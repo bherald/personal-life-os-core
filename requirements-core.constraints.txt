@@ -1,0 +1,13 @@
+# Public core Python constraints.
+#
+# Generated from the passing public smoke environment on 2026-04-27:
+#   $HOME/tmp/personal-life-os-core-smoke/.venv/bin/python -m pip freeze --local
+#
+# This pins the minimal public/core tier used by CI and scripts/public-smoke.sh.
+# Media and GPU tiers are intentionally not pinned here; they need separate
+# host/profile-specific review before a formal public tag.
+
+numpy==2.4.4
+pillow==11.3.0
+psycopg2-binary==2.9.12
+tqdm==4.67.3

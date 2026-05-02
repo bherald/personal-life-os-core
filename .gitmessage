@@ -1,0 +1,18 @@
+# <type>: <imperative summary>
+#
+# Use Conventional Commit prefixes such as fix:, perf:, docs:, test:, chore:.
+# Keep the subject focused on the user-visible or operational change.
+#
+# Required for fix: commits that touch production behavior:
+#
+# Root cause:
+# - What failed, drifted, or was missing?
+#
+# Behavior changed:
+# - What will production do differently after this commit?
+#
+# Verification:
+# - Which test, smoke check, prod read-only check, or log review proves it?
+#
+# Deployment/rollback:
+# - Note migrations, config, queues, cron changes, cache clears, or rollback notes.

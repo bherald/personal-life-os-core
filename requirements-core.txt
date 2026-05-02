@@ -1,0 +1,7 @@
+# Core Python helpers for public PLOS installs.
+# Keep this light; media/GPU dependencies live in separate requirement files.
+
+numpy>=1.26,<3
+Pillow>=10,<12
+psycopg2-binary>=2.9,<3
+tqdm>=4.66,<5

@@ -1,0 +1,258 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: ${DOCKER_UID:-1000}
+        GID: ${DOCKER_GID:-1000}
+        PYTHON_REQUIREMENTS: ${PYTHON_REQUIREMENTS:-requirements-core.txt}
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV:-local}
+      APP_URL: ${APP_URL:-http://localhost:8000}
+      DB_HOST: mysql
+      DB_PORT: 3306
+      RAG_DB_HOST: postgres
+      RAG_DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PYTHON_BINARY: python3
+      OLLAMA_API_URL: http://ollama:11434
+      TIKA_URL: http://tika:9998
+      SEARXNG_URL: http://searxng:8080
+      NEXTCLOUD_URL: http://nextcloud
+      NEXTCLOUD_DATA_PATH: ${NEXTCLOUD_DATA_PATH:-}
+    volumes:
+      - .:/var/www/html
+      - composer_vendor:/var/www/html/vendor
+      - ./storage:/var/www/html/storage
+      - nextcloud_data:/srv/nextcloud/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 9000) ? 0 : 1);'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    image: nginx:1.27-alpine
+    ports:
+      - "${APP_HTTP_PORT:-8000}:80"
+    volumes:
+      - .:/var/www/html:ro
+      - composer_vendor:/var/www/html/vendor:ro
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: ${DOCKER_UID:-1000}
+        GID: ${DOCKER_GID:-1000}
+        PYTHON_REQUIREMENTS: ${PYTHON_REQUIREMENTS:-requirements-core.txt}
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      RAG_DB_HOST: postgres
+      RAG_DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PYTHON_BINARY: python3
+      OLLAMA_API_URL: http://ollama:11434
+      TIKA_URL: http://tika:9998
+      SEARXNG_URL: http://searxng:8080
+      NEXTCLOUD_URL: http://nextcloud
+      NEXTCLOUD_DATA_PATH: ${NEXTCLOUD_DATA_PATH:-}
+    command: php artisan horizon
+    volumes:
+      - .:/var/www/html
+      - composer_vendor:/var/www/html/vendor
+      - ./storage:/var/www/html/storage
+      - nextcloud_data:/srv/nextcloud/data:ro
+    depends_on:
+      - app
+      - redis
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: ${DOCKER_UID:-1000}
+        GID: ${DOCKER_GID:-1000}
+        PYTHON_REQUIREMENTS: ${PYTHON_REQUIREMENTS:-requirements-core.txt}
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      RAG_DB_HOST: postgres
+      RAG_DB_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PYTHON_BINARY: python3
+      OLLAMA_API_URL: http://ollama:11434
+      TIKA_URL: http://tika:9998
+      SEARXNG_URL: http://searxng:8080
+      NEXTCLOUD_URL: http://nextcloud
+      NEXTCLOUD_DATA_PATH: ${NEXTCLOUD_DATA_PATH:-}
+    command: sh -lc "while true; do php artisan schedule:run --verbose --no-interaction; sleep 60; done"
+    volumes:
+      - .:/var/www/html
+      - composer_vendor:/var/www/html/vendor
+      - ./storage:/var/www/html/storage
+      - nextcloud_data:/srv/nextcloud/data:ro
+    depends_on:
+      - app
+      - redis
+
+  vite:
+    image: node:20-bookworm
+    working_dir: /app
+    env_file:
+      - .env
+    command: sh -lc "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "${VITE_PORT:-5173}:5173"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-plos}
+      MYSQL_USER: ${DB_USERNAME:-plos}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-change-me}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-change-root-me}
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${DB_ROOT_PASSWORD:-change-root-me}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ${RAG_DB_DATABASE:-plos_rag}
+      POSTGRES_USER: ${RAG_DB_USERNAME:-plos_rag}
+      POSTGRES_PASSWORD: ${RAG_DB_PASSWORD:-change-me}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-vector.sql:/docker-entrypoint-initdb.d/10-vector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  tika:
+    image: apache/tika:2.9.2.1-full
+    profiles: ["full", "tika"]
+    ports:
+      - "${TIKA_PORT:-9998}:9998"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9998/version >/dev/null || wget -qO- http://127.0.0.1:9998/version >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  searxng:
+    image: searxng/searxng:latest
+    profiles: ["full", "search"]
+    environment:
+      BASE_URL: ${SEARXNG_PUBLIC_URL:-http://localhost:8888/}
+      INSTANCE_NAME: PLOS Search
+    ports:
+      - "${SEARXNG_PORT:-8888}:8080"
+    volumes:
+      - searxng_data:/etc/searxng
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["full", "ollama"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # This public scaffold runs Ollama CPU-only by default. For GPU inference,
+    # use host Ollama or add NVIDIA Container Toolkit device reservations locally.
+
+  nextcloud-db:
+    image: mariadb:11
+    profiles: ["full", "nextcloud"]
+    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
+    environment:
+      MARIADB_DATABASE: ${NEXTCLOUD_DB_DATABASE:-nextcloud}
+      MARIADB_USER: ${NEXTCLOUD_DB_USERNAME:-nextcloud}
+      MARIADB_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:-change-me}
+      MARIADB_ROOT_PASSWORD: ${NEXTCLOUD_DB_ROOT_PASSWORD:-change-root-me}
+    volumes:
+      - nextcloud_db:/var/lib/mysql
+
+  nextcloud:
+    image: nextcloud:apache
+    profiles: ["full", "nextcloud"]
+    environment:
+      MYSQL_HOST: nextcloud-db
+      MYSQL_DATABASE: ${NEXTCLOUD_DB_DATABASE:-nextcloud}
+      MYSQL_USER: ${NEXTCLOUD_DB_USERNAME:-nextcloud}
+      MYSQL_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:-change-me}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_USERNAME:-plos}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_PASSWORD:-change-me}
+    ports:
+      - "${NEXTCLOUD_PORT:-8080}:80"
+    volumes:
+      - nextcloud_html:/var/www/html
+      - nextcloud_data:/var/www/html/data
+    depends_on:
+      - nextcloud-db
+
+volumes:
+  composer_vendor:
+  mysql_data:
+  nextcloud_data:
+  nextcloud_db:
+  nextcloud_html:
+  node_modules:
+  ollama_data:
+  postgres_data:
+  redis_data:
+  searxng_data:

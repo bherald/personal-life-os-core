@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>PLOS Synthetic Search Feed</title>
+    <link>https://example.org/search</link>
+    <description>Public-safe RSS fixture for local search and research tests.</description>
+    <item>
+      <title>Example Township archive releases school ledger index</title>
+      <link>https://example.org/archive/school-ledger-index</link>
+      <guid>https://example.org/archive/school-ledger-index</guid>
+      <pubDate>Wed, 15 Jan 2025 12:00:00 GMT</pubDate>
+      <description>Fictional public archive item used for parser tests.</description>
+    </item>
+    <item>
+      <title>Sample County posts neutral OCR benchmark packet</title>
+      <link>https://example.org/records/ocr-benchmark</link>
+      <guid>https://example.org/records/ocr-benchmark</guid>
+      <pubDate>Thu, 16 Jan 2025 12:00:00 GMT</pubDate>
+      <description>Fictional record announcement with no private data.</description>
+    </item>
+  </channel>
+</rss>

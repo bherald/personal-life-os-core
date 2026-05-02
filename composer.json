@@ -1,0 +1,103 @@
+{
+    "$schema": "https://getcomposer.org/schema.json",
+    "name": "plos/ai-automation-workflow",
+    "type": "project",
+    "description": "PLOS AI Automation Workflow Framework - Node-based automation system with AI integration",
+    "keywords": ["workflow", "automation", "ai", "laravel"],
+    "license": "MIT",
+    "require": {
+        "php": "^8.2",
+        "intervention/image": "^3.11",
+        "jenssegers/imagehash": "^0.11.0",
+        "laravel/framework": "^12.0",
+        "laravel/horizon": "^5.40",
+        "laravel/passport": "^13.2",
+        "laravel/tinker": "^2.10.1",
+        "mrmysql/youtube-transcript": "^0.0.5",
+        "phpoffice/phpspreadsheet": "^5.4",
+        "phpoffice/phpword": "^1.4",
+        "smalot/pdfparser": "^2.12",
+        "tecnickcom/tcpdf": "^6.10",
+        "thiagoalessio/tesseract_ocr": "^2.13"
+    },
+    "require-dev": {
+        "fakerphp/faker": "^1.23",
+        "larastan/larastan": "^3.9",
+        "laravel/pail": "^1.2.2",
+        "laravel/pint": "^1.24",
+        "laravel/sail": "^1.41",
+        "mockery/mockery": "^1.6",
+        "nunomaduro/collision": "^8.6",
+        "phpunit/phpunit": "^11.5.3"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "app/",
+            "Database\\Factories\\": "database/factories/",
+            "Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "post-autoload-dump": [
+            "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
+            "@php artisan package:discover --ansi"
+        ],
+        "post-update-cmd": [
+            "@php artisan vendor:publish --tag=laravel-assets --ansi --force"
+        ],
+        "post-root-package-install": [
+            "@php -r \"file_exists('.env') || copy('.env.example', '.env');\""
+        ],
+        "post-create-project-cmd": [
+            "@php artisan key:generate --ansi",
+            "@php -r \"file_exists('database/database.sqlite') || touch('database/database.sqlite');\"",
+            "@php artisan migrate --graceful --ansi"
+        ],
+        "pre-package-uninstall": [
+            "Illuminate\\Foundation\\ComposerScripts::prePackageUninstall"
+        ],
+        "dev": [
+            "Composer\\Config::disableProcessTimeout",
+            "npx concurrently -c \"#93c5fd,#c4b5fd,#fb7185,#fdba74\" \"php artisan serve\" \"php artisan queue:listen --tries=1\" \"php artisan pail --timeout=0\" \"npm run dev\" --names=server,queue,logs,vite --kill-others"
+        ],
+        "test": [
+            "@php artisan config:clear --ansi",
+            "@php artisan test"
+        ],
+        "analyse": [
+            "@php -d memory_limit=1G vendor/bin/phpstan analyse --no-progress"
+        ],
+        "analyse:baseline": [
+            "@php -d memory_limit=1G vendor/bin/phpstan analyse --generate-baseline --no-progress"
+        ],
+        "public-release-check": [
+            "scripts/guards/public-release-audit.sh",
+            "scripts/guards/dependency-provenance-check.sh",
+            "scripts/audit-licenses.sh"
+        ]
+    },
+    "extra": {
+        "laravel": {
+            "dont-discover": []
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "php-http/discovery": true
+        },
+        "audit": {
+            "block-insecure": false
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

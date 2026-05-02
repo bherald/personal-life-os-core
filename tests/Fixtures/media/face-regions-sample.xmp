@@ -1,0 +1,34 @@
+<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description
+      xmlns:mwg-rs="http://www.metadataworkinggroup.com/schemas/regions/"
+      xmlns:stArea="http://ns.adobe.com/xmp/sType/Area#"
+      xmlns:stDim="http://ns.adobe.com/xap/1.0/sType/Dimensions#"
+      rdf:about="">
+      <mwg-rs:Regions rdf:parseType="Resource">
+        <mwg-rs:AppliedToDimensions rdf:parseType="Resource">
+          <stDim:w>1600</stDim:w>
+          <stDim:h>1200</stDim:h>
+          <stDim:unit>pixel</stDim:unit>
+        </mwg-rs:AppliedToDimensions>
+        <mwg-rs:RegionList>
+          <rdf:Bag>
+            <rdf:li rdf:parseType="Resource">
+              <mwg-rs:Name>Ada Example</mwg-rs:Name>
+              <mwg-rs:Type>Face</mwg-rs:Type>
+              <mwg-rs:Area rdf:parseType="Resource">
+                <stArea:x>0.4200</stArea:x>
+                <stArea:y>0.3600</stArea:y>
+                <stArea:w>0.1800</stArea:w>
+                <stArea:h>0.2400</stArea:h>
+                <stArea:unit>normalized</stArea:unit>
+              </mwg-rs:Area>
+            </rdf:li>
+          </rdf:Bag>
+        </mwg-rs:RegionList>
+      </mwg-rs:Regions>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>

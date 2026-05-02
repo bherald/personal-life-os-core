@@ -1,0 +1,133 @@
+name: Public Readiness
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  public-audit:
+    name: Public Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install audit tools
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Run public extraction audit
+        run: PUBLIC_AUDIT_LIMIT=120 scripts/guards/public-release-audit.sh
+
+      - name: Lint public release scripts
+        run: bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-licenses.sh scripts/snapshot-python-licenses.sh scripts/audit-licenses.sh scripts/guards/dependency-provenance-check.sh scripts/guards/production-fix-commit-message-check.sh
+
+  docker-compose-config:
+    name: Docker Compose Config
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare public environment
+        run: |
+          cp .env.example .env
+          if grep -q '^WEB_UI_MASTER_PASSWORD=' .env; then
+            sed -i 's#^WEB_UI_MASTER_PASSWORD=.*#WEB_UI_MASTER_PASSWORD=public-readiness-password#' .env
+          else
+            printf '%s=%s\n' WEB_UI_MASTER_PASSWORD public-readiness-password >> .env
+          fi
+
+      - name: Validate Docker Compose config
+        run: docker compose --env-file .env config --quiet
+
+  setup-doctor:
+    name: Setup Doctor And Focused Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: bcmath, ctype, curl, dom, fileinfo, intl, json, mbstring, openssl, pcntl, pdo, pdo_mysql, redis, simplexml, sockets, tokenizer, xml, xmlreader, xmlwriter, zip
+          coverage: none
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install system audit tools
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Install PHP dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Install Node dependencies
+        run: |
+          npm ci
+          npm ci --prefix mcp-server
+          npm ci --prefix mcp-servers/plos
+
+      - name: Install Python core tier
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -c requirements-core.constraints.txt -r requirements-core.txt
+
+      - name: Validate license snapshots
+        run: |
+          scripts/snapshot-npm-licenses.sh --check
+          scripts/snapshot-python-licenses.sh --tier=core --check
+
+      - name: Run dependency provenance signoff
+        run: scripts/guards/dependency-provenance-check.sh
+
+      - name: Run dependency audits
+        run: |
+          npm audit
+          npm audit --prefix mcp-server
+          npm audit --prefix mcp-servers/plos
+          scripts/audit-licenses.sh
+
+      - name: Prepare environment
+        run: |
+          cp .env.example .env
+          if grep -q '^PYTHON_BINARY=' .env; then
+            sed -i 's#^PYTHON_BINARY=.*#PYTHON_BINARY=.venv/bin/python#' .env
+          else
+            printf '%s=%s\n' PYTHON_BINARY .venv/bin/python >> .env
+          fi
+          if grep -q '^WEB_UI_MASTER_PASSWORD=' .env; then
+            sed -i 's#^WEB_UI_MASTER_PASSWORD=.*#WEB_UI_MASTER_PASSWORD=public-readiness-password#' .env
+          else
+            printf '%s=%s\n' WEB_UI_MASTER_PASSWORD public-readiness-password >> .env
+          fi
+          php artisan key:generate --ansi
+          php artisan passport:keys --force --no-interaction
+
+      - name: Verify Python binary
+        run: test -x .venv/bin/python
+
+      - name: Build frontend assets
+        run: npm run build
+
+      - name: Run setup doctor core profile
+        run: php artisan setup:doctor --profile=core --skip-services --json
+
+      - name: Run setup doctor media local-assets profile
+        run: php artisan setup:doctor --profile=media --skip-services --only=assets,browser,docker --json
+
+      - name: Run focused public setup tests
+        run: php artisan test tests/Unit/Setup tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php

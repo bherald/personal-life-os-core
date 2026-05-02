@@ -1,0 +1,56 @@
+{
+  "name": "plos-workflow-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.26.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fullcalendar/core": "^6.1.19",
+    "@fullcalendar/daygrid": "^6.1.19",
+    "@fullcalendar/interaction": "^6.1.19",
+    "@fullcalendar/list": "^6.1.19",
+    "@fullcalendar/timegrid": "^6.1.19",
+    "@fullcalendar/vue3": "^6.1.19",
+    "@modelcontextprotocol/server-filesystem": "^2025.8.21",
+    "@modelcontextprotocol/server-memory": "^2025.9.25",
+    "@modelcontextprotocol/server-puppeteer": "^2025.5.12",
+    "@modelcontextprotocol/server-sequential-thinking": "^2025.7.1",
+    "@vue-flow/background": "^1.3.2",
+    "@vue-flow/controls": "^1.1.3",
+    "@vue-flow/core": "^1.47.0",
+    "@vue-flow/minimap": "^1.5.4",
+    "axios": "^1.6.0",
+    "d3": "^7.9.0",
+    "dompurify": "^3.3.0",
+    "graphlit-mcp-server": "^1.0.20251007001",
+    "highlight.js": "^11.11.1",
+    "markdown-it": "^14.1.0",
+    "marked": "^16.4.1",
+    "mcp-agent": "^0.0.1",
+    "nextcloud-mcp-server": "^1.1.0",
+    "pdfjs-dist": "^4.4.168",
+    "pinia": "^2.1.0",
+    "playwright": "^1.57.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "topola": "^3.9.0",
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/forms": "^0.5.0",
+    "@vitejs/plugin-vue": "^6.0.3",
+    "autoprefixer": "^10.4.0",
+    "laravel-vite-plugin": "^2.0.1",
+    "postcss": "^8.4.0",
+    "tailwindcss": "^3.4.0",
+    "vite": "^7.2.6"
+  }
+}

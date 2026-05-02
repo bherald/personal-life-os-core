@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-29T18:30:46Z",
+  "tier": "core",
+  "requirements": "requirements-core.txt",
+  "constraints": "requirements-core.constraints.txt",
+  "python_version": "3.12",
+  "source": "installed virtualenv metadata plus constraints pins",
+  "package_count": 4,
+  "buckets": {
+    "permissive": 2,
+    "lgpl": 1,
+    "watch": 1
+  },
+  "packages": [
+    {
+      "name": "numpy",
+      "normalized_name": "numpy",
+      "pinned_version": "2.4.4",
+      "installed_version": "2.4.4",
+      "license": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+      "license_bucket": "permissive",
+      "summary": "Fundamental package for array computing in Python",
+      "project_urls": {
+        "homepage": "https://numpy.org",
+        "documentation": "https://numpy.org/doc/",
+        "source": "https://github.com/numpy/numpy",
+        "download": "https://pypi.org/project/numpy/#files",
+        "tracker": "https://github.com/numpy/numpy/issues",
+        "release notes": "https://numpy.org/doc/stable/release"
+      },
+      "metadata_source": "installed_metadata"
+    },
+    {
+      "name": "pillow",
+      "normalized_name": "pillow",
+      "pinned_version": "11.3.0",
+      "installed_version": "11.3.0",
+      "license": "MIT-CMU",
+      "license_bucket": "permissive",
+      "summary": "Python Imaging Library (Fork)",
+      "project_urls": {
+        "Changelog": "https://github.com/python-pillow/Pillow/releases",
+        "Documentation": "https://pillow.readthedocs.io",
+        "Funding": "https://tidelift.com/subscription/pkg/pypi-pillow?utm_source=pypi-pillow&utm_medium=pypi",
+        "Homepage": "https://python-pillow.github.io",
+        "Mastodon": "https://fosstodon.org/@pillow",
+        "Release notes": "https://pillow.readthedocs.io/en/stable/releasenotes/index.html",
+        "Source": "https://github.com/python-pillow/Pillow"
+      },
+      "metadata_source": "installed_metadata"
+    },
+    {
+      "name": "psycopg2-binary",
+      "normalized_name": "psycopg2-binary",
+      "pinned_version": "2.9.12",
+      "installed_version": "2.9.12",
+      "license": "LGPL with exceptions",
+      "license_bucket": "lgpl",
+      "summary": "psycopg2 - Python-PostgreSQL Database Adapter",
+      "project_urls": {
+        "Homepage": "https://psycopg.org/",
+        "Changes": "https://www.psycopg.org/docs/news.html",
+        "Documentation": "https://www.psycopg.org/docs/",
+        "Code": "https://github.com/psycopg/psycopg2",
+        "Issue Tracker": "https://github.com/psycopg/psycopg2/issues",
+        "Download": "https://pypi.org/project/psycopg2/",
+        "Home-page": "https://psycopg.org/"
+      },
+      "metadata_source": "installed_metadata"
+    },
+    {
+      "name": "tqdm",
+      "normalized_name": "tqdm",
+      "pinned_version": "4.67.3",
+      "installed_version": "4.67.3",
+      "license": "MPL-2.0 AND MIT",
+      "license_bucket": "watch",
+      "summary": "Fast, Extensible Progress Meter",
+      "project_urls": {
+        "homepage": "https://tqdm.github.io",
+        "repository": "https://github.com/tqdm/tqdm",
+        "changelog": "https://tqdm.github.io/releases",
+        "wiki": "https://github.com/tqdm/tqdm/wiki"
+      },
+      "metadata_source": "installed_metadata"
+    }
+  ]
+}

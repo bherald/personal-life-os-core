@@ -1,0 +1,27 @@
+name: Repository Governance
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  production-fix-commit-messages:
+    name: Production Fix Commit Messages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Lint governance guard
+        run: bash -n scripts/guards/production-fix-commit-message-check.sh
+
+      - name: Check production fix commit bodies
+        env:
+          PLOS_GOVERNANCE_EVENT: ${{ github.event_name }}
+          PLOS_GOVERNANCE_HEAD: ${{ github.sha }}
+          PLOS_GOVERNANCE_PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PLOS_GOVERNANCE_PUSH_BEFORE: ${{ github.event.before }}
+        run: scripts/guards/production-fix-commit-message-check.sh

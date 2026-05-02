@@ -1,0 +1,1610 @@
+<?php
+
+namespace App\Services;
+
+use App\Services\AgentMetrics\AwoReplayService;
+use App\Services\AgentMetrics\GenealogyAgentTriageService;
+use App\Services\Ops\AgentDoctorService;
+use App\Services\Ops\DbaTelemetryReportService;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
+
+class OperatorEvidenceService
+{
+    private const STATUSES = ['healthy' => 0, 'watch' => 1, 'degraded' => 2, 'blocked' => 3];
+
+    private const QUEUES = ['high', 'default', 'low', 'long-running', 'workflow', 'speculative'];
+
+    private const DBA_TELEMETRY_CACHE_KEY = 'operator_evidence:dba_telemetry:v1';
+
+    private const AWO_REPLAY_CACHE_KEY = 'operator_evidence:awo_replay:v1';
+
+    private const NEWS_BIAS_COVERAGE_CACHE_KEY = 'operator_evidence:news_bias_coverage:v1';
+
+    private const AGENT_DOCTOR_CACHE_KEY = 'operator_evidence:agent_doctor:v1';
+
+    private const GENEALOGY_AUTOMATION_TARGETS = [
+        'genealogy_analyst',
+        'genealogy_auto_research',
+        'genealogy_newspaper_research',
+        'genealogy_research_colonial_fan',
+    ];
+
+    private ?array $genealogyAutomationTargetCounts = null;
+
+    public function __construct(
+        private readonly RagBacklogService $ragBacklog,
+        private readonly OfflinePolicyService $offlinePolicy,
+        private readonly OfflineAuditService $offlineAudit,
+        private readonly AgentProceduralMemoryService $proceduralMemory,
+        private readonly ?GenealogyAgentTriageService $genealogyTriage = null,
+        private readonly ?DbaTelemetryReportService $dbaTelemetry = null,
+        private readonly ?AwoReplayService $awoReplay = null,
+        private readonly ?NewsBiasCoverageService $newsBiasCoverage = null,
+        private readonly ?AgentDoctorService $agentDoctor = null,
+        private readonly ?LLMPoolManagerService $llmPool = null,
+    ) {}
+
+    public function collect(): array
+    {
+        $this->genealogyAutomationTargetCounts = null;
+
+        $sampledAt = Carbon::now('UTC');
+        $ragMetrics = $this->collectRagDigest();
+        $ragNetBurn = $this->collectRagNetBurn();
+
+        $sections = [
+            'queue_health' => $this->collectQueueHealth($sampledAt),
+            'dba_telemetry' => $this->collectDbaTelemetry($sampledAt),
+            'kg_backlog' => $this->collectKgBacklog($sampledAt, $ragMetrics, $ragNetBurn),
+            'raptor_sentence_drained' => $this->collectRaptorSentenceDrained($sampledAt, $ragMetrics, $ragNetBurn),
+            'genealogy_pending_approvals' => $this->collectGenealogyPendingApprovals($sampledAt),
+            'genealogy_review_feedback' => $this->collectGenealogyReviewFeedback($sampledAt),
+            'awo_replay' => $this->collectAwoReplay($sampledAt),
+            'agent_doctor' => $this->collectAgentDoctor($sampledAt),
+            'news_bias_coverage' => $this->collectNewsBiasCoverage($sampledAt),
+            'face_match_link_backlog' => $this->collectFaceMatchLinkBacklog($sampledAt),
+            'offline_degraded_state' => $this->collectOfflineDegradedState($sampledAt),
+            'disabled_genealogy_agents' => $this->collectDisabledGenealogyAgents($sampledAt),
+            'genealogy_agent_triage' => $this->collectGenealogyAgentTriage($sampledAt),
+            'agent_failures_stale_work' => $this->collectAgentFailuresStaleWork($sampledAt),
+        ];
+
+        return [
+            'version' => 1,
+            'captured_at' => $this->formatTimestamp($sampledAt),
+            'status' => $this->worstStatus(array_column($sections, 'status')),
+            'sections' => $sections,
+        ];
+    }
+
+    public function collectOfflineStatus(): array
+    {
+        $sampledAt = Carbon::now('UTC');
+        $section = $this->collectOfflineDegradedState($sampledAt);
+
+        return [
+            'version' => 1,
+            'mode' => 'observe',
+            'captured_at' => $this->formatTimestamp($sampledAt),
+            'status' => $section['status'] ?? 'degraded',
+            'section' => $section,
+        ];
+    }
+
+    private function collectAgentDoctor(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::AGENT_DOCTOR_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->agentDoctor ?? app(AgentDoctorService::class))->collect(24)
+            );
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $recursion = is_array($payload['recursion'] ?? null) ? $payload['recursion'] : [];
+            $trace = is_array($payload['trace'] ?? null) ? $payload['trace'] : [];
+            $checks = array_values(array_filter((array) ($payload['checks'] ?? []), 'is_array'));
+
+            $criticalChecks = array_values(array_filter(array_map(
+                fn (array $check): ?string => ($check['status'] ?? null) === 'critical' ? $this->nullableString($check['id'] ?? null) : null,
+                $checks
+            )));
+            $warningChecks = array_values(array_filter(array_map(
+                fn (array $check): ?string => ($check['status'] ?? null) === 'warning' ? $this->nullableString($check['id'] ?? null) : null,
+                $checks
+            )));
+
+            $counts = [
+                'window_hours' => (int) ($payload['window_hours'] ?? 24),
+                'overall_status' => (string) ($payload['overall_status'] ?? 'unknown'),
+                'agents_total' => (int) ($summary['agents_total'] ?? 0),
+                'agents_enabled' => (int) ($summary['agents_enabled'] ?? 0),
+                'agents_with_warnings' => (int) ($summary['agents_with_warnings'] ?? 0),
+                'agents_with_critical' => (int) ($summary['agents_with_critical'] ?? 0),
+                'sessions_active' => (int) ($summary['sessions_active'] ?? 0),
+                'sessions_stalled' => (int) ($summary['sessions_stalled'] ?? 0),
+                'review_queue_pending' => (int) ($summary['review_queue_pending'] ?? 0),
+                'review_queue_aged' => (int) ($summary['review_queue_aged'] ?? 0),
+                'tools_missing_total' => (int) ($summary['tools_missing_total'] ?? 0),
+                'tools_blocked_total' => (int) ($summary['tools_blocked_total'] ?? 0),
+                'memory_error_episodes_window' => (int) ($summary['memory_error_episodes_window'] ?? 0),
+                'memory_undistilled_episodes_window' => (int) ($summary['memory_undistilled_episodes_window'] ?? 0),
+                'procedures_low_quality_total' => (int) ($summary['procedures_low_quality_total'] ?? 0),
+                'recursion_status' => $this->nullableString($recursion['status'] ?? null),
+                'recursion_calls_7d' => (int) ($recursion['calls_7d'] ?? 0),
+                'recursion_move_on_rate_7d' => $recursion['move_on_rate_7d'] ?? null,
+                'recursion_master_enabled' => isset($recursion['master_enabled']) ? (bool) $recursion['master_enabled'] : null,
+                'trace_status' => $this->nullableString($trace['status'] ?? null),
+                'trace_enabled' => isset($trace['enabled']) ? (bool) $trace['enabled'] : null,
+                'trace_directory_writable' => isset($trace['directory_writable']) ? (bool) $trace['directory_writable'] : null,
+                'trace_retention_days' => isset($trace['retention_days']) ? (int) $trace['retention_days'] : null,
+                'trace_files_over_retention' => isset($trace['files_over_retention']) ? (int) $trace['files_over_retention'] : null,
+                'trace_events_24h' => $trace['events_24h'] ?? null,
+                'trace_events_24h_exact' => isset($trace['events_24h_exact']) ? (bool) $trace['events_24h_exact'] : null,
+                'trace_malformed_lines_24h' => $trace['malformed_lines_24h'] ?? null,
+                'trace_scan_status' => $this->nullableString($trace['scan_status'] ?? null),
+                'critical_checks' => $criticalChecks,
+                'warning_checks' => $warningChecks,
+            ];
+
+            $status = match ((string) ($payload['overall_status'] ?? 'warning')) {
+                'healthy' => 'healthy',
+                'warning' => 'watch',
+                'critical' => 'degraded',
+                default => 'watch',
+            };
+
+            if ($counts['tools_blocked_total'] > 0) {
+                $status = $this->maxStatus($status, 'degraded');
+            }
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['AgentDoctorService', 'agent_sessions', 'scheduled_jobs', 'agent_review_queue', 'agent_episodes', 'dev_agent_traces'],
+                $counts,
+                $status === 'healthy' ? null : 'Review ops:agent-doctor --json --since=24 before expanding agent autonomy.',
+                [
+                    'generated_at' => $this->nullableString($payload['generated_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['AgentDoctorService'], $e, 'Agent Doctor query failed.');
+        }
+    }
+
+    private function collectNewsBiasCoverage(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::NEWS_BIAS_COVERAGE_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->newsBiasCoverage ?? app(NewsBiasCoverageService::class))->collect(7, 25)
+            );
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $topUnmatched = array_values(array_filter((array) ($payload['top_unmatched_sources'] ?? []), 'is_array'));
+            $status = $this->normalizeStatus((string) ($payload['status'] ?? 'watch'));
+
+            $counts = [
+                'window_days' => (int) ($payload['window_days'] ?? 7),
+                'bias_ratings' => (int) ($summary['bias_ratings'] ?? 0),
+                'aliases' => (int) ($summary['aliases'] ?? 0),
+                'active_aliases' => (int) ($summary['active_aliases'] ?? 0),
+                'orphaned_aliases' => (int) ($summary['orphaned_aliases'] ?? 0),
+                'recent_articles' => (int) ($summary['recent_articles'] ?? 0),
+                'recent_feeds' => (int) ($summary['recent_feeds'] ?? 0),
+                'recent_bias_covered' => (int) ($summary['recent_bias_covered'] ?? 0),
+                'recent_bias_missing' => (int) ($summary['recent_bias_missing'] ?? 0),
+                'recent_bias_coverage_rate' => $summary['recent_bias_coverage_rate'] ?? null,
+                'unmatched_sources' => (int) ($summary['unmatched_sources'] ?? 0),
+                'top_unmatched_sources' => array_map(
+                    fn (array $row): string => sprintf('%s (%d)', (string) ($row['source'] ?? 'unknown'), (int) ($row['count'] ?? 0)),
+                    $topUnmatched
+                ),
+                'missing_tables' => array_values(array_filter((array) ($payload['missing_tables'] ?? []), 'is_string')),
+            ];
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['NewsBiasCoverageService', 'bias_ratings', 'bias_rating_aliases', 'news_articles', 'BiasRatingEnrich'],
+                $counts,
+                $status === 'healthy' ? null : 'Review news:source-inventory and bias:aliases --unmatched before adding or changing source aliases.',
+                [
+                    'latest_article_at' => $this->nullableString($summary['latest_article_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['NewsBiasCoverageService', 'bias_ratings'], $e, 'News bias coverage query failed.');
+        }
+    }
+
+    private function collectAwoReplay(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::AWO_REPLAY_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->awoReplay ?? app(AwoReplayService::class))->collect('7d', 500)
+            );
+            $replayService = $this->awoReplay ?? app(AwoReplayService::class);
+            $comparison = $this->collectAwoScheduledComparison($replayService, $payload);
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $byAgent = array_values(array_filter((array) ($payload['by_agent'] ?? []), 'is_array'));
+            $recordingEnabled = $this->readAwoRecordingEnabled();
+            $status = $this->mapAwoReplayStatus((string) ($payload['status'] ?? 'insufficient_data'));
+            $comparisonStatus = (string) ($comparison['status'] ?? 'unavailable');
+            if ($comparisonStatus !== 'observe_ok') {
+                $status = $this->maxStatus($status, 'watch');
+            }
+
+            $fieldMatches = array_values(array_filter((array) ($comparison['field_matches'] ?? []), 'is_array'));
+            $matchingFields = count(array_filter($fieldMatches, fn (array $row): bool => (bool) ($row['matches'] ?? false)));
+            $mismatchingFields = count($fieldMatches) - $matchingFields;
+            $latestScheduledRun = is_array($comparison['latest_scheduled_run'] ?? null)
+                ? $comparison['latest_scheduled_run']
+                : null;
+            $job = is_array($comparison['job'] ?? null) ? $comparison['job'] : null;
+
+            $counts = [
+                'window' => (string) ($payload['window'] ?? '7d'),
+                'limit' => (int) ($payload['limit'] ?? 500),
+                'recording_enabled' => $recordingEnabled,
+                'rows_scanned' => (int) ($summary['rows_scanned'] ?? 0),
+                'completed_reviews' => (int) ($summary['completed_reviews'] ?? 0),
+                'approval_worthy_reviews' => (int) ($summary['approval_worthy_reviews'] ?? 0),
+                'approval_worthy_rate' => $summary['approval_worthy_rate'] ?? null,
+                'review_approval_yield' => $summary['review_approval_yield'] ?? null,
+                'operator_rework_rate' => $summary['operator_rework_rate'] ?? null,
+                'hard_fail_count' => (int) ($summary['hard_fail_count'] ?? 0),
+                'insufficient_data' => (bool) ($summary['insufficient_data'] ?? true),
+                'by_agent_count' => count($byAgent),
+                'agents_with_hard_fails' => count(array_filter(
+                    $byAgent,
+                    fn (array $row): bool => (int) ($row['hard_fail_count'] ?? 0) > 0
+                )),
+                'promotion_decisions_count' => count((array) ($payload['promotion_decisions'] ?? [])),
+                'scheduled_comparison_status' => $comparisonStatus,
+                'scheduled_comparison_available' => $latestScheduledRun !== null,
+                'scheduled_job_enabled' => is_array($job) && array_key_exists('enabled', $job) ? (bool) $job['enabled'] : null,
+                'scheduled_fields_compared' => count($fieldMatches),
+                'scheduled_field_matches' => $matchingFields,
+                'scheduled_field_mismatches' => $mismatchingFields,
+                'scheduled_next_run_at' => $this->nullableString($job['next_run_at'] ?? null),
+                'scheduled_latest_run_at' => $this->nullableString($latestScheduledRun['completed_at'] ?? null),
+            ];
+
+            if ($recordingEnabled) {
+                $status = $this->maxStatus($status, 'degraded');
+            }
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['AwoReplayService', 'agent_review_queue', 'system_configs'],
+                $counts,
+                $recordingEnabled
+                    ? 'Confirm AWO recording signoff; prod should remain default-off until validation is complete.'
+                    : ($status === 'healthy' ? null : 'Review awo:replay --window=7d --json and scheduled comparison evidence before expanding agent autonomy.'),
+                [
+                    'cutoff' => $this->nullableString($payload['cutoff'] ?? null),
+                    'mode' => $this->nullableString($payload['mode'] ?? null),
+                    'scheduled_comparison_generated_at' => $this->nullableString($comparison['generated_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['AwoReplayService', 'agent_review_queue'], $e, 'AWO replay query failed.');
+        }
+    }
+
+    private function collectAwoScheduledComparison(AwoReplayService $replay, array $currentReplay): array
+    {
+        try {
+            return $replay->collectScheduledComparison('7d', 500, 'awo_replay_weekly_report', $currentReplay);
+        } catch (\Throwable $e) {
+            return [
+                'status' => 'unavailable',
+                'generated_at' => Carbon::now('UTC')->format('Y-m-d\TH:i:s\Z'),
+                'field_matches' => [],
+                'job' => null,
+                'latest_scheduled_run' => null,
+                'warning' => class_basename($e).' '.$e->getMessage(),
+            ];
+        }
+    }
+
+    private function mapAwoReplayStatus(string $status): string
+    {
+        return match ($status) {
+            'observe_ok' => 'healthy',
+            'insufficient_data' => 'watch',
+            'observe_warning' => 'degraded',
+            default => 'degraded',
+        };
+    }
+
+    private function readAwoRecordingEnabled(): bool
+    {
+        try {
+            return filter_var(app(SystemConfigService::class)->get('awo.recording_enabled', false), FILTER_VALIDATE_BOOLEAN);
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function collectDbaTelemetry(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::DBA_TELEMETRY_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->dbaTelemetry ?? app(DbaTelemetryReportService::class))->collect(
+                    weekly: false,
+                    dryRun: false,
+                    deep: false
+                )
+            );
+            $sections = is_array($payload['sections'] ?? null) ? $payload['sections'] : [];
+            $mysql = is_array($sections['mysql_storage'] ?? null) ? $sections['mysql_storage'] : [];
+            $arc = is_array($sections['arc_growth']['summary'] ?? null) ? $sections['arc_growth']['summary'] : [];
+            $postgres = is_array($sections['postgres_storage'] ?? null) ? $sections['postgres_storage'] : [];
+            $redis = is_array($sections['redis_health'] ?? null) ? $sections['redis_health'] : [];
+            $breaches = array_values(array_filter((array) ($payload['threshold_breaches'] ?? []), 'is_array'));
+            $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
+
+            $counts = [
+                'deep' => (bool) ($payload['deep'] ?? false),
+                'threshold_breaches' => count($breaches),
+                'recommendations' => count($recommendations),
+                'breach_ids' => array_values(array_filter(array_map(
+                    fn (array $breach): ?string => isset($breach['id']) ? (string) $breach['id'] : null,
+                    $breaches
+                ))),
+                'mysql_top20_total_gb' => (float) ($mysql['schema_top20_total_gb'] ?? 0.0),
+                'arc_rows_total_estimate' => (int) ($arc['rows_total_estimate'] ?? 0),
+                'arc_total_gb' => (float) ($arc['total_gb'] ?? 0.0),
+                'arc_raw_recent_scan_skipped' => (bool) ($arc['raw_recent_scan_skipped'] ?? false),
+                'arc_rows_7d' => $arc['rows_7d'] ?? null,
+                'arc_move_on_rate_7d' => $arc['move_on_rate_7d'] ?? null,
+                'postgres_database_total_gb' => (float) ($postgres['database_total_gb'] ?? 0.0),
+                'postgres_dead_tuple_top' => $this->maxDeadTupleCount((array) ($postgres['dead_tuple_top'] ?? [])),
+                'redis_used_memory_mb' => (float) ($redis['used_memory_mb'] ?? 0.0),
+                'redis_memory_ratio' => $redis['memory_ratio'] ?? null,
+                'redis_fragmentation_ratio' => $redis['fragmentation_ratio'] ?? null,
+                'redis_key_count' => (int) ($redis['key_count'] ?? 0),
+            ];
+
+            $status = $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning'));
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['DbaTelemetryReportService', 'information_schema.tables', 'agent_recursion_calls', 'pgsql_rag.pg_catalog', 'redis_info'],
+                $counts,
+                $status === 'healthy' ? null : 'Review ops:dba-telemetry-report --json before DBA cleanup, partition, or retention changes.',
+                [
+                    'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
+                    'window' => $this->nullableString($payload['window'] ?? null),
+                    'mode' => $this->nullableString($payload['mode'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['DbaTelemetryReportService'], $e, 'DBA telemetry query failed.');
+        }
+    }
+
+    private function mapObserveStatus(string $status): string
+    {
+        return match ($status) {
+            'observe_ok' => 'healthy',
+            'observe_warning' => 'watch',
+            'review_required' => 'degraded',
+            default => 'degraded',
+        };
+    }
+
+    private function maxDeadTupleCount(array $rows): int
+    {
+        $max = 0;
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $max = max($max, (int) ($row['dead_tuples'] ?? 0));
+            }
+        }
+
+        return $max;
+    }
+
+    private function collectQueueHealth(Carbon $sampledAt): array
+    {
+        $missing = $this->missingTables(['scheduled_jobs']);
+        if ($missing !== []) {
+            return $this->section(
+                'blocked',
+                $sampledAt,
+                ['scheduled_jobs', 'jobs', 'failed_jobs', 'scheduled_job_runs'],
+                ['missing_tables' => $missing],
+                'Restore scheduler evidence tables before evaluating queue health.'
+            );
+        }
+        $missingSupport = $this->missingTables(['jobs', 'failed_jobs', 'scheduled_job_runs']);
+
+        try {
+            $row = DB::selectOne(
+                "SELECT
+                    SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled_jobs,
+                    SUM(CASE WHEN enabled = 1
+                               AND stall_exempt = 0
+                               AND COALESCE(job_type, '') <> 'agent_task'
+                               AND last_run_status = 'running'
+                               AND last_run_at < DATE_SUB(NOW(), INTERVAL COALESCE(timeout_minutes, 30) MINUTE)
+                             THEN 1 ELSE 0 END) AS stale_running,
+                    SUM(CASE WHEN enabled = 1
+                               AND last_run_status IN ('failed', 'timeout')
+                               AND last_run_at > DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+                             THEN 1 ELSE 0 END) AS recent_scheduler_failures,
+                    SUM(CASE WHEN enabled = 1
+                               AND next_run_at IS NOT NULL
+                               AND next_run_at < NOW()
+                             THEN 1 ELSE 0 END) AS due_jobs_overdue,
+                    COALESCE(TIMESTAMPDIFF(MINUTE, MAX(CASE WHEN enabled = 1 THEN last_run_at END), NOW()), 0) AS scheduler_lag_minutes,
+                    MAX(CASE WHEN enabled = 1 THEN last_run_at END) AS latest_scheduler_run_at
+                 FROM scheduled_jobs"
+            );
+
+            $queueDepth = $this->collectQueueDepth();
+            $recentQueueFailures = $this->countRecentFailedJobs();
+            $recentQueueFailures30m = $this->countRecentFailedJobs(30, 'MINUTE');
+            $completionLag = $this->collectCompletionLagMinutes();
+
+            $counts = [
+                'queue_depth_total' => $queueDepth['total'],
+                'queue_depths' => $queueDepth['queues'],
+                'enabled_scheduled_jobs' => (int) ($row->enabled_jobs ?? 0),
+                'stale_running_jobs' => (int) ($row->stale_running ?? 0),
+                'recent_scheduler_failures' => (int) ($row->recent_scheduler_failures ?? 0),
+                'recent_queue_failures' => $recentQueueFailures,
+                'recent_failed_jobs_30m' => $recentQueueFailures30m,
+                'due_jobs_overdue' => (int) ($row->due_jobs_overdue ?? 0),
+                'missing_support_tables' => $missingSupport,
+            ];
+
+            $freshness = [
+                'latest_scheduler_run_at' => $this->nullableString($row->latest_scheduler_run_at ?? null),
+                'scheduler_lag_minutes' => (int) ($row->scheduler_lag_minutes ?? 0),
+                'completion_lag_minutes' => $completionLag,
+                'queue_source' => $queueDepth['source'],
+            ];
+
+            $status = 'healthy';
+            $nextAction = null;
+            if ($queueDepth['error'] !== null) {
+                $status = 'degraded';
+                $nextAction = 'Check Laravel queue storage; queue depth could not be sampled.';
+            }
+            if ($missingSupport !== []) {
+                $status = $this->maxStatus($status, 'degraded');
+                $nextAction ??= 'Restore queue failure/completion evidence tables before trusting a healthy queue snapshot.';
+            }
+            if ($counts['stale_running_jobs'] > 0) {
+                $status = 'blocked';
+                $nextAction = 'Review stale scheduled jobs before trusting downstream evidence.';
+            } elseif ($counts['recent_scheduler_failures'] > 0 || ($recentQueueFailures ?? 0) > 0 || ($recentQueueFailures30m ?? 0) > 0) {
+                $status = $this->maxStatus($status, 'degraded');
+                $nextAction ??= 'Inspect recent failed scheduler or queue jobs.';
+            } elseif ($counts['queue_depth_total'] > 250 || $freshness['scheduler_lag_minutes'] > 60) {
+                $status = $this->maxStatus($status, 'degraded');
+                $nextAction ??= 'Drain queues and verify scheduler execution.';
+            } elseif ($counts['queue_depth_total'] > 20 || $counts['due_jobs_overdue'] > 0 || ($completionLag ?? 0) > 30) {
+                $status = $this->maxStatus($status, 'watch');
+                $nextAction ??= 'Monitor queue drain and scheduler flow.';
+            } elseif ($completionLag === null) {
+                $status = $this->maxStatus($status, 'watch');
+                $nextAction ??= 'Wait for or restore successful scheduler completion evidence.';
+            }
+
+            return $this->section($status, $sampledAt, ['scheduled_jobs', 'jobs', 'failed_jobs', 'scheduled_job_runs'], $counts, $nextAction, $freshness);
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['scheduled_jobs'], $e, 'Queue health query failed.');
+        }
+    }
+
+    private function collectKgBacklog(Carbon $sampledAt, array $ragMetrics, array $ragNetBurn): array
+    {
+        if (($ragMetrics['result'] ?? null) !== 'ok') {
+            return $this->section('blocked', $sampledAt, ['RagBacklogService', 'pgsql_rag.rag_documents'], [
+                'error' => $ragMetrics['error'] ?? 'rag_digest_unavailable',
+                'evidence_errors' => $ragMetrics['evidence_errors'] ?? [],
+            ], 'Restore RAG backlog evidence before evaluating KG state.');
+        }
+
+        $metrics = $ragMetrics['metrics'];
+        $kg = $metrics['kg'] ?? [];
+        $pending = (int) ($kg['pending'] ?? 0);
+        $throughput = (int) ($kg['throughput_per_day'] ?? 0);
+        $fresh = (int) ($kg['fresh'] ?? 0);
+        $stale = (int) ($kg['stale'] ?? 0);
+
+        $counts = [
+            'documents' => (int) ($metrics['documents'] ?? 0),
+            'kg_pending' => $pending,
+            'kg_fresh_pending' => $fresh,
+            'kg_stale_pending' => $stale,
+            'kg_entities' => (int) ($kg['entities'] ?? 0),
+            'throughput_per_day' => $throughput,
+            'eta_days' => $kg['eta_days'] ?? null,
+        ];
+        $this->appendNetBurnCounts($counts, 'kg', $ragNetBurn['lanes']['kg'] ?? null, $ragNetBurn);
+
+        $status = match (true) {
+            $pending === 0 => 'healthy',
+            $throughput <= 0 || $pending > 1000 => 'degraded',
+            default => 'watch',
+        };
+
+        return $this->section(
+            $status,
+            $sampledAt,
+            ['RagBacklogService', 'pgsql_rag.rag_documents', 'pgsql_rag.knowledge_graph_entities'],
+            $counts,
+            $pending > 0 ? 'Run or inspect the KG catch-up/build lane.' : null
+        );
+    }
+
+    private function collectRaptorSentenceDrained(Carbon $sampledAt, array $ragMetrics, array $ragNetBurn): array
+    {
+        if (($ragMetrics['result'] ?? null) !== 'ok') {
+            return $this->section('blocked', $sampledAt, ['RagBacklogService', 'pgsql_rag.rag_documents'], [
+                'error' => $ragMetrics['error'] ?? 'rag_digest_unavailable',
+                'evidence_errors' => $ragMetrics['evidence_errors'] ?? [],
+            ], 'Restore RAG backlog evidence before evaluating drained state.');
+        }
+
+        $metrics = $ragMetrics['metrics'];
+        $raptor = $metrics['raptor'] ?? [];
+        $sentence = $metrics['sentence'] ?? [];
+        $raptorPending = (int) ($raptor['pending'] ?? 0);
+        $sentencePending = (int) ($sentence['pending'] ?? 0);
+
+        $counts = [
+            'raptor_pending' => $raptorPending,
+            'raptor_throughput_per_day' => (int) ($raptor['throughput_per_day'] ?? 0),
+            'raptor_eta_days' => $raptor['eta_days'] ?? null,
+            'sentence_pending' => $sentencePending,
+            'sentence_throughput_per_day' => (int) ($sentence['throughput_per_day'] ?? 0),
+            'sentence_eta_days' => $sentence['eta_days'] ?? null,
+            'drained' => $raptorPending === 0 && $sentencePending === 0,
+        ];
+        $this->appendNetBurnCounts($counts, 'raptor', $ragNetBurn['lanes']['raptor'] ?? null, $ragNetBurn);
+        $this->appendNetBurnCounts($counts, 'sentence', $ragNetBurn['lanes']['sentence'] ?? null, $ragNetBurn);
+
+        $status = 'healthy';
+        if (! $counts['drained']) {
+            $status = ($counts['raptor_throughput_per_day'] <= 0 && $raptorPending > 0)
+                || ($counts['sentence_throughput_per_day'] <= 0 && $sentencePending > 0)
+                    ? 'degraded'
+                    : 'watch';
+        }
+
+        return $this->section(
+            $status,
+            $sampledAt,
+            ['RagBacklogService', 'RaptorBuildCommand', 'SentenceEmbeddingsBuildCommand'],
+            $counts,
+            $counts['drained'] ? null : 'Run or inspect RAPTOR and sentence indexing lanes.'
+        );
+    }
+
+    private function collectGenealogyPendingApprovals(Carbon $sampledAt): array
+    {
+        $missing = $this->missingTables(['genealogy_proposed_changes', 'genealogy_proposed_relationships']);
+        if ($missing !== []) {
+            return $this->section('blocked', $sampledAt, ['genealogy_proposed_changes', 'genealogy_proposed_relationships'], [
+                'missing_tables' => $missing,
+            ], 'Restore genealogy proposal tables before evaluating approvals.');
+        }
+
+        try {
+            $changes = $this->proposalSummary('genealogy_proposed_changes');
+            $relationships = $this->proposalSummary('genealogy_proposed_relationships');
+
+            $pendingTotal = $changes['pending'] + $relationships['pending'];
+            $evidenceGaps = $changes['evidence_gaps'] + $relationships['evidence_gaps'];
+            $oldestAgeHours = $this->maxNullable($changes['oldest_pending_age_hours'], $relationships['oldest_pending_age_hours']);
+
+            $counts = [
+                'pending_total' => $pendingTotal,
+                'pending_person_changes' => $changes['pending'],
+                'pending_relationships' => $relationships['pending'],
+                'evidence_gap_count' => $evidenceGaps,
+                'oldest_pending_age_hours' => $oldestAgeHours,
+            ];
+
+            $status = match (true) {
+                $pendingTotal === 0 => 'healthy',
+                $evidenceGaps > 0 || ($oldestAgeHours ?? 0) > 336 => 'degraded',
+                default => 'watch',
+            };
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['genealogy_proposed_changes', 'genealogy_proposed_relationships', 'GenealogyProposalReviewQueueService'],
+                $counts,
+                $pendingTotal > 0 ? 'Review pending genealogy proposals and evidence gaps.' : null
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['genealogy_proposed_changes', 'genealogy_proposed_relationships'], $e, 'Genealogy approval query failed.');
+        }
+    }
+
+    private function collectGenealogyReviewFeedback(Carbon $sampledAt): array
+    {
+        $missing = $this->missingTables(['agent_review_queue']);
+        if ($missing !== []) {
+            return $this->section('blocked', $sampledAt, ['AgentProceduralMemoryService', 'agent_review_queue'], [
+                'missing_tables' => $missing,
+            ], 'Restore agent review evidence before evaluating genealogy review feedback.');
+        }
+
+        try {
+            $windowDays = 7;
+            $rollup = $this->proceduralMemory->getReviewerFeedbackDailyRollup($windowDays);
+
+            $agents = [];
+            $rejectHistogram = [];
+            $totalReviews = 0;
+            $acceptedProposals = 0;
+            $rejectedProposals = 0;
+            $latestReviewedAt = null;
+
+            foreach ($rollup as $row) {
+                $agentId = trim((string) ($row['agent_id'] ?? ''));
+                if ($agentId !== '') {
+                    $agents[$agentId] = true;
+                }
+
+                $totalReviews += (int) ($row['total_reviews'] ?? 0);
+                $acceptedProposals += (int) ($row['accepted_proposals'] ?? 0);
+                $rejectedProposals += (int) ($row['rejected_proposals'] ?? 0);
+
+                $reviewedAt = $this->nullableString($row['latest_reviewed_at'] ?? null);
+                if ($reviewedAt !== null && ($latestReviewedAt === null || strcmp($reviewedAt, $latestReviewedAt) > 0)) {
+                    $latestReviewedAt = $reviewedAt;
+                }
+
+                $histogram = is_array($row['reject_reason_histogram'] ?? null)
+                    ? $row['reject_reason_histogram']
+                    : [];
+                foreach ($histogram as $code => $count) {
+                    $code = trim((string) $code) !== '' ? (string) $code : 'other';
+                    $rejectHistogram[$code] = ($rejectHistogram[$code] ?? 0) + (int) $count;
+                }
+            }
+
+            arsort($rejectHistogram);
+            $decisionTotal = $acceptedProposals + $rejectedProposals;
+
+            $counts = [
+                'window_days' => $windowDays,
+                'rollup_rows' => count($rollup),
+                'agents' => count($agents),
+                'total_reviews' => $totalReviews,
+                'accepted_proposals' => $acceptedProposals,
+                'rejected_proposals' => $rejectedProposals,
+                'acceptance_rate' => $decisionTotal > 0 ? round($acceptedProposals / $decisionTotal, 4) : null,
+                'top_reject_codes' => array_slice($rejectHistogram, 0, 5, true),
+                'latest_reviewed_at' => $latestReviewedAt,
+            ];
+
+            return $this->section(
+                'healthy',
+                $sampledAt,
+                ['AgentProceduralMemoryService', 'agent_review_queue'],
+                $counts,
+                $rejectedProposals > 0 ? 'Review top genealogy reject codes before expanding review-packet autonomy.' : null
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['AgentProceduralMemoryService', 'agent_review_queue'], $e, 'Genealogy review feedback rollup failed.');
+        }
+    }
+
+    private function collectFaceMatchLinkBacklog(Carbon $sampledAt): array
+    {
+        $missing = $this->missingTables(['genealogy_face_match_queue', 'file_registry_faces', 'genealogy_person_media']);
+        if ($missing !== []) {
+            return $this->section('blocked', $sampledAt, ['genealogy_face_match_queue', 'file_registry_faces', 'genealogy_person_media'], [
+                'missing_tables' => $missing,
+            ], 'Restore face/link evidence tables before evaluating backlog.');
+        }
+
+        try {
+            $queue = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS pending_total,
+                    SUM(CASE WHEN match_type = 'no_match' THEN 1 ELSE 0 END) AS no_match_pending,
+                    SUM(CASE WHEN match_type NOT IN ('exact', 'no_match') THEN 1 ELSE 0 END) AS fuzzy_pending,
+                    SUM(CASE WHEN file_registry_face_id IS NOT NULL THEN 1 ELSE 0 END) AS bridge_eligible_pending,
+                    SUM(CASE WHEN created_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_pending,
+                    MAX(TIMESTAMPDIFF(HOUR, created_at, NOW())) AS oldest_pending_age_hours
+                 FROM genealogy_face_match_queue
+                 WHERE status = 'pending'"
+            );
+            $faces = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS total_faces,
+                    SUM(CASE WHEN hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
+                    SUM(CASE WHEN hidden = 0 AND genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS linked_faces,
+                    SUM(CASE WHEN hidden = 0 AND genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS unlinked_faces,
+                    SUM(CASE WHEN hidden = 0 AND genealogy_person_id IS NULL AND person_name != '' THEN 1 ELSE 0 END) AS named_only_unlinked,
+                    SUM(CASE WHEN hidden = 0 AND genealogy_person_id IS NULL AND person_name != '' AND verified = 1 THEN 1 ELSE 0 END) AS named_only_verified,
+                    MAX(CASE WHEN hidden = 0 AND genealogy_person_id IS NULL AND person_name != '' THEN TIMESTAMPDIFF(HOUR, updated_at, NOW()) END) AS named_only_oldest_age_hours
+                 FROM file_registry_faces"
+            );
+            $bridge = DB::selectOne(
+                "SELECT COUNT(*) AS approved_missing_person_media
+                 FROM genealogy_face_match_queue q
+                 LEFT JOIN genealogy_person_media pm
+                   ON pm.person_id = q.suggested_person_id
+                  AND pm.media_id = q.media_id
+                 WHERE q.status IN ('approved', 'auto_linked')
+                   AND q.file_registry_face_id IS NOT NULL
+                   AND q.suggested_person_id IS NOT NULL
+                   AND q.media_id IS NOT NULL
+                   AND pm.id IS NULL"
+            );
+            $decisions = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS candidate_decision_rows,
+                    COUNT(DISTINCT file_registry_face_id) AS candidate_decided_faces,
+                    SUM(CASE WHEN action = 'keep_name_only' THEN 1 ELSE 0 END) AS candidate_keep_name_only,
+                    SUM(CASE WHEN action = 'outside_tree' THEN 1 ELSE 0 END) AS candidate_outside_tree,
+                    SUM(CASE WHEN action = 'too_vague' THEN 1 ELSE 0 END) AS candidate_too_vague,
+                    SUM(CASE WHEN action = 'not_this_person' THEN 1 ELSE 0 END) AS candidate_not_this_person,
+                    SUM(CASE WHEN action = 'defer' THEN 1 ELSE 0 END) AS candidate_deferred,
+                    SUM(CASE WHEN terminal = 'true' THEN 1 ELSE 0 END) AS candidate_terminal_decisions,
+                    SUM(CASE WHEN decided_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS candidate_recent_decisions,
+                    DATE_FORMAT(MAX(decided_at), '%Y-%m-%dT%H:%i:%sZ') AS candidate_latest_decision_at
+                 FROM (
+                    SELECT
+                        file_registry_face_id,
+                        JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.action')) AS action,
+                        JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.terminal')) AS terminal,
+                        STR_TO_DATE(JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.decided_at')), '%Y-%m-%dT%H:%i:%sZ') AS decided_at
+                    FROM genealogy_face_match_queue
+                 ) decisions
+                 WHERE action IN ('keep_name_only', 'outside_tree', 'too_vague', 'not_this_person', 'defer')"
+            );
+
+            $counts = [
+                'pending_total' => (int) ($queue->pending_total ?? 0),
+                'no_match_pending' => (int) ($queue->no_match_pending ?? 0),
+                'fuzzy_pending' => (int) ($queue->fuzzy_pending ?? 0),
+                'bridge_eligible_pending' => (int) ($queue->bridge_eligible_pending ?? 0),
+                'stale_pending' => (int) ($queue->stale_pending ?? 0),
+                'oldest_pending_age_hours' => isset($queue->oldest_pending_age_hours) ? (int) $queue->oldest_pending_age_hours : null,
+                'visible_faces' => (int) ($faces->visible_faces ?? 0),
+                'linked_faces' => (int) ($faces->linked_faces ?? 0),
+                'unlinked_faces' => (int) ($faces->unlinked_faces ?? 0),
+                'named_only_unlinked' => (int) ($faces->named_only_unlinked ?? 0),
+                'named_only_verified' => (int) ($faces->named_only_verified ?? 0),
+                'named_only_oldest_age_hours' => isset($faces->named_only_oldest_age_hours) ? (int) $faces->named_only_oldest_age_hours : null,
+                'approved_missing_person_media' => (int) ($bridge->approved_missing_person_media ?? 0),
+                'candidate_decision_rows' => (int) ($decisions->candidate_decision_rows ?? 0),
+                'candidate_decided_faces' => (int) ($decisions->candidate_decided_faces ?? 0),
+                'candidate_keep_name_only' => (int) ($decisions->candidate_keep_name_only ?? 0),
+                'candidate_outside_tree' => (int) ($decisions->candidate_outside_tree ?? 0),
+                'candidate_too_vague' => (int) ($decisions->candidate_too_vague ?? 0),
+                'candidate_not_this_person' => (int) ($decisions->candidate_not_this_person ?? 0),
+                'candidate_deferred' => (int) ($decisions->candidate_deferred ?? 0),
+                'candidate_terminal_decisions' => (int) ($decisions->candidate_terminal_decisions ?? 0),
+                'candidate_recent_decisions' => (int) ($decisions->candidate_recent_decisions ?? 0),
+                'candidate_latest_decision_at' => $decisions->candidate_latest_decision_at ?? null,
+            ];
+
+            $status = match (true) {
+                $counts['stale_pending'] > 0 || $counts['approved_missing_person_media'] > 0 => 'degraded',
+                $counts['pending_total'] > 0 || $counts['unlinked_faces'] > 0 => 'watch',
+                default => 'healthy',
+            };
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['genealogy_face_match_queue', 'file_registry_faces', 'genealogy_person_media', 'FaceLinkBridgeService'],
+                $counts,
+                $status === 'healthy' ? null : 'Review face match queue and bridge missing approved links.'
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['genealogy_face_match_queue', 'file_registry_faces'], $e, 'Face backlog query failed.');
+        }
+    }
+
+    private function collectOfflineDegradedState(Carbon $sampledAt): array
+    {
+        try {
+            $profile = $this->offlinePolicy->activeProfile();
+            $offlineModeActive = $this->offlinePolicy->isOfflineModeActive();
+            $audit = $this->offlineAudit->summarizeWindow(24);
+            $recentEvents = $this->offlineAudit->recentEvents(5, 24);
+            $profileConfig = (array) config('offline_policy.profiles.'.$profile, []);
+            $localRuntime = $this->collectLocalRuntimeScorecard();
+
+            $counts = [
+                'offline_mode_active' => $offlineModeActive,
+                'active_profile' => $profile,
+                'runtime_state' => $this->offlineRuntimeState($profile, $offlineModeActive),
+                'audit_result' => $audit['result'] ?? 'unknown',
+                'audit_total_24h' => (int) ($audit['total'] ?? 0),
+                'policy_denials_24h' => (int) ($audit['denied'] ?? 0),
+                'mode_changes_24h' => (int) ($audit['mode_changes'] ?? 0),
+                'local_runtime_status' => $localRuntime['status'],
+                'local_availability_state' => $localRuntime['availability_state'],
+                'local_instances' => $localRuntime['local_instances'],
+                'healthy_local_instances' => $localRuntime['healthy_local_instances'],
+                'selected_local_id' => $localRuntime['selected_local_id'],
+                'selected_local_model' => $localRuntime['selected_local_model'],
+                'local_runtime' => $localRuntime,
+                'capabilities' => [
+                    'tool_classes' => array_values((array) ($profileConfig['allowed_tool_classes'] ?? [])),
+                    'mcp_trust' => array_values((array) ($profileConfig['allowed_mcp_trust'] ?? [])),
+                    'path_classes' => array_values((array) ($profileConfig['allowed_path_classes'] ?? [])),
+                    'provider_classes' => $offlineModeActive
+                        ? ['local_llm']
+                        : array_values((array) ($profileConfig['allowed_provider_classes'] ?? [])),
+                    'remote_domain_classes' => array_values((array) ($profileConfig['allowed_remote_domain_classes'] ?? [])),
+                    'confirmation_required_for' => array_values((array) ($profileConfig['confirmation'] ?? [])),
+                ],
+                'recent_audit_events' => array_map(fn (array $event): array => [
+                    'event_type' => $event['event_type'] ?? null,
+                    'profile' => $event['profile'] ?? null,
+                    'offline_mode_active' => (bool) ($event['offline_mode_active'] ?? false),
+                    'operation' => $event['operation'] ?? null,
+                    'tool_class' => $event['tool_class'] ?? null,
+                    'provider_class' => $event['provider_class'] ?? null,
+                    'remote_domain_class' => $event['remote_domain_class'] ?? null,
+                    'reason' => $event['reason'] ?? null,
+                    'created_at' => $event['created_at'] ?? null,
+                ], $recentEvents),
+            ];
+
+            $status = match (true) {
+                $offlineModeActive => 'degraded',
+                ($audit['result'] ?? null) !== 'ok' => 'degraded',
+                $counts['policy_denials_24h'] > 0 || $counts['mode_changes_24h'] > 0 || $profile !== 'default' => 'watch',
+                default => 'healthy',
+            };
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['OfflinePolicyService', 'OfflineAuditService', 'LLMPoolManagerService', 'offline_audit_events', 'system_configs'],
+                $counts,
+                $status === 'healthy' ? null : 'Review offline policy profile, mode switch, and recent denial receipts.'
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['OfflinePolicyService', 'offline_audit_events'], $e, 'Offline/degraded state query failed.');
+        }
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function collectLocalRuntimeScorecard(): array
+    {
+        $empty = [
+            'source' => LLMPoolManagerService::class,
+            'status' => 'unavailable',
+            'role' => 'coding',
+            'availability_state' => 'unavailable',
+            'primary_up' => null,
+            'secondary_up' => null,
+            'local_instances' => null,
+            'healthy_local_instances' => null,
+            'degraded_local_instances' => null,
+            'selected_local_present' => false,
+            'selected_local_id' => null,
+            'selected_local_model' => null,
+            'selection_method' => 'monitoring_rows_read_only',
+        ];
+
+        try {
+            $llmPool = $this->llmPool;
+            if ($llmPool === null) {
+                if (app()->runningUnitTests()) {
+                    return $empty;
+                }
+
+                $llmPool = app(LLMPoolManagerService::class);
+            }
+
+            $availability = $llmPool->describeLocalAvailability();
+            $monitoringInstances = $llmPool->getInstancesForMonitoring();
+            $instances = array_values(array_filter(
+                $monitoringInstances,
+                static fn (object $instance): bool => ((int) ($instance->is_active ?? 0)) === 1
+                    && (($instance->routability ?? 'allowed') === 'allowed')
+                    && (($instance->instance_type ?? null) === 'ollama')
+            ));
+            $healthy = array_values(array_filter(
+                $instances,
+                static fn (object $instance): bool => ((int) ($instance->is_healthy ?? 0)) === 1
+                    && (($instance->circuit_state ?? 'closed') !== 'open')
+            ));
+            $selectedLocal = $this->serializeLocalRuntimeInstance($healthy[0] ?? null, 'coding');
+            $availabilityState = (string) ($availability['state'] ?? 'unknown');
+            $status = match ($availabilityState) {
+                'all_locals_up' => 'healthy',
+                'primary_down', 'secondary_down' => 'watch',
+                default => 'degraded',
+            };
+
+            return [
+                'source' => LLMPoolManagerService::class,
+                'status' => $status,
+                'role' => 'coding',
+                'availability_state' => $availabilityState,
+                'primary_up' => isset($availability['primary_up']) ? (bool) $availability['primary_up'] : null,
+                'secondary_up' => isset($availability['secondary_up']) ? (bool) $availability['secondary_up'] : null,
+                'local_instances' => count($instances),
+                'healthy_local_instances' => count($healthy),
+                'degraded_local_instances' => max(0, count($instances) - count($healthy)),
+                'selected_local_present' => $selectedLocal !== null,
+                'selected_local_id' => $selectedLocal['instance_id'] ?? null,
+                'selected_local_model' => $selectedLocal['selected_model'] ?? null,
+                'selection_method' => 'monitoring_rows_read_only',
+            ];
+        } catch (\Throwable) {
+            return $empty;
+        }
+    }
+
+    /**
+     * @return array<string,mixed>|null
+     */
+    private function serializeLocalRuntimeInstance(?object $instance, string $role): ?array
+    {
+        if ($instance === null || ($instance->instance_type ?? null) !== 'ollama') {
+            return null;
+        }
+
+        $configValue = $instance->config ?? [];
+        $config = match (true) {
+            is_array($configValue) => $configValue,
+            $configValue instanceof \stdClass => (array) $configValue,
+            default => json_decode((string) $configValue, true) ?: [],
+        };
+        $models = (array) ($config['models'] ?? []);
+
+        return [
+            'instance_id' => (string) ($instance->instance_id ?? ''),
+            'selected_model' => $models[$role] ?? $models['standard'] ?? null,
+        ];
+    }
+
+    private function offlineRuntimeState(string $profile, bool $offlineModeActive): string
+    {
+        if ($offlineModeActive) {
+            return 'offline_mode_enabled';
+        }
+
+        if (str_starts_with($profile, 'offline_')) {
+            return 'offline_profile_without_kill_switch';
+        }
+
+        if (str_starts_with($profile, 'hybrid_') || $profile === 'cloud_escalation_only') {
+            return 'hybrid_profile';
+        }
+
+        return 'normal';
+    }
+
+    private function collectDisabledGenealogyAgents(Carbon $sampledAt): array
+    {
+        if ($this->missingTables(['scheduled_jobs']) !== []) {
+            return $this->section('blocked', $sampledAt, ['scheduled_jobs'], [
+                'missing_tables' => ['scheduled_jobs'],
+            ], 'Restore scheduled_jobs before evaluating genealogy agent state.');
+        }
+
+        try {
+            $counts = $this->genealogyAutomationTargetCounts();
+
+            $status = match (true) {
+                $counts['missing'] > 0 => 'blocked',
+                $counts['stale_running'] > 0 || $counts['recent_failed_24h'] > 0 => 'degraded',
+                $counts['disabled_without_reason'] > 0 => 'degraded',
+                $counts['disabled'] > 0 => 'watch',
+                default => 'healthy',
+            };
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['scheduled_jobs'],
+                $counts,
+                $status === 'healthy' ? null : 'Review disabled or degraded genealogy automation targets before re-enabling autonomy.'
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['scheduled_jobs'], $e, 'Disabled genealogy agent query failed.');
+        }
+    }
+
+    private function collectGenealogyAgentTriage(Carbon $sampledAt): array
+    {
+        try {
+            $payload = ($this->genealogyTriage ?? app(GenealogyAgentTriageService::class))->collect(30);
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $status = (string) ($payload['status'] ?? 'watch');
+            if (! array_key_exists($status, self::STATUSES)) {
+                $status = 'watch';
+            }
+
+            $counts = [
+                'window_days' => (int) ($payload['window_days'] ?? 30),
+                'targets_total' => (int) ($summary['targets_total'] ?? 0),
+                'configured_targets' => (int) ($summary['configured_targets'] ?? 0),
+                'enabled_targets' => (int) ($summary['enabled_targets'] ?? 0),
+                'disabled_targets' => (int) ($summary['disabled_targets'] ?? 0),
+                'missing_targets' => (int) ($summary['missing_targets'] ?? 0),
+                'blocked_targets' => (int) ($summary['blocked_targets'] ?? 0),
+                'degraded_targets' => (int) ($summary['degraded_targets'] ?? 0),
+                'watch_targets' => (int) ($summary['watch_targets'] ?? 0),
+                'completed_sessions_window' => (int) ($summary['completed_sessions_window'] ?? 0),
+                'review_outputs_window' => (int) ($summary['review_outputs_window'] ?? 0),
+                'awo_completed_reviews_window' => (int) ($summary['awo_completed_reviews_window'] ?? 0),
+                'awo_approval_worthy_reviews_window' => (int) ($summary['awo_approval_worthy_reviews_window'] ?? 0),
+                'awo_approval_worthy_rate' => $summary['awo_approval_worthy_rate'] ?? null,
+                'targets_needing_review' => array_values(array_filter(
+                    (array) ($summary['targets_needing_review'] ?? []),
+                    'is_string'
+                )),
+            ];
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['GenealogyAgentTriageService', 'scheduled_jobs', 'agent_sessions', 'agent_episodes', 'agent_review_queue', 'AwoReplayService'],
+                $counts,
+                $status === 'healthy' ? null : 'Review genealogy:agent-triage before changing genealogy sub-agent scheduler state.'
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['GenealogyAgentTriageService', 'scheduled_jobs'], $e, 'Genealogy agent triage query failed.');
+        }
+    }
+
+    private function collectAgentFailuresStaleWork(Carbon $sampledAt): array
+    {
+        $missing = $this->missingTables(['agent_sessions', 'agent_review_queue', 'agent_episodes', 'scheduled_jobs']);
+        if ($missing !== []) {
+            return $this->section('blocked', $sampledAt, ['agent_sessions', 'agent_review_queue', 'agent_episodes', 'scheduled_jobs'], [
+                'missing_tables' => $missing,
+            ], 'Restore agent evidence tables before evaluating failures.');
+        }
+
+        try {
+            $sessions = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS stale_active_sessions,
+                    MAX(TIMESTAMPDIFF(MINUTE, COALESCE(last_activity_at, updated_at, created_at), NOW())) AS oldest_active_age_minutes
+                 FROM agent_sessions
+                 WHERE status IN ('active', 'running')
+                   AND COALESCE(last_activity_at, updated_at, created_at) < DATE_SUB(NOW(), INTERVAL 30 MINUTE)"
+            );
+            $reviews = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS pending_reviews,
+                    SUM(CASE WHEN priority >= 2 THEN 1 ELSE 0 END) AS urgent_pending_reviews
+                 FROM agent_review_queue
+                 WHERE status = 'pending'"
+            );
+            $episodes = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS recent_episodes,
+                    SUM(CASE WHEN event_type = 'error' THEN 1 ELSE 0 END) AS recent_errors,
+                    MAX(created_at) AS latest_episode_at
+                 FROM agent_episodes
+                 WHERE created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)"
+            );
+            $jobs = DB::selectOne(
+                "SELECT
+                    SUM(CASE WHEN enabled = 1
+                               AND (job_type = 'agent_task' OR name LIKE '%agent%')
+                               AND last_run_status IN ('failed', 'timeout')
+                               AND last_run_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                             THEN 1 ELSE 0 END) AS recent_failed_agent_jobs,
+                    SUM(CASE WHEN enabled = 1
+                               AND (job_type = 'agent_task' OR name LIKE '%agent%')
+                               AND last_run_status = 'running'
+                               AND last_run_at < DATE_SUB(NOW(), INTERVAL COALESCE(timeout_minutes, 30) MINUTE)
+                             THEN 1 ELSE 0 END) AS stale_agent_jobs
+                 FROM scheduled_jobs"
+            );
+
+            $counts = [
+                'stale_active_sessions' => (int) ($sessions->stale_active_sessions ?? 0),
+                'oldest_active_session_age_minutes' => isset($sessions->oldest_active_age_minutes) ? (int) $sessions->oldest_active_age_minutes : null,
+                'pending_reviews' => (int) ($reviews->pending_reviews ?? 0),
+                'urgent_pending_reviews' => (int) ($reviews->urgent_pending_reviews ?? 0),
+                'review_type_breakdown' => $this->pendingReviewTypeBreakdown(),
+                'genealogy_automation_targets' => $this->genealogyAutomationTargetCounts(),
+                'recent_failures' => $this->recentAgentFailures(),
+                'agent_failures_by_agent_24h' => $this->agentFailuresByAgent24h(),
+                'recent_agent_episodes_24h' => (int) ($episodes->recent_episodes ?? 0),
+                'recent_agent_errors_24h' => (int) ($episodes->recent_errors ?? 0),
+                'recent_failed_agent_jobs_24h' => (int) ($jobs->recent_failed_agent_jobs ?? 0),
+                'stale_agent_jobs' => (int) ($jobs->stale_agent_jobs ?? 0),
+            ];
+            $freshness = [
+                'latest_agent_episode_at' => $this->nullableString($episodes->latest_episode_at ?? null),
+            ];
+
+            $status = match (true) {
+                $counts['stale_agent_jobs'] > 0 => 'blocked',
+                $counts['stale_active_sessions'] > 0
+                    || $counts['recent_agent_errors_24h'] > 0
+                    || $counts['recent_failed_agent_jobs_24h'] > 0
+                    || $counts['urgent_pending_reviews'] > 0 => 'degraded',
+                $counts['pending_reviews'] > 0 || $counts['recent_agent_episodes_24h'] === 0 => 'watch',
+                default => 'healthy',
+            };
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['agent_sessions', 'agent_review_queue', 'agent_episodes', 'scheduled_jobs'],
+                $counts,
+                $status === 'healthy' ? null : 'Inspect stale agent sessions, failed agent jobs, and pending review output.',
+                $freshness
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['agent_sessions', 'agent_review_queue', 'agent_episodes'], $e, 'Agent failure query failed.');
+        }
+    }
+
+    private function pendingReviewTypeBreakdown(): array
+    {
+        $rows = DB::select(
+            "SELECT COALESCE(NULLIF(review_type, ''), 'unknown') AS review_type, COUNT(*) AS count
+             FROM agent_review_queue
+             WHERE status = 'pending'
+             GROUP BY COALESCE(NULLIF(review_type, ''), 'unknown')
+             ORDER BY review_type"
+        );
+
+        $breakdown = [];
+        foreach ($rows as $row) {
+            $breakdown[(string) $row->review_type] = (int) $row->count;
+        }
+
+        return $breakdown;
+    }
+
+    private function recentAgentFailures(): array
+    {
+        $rows = DB::select(
+            "SELECT agent_id, event_type, summary, created_at
+             FROM agent_episodes
+             WHERE event_type = 'error'
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+             ORDER BY created_at DESC
+             LIMIT 3"
+        );
+
+        return array_map(fn ($row) => [
+            'agent_id' => $this->nonEmptyString($row->agent_id ?? null, 'unknown'),
+            'event_type' => $this->nonEmptyString($row->event_type ?? null, 'error'),
+            'summary' => $this->truncateSummary($row->summary ?? null),
+            'created_at' => $this->nullableString($row->created_at ?? null),
+        ], $rows);
+    }
+
+    private function agentFailuresByAgent24h(): array
+    {
+        $rows = DB::select(
+            "SELECT COALESCE(NULLIF(agent_id, ''), 'unknown') AS agent_id, COUNT(*) AS count
+             FROM agent_episodes
+             WHERE event_type = 'error'
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+             GROUP BY COALESCE(NULLIF(agent_id, ''), 'unknown')
+             ORDER BY count DESC, agent_id ASC
+             LIMIT 5"
+        );
+
+        $breakdown = [];
+        foreach ($rows as $row) {
+            $breakdown[(string) $row->agent_id] = (int) $row->count;
+        }
+
+        return $breakdown;
+    }
+
+    private function genealogyAutomationTargetCounts(): array
+    {
+        if ($this->genealogyAutomationTargetCounts !== null) {
+            return $this->genealogyAutomationTargetCounts;
+        }
+
+        $placeholders = implode(',', array_fill(0, count(self::GENEALOGY_AUTOMATION_TARGETS), '?'));
+        $rows = DB::select(
+            "SELECT
+                name,
+                enabled,
+                CASE WHEN enabled = 0 THEN 1 ELSE 0 END AS disabled,
+                CASE WHEN enabled = 0 AND NULLIF(TRIM(COALESCE(notes, '')), '') IS NULL THEN 1 ELSE 0 END AS disabled_without_reason,
+                CASE WHEN enabled = 1
+                           AND last_run_status = 'running'
+                           AND last_run_at IS NOT NULL
+                           AND last_run_at < DATE_SUB(NOW(), INTERVAL COALESCE(timeout_minutes, 30) MINUTE)
+                     THEN 1 ELSE 0 END AS stale_running,
+                CASE WHEN enabled = 1
+                           AND last_run_status IN ('failed', 'timeout')
+                           AND last_run_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+                     THEN 1 ELSE 0 END AS recent_failed,
+                notes
+             FROM scheduled_jobs
+             WHERE name IN ({$placeholders})
+             ORDER BY name",
+            self::GENEALOGY_AUTOMATION_TARGETS
+        );
+
+        // Keep this tied to scheduled_jobs only. Some names may exist as skills
+        // or docs references, but this evidence surface should not infer runtime
+        // automation state from anything other than scheduler rows.
+        $seen = [];
+        $disabled = [];
+        $disabledWithoutReason = [];
+        $lastDisabledReasons = [];
+        $staleRunning = [];
+        $recentFailed = [];
+        $enabled = 0;
+
+        foreach ($rows as $row) {
+            $name = (string) $row->name;
+            $seen[] = $name;
+
+            if ((int) ($row->enabled ?? 0) === 1) {
+                $enabled++;
+            }
+            if ((int) ($row->disabled ?? 0) > 0) {
+                $disabled[] = $name;
+                $reason = trim((string) ($row->notes ?? ''));
+                if ($reason !== '') {
+                    $lastDisabledReasons[$name] = $reason;
+                }
+            }
+            if ((int) ($row->disabled_without_reason ?? 0) > 0) {
+                $disabledWithoutReason[] = $name;
+            }
+            if ((int) ($row->stale_running ?? 0) > 0) {
+                $staleRunning[] = $name;
+            }
+            if ((int) ($row->recent_failed ?? 0) > 0) {
+                $recentFailed[] = $name;
+            }
+        }
+
+        $missing = array_values(array_diff(self::GENEALOGY_AUTOMATION_TARGETS, $seen));
+
+        return $this->genealogyAutomationTargetCounts = [
+            'configured' => count($seen),
+            'enabled' => $enabled,
+            'disabled' => count($disabled),
+            'disabled_without_reason' => count($disabledWithoutReason),
+            'stale_running' => count($staleRunning),
+            'recent_failed_24h' => count($recentFailed),
+            'missing' => count($missing),
+            'disabled_names' => $disabled,
+            'disabled_without_reason_names' => $disabledWithoutReason,
+            'last_disabled_reasons' => $lastDisabledReasons,
+            'stale_running_names' => $staleRunning,
+            'recent_failed_names' => $recentFailed,
+            'missing_names' => $missing,
+        ];
+    }
+
+    private function collectRagDigest(): array
+    {
+        try {
+            $metrics = $this->ragBacklog->getDigestMetrics();
+            $evidenceErrors = $metrics['evidence_errors'] ?? [];
+            if (is_array($evidenceErrors) && $evidenceErrors !== []) {
+                return [
+                    'result' => 'query_failed',
+                    'error' => 'RAG digest has incomplete evidence.',
+                    'evidence_errors' => array_slice($evidenceErrors, 0, 10),
+                ];
+            }
+
+            $allZero = (int) ($metrics['documents'] ?? 0) === 0
+                && (int) ($metrics['raptor']['pending'] ?? 0) === 0
+                && (int) ($metrics['sentence']['pending'] ?? 0) === 0
+                && (int) ($metrics['kg']['pending'] ?? 0) === 0;
+
+            if ($allZero && $this->missingTables(['rag_documents'], 'pgsql_rag') !== []) {
+                return [
+                    'result' => 'missing_evidence',
+                    'error' => 'pgsql_rag.rag_documents missing or unreadable',
+                ];
+            }
+
+            return [
+                'result' => 'ok',
+                'metrics' => $metrics,
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'result' => 'query_failed',
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    private function collectRagNetBurn(): array
+    {
+        try {
+            $payload = $this->ragBacklog->getNetBurn(7);
+
+            return [
+                'result' => empty($payload['evidence_errors']) ? 'ok' : 'query_failed',
+                'window_days' => (int) ($payload['window_days'] ?? 7),
+                'lanes' => is_array($payload['lanes'] ?? null) ? $payload['lanes'] : [],
+                'evidence_errors' => $payload['evidence_errors'] ?? [],
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'result' => 'query_failed',
+                'window_days' => 7,
+                'lanes' => [],
+                'evidence_errors' => [[
+                    'code' => 'net_burn_unavailable',
+                    'context' => ['error' => $e->getMessage()],
+                ]],
+            ];
+        }
+    }
+
+    private function appendNetBurnCounts(array &$counts, string $prefix, ?array $lane, array $ragNetBurn): void
+    {
+        $counts["{$prefix}_net_burn_window_days"] = (int) ($ragNetBurn['window_days'] ?? 7);
+        $counts["{$prefix}_net_burn_points"] = (int) ($lane['points'] ?? 0);
+        $counts["{$prefix}_net_delta_total"] = $lane['delta_total'] ?? null;
+        $counts["{$prefix}_net_delta_avg_per_day"] = $lane['delta_avg_per_day'] ?? null;
+        $counts["{$prefix}_net_burn_per_day"] = $lane['net_burn_per_day'] ?? 0.0;
+        $counts["{$prefix}_net_burn_trend"] = $lane['trend'] ?? 'insufficient_data';
+    }
+
+    private function proposalSummary(string $table): array
+    {
+        $row = DB::selectOne(
+            "SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status = 'pending'
+                           AND (
+                               evidence_sources IS NULL
+                               OR evidence_sources = ''
+                               OR evidence_sources = '[]'
+                               OR evidence_summary IS NULL
+                               OR evidence_summary = ''
+                           )
+                         THEN 1 ELSE 0 END) AS evidence_gaps,
+                MAX(CASE WHEN status = 'pending' THEN TIMESTAMPDIFF(HOUR, created_at, NOW()) ELSE NULL END) AS oldest_pending_age_hours
+             FROM {$table}"
+        );
+
+        return [
+            'total' => (int) ($row->total ?? 0),
+            'pending' => (int) ($row->pending ?? 0),
+            'evidence_gaps' => (int) ($row->evidence_gaps ?? 0),
+            'oldest_pending_age_hours' => isset($row->oldest_pending_age_hours) ? (int) $row->oldest_pending_age_hours : null,
+        ];
+    }
+
+    private function collectQueueDepth(): array
+    {
+        $driver = (string) config('queue.default', 'sync');
+        $depths = array_fill_keys(self::QUEUES, 0);
+
+        try {
+            if ($driver === 'redis') {
+                $redis = Redis::connection((string) config('queue.connections.redis.connection', 'default'));
+                foreach (self::QUEUES as $queue) {
+                    $depths[$queue] = (int) ($redis->llen("queues:{$queue}") ?? 0)
+                        + (int) ($redis->zcard("queues:{$queue}:delayed") ?? 0)
+                        + (int) ($redis->zcard("queues:{$queue}:reserved") ?? 0);
+                }
+
+                return [
+                    'source' => 'redis',
+                    'queues' => $depths,
+                    'total' => array_sum($depths),
+                    'error' => null,
+                ];
+            }
+
+            if ($driver === 'database' && $this->missingTables(['jobs']) === []) {
+                $rows = DB::select('SELECT queue, COUNT(*) AS c FROM jobs GROUP BY queue');
+                foreach ($rows as $row) {
+                    $depths[(string) $row->queue] = (int) $row->c;
+                }
+
+                return [
+                    'source' => 'database',
+                    'queues' => $depths,
+                    'total' => array_sum($depths),
+                    'error' => null,
+                ];
+            }
+
+            return [
+                'source' => $driver,
+                'queues' => $depths,
+                'total' => 0,
+                'error' => null,
+            ];
+        } catch (\Throwable $e) {
+            return [
+                'source' => $driver,
+                'queues' => $depths,
+                'total' => 0,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    private function countRecentFailedJobs(int $window = 24, string $unit = 'HOUR'): ?int
+    {
+        if ($this->missingTables(['failed_jobs']) !== []) {
+            return null;
+        }
+
+        $unit = strtoupper($unit);
+        if (! in_array($unit, ['MINUTE', 'HOUR'], true)) {
+            $unit = 'HOUR';
+        }
+        $window = max(1, (int) $window);
+
+        return (int) (DB::selectOne(
+            "SELECT COUNT(*) AS c FROM failed_jobs WHERE failed_at >= DATE_SUB(NOW(), INTERVAL {$window} {$unit})"
+        )?->c ?? 0);
+    }
+
+    private function collectCompletionLagMinutes(): ?int
+    {
+        if ($this->missingTables(['scheduled_job_runs']) !== []) {
+            return null;
+        }
+
+        $row = DB::selectOne(
+            "SELECT TIMESTAMPDIFF(MINUTE, MAX(completed_at), NOW()) AS c
+             FROM scheduled_job_runs
+             WHERE status = 'success'
+               AND completed_at IS NOT NULL
+               AND triggered_by = 'scheduler'"
+        );
+
+        return $row?->c === null ? null : (int) $row->c;
+    }
+
+    private function missingTables(array $tables, string $connection = 'mysql'): array
+    {
+        $missing = [];
+
+        foreach ($tables as $table) {
+            try {
+                if (! Schema::connection($connection)->hasTable($table)) {
+                    $missing[] = $table;
+                }
+            } catch (\Throwable) {
+                $missing[] = $table;
+            }
+        }
+
+        return $missing;
+    }
+
+    private function section(
+        string $status,
+        Carbon $sampledAt,
+        array $sources,
+        array $counts,
+        ?string $nextAction = null,
+        array $freshness = []
+    ): array {
+        $section = [
+            'status' => $this->normalizeStatus($status),
+            'sampled_at' => $this->formatTimestamp($sampledAt),
+            'sources' => array_values($sources),
+            'counts' => $counts,
+        ];
+
+        if ($freshness !== []) {
+            $section['freshness'] = $freshness;
+        }
+
+        if ($nextAction !== null) {
+            $section['next_action'] = $nextAction;
+        }
+
+        return $section;
+    }
+
+    private function failedSection(Carbon $sampledAt, array $sources, \Throwable $e, string $nextAction): array
+    {
+        return $this->section('blocked', $sampledAt, $sources, [
+            'error' => $e->getMessage(),
+        ], $nextAction);
+    }
+
+    private function worstStatus(array $statuses): string
+    {
+        $worst = 'healthy';
+
+        foreach ($statuses as $status) {
+            $worst = $this->maxStatus($worst, (string) $status);
+        }
+
+        return $worst;
+    }
+
+    private function maxStatus(string $left, string $right): string
+    {
+        $left = $this->normalizeStatus($left);
+        $right = $this->normalizeStatus($right);
+
+        return self::STATUSES[$right] > self::STATUSES[$left] ? $right : $left;
+    }
+
+    private function normalizeStatus(string $status): string
+    {
+        return array_key_exists($status, self::STATUSES) ? $status : 'degraded';
+    }
+
+    private function maxNullable(?int $left, ?int $right): ?int
+    {
+        if ($left === null) {
+            return $right;
+        }
+        if ($right === null) {
+            return $left;
+        }
+
+        return max($left, $right);
+    }
+
+    private function nullableString(mixed $value): ?string
+    {
+        return $value === null ? null : (string) $value;
+    }
+
+    private function nonEmptyString(mixed $value, string $fallback): string
+    {
+        $string = trim((string) ($value ?? ''));
+
+        return $string === '' ? $fallback : $string;
+    }
+
+    private function truncateSummary(mixed $value): ?string
+    {
+        $summary = trim(preg_replace('/\s+/', ' ', (string) ($value ?? '')));
+        if ($summary === '') {
+            return null;
+        }
+
+        return Str::limit($summary, 180, '...');
+    }
+
+    private function formatTimestamp(Carbon $timestamp): string
+    {
+        return $timestamp->copy()->utc()->format('Y-m-d\TH:i:s\Z');
+    }
+}

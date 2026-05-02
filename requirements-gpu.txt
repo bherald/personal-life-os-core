@@ -1,0 +1,11 @@
+# Optional transformer, HTR, embedding, and transcription dependencies.
+# Plain pip installs PyTorch CPU wheels. For CUDA hosts, install the matching
+# PyTorch wheel/index first, then install this file.
+
+-r requirements-media.txt
+
+torch>=2.2,<3
+torchvision>=0.17,<1
+transformers>=4.40,<5
+sentence-transformers>=3,<6
+openai-whisper>=20231117

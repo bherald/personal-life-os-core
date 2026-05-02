@@ -1,0 +1,463 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\DB;
+
+return new class extends Migration
+{
+    protected $connection = 'pgsql_rag';
+
+    public function up(): void
+    {
+        $sources = [
+            // Medical Sources
+            [
+                'name' => 'PubMed',
+                'base_url' => 'https://pubmed.ncbi.nlm.nih.gov',
+                'research_category' => 'medical',
+                'source_type' => 'database',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://pubmed.ncbi.nlm.nih.gov/?term={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'NIH medical literature database',
+            ],
+            [
+                'name' => 'NIH - National Institutes of Health',
+                'base_url' => 'https://www.nih.gov',
+                'research_category' => 'medical',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://search.nih.gov/search?query={query}&affiliate=nih',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'US government health research',
+            ],
+            [
+                'name' => 'Mayo Clinic',
+                'base_url' => 'https://www.mayoclinic.org',
+                'research_category' => 'medical',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.mayoclinic.org/search/search-results?q={query}',
+                'trust_score' => 9,
+                'is_active' => true,
+                'notes' => 'Authoritative medical information',
+            ],
+            [
+                'name' => 'CDC - Centers for Disease Control',
+                'base_url' => 'https://www.cdc.gov',
+                'research_category' => 'medical',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://search.cdc.gov/search/?query={query}&affiliate=cdc-main',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'US government disease control',
+            ],
+            [
+                'name' => 'WebMD',
+                'base_url' => 'https://www.webmd.com',
+                'research_category' => 'medical',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.webmd.com/search/search_results/default.aspx?query={query}',
+                'trust_score' => 7,
+                'is_active' => true,
+                'notes' => 'Consumer health information',
+            ],
+            [
+                'name' => 'MedlinePlus',
+                'base_url' => 'https://medlineplus.gov',
+                'research_category' => 'medical',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://medlineplus.gov/search/?query={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'NIH consumer health library',
+            ],
+
+            // Science Sources
+            [
+                'name' => 'Nature',
+                'base_url' => 'https://www.nature.com',
+                'research_category' => 'science',
+                'source_type' => 'academic',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.nature.com/search?q={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'Premier scientific journal',
+            ],
+            [
+                'name' => 'Science Magazine',
+                'base_url' => 'https://www.science.org',
+                'research_category' => 'science',
+                'source_type' => 'academic',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.science.org/action/doSearch?AllField={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'AAAS scientific journal',
+            ],
+            [
+                'name' => 'Google Scholar',
+                'base_url' => 'https://scholar.google.com',
+                'research_category' => 'science',
+                'source_type' => 'search_engine',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://scholar.google.com/scholar?q={query}',
+                'trust_score' => 8,
+                'is_active' => true,
+                'notes' => 'Academic paper search',
+            ],
+            [
+                'name' => 'arXiv',
+                'base_url' => 'https://arxiv.org',
+                'research_category' => 'science',
+                'source_type' => 'archive',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://arxiv.org/search/?query={query}&searchtype=all',
+                'trust_score' => 9,
+                'is_active' => true,
+                'notes' => 'Preprint server for physics, math, CS',
+            ],
+
+            // Technology Sources
+            [
+                'name' => 'Ars Technica',
+                'base_url' => 'https://arstechnica.com',
+                'research_category' => 'technology',
+                'source_type' => 'news',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://arstechnica.com/search/?q={query}',
+                'trust_score' => 8,
+                'is_active' => true,
+                'notes' => 'Technology news and analysis',
+            ],
+            [
+                'name' => 'TechCrunch',
+                'base_url' => 'https://techcrunch.com',
+                'research_category' => 'technology',
+                'source_type' => 'news',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://search.techcrunch.com/search?p={query}',
+                'trust_score' => 7,
+                'is_active' => true,
+                'notes' => 'Tech startup news',
+            ],
+            [
+                'name' => 'Wired',
+                'base_url' => 'https://www.wired.com',
+                'research_category' => 'technology',
+                'source_type' => 'news',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.wired.com/search/?q={query}',
+                'trust_score' => 8,
+                'is_active' => true,
+                'notes' => 'Technology and culture',
+            ],
+            [
+                'name' => 'IEEE Xplore',
+                'base_url' => 'https://ieeexplore.ieee.org',
+                'research_category' => 'technology',
+                'source_type' => 'academic',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://ieeexplore.ieee.org/search/searchresult.jsp?queryText={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'Engineering and computing papers',
+            ],
+
+            // Finance Sources
+            [
+                'name' => 'SEC EDGAR',
+                'base_url' => 'https://www.sec.gov/cgi-bin/browse-edgar',
+                'research_category' => 'finance',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://efts.sec.gov/LATEST/search-index?q={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'SEC company filings',
+            ],
+            [
+                'name' => 'Yahoo Finance',
+                'base_url' => 'https://finance.yahoo.com',
+                'research_category' => 'finance',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://finance.yahoo.com/lookup?s={query}',
+                'trust_score' => 7,
+                'is_active' => true,
+                'notes' => 'Stock quotes and financial news',
+            ],
+            [
+                'name' => 'Federal Reserve',
+                'base_url' => 'https://www.federalreserve.gov',
+                'research_category' => 'finance',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.federalreserve.gov/search.htm?Search={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'US central bank',
+            ],
+            [
+                'name' => 'Investopedia',
+                'base_url' => 'https://www.investopedia.com',
+                'research_category' => 'finance',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.investopedia.com/search?q={query}',
+                'trust_score' => 7,
+                'is_active' => true,
+                'notes' => 'Financial education',
+            ],
+
+            // News Sources
+            [
+                'name' => 'Reuters',
+                'base_url' => 'https://www.reuters.com',
+                'research_category' => 'news',
+                'source_type' => 'news',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.reuters.com/site-search/?query={query}',
+                'trust_score' => 9,
+                'is_active' => true,
+                'notes' => 'International news agency',
+            ],
+            [
+                'name' => 'Associated Press',
+                'base_url' => 'https://apnews.com',
+                'research_category' => 'news',
+                'source_type' => 'news',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://apnews.com/search?q={query}',
+                'trust_score' => 9,
+                'is_active' => true,
+                'notes' => 'US news cooperative',
+            ],
+            [
+                'name' => 'BBC News',
+                'base_url' => 'https://www.bbc.com/news',
+                'research_category' => 'news',
+                'source_type' => 'news',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.bbc.co.uk/search?q={query}',
+                'trust_score' => 9,
+                'is_active' => true,
+                'notes' => 'British public broadcaster',
+            ],
+            [
+                'name' => 'NPR',
+                'base_url' => 'https://www.npr.org',
+                'research_category' => 'news',
+                'source_type' => 'news',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.npr.org/search?query={query}',
+                'trust_score' => 8,
+                'is_active' => true,
+                'notes' => 'US public radio',
+            ],
+
+            // Government Sources
+            [
+                'name' => 'USA.gov',
+                'base_url' => 'https://www.usa.gov',
+                'research_category' => 'government',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.usa.gov/search?query={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'US government portal',
+            ],
+            [
+                'name' => 'Congress.gov',
+                'base_url' => 'https://www.congress.gov',
+                'research_category' => 'government',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.congress.gov/search?q={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'US legislative information',
+            ],
+            [
+                'name' => 'Data.gov',
+                'base_url' => 'https://data.gov',
+                'research_category' => 'government',
+                'source_type' => 'database',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://catalog.data.gov/dataset?q={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'US open data',
+            ],
+
+            // Legal Sources
+            [
+                'name' => 'Cornell Law - Legal Information Institute',
+                'base_url' => 'https://www.law.cornell.edu',
+                'research_category' => 'legal',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.law.cornell.edu/search/site/{query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'Free legal information',
+            ],
+            [
+                'name' => 'Justia',
+                'base_url' => 'https://www.justia.com',
+                'research_category' => 'legal',
+                'source_type' => 'database',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.justia.com/search?q={query}',
+                'trust_score' => 8,
+                'is_active' => true,
+                'notes' => 'Legal information and cases',
+            ],
+            [
+                'name' => 'Supreme Court',
+                'base_url' => 'https://www.supremecourt.gov',
+                'research_category' => 'legal',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.supremecourt.gov/search.aspx?Search={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'US Supreme Court',
+            ],
+
+            // Academic Sources
+            [
+                'name' => 'JSTOR',
+                'base_url' => 'https://www.jstor.org',
+                'research_category' => 'academic',
+                'source_type' => 'database',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.jstor.org/action/doBasicSearch?Query={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'Academic journal archive',
+            ],
+            [
+                'name' => 'ResearchGate',
+                'base_url' => 'https://www.researchgate.net',
+                'research_category' => 'academic',
+                'source_type' => 'database',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.researchgate.net/search/publication?q={query}',
+                'trust_score' => 8,
+                'is_active' => true,
+                'notes' => 'Academic social network',
+            ],
+            [
+                'name' => 'Semantic Scholar',
+                'base_url' => 'https://www.semanticscholar.org',
+                'research_category' => 'academic',
+                'source_type' => 'database',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.semanticscholar.org/search?q={query}',
+                'trust_score' => 9,
+                'is_active' => true,
+                'notes' => 'AI-powered academic search',
+            ],
+
+            // Health Sources
+            [
+                'name' => 'WHO - World Health Organization',
+                'base_url' => 'https://www.who.int',
+                'research_category' => 'health',
+                'source_type' => 'government',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.who.int/home/search?query={query}',
+                'trust_score' => 10,
+                'is_active' => true,
+                'notes' => 'International health authority',
+            ],
+            [
+                'name' => 'Cleveland Clinic',
+                'base_url' => 'https://my.clevelandclinic.org',
+                'research_category' => 'health',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://my.clevelandclinic.org/search?q={query}',
+                'trust_score' => 9,
+                'is_active' => true,
+                'notes' => 'Medical center health library',
+            ],
+            [
+                'name' => 'Healthline',
+                'base_url' => 'https://www.healthline.com',
+                'research_category' => 'health',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.healthline.com/search?q1={query}',
+                'trust_score' => 7,
+                'is_active' => true,
+                'notes' => 'Consumer health information',
+            ],
+
+            // General Reference
+            [
+                'name' => 'Wikipedia',
+                'base_url' => 'https://en.wikipedia.org',
+                'research_category' => 'general',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://en.wikipedia.org/w/index.php?search={query}',
+                'trust_score' => 6,
+                'is_active' => true,
+                'notes' => 'Community encyclopedia - verify facts elsewhere',
+            ],
+            [
+                'name' => 'Britannica',
+                'base_url' => 'https://www.britannica.com',
+                'research_category' => 'general',
+                'source_type' => 'reference',
+                'is_search_engine' => true,
+                'search_url_template' => 'https://www.britannica.com/search?query={query}',
+                'trust_score' => 9,
+                'is_active' => true,
+                'notes' => 'Authoritative encyclopedia',
+            ],
+        ];
+
+        foreach ($sources as $source) {
+            // Check if source already exists
+            $existing = DB::connection($this->connection)->select(
+                "SELECT id FROM research_sources WHERE base_url = ? OR name = ?",
+                [$source['base_url'], $source['name']]
+            );
+
+            if (empty($existing)) {
+                DB::connection($this->connection)->insert("
+                    INSERT INTO research_sources (
+                        name, base_url, research_category, source_type,
+                        is_search_engine, search_url_template, trust_score,
+                        is_active, notes, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ", [
+                    $source['name'],
+                    $source['base_url'],
+                    $source['research_category'],
+                    $source['source_type'],
+                    $source['is_search_engine'],
+                    $source['search_url_template'],
+                    $source['trust_score'],
+                    $source['is_active'],
+                    $source['notes'],
+                ]);
+            }
+        }
+    }
+
+    public function down(): void
+    {
+        // Don't delete sources on rollback - they may have been used
+    }
+};

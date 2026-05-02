@@ -1,0 +1,44 @@
+0 HEAD
+1 SOUR PLOS
+2 NAME PLOS Synthetic Fixture
+2 VERS 1.0
+1 GEDC
+2 VERS 5.5.1
+2 FORM LINEAGE-LINKED
+1 CHAR UTF-8
+1 LANG English
+0 @I1@ INDI
+1 NAME Ada /Example/
+1 SEX F
+1 BIRT
+2 DATE 12 MAR 1901
+2 PLAC Example Township, Sample County, Pennsylvania, USA
+1 DEAT
+2 DATE 4 JUL 1984
+2 PLAC Example City, Sample County, Pennsylvania, USA
+1 FAMS @F1@
+0 @I2@ INDI
+1 NAME Ben /Example/
+1 SEX M
+1 BIRT
+2 DATE 22 MAY 1899
+2 PLAC Sample Borough, Sample County, Pennsylvania, USA
+1 DEAT
+2 DATE 18 NOV 1975
+2 PLAC Example City, Sample County, Pennsylvania, USA
+1 FAMS @F1@
+0 @I3@ INDI
+1 NAME Clara /Example/
+1 SEX F
+1 BIRT
+2 DATE 3 FEB 1928
+2 PLAC Example City, Sample County, Pennsylvania, USA
+1 FAMC @F1@
+0 @F1@ FAM
+1 HUSB @I2@
+1 WIFE @I1@
+1 CHIL @I3@
+1 MARR
+2 DATE 15 JUN 1924
+2 PLAC Sample Borough, Sample County, Pennsylvania, USA
+0 TRLR

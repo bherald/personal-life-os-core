@@ -1,0 +1,65 @@
+# Resolver snapshot for requirements-media.txt.
+# Generated 2026-04-27 with:
+#   python -m pip install --dry-run --report "$HOME/tmp/personal-life-os-core-media-dry-run-report.json" -r requirements-media.txt
+# Environment: Linux x86_64, Python 3.12, default PyPI indexes.
+# This is a reproducibility aid, not a substitute for native package/license review.
+# Adjusted after install/import proof: face_recognition_models 0.3.0 imports
+# pkg_resources, and setuptools 81+ broke that import path in this environment.
+
+numpy==2.4.4
+pillow==11.3.0
+psycopg2-binary==2.9.12
+tqdm==4.67.3
+face-recognition==1.3.0
+dlib==19.24.9
+hdbscan==0.8.42
+igraph==0.11.9
+leidenalg==0.10.2
+spacy==3.8.14
+scikit-learn==1.8.0
+scipy==1.17.1
+catalogue==2.0.10
+confection==1.3.3
+cymem==2.0.13
+murmurhash==1.0.15
+preshed==3.0.13
+pydantic==2.13.3
+pydantic_core==2.46.3
+requests==2.33.1
+charset-normalizer==3.4.7
+idna==3.13
+spacy-legacy==3.0.12
+spacy-loggers==1.0.5
+srsly==2.5.3
+thinc==8.3.13
+blis==1.3.3
+typer==0.25.0
+urllib3==2.6.3
+wasabi==1.1.3
+weasel==1.0.0
+annotated-doc==0.0.4
+annotated-types==0.7.0
+certifi==2026.4.22
+click==8.3.3
+cloudpathlib==0.23.0
+face_recognition_models==0.3.0
+httpx==0.28.1
+httpcore==1.0.9
+h11==0.16.0
+joblib==1.5.3
+packaging==26.2
+rich==15.0.0
+Pygments==2.20.0
+markdown-it-py==4.0.0
+mdurl==0.1.2
+shellingham==1.5.4
+smart_open==7.6.0
+texttable==1.7.0
+threadpoolctl==3.6.0
+typing_extensions==4.15.0
+typing-inspection==0.4.2
+anyio==4.13.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+setuptools==80.9.0
+wrapt==2.1.2

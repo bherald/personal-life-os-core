@@ -1,0 +1,1569 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+/* ========================================
+   Ops console font
+   ======================================== */
+@import url('https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&display=swap');
+
+@layer base {
+  /* ========================================
+     Ops console color palette
+     ======================================== */
+  :root {
+    /* Warm accents */
+    --ops-orange: #ff9900;
+    --ops-peach: #ff9966;
+    --ops-gold: #ffcc99;
+    --ops-yellow: #ffff99;
+    --ops-tan: #cc9966;
+    --ops-sunset: #cc6633;
+    --ops-butterscotch: #ff9933;
+
+    /* Purple accents */
+    --ops-lilac: #cc99cc;
+    --ops-violet: #9977aa;
+    --ops-plum: #774477;
+    --ops-magenta: #cc6699;
+    --ops-grape: #9966cc;
+    --ops-lavender: #cc99ff;
+
+    /* Blue accents */
+    --ops-sky: #99ccff;
+    --ops-blue: #6688cc;
+    --ops-azure: #3366cc;
+    --ops-navy: #336699;
+    --ops-ice: #aaccff;
+    --ops-teal: #66cccc;
+
+    /* Status colors */
+    --ops-red-alert: #cc0000;
+    --ops-green: #99cc66;
+    --ops-green-bright: #66ff66;
+    --ops-white: #ffffff;
+    --ops-black: #000000;
+    --ops-gray: #999999;
+
+    /* Text colors */
+    --ops-text: #ff9966;
+    --ops-text-muted: #999999;
+
+    /* Semantic accent colors */
+    --color-accent-blue: #99ccff;
+    --color-success-green: #99cc66;
+    --color-warning-orange: #ff9900;
+    --color-danger-red: #cc0000;
+
+    /* Spacing and frame geometry */
+    --ops-unit: 8px;
+    --ops-gap: 6px;
+    --ops-bar-width: 8px;
+    --ops-border-radius: 16px;
+    --ops-border-radius-sm: 10px;
+    --ops-elbow-radius: 32px;
+    --ops-accent: var(--ops-orange);
+    --ops-accent-soft: var(--ops-peach);
+    --ops-accent-muted: var(--ops-gold);
+    --ops-info: var(--ops-sky);
+    --ops-success: var(--ops-green);
+    --ops-warning: var(--ops-orange);
+    --ops-danger: var(--ops-red-alert);
+    --ops-frame: var(--ops-plum);
+    --ops-mute: var(--ops-gray);
+  }
+
+  /* Ops console dark theme */
+  .dark {
+    --color-bg-primary: #000000;
+    --color-bg-secondary: #0a0a0a;
+    --color-bg-tertiary: #141414;
+    --color-bg-hover: #1a1a1a;
+    --color-text-primary: #ff9966;
+    --color-text-secondary: #cc99cc;
+    --color-border: #774477;
+    --color-accent: #ff9900;
+
+    /* Panel colors */
+    --ops-sidebar-bg: #000000;
+    --ops-panel-bg: #0a0a0a;
+    --ops-header-bg: #cc6699;
+  }
+
+  /* Root defaults match dark theme */
+  :root {
+    --color-bg-primary: #000000;
+    --color-bg-secondary: #0a0a0a;
+    --color-bg-tertiary: #141414;
+    --color-bg-hover: #1a1a1a;
+    --color-text-primary: #ff9966;
+    --color-text-secondary: #cc99cc;
+    --color-border: #774477;
+    --color-accent: #ff9900;
+
+    --ops-sidebar-bg: #000000;
+    --ops-panel-bg: #0a0a0a;
+    --ops-header-bg: #cc6699;
+
+  }
+
+  .light {
+    --color-bg-primary: #0a0a14;
+    --color-bg-secondary: #0f0f1a;
+    --color-bg-tertiary: #141420;
+    --color-bg-hover: #1a1a2a;
+    --color-text-primary: #ffcc99;
+    --color-text-secondary: #cc99cc;
+    --color-border: #6688cc;
+    --color-accent: #ff9900;
+  }
+
+  /* Apply theme to body */
+  body {
+    background-color: var(--ops-black);
+    color: var(--color-text-primary);
+    font-family: 'Antonio', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  /* Typography hierarchy */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Antonio', sans-serif;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+
+  /* Font sizing: base (1x), big (1.5x), large (2x), huge (4x) */
+  h1 { font-size: 1.75rem; } /* Large */
+  h2 { font-size: 1.25rem; } /* Big */
+  h3 { font-size: 1rem; }    /* Base */
+}
+
+@layer components {
+  /* ========================================
+     BUTTON STYLES - Theme Aware
+     ======================================== */
+  .btn-primary {
+    @apply px-4 py-2 rounded font-semibold transition-colors;
+    background-color: var(--color-accent);
+    color: white;
+  }
+  .btn-primary:hover {
+    filter: brightness(1.1);
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 rounded transition-colors;
+    background-color: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+  }
+  .btn-secondary:hover {
+    background-color: var(--color-bg-hover);
+  }
+
+  .btn-danger {
+    @apply px-4 py-2 bg-[#e74c3c] text-white rounded hover:bg-[#c0392b] transition-colors;
+  }
+
+  .btn-success {
+    @apply px-4 py-2 bg-[#27ae60] text-white rounded hover:bg-[#229954] transition-colors;
+  }
+
+  .btn-icon {
+    @apply p-2 rounded transition-colors;
+    background-color: transparent;
+    color: var(--color-text-secondary);
+  }
+  .btn-icon:hover {
+    background-color: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+  }
+
+  /* ========================================
+     CARD STYLES - Theme Aware
+     ======================================== */
+  .card {
+    @apply rounded-lg shadow-lg p-6;
+    background-color: var(--color-bg-secondary);
+    border: 1px solid var(--color-border);
+  }
+
+  .card-header {
+    @apply pb-3 mb-4;
+    border-bottom: 2px solid var(--color-accent);
+  }
+
+  /* ========================================
+     INPUT STYLES - Theme Aware
+     ======================================== */
+  .input, .form-input {
+    @apply w-full px-3 py-2 rounded transition-colors;
+    background-color: var(--color-bg-primary);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-primary);
+  }
+  .input:focus, .form-input:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-accent);
+    border-color: transparent;
+  }
+
+  .form-select, select {
+    @apply w-full px-3 py-2 rounded cursor-pointer;
+    background-color: var(--color-bg-primary);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-primary);
+  }
+  .form-select:focus, select:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-accent);
+    border-color: transparent;
+  }
+
+  .form-textarea, textarea {
+    @apply w-full px-3 py-2 rounded resize-y;
+    background-color: var(--color-bg-primary);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-primary);
+  }
+  .form-textarea:focus, textarea:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--color-accent);
+    border-color: transparent;
+  }
+
+  .form-checkbox, input[type="checkbox"] {
+    @apply w-4 h-4 rounded;
+    background-color: var(--color-bg-primary);
+    border-color: var(--color-border);
+    color: var(--color-accent);
+  }
+  .form-checkbox:focus, input[type="checkbox"]:focus {
+    box-shadow: 0 0 0 2px var(--color-accent);
+  }
+
+  .label, label {
+    @apply block text-sm font-medium mb-1;
+    color: var(--color-text-secondary);
+  }
+
+  /* ========================================
+     TABLE STYLES - Theme Aware
+     ======================================== */
+  .table {
+    @apply w-full border-collapse;
+  }
+
+  .table thead {
+    background-color: var(--color-bg-tertiary);
+    border-bottom: 2px solid var(--color-accent);
+  }
+
+  .table th {
+    @apply text-left py-3 px-4 font-semibold;
+    color: var(--color-text-primary);
+  }
+
+  .table td {
+    @apply py-3 px-4;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .table tbody tr {
+    @apply transition-colors;
+  }
+  .table tbody tr:hover {
+    background-color: var(--color-bg-tertiary);
+  }
+
+  /* ========================================
+     BADGE STYLES
+     ======================================== */
+  .badge {
+    @apply px-2 py-1 text-xs font-medium rounded-full;
+  }
+
+  .badge-success {
+    @apply bg-[#27ae60] bg-opacity-20 text-[#27ae60] border border-[#27ae60];
+  }
+
+  .badge-warning {
+    @apply bg-[#f39c12] bg-opacity-20 text-[#f39c12] border border-[#f39c12];
+  }
+
+  .badge-danger {
+    @apply bg-[#e74c3c] bg-opacity-20 text-[#e74c3c] border border-[#e74c3c];
+  }
+
+  .badge-info {
+    @apply bg-accent bg-opacity-20 text-accent border border-accent;
+  }
+
+  .badge-gray {
+    @apply bg-opacity-20 border;
+    background-color: var(--color-text-secondary);
+    color: var(--color-text-secondary);
+    border-color: var(--color-text-secondary);
+  }
+
+  /* ========================================
+     ALERT/MESSAGE STYLES
+     ======================================== */
+  .alert {
+    @apply p-4 rounded-lg border;
+  }
+
+  .alert-success {
+    @apply bg-[#27ae60] bg-opacity-10 border-[#27ae60] text-[#27ae60];
+  }
+
+  .alert-warning {
+    @apply bg-[#f39c12] bg-opacity-10 border-[#f39c12] text-[#f39c12];
+  }
+
+  .alert-danger {
+    @apply bg-[#e74c3c] bg-opacity-10 border-[#e74c3c] text-[#e74c3c];
+  }
+
+  .alert-info {
+    @apply bg-accent bg-opacity-10 border-accent text-accent;
+  }
+
+  /* ========================================
+     THEME-AWARE UTILITY CLASSES
+     ======================================== */
+  .bg-theme-primary {
+    background-color: var(--color-bg-primary);
+  }
+
+  .bg-theme-secondary {
+    background-color: var(--color-bg-secondary);
+  }
+
+  .bg-theme-tertiary {
+    background-color: var(--color-bg-tertiary);
+  }
+
+  .text-theme-primary {
+    color: var(--color-text-primary);
+  }
+
+  .text-theme-secondary {
+    color: var(--color-text-secondary);
+  }
+
+  .border-theme {
+    border-color: var(--color-border);
+  }
+
+  .border-accent {
+    border-color: var(--color-accent);
+  }
+
+  /* Hover utilities */
+  .hover\:bg-theme-tertiary:hover {
+    background-color: var(--color-bg-tertiary);
+  }
+
+  .hover\:bg-theme-hover:hover {
+    background-color: var(--color-bg-hover);
+  }
+
+  /* ========================================
+     MOBILE-FRIENDLY UTILITIES
+     ======================================== */
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* ========================================
+   MOBILE RESPONSIVE STYLES
+   ======================================== */
+
+/* Mobile: 0-639px */
+@media (max-width: 639px) {
+  /* Touch-friendly buttons */
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger,
+  .btn-success {
+    min-height: 44px;
+    padding: 0.625rem 1rem;
+  }
+
+  /* Touch-friendly inputs */
+  .input,
+  .form-input,
+  .form-select,
+  select,
+  .form-textarea,
+  textarea {
+    min-height: 44px;
+    font-size: 16px; /* Prevents iOS zoom on focus */
+  }
+
+  /* Better readable text on mobile */
+  .text-xs {
+    font-size: 0.8125rem; /* 13px instead of 12px */
+  }
+
+  .text-sm {
+    font-size: 0.9375rem; /* 15px instead of 14px */
+  }
+
+  /* Card padding reduction for mobile */
+  .card {
+    padding: 1rem;
+  }
+
+  /* Page header adjustments */
+  h1, .text-3xl {
+    font-size: 1.5rem;
+  }
+
+  h2, .text-2xl {
+    font-size: 1.25rem;
+  }
+
+  /* Table responsive improvements */
+  .table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table th,
+  .table td {
+    white-space: nowrap;
+    padding: 0.75rem 0.5rem;
+    font-size: 0.875rem;
+  }
+
+  /* Container padding */
+  .container {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  /* Fix flex wrapping for button groups */
+  .flex.gap-2,
+  .flex.gap-3,
+  .flex.gap-4 {
+    flex-wrap: wrap;
+  }
+}
+
+/* Touch device improvements */
+@media (hover: none) and (pointer: coarse) {
+  /* Larger touch targets */
+  button,
+  a,
+  .cursor-pointer {
+    min-height: 44px;
+  }
+
+  /* Better tap feedback */
+  button:active,
+  a:active,
+  .cursor-pointer:active {
+    opacity: 0.8;
+    transform: scale(0.98);
+  }
+
+  /* Remove hover effects that don't work on touch */
+  .btn-primary:hover,
+  .btn-secondary:hover {
+    filter: none;
+  }
+}
+
+/* ========================================
+   Ops console COMPONENT STYLES
+   operations console-inspired UI elements
+   ======================================== */
+
+/* Ops console Buttons - Pill-shaped with rounded ends */
+.ops-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.375rem 1rem;
+  font-family: 'Antonio', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-radius: 9999px;
+  min-height: 32px;
+  text-decoration: none;
+}
+
+.ops-btn-orange {
+  background-color: var(--ops-orange);
+  color: var(--ops-black);
+}
+.ops-btn-orange:hover {
+  background-color: var(--ops-gold);
+}
+
+.ops-btn-peach {
+  background-color: var(--ops-peach);
+  color: var(--ops-black);
+}
+.ops-btn-peach:hover {
+  background-color: var(--ops-gold);
+}
+
+.ops-btn-lilac {
+  background-color: var(--ops-lilac);
+  color: var(--ops-black);
+}
+.ops-btn-lilac:hover {
+  background-color: var(--ops-magenta);
+}
+
+.ops-btn-blue {
+  background-color: var(--ops-sky);
+  color: var(--ops-black);
+}
+.ops-btn-blue:hover {
+  background-color: var(--ops-ice);
+}
+
+.ops-btn-red {
+  background-color: var(--ops-red-alert);
+  color: var(--ops-white);
+}
+.ops-btn-red:hover {
+  filter: brightness(1.2);
+}
+
+.ops-btn-green {
+  background-color: var(--ops-green);
+  color: var(--ops-black);
+}
+.ops-btn-green:hover {
+  filter: brightness(1.1);
+}
+
+/* Ops console Panel - Main content container */
+.ops-panel {
+  background-color: var(--color-bg-secondary);
+  border: 2px solid var(--ops-plum);
+  border-radius: 0 20px 20px 0;
+  padding: 1rem;
+  position: relative;
+}
+
+.ops-panel-header {
+  background-color: var(--ops-magenta);
+  color: var(--ops-black);
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-radius: 0 15px 0 0;
+  margin: -1rem -1rem 1rem -1rem;
+}
+
+/* Ops console Elbow - corner piece */
+.ops-elbow {
+  position: relative;
+  background-color: var(--ops-orange);
+}
+
+.ops-elbow-top-left {
+  border-radius: 30px 0 0 0;
+  width: 100px;
+  height: 60px;
+}
+
+.ops-elbow-top-right {
+  border-radius: 0 30px 0 0;
+  width: 100px;
+  height: 60px;
+}
+
+.ops-elbow-bottom-left {
+  border-radius: 0 0 0 30px;
+  width: 100px;
+  height: 60px;
+}
+
+.ops-elbow-bottom-right {
+  border-radius: 0 0 30px 0;
+  width: 100px;
+  height: 60px;
+}
+
+/* Ops console Bar - Horizontal/Vertical dividers */
+.ops-bar {
+  background-color: var(--ops-orange);
+  min-height: 8px;
+}
+
+.ops-bar-thin {
+  min-height: 4px;
+}
+
+.ops-bar-thick {
+  min-height: 16px;
+}
+
+.ops-bar-vertical {
+  width: 8px;
+  min-height: auto;
+  height: 100%;
+}
+
+/* Ops console Bar Color Variants */
+.ops-bar-peach { background-color: var(--ops-peach); }
+.ops-bar-lilac { background-color: var(--ops-lilac); }
+.ops-bar-blue { background-color: var(--ops-sky); }
+.ops-bar-gold { background-color: var(--ops-gold); }
+.ops-bar-magenta { background-color: var(--ops-magenta); }
+
+/* Ops console Sidebar - Left navigation structure */
+.ops-sidebar {
+  background-color: var(--ops-black);
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+}
+
+.ops-sidebar-header {
+  background-color: var(--ops-magenta);
+  color: var(--ops-black);
+  padding: 1rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-radius: 0 0 30px 0;
+}
+
+.ops-sidebar-item {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  color: var(--ops-peach);
+  text-transform: uppercase;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  border-left: 4px solid transparent;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.ops-sidebar-item:hover {
+  background-color: var(--color-bg-tertiary);
+  border-left-color: var(--ops-orange);
+  color: var(--ops-orange);
+}
+
+.ops-sidebar-item.active {
+  background-color: var(--color-bg-tertiary);
+  border-left-color: var(--ops-orange);
+  color: var(--ops-orange);
+}
+
+/* Ops console Data Display */
+.ops-data {
+  font-family: 'Courier New', monospace;
+  color: var(--ops-sky);
+  font-size: 0.875rem;
+}
+
+.ops-data-label {
+  color: var(--ops-lilac);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.25rem;
+}
+
+.ops-data-value {
+  color: var(--ops-peach);
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+/* Ops console Status Indicators */
+.ops-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.ops-status-ok {
+  background-color: var(--ops-green);
+  color: var(--ops-black);
+}
+
+.ops-status-warning {
+  background-color: var(--ops-orange);
+  color: var(--ops-black);
+}
+
+.ops-status-alert {
+  background-color: var(--ops-red-alert);
+  color: var(--ops-white);
+  animation: ops-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes ops-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Ops console Card - Content container with Ops console styling */
+.ops-card {
+  background-color: var(--color-bg-secondary);
+  border-left: 4px solid var(--ops-orange);
+  border-radius: 0 15px 15px 0;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.ops-card-title {
+  color: var(--ops-peach);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.5rem;
+}
+
+/* Ops console Input Fields */
+.ops-input {
+  background-color: var(--color-bg-primary);
+  border: 2px solid var(--ops-plum);
+  border-radius: 0 15px 15px 0;
+  color: var(--ops-peach);
+  padding: 0.5rem 1rem;
+  font-size: 1rem;
+  width: 100%;
+  transition: border-color 0.15s ease;
+}
+
+.ops-input:focus {
+  outline: none;
+  border-color: var(--ops-orange);
+}
+
+.ops-input::placeholder {
+  color: var(--ops-violet);
+}
+
+/* Ops console Table */
+.ops-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0 4px;
+}
+
+.ops-table thead th {
+  background-color: var(--ops-plum);
+  color: var(--ops-lilac);
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.ops-table thead th:first-child {
+  border-radius: 15px 0 0 15px;
+}
+
+.ops-table thead th:last-child {
+  border-radius: 0 15px 15px 0;
+}
+
+.ops-table tbody tr {
+  background-color: var(--color-bg-secondary);
+  transition: background-color 0.15s ease;
+}
+
+.ops-table tbody tr:hover {
+  background-color: var(--color-bg-tertiary);
+}
+
+.ops-table tbody td {
+  padding: 0.75rem 1rem;
+  color: var(--ops-peach);
+  border-bottom: 1px solid var(--ops-plum);
+}
+
+.ops-table tbody td:first-child {
+  border-radius: 10px 0 0 10px;
+  border-left: 3px solid var(--ops-orange);
+}
+
+.ops-table tbody td:last-child {
+  border-radius: 0 10px 10px 0;
+}
+
+/* Ops console Section Divider */
+.ops-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 1.5rem 0;
+}
+
+.ops-divider-line {
+  flex: 1;
+  height: 4px;
+  background-color: var(--ops-plum);
+  border-radius: 2px;
+}
+
+.ops-divider-text {
+  color: var(--ops-lilac);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+/* Ops console Badge */
+.ops-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.ops-badge-orange {
+  background-color: var(--ops-orange);
+  color: var(--ops-black);
+}
+
+.ops-badge-red {
+  background-color: var(--ops-red-alert);
+  color: var(--ops-white);
+}
+
+.ops-badge-green {
+  background-color: var(--ops-green);
+  color: var(--ops-black);
+}
+
+.ops-badge-blue {
+  background-color: var(--ops-sky);
+  color: var(--ops-black);
+}
+
+/* Ops console Scrollbar Styling */
+.ops-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.ops-scroll::-webkit-scrollbar-track {
+  background: var(--color-bg-primary);
+}
+
+.ops-scroll::-webkit-scrollbar-thumb {
+  background: var(--ops-plum);
+  border-radius: 4px;
+}
+
+.ops-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--ops-violet);
+}
+
+/* Ops console Loading Animation */
+.ops-loading {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ops-loading-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  animation: ops-loading 1.4s ease-in-out infinite;
+}
+
+.ops-loading-dot:nth-child(1) {
+  background-color: var(--ops-orange);
+  animation-delay: 0s;
+}
+
+.ops-loading-dot:nth-child(2) {
+  background-color: var(--ops-lilac);
+  animation-delay: 0.2s;
+}
+
+.ops-loading-dot:nth-child(3) {
+  background-color: var(--ops-sky);
+  animation-delay: 0.4s;
+}
+
+@keyframes ops-loading {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.5;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Ops console Frame - Full page layout structure */
+.ops-frame {
+  display: flex;
+  min-height: 100vh;
+  background-color: var(--ops-black);
+}
+
+.ops-frame-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--ops-black);
+}
+
+.ops-frame-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-primary);
+  border-radius: 30px 0 0 30px;
+  margin-left: 8px;
+  overflow: hidden;
+}
+
+/* Mobile Ops console Adjustments */
+@media (max-width: 768px) {
+  .ops-frame-sidebar {
+    position: fixed;
+    left: -220px;
+    top: 0;
+    height: 100vh;
+    z-index: 100;
+    transition: left 0.3s ease;
+  }
+
+  .ops-frame-sidebar.open {
+    left: 0;
+  }
+
+  .ops-frame-content {
+    border-radius: 0;
+    margin-left: 0;
+  }
+
+  .ops-btn {
+    padding: 0.75rem 1.25rem;
+  }
+
+  .ops-sidebar-header {
+    padding: 0.75rem;
+    font-size: 1rem;
+  }
+}
+
+/* ========================================
+   Ops console FRAME STRUCTURE
+   The signature operations console interface layout
+   ======================================== */
+
+/* Main Ops console page wrapper with structured frame */
+.ops-page {
+  min-height: 100vh;
+  background-color: var(--ops-black);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Ops console Top Header Bar with elbow */
+.ops-top-frame {
+  display: flex;
+  background-color: var(--ops-black);
+  padding-bottom: var(--ops-gap);
+}
+
+.ops-top-elbow {
+  width: 180px;
+  height: 80px;
+  background-color: var(--ops-magenta);
+  border-radius: 0 0 var(--ops-elbow-radius) 0;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* Cutout effect for elbow */
+.ops-top-elbow::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 60px;
+  height: 40px;
+  background-color: var(--ops-black);
+  border-radius: var(--ops-border-radius) 0 0 0;
+}
+
+.ops-top-bar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.ops-top-bar-upper {
+  height: 40px;
+  background-color: var(--ops-magenta);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 1rem;
+}
+
+.ops-top-bar-lower {
+  height: 40px;
+  display: flex;
+  gap: var(--ops-gap);
+  padding-top: var(--ops-gap);
+}
+
+.ops-top-cap {
+  width: 80px;
+  height: 40px;
+  background-color: var(--ops-lilac);
+  border-radius: 0 0 0 var(--ops-border-radius);
+  flex-shrink: 0;
+}
+
+/* Ops console Main Content Area with sidebar */
+.ops-main-frame {
+  flex: 1;
+  display: flex;
+  background-color: var(--ops-black);
+  gap: var(--ops-gap);
+  padding-left: var(--ops-gap);
+}
+
+/* Left sidebar bar */
+.ops-left-bar {
+  width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ops-gap);
+  flex-shrink: 0;
+}
+
+.ops-sidebar-block {
+  background-color: var(--ops-orange);
+  border-radius: var(--ops-border-radius);
+  flex: 1;
+  min-height: 60px;
+}
+
+.ops-sidebar-block-peach { background-color: var(--ops-peach); }
+.ops-sidebar-block-tan { background-color: var(--ops-tan); }
+.ops-sidebar-block-lilac { background-color: var(--ops-lilac); }
+.ops-sidebar-block-blue { background-color: var(--ops-sky); }
+.ops-sidebar-block-gold { background-color: var(--ops-gold); }
+
+/* Content area */
+.ops-content-area {
+  flex: 1;
+  background-color: var(--color-bg-primary);
+  border-radius: var(--ops-border-radius) 0 0 var(--ops-border-radius);
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+/* Ops console Bottom Frame */
+.ops-bottom-frame {
+  display: flex;
+  background-color: var(--ops-black);
+  padding-top: var(--ops-gap);
+  height: 50px;
+}
+
+.ops-bottom-elbow {
+  width: 180px;
+  height: 50px;
+  background-color: var(--ops-tan);
+  border-radius: 0 var(--ops-elbow-radius) 0 0;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.ops-bottom-elbow::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 60px;
+  height: 30px;
+  background-color: var(--ops-black);
+  border-radius: 0 0 var(--ops-border-radius) 0;
+}
+
+.ops-bottom-bar {
+  flex: 1;
+  height: 30px;
+  background-color: var(--ops-tan);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 1rem;
+  margin-top: 20px;
+}
+
+.ops-bottom-cap {
+  width: 80px;
+  height: 30px;
+  background-color: var(--ops-peach);
+  border-radius: 0 0 0 var(--ops-border-radius);
+  flex-shrink: 0;
+  margin-top: 20px;
+}
+
+/* ========================================
+   Ops console ENHANCED PANELS (for dashboard)
+   ======================================== */
+
+.ops-panel-v2 {
+  background-color: var(--color-bg-secondary);
+  border-radius: 0 var(--ops-border-radius) var(--ops-border-radius) 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.ops-panel-v2::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--ops-bar-width);
+  background-color: var(--ops-orange);
+}
+
+.ops-panel-v2-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem 0.5rem 1rem;
+  padding-left: calc(var(--ops-bar-width) + 0.75rem);
+  background: linear-gradient(90deg, var(--ops-plum) 0%, transparent 100%);
+  min-height: 32px;
+}
+
+.ops-panel-v2-title {
+  color: var(--ops-peach);
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: 'Antonio', sans-serif;
+}
+
+.ops-panel-v2-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ops-panel-v2-body {
+  padding: 0.75rem;
+  padding-left: calc(var(--ops-bar-width) + 0.75rem);
+}
+
+/* Color variants for panels */
+.ops-panel-v2.peach::before { background-color: var(--ops-peach); }
+.ops-panel-v2.lilac::before { background-color: var(--ops-lilac); }
+.ops-panel-v2.blue::before { background-color: var(--ops-sky); }
+.ops-panel-v2.gold::before { background-color: var(--ops-gold); }
+.ops-panel-v2.green::before { background-color: var(--ops-green); }
+.ops-panel-v2.magenta::before { background-color: var(--ops-magenta); }
+
+/* ========================================
+   Ops console STAT BLOCKS
+   ======================================== */
+
+.ops-stat-block {
+  background-color: var(--color-bg-secondary);
+  border-radius: 0 var(--ops-border-radius-sm) var(--ops-border-radius-sm) 0;
+  padding: 0.625rem 0.75rem;
+  padding-left: calc(var(--ops-bar-width) + 0.625rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  min-height: 64px;
+}
+
+.ops-stat-block::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--ops-bar-width);
+  background-color: var(--ops-orange);
+}
+
+.ops-stat-value {
+  font-family: 'Antonio', sans-serif;
+  font-size: 1.75rem;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.05em;
+}
+
+.ops-stat-value.green { color: var(--ops-green); }
+.ops-stat-value.blue { color: var(--ops-sky); }
+.ops-stat-value.orange { color: var(--ops-orange); }
+.ops-stat-value.peach { color: var(--ops-peach); }
+.ops-stat-value.lilac { color: var(--ops-lilac); }
+
+.ops-stat-label {
+  font-family: 'Antonio', sans-serif;
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ops-lilac);
+  margin-top: 0.25rem;
+}
+
+/* ========================================
+   Ops console LIST ITEMS
+   ======================================== */
+
+.ops-list-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background-color: var(--color-bg-tertiary);
+  border-radius: 0 var(--ops-border-radius-sm) var(--ops-border-radius-sm) 0;
+  margin-bottom: 4px;
+  border-left: 4px solid var(--ops-plum);
+  transition: all 0.15s ease;
+}
+
+.ops-list-item:hover {
+  background-color: var(--color-bg-hover);
+  border-left-color: var(--ops-orange);
+}
+
+.ops-list-item-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ops-list-item-indicator.active { background-color: var(--ops-green); }
+.ops-list-item-indicator.warning { background-color: var(--ops-orange); animation: ops-pulse 1.5s infinite; }
+.ops-list-item-indicator.error { background-color: var(--ops-red-alert); }
+.ops-list-item-indicator.idle { background-color: var(--ops-gray); }
+
+.ops-list-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.ops-list-item-title {
+  color: var(--ops-peach);
+  font-size: 0.8rem;
+  font-weight: 500;
+  font-family: 'Antonio', sans-serif;
+  letter-spacing: 0.02em;
+}
+
+.ops-list-item-subtitle {
+  color: var(--ops-violet);
+  font-size: 0.7rem;
+  margin-top: 0.125rem;
+  font-family: 'Antonio', sans-serif;
+}
+
+/* ========================================
+   Ops console QUICK CAPTURE BAR
+   ======================================== */
+
+.ops-capture-bar {
+  display: flex;
+  gap: var(--ops-gap);
+  background-color: var(--ops-magenta);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--ops-border-radius);
+  align-items: center;
+}
+
+.ops-capture-input {
+  flex: 1;
+  background-color: var(--ops-black);
+  border: none;
+  border-radius: 0 var(--ops-border-radius-sm) var(--ops-border-radius-sm) 0;
+  padding: 0.5rem 0.75rem;
+  color: var(--ops-peach);
+  font-family: 'Antonio', sans-serif;
+  font-size: 0.875rem;
+  letter-spacing: 0.02em;
+}
+
+.ops-capture-input::placeholder {
+  color: var(--ops-violet);
+}
+
+.ops-capture-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ops-orange);
+}
+
+.ops-capture-btn {
+  background-color: var(--ops-black);
+  color: var(--ops-peach);
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: var(--ops-border-radius-sm);
+  font-family: 'Antonio', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ops-capture-btn:hover {
+  background-color: var(--ops-orange);
+  color: var(--ops-black);
+}
+
+/* ========================================
+   Ops console CONTACT AVATAR
+   ======================================== */
+
+.ops-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Antonio', sans-serif;
+  font-weight: 700;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.ops-avatar.orange { background-color: var(--ops-orange); color: var(--ops-black); }
+.ops-avatar.peach { background-color: var(--ops-peach); color: var(--ops-black); }
+.ops-avatar.lilac { background-color: var(--ops-lilac); color: var(--ops-black); }
+.ops-avatar.blue { background-color: var(--ops-sky); color: var(--ops-black); }
+.ops-avatar.green { background-color: var(--ops-green); color: var(--ops-black); }
+.ops-avatar.gold { background-color: var(--ops-gold); color: var(--ops-black); }
+
+/* ========================================
+   Ops console ANIMATED DECORATIONS
+   ======================================== */
+
+/* Scanning line animation */
+.ops-scan-line {
+  position: relative;
+  overflow: hidden;
+}
+
+.ops-scan-line::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--ops-sky), transparent);
+  animation: ops-scan 3s linear infinite;
+}
+
+@keyframes ops-scan {
+  0% { left: -100%; }
+  100% { left: 100%; }
+}
+
+/* Data stream animation */
+.ops-data-stream {
+  font-family: 'Courier New', monospace;
+  font-size: 0.75rem;
+  color: var(--ops-sky);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Blinking cursor */
+.ops-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 1em;
+  background-color: var(--ops-orange);
+  animation: ops-blink 0.8s step-end infinite;
+  vertical-align: middle;
+  margin-left: 2px;
+}
+
+@keyframes ops-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ========================================
+   Ops console RESPONSIVE ADJUSTMENTS
+   ======================================== */
+
+@media (max-width: 1024px) {
+  .ops-left-bar {
+    width: 80px;
+  }
+
+  .ops-top-elbow {
+    width: 120px;
+  }
+
+  .ops-bottom-elbow {
+    width: 120px;
+  }
+}
+
+@media (max-width: 768px) {
+  .ops-main-frame {
+    flex-direction: column;
+    padding-left: 0;
+  }
+
+  .ops-left-bar {
+    display: none;
+  }
+
+  .ops-content-area {
+    border-radius: 0;
+  }
+
+  .ops-top-elbow,
+  .ops-bottom-elbow {
+    display: none;
+  }
+
+  .ops-top-bar-upper {
+    border-radius: 0;
+  }
+
+  .ops-top-cap,
+  .ops-bottom-cap {
+    display: none;
+  }
+
+  .ops-panel-v2 {
+    border-radius: 0 12px 12px 0;
+  }
+}
+
+/* ========================================
+   TOPOLA FAMILY TREE OVERRIDES
+   Industry-standard design based on Treemily, Ancestry, FamilySearch
+   ======================================== */
+
+/* Reset fonts to clean sans-serif */
+#tree-svg,
+#tree-svg * {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* Person card backgrounds - cleaner with subtle borders */
+#tree-svg rect.background {
+  stroke: #c0c0c0 !important;
+  stroke-width: 1px !important;
+}
+
+#tree-svg rect.border {
+  stroke: #888 !important;
+  stroke-width: 1.5px !important;
+}
+
+/* Connector lines - subtle gray for professional look */
+#tree-svg path.link {
+  stroke: #666 !important;
+  stroke-width: 2px !important;
+  fill: none !important;
+}
+
+/* Kinship chart link stubs */
+#tree-svg path.link-stub {
+  stroke: #666 !important;
+  stroke-width: 2px !important;
+  fill: none !important;
+}
+
+#tree-svg line {
+  stroke: #888 !important;
+}
+
+/* Person name - bold and prominent */
+#tree-svg text.name {
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  fill: #141414 !important;
+}
+
+/* Details (dates) - smaller, secondary color */
+#tree-svg text.details {
+  font-size: 11px !important;
+  fill: #4b4b52 !important;
+}
+
+/* Sex indicator */
+#tree-svg text.sex {
+  font-size: 12px !important;
+  fill: #666 !important;
+}
+
+/* Hide family box - spouses connected by touching borders */
+#tree-svg g.family {
+  display: none !important;
+}
+
+/* Person card hover effect */
+#tree-svg g.indi:hover rect.border {
+  stroke: #ff6f26 !important;
+  stroke-width: 2px !important;
+}
+
+/* Images - rounded corners */
+#tree-svg image {
+  border-radius: 8px;
+}

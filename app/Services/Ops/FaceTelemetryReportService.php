@@ -1,0 +1,613 @@
+<?php
+
+namespace App\Services\Ops;
+
+use Illuminate\Support\Facades\DB;
+use Throwable;
+
+class FaceTelemetryReportService
+{
+    private const STATUS_RANK = [
+        'observe_ok' => 0,
+        'observe_warning' => 1,
+        'review_required' => 2,
+    ];
+
+    public function collect(int $hours = 24, bool $dryRun = false): array
+    {
+        $hours = max(1, min(720, $hours));
+
+        $payload = [
+            'version' => 1,
+            'mode' => 'observe',
+            'dry_run' => $dryRun,
+            'window_hours' => $hours,
+            'captured_at' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
+            'sections' => [],
+            'threshold_breaches' => [],
+            'recommendations' => [],
+        ];
+
+        if ($dryRun) {
+            $payload['status'] = 'observe_ok';
+            $payload['sections'] = [
+                'dry_run' => [
+                    'status' => 'observe_ok',
+                    'note' => 'Dry run only; no database probes executed.',
+                ],
+            ];
+
+            return $payload;
+        }
+
+        $payload['sections'] = [
+            'mysql_face_registry' => $this->collectMysqlFaceRegistry($hours),
+            'review_queue' => $this->collectReviewQueue($hours),
+            'candidate_decisions' => $this->collectCandidateDecisions($hours),
+            'bridge_alignment' => $this->collectBridgeAlignment(),
+            'postgres_face_vectors' => $this->collectPostgresFaceVectors(),
+            'face_jobs' => $this->collectFaceJobs($hours),
+        ];
+
+        [$breaches, $recommendations] = $this->evaluateThresholds($payload['sections']);
+        $payload['threshold_breaches'] = $breaches;
+        $payload['recommendations'] = $recommendations;
+        $payload['status'] = $this->worstStatus(array_merge(
+            array_column($payload['sections'], 'status'),
+            array_column($breaches, 'status')
+        ));
+
+        return $payload;
+    }
+
+    public function toMarkdown(array $payload): string
+    {
+        $lines = [
+            '# Face Telemetry Report',
+            '',
+            '- Mode: `'.($payload['mode'] ?? 'observe').'`',
+            '- Status: `'.($payload['status'] ?? 'unknown').'`',
+            '- Captured: `'.($payload['captured_at'] ?? 'unknown').'`',
+            '- Window Hours: `'.($payload['window_hours'] ?? 'unknown').'`',
+            '',
+            '## Sections',
+            '',
+        ];
+
+        foreach (($payload['sections'] ?? []) as $name => $section) {
+            $lines[] = '- `'.$name.'`: `'.($section['status'] ?? 'unknown').'`';
+        }
+
+        $candidateSummary = $payload['sections']['candidate_decisions']['summary'] ?? null;
+        if (is_array($candidateSummary)) {
+            $lines[] = '';
+            $lines[] = '## Candidate Decisions';
+            $lines[] = '';
+            $lines[] = '- Decision rows: `'.($candidateSummary['decision_rows'] ?? 0).'`';
+            $lines[] = '- Decided faces: `'.($candidateSummary['decided_faces'] ?? 0).'`';
+            $lines[] = '- Recent decisions: `'.($candidateSummary['recent_decisions'] ?? 0).'`';
+            $lines[] = '- Latest decision: `'.($candidateSummary['latest_decision_at'] ?? 'none').'`';
+            $lines[] = '- Terminal decisions: `'.($candidateSummary['terminal_decisions'] ?? 0).'`';
+            $lines[] = '- Action buckets: keep_name_only=`'.($candidateSummary['keep_name_only'] ?? 0).'`, outside_tree=`'.($candidateSummary['outside_tree'] ?? 0).'`, too_vague=`'.($candidateSummary['too_vague'] ?? 0).'`, not_this_person=`'.($candidateSummary['not_this_person'] ?? 0).'`, defer=`'.($candidateSummary['deferred'] ?? 0).'`';
+        }
+
+        $bridgeSummary = $payload['sections']['bridge_alignment']['summary'] ?? null;
+        if (is_array($bridgeSummary)) {
+            $lines[] = '';
+            $lines[] = '## Bridge Alignment';
+            $lines[] = '';
+            $lines[] = '- Linked faces: `'.($bridgeSummary['linked_faces'] ?? 0).'`';
+            $lines[] = '- Aligned faces: `'.($bridgeSummary['aligned_faces'] ?? 0).'`';
+            $lines[] = '- Missing genealogy media links: `'.($bridgeSummary['missing_media_links'] ?? 0).'`';
+            $lines[] = '- Missing person-media links: `'.($bridgeSummary['missing_person_media_links'] ?? 0).'`';
+
+            $samples = $bridgeSummary['gap_samples'] ?? [];
+            if (is_array($samples) && $samples !== []) {
+                $lines[] = '';
+                $lines[] = '### Bridge Gap Samples';
+                $lines[] = '';
+                foreach ($samples as $sample) {
+                    if (! is_array($sample)) {
+                        continue;
+                    }
+
+                    $lines[] = sprintf(
+                        '- `%s`: face=`%s`, file=`%s`, person=`%s`, tree=`%s`, media=`%s`, path_present=`%s`',
+                        $sample['gap_type'] ?? 'unknown',
+                        $sample['face_id'] ?? 'unknown',
+                        $sample['file_registry_id'] ?? 'unknown',
+                        $sample['person_id'] ?? 'unknown',
+                        $sample['tree_id'] ?? 'unknown',
+                        $sample['genealogy_media_id'] ?? 'none',
+                        ($sample['has_registry_path'] ?? false) ? 'yes' : 'no'
+                    );
+                }
+            }
+        }
+
+        $lines[] = '';
+        $lines[] = '## Threshold Breaches';
+        $lines[] = '';
+        foreach (($payload['threshold_breaches'] ?? []) as $breach) {
+            $lines[] = '- `'.($breach['status'] ?? 'observe_warning').'` '.$breach['message'];
+        }
+        if (($payload['threshold_breaches'] ?? []) === []) {
+            $lines[] = '- None.';
+        }
+
+        $lines[] = '';
+        $lines[] = '## Recommendations';
+        $lines[] = '';
+        foreach (($payload['recommendations'] ?? []) as $recommendation) {
+            $lines[] = '- '.$recommendation;
+        }
+        if (($payload['recommendations'] ?? []) === []) {
+            $lines[] = '- No human action recommended from this observe-only sample.';
+        }
+
+        return implode("\n", $lines)."\n";
+    }
+
+    private function collectMysqlFaceRegistry(int $hours): array
+    {
+        try {
+            $row = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS total_faces,
+                    SUM(CASE WHEN hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
+                    SUM(CASE WHEN hidden = 1 THEN 1 ELSE 0 END) AS hidden_faces,
+                    SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) AS verified_faces,
+                    SUM(CASE WHEN genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS genealogy_linked_faces,
+                    SUM(CASE WHEN hidden = 0 AND person_name IS NOT NULL AND person_name != '' AND genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS named_only_faces,
+                    SUM(CASE WHEN hidden = 0 AND (cluster_id IS NULL OR cluster_id = 0) THEN 1 ELSE 0 END) AS unclustered_visible_faces,
+                    SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS created_recent_faces
+                 FROM file_registry_faces",
+                [$hours]
+            );
+
+            $totalFaces = $this->intValue($row->total_faces ?? 0);
+
+            return [
+                'status' => $totalFaces > 0 ? 'observe_ok' : 'observe_warning',
+                'source' => 'mysql.file_registry_faces',
+                'summary' => [
+                    'total_faces' => $totalFaces,
+                    'visible_faces' => $this->intValue($row->visible_faces ?? 0),
+                    'hidden_faces' => $this->intValue($row->hidden_faces ?? 0),
+                    'verified_faces' => $this->intValue($row->verified_faces ?? 0),
+                    'genealogy_linked_faces' => $this->intValue($row->genealogy_linked_faces ?? 0),
+                    'named_only_faces' => $this->intValue($row->named_only_faces ?? 0),
+                    'unclustered_visible_faces' => $this->intValue($row->unclustered_visible_faces ?? 0),
+                    'created_recent_faces' => $this->intValue($row->created_recent_faces ?? 0),
+                ],
+            ];
+        } catch (Throwable $e) {
+            return $this->failedSection('mysql.file_registry_faces', $e);
+        }
+    }
+
+    private function collectReviewQueue(int $hours): array
+    {
+        try {
+            $row = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS total_queue_items,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_items,
+                    SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_items,
+                    SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_items,
+                    SUM(CASE WHEN status = 'auto_linked' THEN 1 ELSE 0 END) AS auto_linked_items,
+                    SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored_items,
+                    SUM(CASE WHEN status = 'pending' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_pending_items,
+                    SUM(CASE WHEN updated_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS recent_updates,
+                    MIN(CASE WHEN status = 'pending' THEN created_at ELSE NULL END) AS oldest_pending_at
+                 FROM genealogy_face_match_queue",
+                [$hours, $hours]
+            );
+
+            $pending = $this->intValue($row->pending_items ?? 0);
+            $stalePending = $this->intValue($row->stale_pending_items ?? 0);
+
+            return [
+                'status' => $pending > 0 || $stalePending > 0 ? 'observe_warning' : 'observe_ok',
+                'source' => 'mysql.genealogy_face_match_queue',
+                'summary' => [
+                    'total_queue_items' => $this->intValue($row->total_queue_items ?? 0),
+                    'pending_items' => $pending,
+                    'approved_items' => $this->intValue($row->approved_items ?? 0),
+                    'rejected_items' => $this->intValue($row->rejected_items ?? 0),
+                    'auto_linked_items' => $this->intValue($row->auto_linked_items ?? 0),
+                    'ignored_items' => $this->intValue($row->ignored_items ?? 0),
+                    'stale_pending_items' => $stalePending,
+                    'recent_updates' => $this->intValue($row->recent_updates ?? 0),
+                    'oldest_pending_at' => $this->nullableString($row->oldest_pending_at ?? null),
+                ],
+            ];
+        } catch (Throwable $e) {
+            return $this->failedSection('mysql.genealogy_face_match_queue', $e);
+        }
+    }
+
+    private function collectCandidateDecisions(int $hours): array
+    {
+        try {
+            $row = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS decision_rows,
+                    COUNT(DISTINCT file_registry_face_id) AS decided_faces,
+                    SUM(CASE WHEN action = 'keep_name_only' THEN 1 ELSE 0 END) AS keep_name_only,
+                    SUM(CASE WHEN action = 'outside_tree' THEN 1 ELSE 0 END) AS outside_tree,
+                    SUM(CASE WHEN action = 'too_vague' THEN 1 ELSE 0 END) AS too_vague,
+                    SUM(CASE WHEN action = 'not_this_person' THEN 1 ELSE 0 END) AS not_this_person,
+                    SUM(CASE WHEN action = 'defer' THEN 1 ELSE 0 END) AS deferred,
+                    SUM(CASE WHEN terminal = 'true' THEN 1 ELSE 0 END) AS terminal_decisions,
+                    SUM(CASE WHEN decided_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS recent_decisions,
+                    DATE_FORMAT(MAX(decided_at), '%Y-%m-%dT%H:%i:%sZ') AS latest_decision_at
+                 FROM (
+                    SELECT
+                        file_registry_face_id,
+                        JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.action')) AS action,
+                        JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.terminal')) AS terminal,
+                        STR_TO_DATE(JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.decided_at')), '%Y-%m-%dT%H:%i:%sZ') AS decided_at
+                    FROM genealogy_face_match_queue
+                 ) decisions
+                 WHERE action IN ('keep_name_only', 'outside_tree', 'too_vague', 'not_this_person', 'defer')",
+                [$hours]
+            );
+
+            return [
+                'status' => 'observe_ok',
+                'source' => 'mysql.genealogy_face_match_queue.match_details',
+                'summary' => [
+                    'decision_rows' => $this->intValue($row->decision_rows ?? 0),
+                    'decided_faces' => $this->intValue($row->decided_faces ?? 0),
+                    'keep_name_only' => $this->intValue($row->keep_name_only ?? 0),
+                    'outside_tree' => $this->intValue($row->outside_tree ?? 0),
+                    'too_vague' => $this->intValue($row->too_vague ?? 0),
+                    'not_this_person' => $this->intValue($row->not_this_person ?? 0),
+                    'deferred' => $this->intValue($row->deferred ?? 0),
+                    'terminal_decisions' => $this->intValue($row->terminal_decisions ?? 0),
+                    'recent_decisions' => $this->intValue($row->recent_decisions ?? 0),
+                    'latest_decision_at' => $this->nullableString($row->latest_decision_at ?? null),
+                ],
+            ];
+        } catch (Throwable $e) {
+            return $this->failedSection('mysql.face_candidate_decisions', $e);
+        }
+    }
+
+    private function collectBridgeAlignment(): array
+    {
+        try {
+            $alignment = DB::selectOne(
+                "SELECT
+                    COUNT(DISTINCT frf.id) AS linked_faces,
+                    COUNT(DISTINCT CASE WHEN gm.id IS NULL THEN frf.id ELSE NULL END) AS missing_media_links,
+                    COUNT(DISTINCT CASE WHEN gm.id IS NOT NULL AND gpm.id IS NULL THEN frf.id ELSE NULL END) AS missing_person_media_links,
+                    COUNT(DISTINCT CASE WHEN gpm.id IS NOT NULL THEN frf.id ELSE NULL END) AS aligned_faces
+                 FROM file_registry_faces frf
+                 JOIN file_registry fr ON fr.id = frf.file_registry_id
+                 JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
+                 LEFT JOIN genealogy_media gm
+                   ON gm.tree_id = gp.tree_id
+                  AND (
+                    gm.nextcloud_path = COALESCE(NULLIF(fr.current_path, ''), fr.original_path)
+                    OR gm.original_path = fr.original_path
+                  )
+                 LEFT JOIN genealogy_person_media gpm
+                   ON gpm.person_id = frf.genealogy_person_id
+                  AND gpm.media_id = gm.id
+                 WHERE frf.hidden = 0
+                   AND frf.genealogy_person_id IS NOT NULL"
+            );
+
+            $personMedia = DB::selectOne(
+                'SELECT
+                    COUNT(*) AS face_confirmed_person_media,
+                    SUM(CASE WHEN face_region_x IS NOT NULL OR face_region_y IS NOT NULL OR face_region_w IS NOT NULL OR face_region_h IS NOT NULL THEN 1 ELSE 0 END) AS person_media_with_regions
+                 FROM genealogy_person_media
+                 WHERE face_confirmed = 1
+                    OR face_region_x IS NOT NULL
+                    OR face_region_y IS NOT NULL
+                    OR face_region_w IS NOT NULL
+                    OR face_region_h IS NOT NULL'
+            );
+
+            $missingMedia = $this->intValue($alignment->missing_media_links ?? 0);
+            $missingPersonMedia = $this->intValue($alignment->missing_person_media_links ?? 0);
+            $gapSamples = [];
+            if ($missingMedia + $missingPersonMedia > 0) {
+                $gapSamples = array_map(
+                    fn (object $row): array => [
+                        'face_id' => $this->intValue($row->face_id ?? 0),
+                        'file_registry_id' => $this->intValue($row->file_registry_id ?? 0),
+                        'person_id' => $this->intValue($row->person_id ?? 0),
+                        'tree_id' => $this->intValue($row->tree_id ?? 0),
+                        'genealogy_media_id' => isset($row->genealogy_media_id) ? $this->intValue($row->genealogy_media_id) : null,
+                        'gap_type' => (string) ($row->gap_type ?? 'unknown'),
+                        'has_registry_path' => ((int) ($row->has_registry_path ?? 0)) === 1,
+                    ],
+                    DB::select(
+                        "SELECT
+                            frf.id AS face_id,
+                            frf.file_registry_id,
+                            frf.genealogy_person_id AS person_id,
+                            gp.tree_id,
+                            gm.id AS genealogy_media_id,
+                            CASE
+                                WHEN gm.id IS NULL THEN 'missing_genealogy_media'
+                                WHEN gpm.id IS NULL THEN 'missing_person_media'
+                                ELSE 'aligned'
+                            END AS gap_type,
+                            CASE
+                                WHEN COALESCE(NULLIF(fr.current_path, ''), fr.original_path) IS NULL
+                                  OR COALESCE(NULLIF(fr.current_path, ''), fr.original_path) = ''
+                                THEN 0 ELSE 1
+                            END AS has_registry_path
+                         FROM file_registry_faces frf
+                         JOIN file_registry fr ON fr.id = frf.file_registry_id
+                         JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
+                         LEFT JOIN genealogy_media gm
+                           ON gm.tree_id = gp.tree_id
+                          AND (
+                            gm.nextcloud_path = COALESCE(NULLIF(fr.current_path, ''), fr.original_path)
+                            OR gm.original_path = fr.original_path
+                          )
+                         LEFT JOIN genealogy_person_media gpm
+                           ON gpm.person_id = frf.genealogy_person_id
+                          AND gpm.media_id = gm.id
+                         WHERE frf.hidden = 0
+                           AND frf.genealogy_person_id IS NOT NULL
+                           AND (gm.id IS NULL OR gpm.id IS NULL)
+                         ORDER BY frf.updated_at DESC, frf.id DESC
+                         LIMIT 5"
+                    )
+                );
+            }
+
+            return [
+                'status' => $missingMedia + $missingPersonMedia > 0 ? 'review_required' : 'observe_ok',
+                'source' => 'mysql.file_registry_faces+genealogy_media+genealogy_person_media',
+                'summary' => [
+                    'linked_faces' => $this->intValue($alignment->linked_faces ?? 0),
+                    'aligned_faces' => $this->intValue($alignment->aligned_faces ?? 0),
+                    'missing_media_links' => $missingMedia,
+                    'missing_person_media_links' => $missingPersonMedia,
+                    'face_confirmed_person_media' => $this->intValue($personMedia->face_confirmed_person_media ?? 0),
+                    'person_media_with_regions' => $this->intValue($personMedia->person_media_with_regions ?? 0),
+                    'gap_samples' => $gapSamples,
+                ],
+            ];
+        } catch (Throwable $e) {
+            return $this->failedSection('mysql.face_bridge_alignment', $e);
+        }
+    }
+
+    private function collectPostgresFaceVectors(): array
+    {
+        try {
+            $db = DB::connection('pgsql_rag');
+
+            $embeddings = $db->selectOne(
+                'SELECT
+                    COUNT(*) AS total_embeddings,
+                    COUNT(file_registry_face_id) AS linked_registry_embeddings,
+                    SUM(CASE WHEN person_cluster_id IS NOT NULL THEN 1 ELSE 0 END) AS clustered_embeddings
+                 FROM face_embeddings'
+            );
+
+            $clusters = $db->selectOne(
+                "SELECT
+                    COUNT(*) AS total_clusters,
+                    SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END) AS confirmed_clusters,
+                    SUM(CASE WHEN genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS genealogy_linked_clusters,
+                    SUM(CASE WHEN status = 'unreviewed' THEN 1 ELSE 0 END) AS unreviewed_clusters,
+                    SUM(CASE WHEN merged_into_id IS NOT NULL THEN 1 ELSE 0 END) AS merged_clusters
+                 FROM person_clusters"
+            );
+
+            $totalEmbeddings = $this->intValue($embeddings->total_embeddings ?? 0);
+            $linkedRegistry = $this->intValue($embeddings->linked_registry_embeddings ?? 0);
+
+            return [
+                'status' => $linkedRegistry < $totalEmbeddings ? 'observe_warning' : 'observe_ok',
+                'source' => 'pgsql_rag.face_embeddings+person_clusters',
+                'summary' => [
+                    'total_embeddings' => $totalEmbeddings,
+                    'linked_registry_embeddings' => $linkedRegistry,
+                    'clustered_embeddings' => $this->intValue($embeddings->clustered_embeddings ?? 0),
+                    'total_clusters' => $this->intValue($clusters->total_clusters ?? 0),
+                    'confirmed_clusters' => $this->intValue($clusters->confirmed_clusters ?? 0),
+                    'genealogy_linked_clusters' => $this->intValue($clusters->genealogy_linked_clusters ?? 0),
+                    'unreviewed_clusters' => $this->intValue($clusters->unreviewed_clusters ?? 0),
+                    'merged_clusters' => $this->intValue($clusters->merged_clusters ?? 0),
+                ],
+            ];
+        } catch (Throwable $e) {
+            return $this->failedSection('pgsql_rag.face_vectors', $e);
+        }
+    }
+
+    private function collectFaceJobs(int $hours): array
+    {
+        try {
+            $jobs = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS total_jobs,
+                    SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled_jobs,
+                    SUM(CASE WHEN last_run_status = 'success' THEN 1 ELSE 0 END) AS last_success_jobs,
+                    SUM(CASE WHEN last_run_status IN ('failed', 'timeout') THEN 1 ELSE 0 END) AS last_failed_jobs,
+                    SUM(CASE WHEN last_run_status = 'running' THEN 1 ELSE 0 END) AS running_jobs,
+                    MAX(last_run_at) AS latest_run_at,
+                    MIN(next_run_at) AS next_run_at
+                 FROM scheduled_jobs
+                 WHERE LOWER(name) LIKE '%face%'
+                    OR LOWER(command) LIKE '%face%'
+                    OR command LIKE '%--type=faces%'"
+            );
+
+            $runs = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS recent_runs,
+                    SUM(CASE WHEN r.status = 'success' THEN 1 ELSE 0 END) AS recent_success_runs,
+                    SUM(CASE WHEN r.status IN ('failed', 'timeout') THEN 1 ELSE 0 END) AS recent_failed_runs,
+                    MAX(r.completed_at) AS latest_completed_at
+                 FROM scheduled_job_runs r
+                 JOIN scheduled_jobs j ON j.id = r.scheduled_job_id
+                 WHERE r.started_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                   AND (
+                    LOWER(j.name) LIKE '%face%'
+                    OR LOWER(j.command) LIKE '%face%'
+                    OR j.command LIKE '%--type=faces%'
+                   )",
+                [$hours]
+            );
+
+            $totalJobs = $this->intValue($jobs->total_jobs ?? 0);
+            $failedJobs = $this->intValue($jobs->last_failed_jobs ?? 0);
+            $failedRuns = $this->intValue($runs->recent_failed_runs ?? 0);
+
+            return [
+                'status' => $totalJobs === 0 || $failedJobs > 0 || $failedRuns > 0 ? 'observe_warning' : 'observe_ok',
+                'source' => 'mysql.scheduled_jobs+scheduled_job_runs',
+                'summary' => [
+                    'total_jobs' => $totalJobs,
+                    'enabled_jobs' => $this->intValue($jobs->enabled_jobs ?? 0),
+                    'last_success_jobs' => $this->intValue($jobs->last_success_jobs ?? 0),
+                    'last_failed_jobs' => $failedJobs,
+                    'running_jobs' => $this->intValue($jobs->running_jobs ?? 0),
+                    'latest_run_at' => $this->nullableString($jobs->latest_run_at ?? null),
+                    'next_run_at' => $this->nullableString($jobs->next_run_at ?? null),
+                    'recent_runs' => $this->intValue($runs->recent_runs ?? 0),
+                    'recent_success_runs' => $this->intValue($runs->recent_success_runs ?? 0),
+                    'recent_failed_runs' => $failedRuns,
+                    'latest_completed_at' => $this->nullableString($runs->latest_completed_at ?? null),
+                ],
+            ];
+        } catch (Throwable $e) {
+            return $this->failedSection('mysql.face_jobs', $e);
+        }
+    }
+
+    private function evaluateThresholds(array $sections): array
+    {
+        $breaches = [];
+        $recommendations = [];
+
+        $registry = $sections['mysql_face_registry']['summary'] ?? [];
+        $namedOnly = (int) ($registry['named_only_faces'] ?? 0);
+        if ($namedOnly > 0) {
+            $breaches[] = [
+                'id' => 'face-named-only-backlog',
+                'status' => 'observe_warning',
+                'message' => "{$namedOnly} visible named face(s) are not linked to genealogy persons.",
+            ];
+            $recommendations[] = 'Review named-only face rows and either link to genealogy persons or keep them explicitly as named-only.';
+        }
+
+        $queue = $sections['review_queue']['summary'] ?? [];
+        $pending = (int) ($queue['pending_items'] ?? 0);
+        $stalePending = (int) ($queue['stale_pending_items'] ?? 0);
+        if ($pending > 0) {
+            $breaches[] = [
+                'id' => 'face-review-pending',
+                'status' => 'observe_warning',
+                'message' => "{$pending} face review queue item(s) are pending.",
+            ];
+            $recommendations[] = 'Use the face review queue to approve, reject, ignore, or keep pending candidates before widening automation.';
+        }
+        if ($stalePending > 0) {
+            $breaches[] = [
+                'id' => 'face-review-stale',
+                'status' => 'observe_warning',
+                'message' => "{$stalePending} pending face review queue item(s) are older than the report window.",
+            ];
+        }
+
+        $bridge = $sections['bridge_alignment']['summary'] ?? [];
+        $missingLinks = (int) ($bridge['missing_media_links'] ?? 0) + (int) ($bridge['missing_person_media_links'] ?? 0);
+        if ($missingLinks > 0) {
+            $breaches[] = [
+                'id' => 'face-bridge-missing-links',
+                'status' => 'review_required',
+                'message' => "{$missingLinks} genealogy-linked face(s) are missing media or person-media bridge rows.",
+            ];
+            $recommendations[] = 'Reconcile face bridge rows through FaceLinkBridgeService before relying on exports or writeback evidence.';
+        }
+
+        $vectors = $sections['postgres_face_vectors']['summary'] ?? [];
+        $totalEmbeddings = (int) ($vectors['total_embeddings'] ?? 0);
+        $linkedEmbeddings = (int) ($vectors['linked_registry_embeddings'] ?? 0);
+        if ($linkedEmbeddings < $totalEmbeddings) {
+            $missingEmbeddings = $totalEmbeddings - $linkedEmbeddings;
+            $breaches[] = [
+                'id' => 'face-pgvector-unlinked',
+                'status' => 'observe_warning',
+                'message' => "{$missingEmbeddings} pgvector face embedding(s) lack a file_registry_face_id link.",
+            ];
+        }
+
+        $jobs = $sections['face_jobs']['summary'] ?? [];
+        $totalJobs = (int) ($jobs['total_jobs'] ?? 0);
+        $failedJobs = (int) ($jobs['last_failed_jobs'] ?? 0);
+        $failedRuns = (int) ($jobs['recent_failed_runs'] ?? 0);
+        if ($totalJobs === 0) {
+            $breaches[] = [
+                'id' => 'face-jobs-missing',
+                'status' => 'observe_warning',
+                'message' => 'No face-related scheduled jobs were found.',
+            ];
+        }
+        if ($failedJobs + $failedRuns > 0) {
+            $breaches[] = [
+                'id' => 'face-jobs-failures',
+                'status' => 'observe_warning',
+                'message' => ($failedJobs + $failedRuns).' face-related scheduled job failure signal(s) were observed.',
+            ];
+            $recommendations[] = 'Review face-related scheduled job output before treating face backlog or cluster telemetry as fresh.';
+        }
+
+        return [$breaches, array_values(array_unique($recommendations))];
+    }
+
+    private function failedSection(string $source, Throwable $e): array
+    {
+        return [
+            'status' => 'observe_warning',
+            'source' => $source,
+            'error' => class_basename($e).' '.$e->getMessage(),
+        ];
+    }
+
+    private function worstStatus(array $statuses): string
+    {
+        $worst = 'observe_ok';
+
+        foreach ($statuses as $status) {
+            if (! is_string($status)) {
+                continue;
+            }
+
+            if ((self::STATUS_RANK[$status] ?? 0) > (self::STATUS_RANK[$worst] ?? 0)) {
+                $worst = $status;
+            }
+        }
+
+        return $worst;
+    }
+
+    private function intValue(mixed $value): int
+    {
+        return (int) ($value ?? 0);
+    }
+
+    private function nullableString(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $string = trim((string) $value);
+
+        return $string === '' ? null : $string;
+    }
+}

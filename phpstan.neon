@@ -1,0 +1,45 @@
+includes:
+    - ./vendor/larastan/larastan/extension.neon
+    - ./phpstan-baseline.neon
+
+parameters:
+    level: 5
+
+    # APL #29 / row 1H — static-analysis baseline.
+    #
+    # Scoped to PLOS's highest-risk runtime/control surfaces. Expanding to
+    # app/** is a tighten-later task; the first pass intentionally stays
+    # narrow so the baseline captures what actually matters.
+    paths:
+        - app/Services/AIService.php
+        - app/Services/ScheduledJobService.php
+        - app/Services/AgentLoopService.php
+        - app/Services/AgentToolRegistryService.php
+        - app/Services/AgentGuardrailService.php
+        - app/Services/KnowledgeGraphService.php
+        - app/Services/LLMPoolManagerService.php
+        - app/Services/Scheduler/QueuePlacementAuditor.php
+        - app/Console/Commands/SchedulerRunCommand.php
+        - app/Console/Commands/QueuePlacementAuditCommand.php
+
+    excludePaths:
+        - vendor/*
+        - storage/*
+        - bootstrap/cache/*
+
+    # Runtime-Dependency checks: let runtime-only symbols through (Laravel
+    # facade magic, container bindings, dynamic DB queries). The services
+    # in scope rely on all three.
+    checkOctaneCompatibility: false
+    checkModelProperties: false
+
+    # Bleed-through from the legacy pgsql_rag connection used by the KG /
+    # RAG lanes. Keep Larastan from flagging DB::connection('pgsql_rag')
+    # table names as unknown.
+    noUnnecessaryCollectionCall: false
+
+    # Ignore PHPUnit-style dynamic class_alias tricks that Laravel pulls in.
+    ignoreErrors:
+        -
+            message: '#^Call to an undefined method .*::shouldReceive\(\)#'
+            path: tests/*

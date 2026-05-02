@@ -1,0 +1,40 @@
+# Private/local override example. Copy to docker-compose.personal.yml, adjust the
+# environment variables in your private .env, and keep the real override out of git.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.personal.yml --profile full up -d
+
+services:
+  app:
+    environment:
+      NEXTCLOUD_DATA_PATH: ${PLOS_PERSONAL_NEXTCLOUD_DATA_PATH:-/srv/personal/nextcloud/files}
+      NEXTCLOUD_JOPLIN_PATH: ${PLOS_PERSONAL_JOPLIN_PATH:-/Joplin-data}
+      THUNDERBIRD_MCP_URL: ${PLOS_PERSONAL_THUNDERBIRD_MCP_URL:-http://host.docker.internal:8766}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${PLOS_PERSONAL_NEXTCLOUD_ROOT:-./storage/app/example-nextcloud}:/srv/personal/nextcloud:ro
+
+  worker:
+    environment:
+      NEXTCLOUD_DATA_PATH: ${PLOS_PERSONAL_NEXTCLOUD_DATA_PATH:-/srv/personal/nextcloud/files}
+      NEXTCLOUD_JOPLIN_PATH: ${PLOS_PERSONAL_JOPLIN_PATH:-/Joplin-data}
+      THUNDERBIRD_MCP_URL: ${PLOS_PERSONAL_THUNDERBIRD_MCP_URL:-http://host.docker.internal:8766}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${PLOS_PERSONAL_NEXTCLOUD_ROOT:-./storage/app/example-nextcloud}:/srv/personal/nextcloud:ro
+
+  scheduler:
+    environment:
+      NEXTCLOUD_DATA_PATH: ${PLOS_PERSONAL_NEXTCLOUD_DATA_PATH:-/srv/personal/nextcloud/files}
+      NEXTCLOUD_JOPLIN_PATH: ${PLOS_PERSONAL_JOPLIN_PATH:-/Joplin-data}
+      THUNDERBIRD_MCP_URL: ${PLOS_PERSONAL_THUNDERBIRD_MCP_URL:-http://host.docker.internal:8766}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${PLOS_PERSONAL_NEXTCLOUD_ROOT:-./storage/app/example-nextcloud}:/srv/personal/nextcloud:ro
+
+  ollama:
+    volumes:
+      - ${PLOS_PERSONAL_OLLAMA_MODELS:-ollama_data}:/root/.ollama

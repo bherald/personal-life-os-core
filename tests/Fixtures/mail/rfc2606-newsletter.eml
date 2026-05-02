@@ -1,0 +1,16 @@
+From: Local History Desk <history@example.org>
+To: PLOS Test User <reader@example.com>
+Subject: Sample local history digest
+Date: Tue, 14 Jan 2025 09:30:00 -0500
+Message-ID: <sample-digest-20250114@example.org>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+
+This synthetic fixture represents a newsletter-style email for parser tests.
+
+Items:
+- The Example Township archive posted a digitized 1924 meeting notice.
+- A sample cemetery transcription mentions Ada Example and Ben Example.
+- The public event calendar lists a lecture at 198.51.100.24.
+
+No real mailbox, genealogy record, or private contact data is present.

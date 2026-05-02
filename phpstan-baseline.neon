@@ -1,0 +1,325 @@
+parameters:
+	ignoreErrors:
+		-
+			message: '#^Comparison operation "\<\=" between 1\|2 and 2 is always true\.$#'
+			identifier: smallerOrEqual.alwaysTrue
+			count: 4
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Comparison operation "\>" between int\<1, max\> and 0 is always true\.$#'
+			identifier: greater.alwaysTrue
+			count: 1
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Instanceof between class\-string\|object and PhpOffice\\PhpWord\\Element\\Text will always evaluate to false\.$#'
+			identifier: instanceof.alwaysFalse
+			count: 1
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Method App\\Services\\AIService\:\:getEmbeddingContextLimit\(\) is unused\.$#'
+			identifier: method.unused
+			count: 1
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Negated boolean expression is always true\.$#'
+			identifier: booleanNot.alwaysTrue
+			count: 1
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Offset ''running'' on array\{command\: string, pid\: int, running\: bool, signaled\: bool, stopped\: bool, exitcode\: int, termsig\: int, stopsig\: int\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 2
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Strict comparison using \!\=\= between string and null will always evaluate to true\.$#'
+			identifier: notIdentical.alwaysTrue
+			count: 1
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Variable \$cacheContext might not be defined\.$#'
+			identifier: variable.undefined
+			count: 4
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Variable \$lastError on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Variable \$subResults in empty\(\) always exists and is not falsy\.$#'
+			identifier: empty.variable
+			count: 1
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Variable \$typed in isset\(\) always exists and is not nullable\.$#'
+			identifier: isset.variable
+			count: 1
+			path: app/Services/AIService.php
+
+		-
+			message: '#^Call to function is_array\(\) with array will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: app/Services/AgentGuardrailService.php
+
+		-
+			message: '#^Offset ''reason'' on array\{allowed\: true, requires_confirmation\: true, reason\: null, rule_id\: null, severity\: ''low''\} on left side of \?\? always exists and is always null\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: app/Services/AgentGuardrailService.php
+
+		-
+			message: '#^Strict comparison using \=\=\= between ''low'' and ''low'' will always evaluate to true\.$#'
+			identifier: identical.alwaysTrue
+			count: 1
+			path: app/Services/AgentGuardrailService.php
+
+		-
+			message: '#^Call to function is_array\(\) with \*NEVER\* will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Call to function is_string\(\) with string will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^If condition is always true\.$#'
+			identifier: if.alwaysTrue
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Match arm comparison between ''log\-analyst'' and ''log\-analyst'' is always true\.$#'
+			identifier: match.alwaysTrue
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Method App\\Services\\AgentLoopService\:\:notifyCompletion\(\) returns void but does not have any side effects\.$#'
+			identifier: void.pure
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Negated boolean expression is always true\.$#'
+			identifier: booleanNot.alwaysTrue
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Offset ''failed_tools'' does not exist on array\{messages\: array, context\: string, branchpoint_iteration\: int\}\.$#'
+			identifier: offsetAccess.notFound
+			count: 2
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Offset ''findings'' on non\-empty\-array\<mixed\> on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 2
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Offset ''person_id'' on non\-empty\-array\<mixed\> on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 2
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Offset 0 on non\-empty\-list\<\(int\|string\)\> on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Offset 1 on array\{list\<string\>, list\<non\-empty\-string\>\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Parameter \#1 \$array \(\*NEVER\*\) to function array_filter contains falsy values only, the result will always be an empty array\.$#'
+			identifier: arrayFilter.alwaysEmpty
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Parameter \#1 \$array \(list\<''rag_index''\|''update_search…''\>\) to function array_filter does not contain falsy values, the array will always stay the same\.$#'
+			identifier: arrayFilter.same
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Parameter \#1 \$itemId of method App\\Services\\AgentLoopService\:\:sendAutoApproveNotification\(\) expects int, string\|false given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Parameter \#1 \$itemId of method App\\Services\\AgentLoopService\:\:sendReviewNotification\(\) expects int, string\|false given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Parameter \#3 \$durationMs of method App\\Services\\AdaptiveModeService\:\:recordOutcome\(\) expects int, float given\.$#'
+			identifier: argument.type
+			count: 2
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Parameter \#4 \$durationMs of method App\\Services\\AgentLoopService\:\:notifyCompletion\(\) expects int, float given\.$#'
+			identifier: argument.type
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Right side of && is always true\.$#'
+			identifier: booleanAnd.rightAlwaysTrue
+			count: 2
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Unreachable statement \- code above always terminates\.$#'
+			identifier: deadCode.unreachable
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Variable \$assessContent on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Variable \$currentPhaseIdx on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Variable \$currentPhaseTools on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 4
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Variable \$hasPlaceholderNames might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Variable \$isTemplate might not be defined\.$#'
+			identifier: variable.undefined
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Variable \$lastPhaseResult on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Variable \$phaseNames on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Variable \$task on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: app/Services/AgentLoopService.php
+
+		-
+			message: '#^Call to function is_array\(\) with array will always evaluate to true\.$#'
+			identifier: function.alreadyNarrowedType
+			count: 1
+			path: app/Services/KnowledgeGraphService.php
+
+		-
+			message: '#^Constant App\\Services\\LLMPoolManagerService\:\:HEALTH_SCORE_MAX is unused\.$#'
+			identifier: classConstant.unused
+			count: 1
+			path: app/Services/LLMPoolManagerService.php
+
+		-
+			message: '#^Constant App\\Services\\LLMPoolManagerService\:\:HEALTH_SCORE_MIN is unused\.$#'
+			identifier: classConstant.unused
+			count: 1
+			path: app/Services/LLMPoolManagerService.php
+
+		-
+			message: '#^Dead catch \- Throwable is never thrown in the try block\.$#'
+			identifier: catch.neverThrown
+			count: 1
+			path: app/Services/LLMPoolManagerService.php
+
+		-
+			message: '#^Negated boolean expression is always true\.$#'
+			identifier: booleanNot.alwaysTrue
+			count: 1
+			path: app/Services/LLMPoolManagerService.php
+
+		-
+			message: '#^Variable \$capabilities on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.variable
+			count: 1
+			path: app/Services/LLMPoolManagerService.php
+
+		-
+			message: '#^If condition is always true\.$#'
+			identifier: if.alwaysTrue
+			count: 1
+			path: app/Services/ScheduledJobService.php
+
+		-
+			message: '#^Negated boolean expression is always false\.$#'
+			identifier: booleanNot.alwaysFalse
+			count: 1
+			path: app/Services/ScheduledJobService.php
+
+		-
+			message: '#^Parameter \#1 \$array \(non\-empty\-list\) of array_values is already a list, call has no effect\.$#'
+			identifier: arrayValues.list
+			count: 1
+			path: app/Services/ScheduledJobService.php
+
+		-
+			message: '#^Right side of && is always true\.$#'
+			identifier: booleanAnd.rightAlwaysTrue
+			count: 1
+			path: app/Services/ScheduledJobService.php
+
+		-
+			message: '#^Offset ''content'' on array\{name\: string, declared_queue\: string, content\: string\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: app/Services/Scheduler/QueuePlacementAuditor.php
+
+		-
+			message: '#^Offset ''declared_queue'' on array\{name\: string, declared_queue\: string, content\: string\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: app/Services/Scheduler/QueuePlacementAuditor.php
+
+		-
+			message: '#^Offset ''name'' on array\{name\: string, declared_queue\: string, content\: string\} on left side of \?\? always exists and is not nullable\.$#'
+			identifier: nullCoalesce.offset
+			count: 1
+			path: app/Services/Scheduler/QueuePlacementAuditor.php
