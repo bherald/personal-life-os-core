@@ -94,6 +94,7 @@ class PublicExportPackagingTest extends TestCase
         $this->assertStringContainsString('actions/setup-node@v6', $workflow);
         $this->assertStringContainsString('node-version: "24"', $workflow);
         $this->assertStringContainsString('actions/setup-python@v6', $workflow);
+        $this->assertStringContainsString('python-version: "3.12"', $workflow);
         $this->assertStringContainsString('cache-dependency-path: |', $workflow);
         $this->assertStringContainsString('requirements-core.txt', $workflow);
         $this->assertStringContainsString('requirements-core.constraints.txt', $workflow);
