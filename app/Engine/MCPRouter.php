@@ -1180,6 +1180,15 @@ class MCPRouter
                 ['name' => 'read_memory', 'description' => 'Read a Serena memory file', 'parameters' => ['type' => 'object', 'properties' => (object) ['memory_name' => ['type' => 'string']], 'required' => ['memory_name']]],
                 ['name' => 'write_memory', 'description' => 'Write or replace a Serena project memory file', 'parameters' => ['type' => 'object', 'properties' => (object) ['memory_name' => ['type' => 'string'], 'content' => ['type' => 'string']], 'required' => ['memory_name', 'content']]],
             ],
+            'prompt-compressor' => [
+                ['name' => 'prompt_token_count', 'description' => 'Estimate token, character, line, and word counts for text or an allowed local file.', 'parameters' => ['type' => 'object', 'properties' => (object) ['text' => ['type' => 'string'], 'path' => ['type' => 'string']]]],
+                ['name' => 'compress_prompt', 'description' => 'Compress pasted prompt/context using extractive scoring or local Ollama.', 'parameters' => ['type' => 'object', 'properties' => (object) ['text' => ['type' => 'string'], 'target_tokens' => ['type' => 'number'], 'mode' => ['type' => 'string'], 'query' => ['type' => 'string'], 'method' => ['type' => 'string'], 'preserve_patterns' => ['type' => 'array'], 'include_stats' => ['type' => 'boolean']], 'required' => ['text']]],
+                ['name' => 'compress_file', 'description' => 'Read an allowed local file and return compressed context.', 'parameters' => ['type' => 'object', 'properties' => (object) ['path' => ['type' => 'string'], 'max_bytes' => ['type' => 'number'], 'target_tokens' => ['type' => 'number'], 'mode' => ['type' => 'string'], 'query' => ['type' => 'string'], 'method' => ['type' => 'string'], 'preserve_patterns' => ['type' => 'array'], 'include_stats' => ['type' => 'boolean']], 'required' => ['path']]],
+                ['name' => 'compress_diff', 'description' => 'Compress a git diff into changed-file stats and relevant hunks.', 'parameters' => ['type' => 'object', 'properties' => (object) ['diff' => ['type' => 'string'], 'target_tokens' => ['type' => 'number'], 'mode' => ['type' => 'string'], 'query' => ['type' => 'string'], 'method' => ['type' => 'string'], 'preserve_patterns' => ['type' => 'array'], 'include_stats' => ['type' => 'boolean']], 'required' => ['diff']]],
+                ['name' => 'context_store', 'description' => 'Store large context outside chat and return a small id for later retrieval.', 'parameters' => ['type' => 'object', 'properties' => (object) ['text' => ['type' => 'string'], 'id' => ['type' => 'string'], 'metadata' => ['type' => 'string']], 'required' => ['text']]],
+                ['name' => 'context_retrieve', 'description' => 'Retrieve stored context by id and return compressed output.', 'parameters' => ['type' => 'object', 'properties' => (object) ['id' => ['type' => 'string'], 'target_tokens' => ['type' => 'number'], 'mode' => ['type' => 'string'], 'query' => ['type' => 'string'], 'method' => ['type' => 'string'], 'preserve_patterns' => ['type' => 'array'], 'include_stats' => ['type' => 'boolean']], 'required' => ['id']]],
+                ['name' => 'context_list', 'description' => 'List stored context ids and token estimates without returning full stored text.', 'parameters' => ['type' => 'object', 'properties' => new \stdClass]],
+            ],
             'nextcloud-files' => [
                 ['name' => 'test-connection', 'description' => 'Test connection to Nextcloud server', 'parameters' => ['type' => 'object', 'properties' => new \stdClass]],
                 ['name' => 'list-files', 'description' => 'List files and directories in Nextcloud', 'parameters' => ['type' => 'object', 'properties' => (object) ['path' => ['type' => 'string', 'description' => 'Path to list (default: /)']]]],
@@ -1377,6 +1386,13 @@ class MCPRouter
         // Web research tools may need more time for API calls
         if ($server === 'web-research') {
             return 45;
+        }
+
+        if ($server === 'prompt-compressor') {
+            return match ($tool) {
+                'compress_prompt', 'compress_file', 'compress_diff', 'context_retrieve' => 120,
+                default => 30,
+            };
         }
 
         return $this->timeout;

@@ -21,6 +21,7 @@ class ReviewBacklogReportService
             'captured_at' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
             'sources' => ['agent_review_queue'],
             'summary' => [],
+            'pending_by_age' => [],
             'pending_by_type' => [],
             'pending_by_agent' => [],
             'status_counts' => [],
@@ -56,6 +57,7 @@ class ReviewBacklogReportService
         }
 
         $payload['summary'] = $this->summary($staleDays, $highPriorityThreshold);
+        $payload['pending_by_age'] = $this->pendingByAge($highPriorityThreshold);
         $payload['pending_by_type'] = $this->pendingByType($highPriorityThreshold);
         $payload['pending_by_agent'] = $this->pendingByAgent($highPriorityThreshold);
         $payload['status_counts'] = $this->statusCounts();
@@ -79,9 +81,26 @@ class ReviewBacklogReportService
             '- Stale pending: `'.($summary['stale_pending'] ?? 0).'`',
             '- High-priority pending: `'.($summary['high_priority_pending'] ?? 0).'`',
             '',
-            '## Pending By Type',
+            '## Pending By Age',
             '',
         ];
+
+        foreach (($payload['pending_by_age'] ?? []) as $row) {
+            $lines[] = sprintf(
+                '- `%s`: `%d` pending, `%d` high priority, oldest `%s`',
+                (string) ($row['bucket'] ?? 'unknown'),
+                (int) ($row['pending'] ?? 0),
+                (int) ($row['high_priority_pending'] ?? 0),
+                (string) ($row['oldest_pending_at'] ?? 'none')
+            );
+        }
+        if (($payload['pending_by_age'] ?? []) === []) {
+            $lines[] = '- None.';
+        }
+
+        $lines[] = '';
+        $lines[] = '## Pending By Type';
+        $lines[] = '';
 
         foreach (($payload['pending_by_type'] ?? []) as $row) {
             $lines[] = sprintf(
@@ -132,6 +151,51 @@ class ReviewBacklogReportService
             'oldest_pending_at' => $this->nullableString($row->oldest_pending_at ?? null),
             'newest_pending_at' => $this->nullableString($row->newest_pending_at ?? null),
         ];
+    }
+
+    private function pendingByAge(int $highPriorityThreshold): array
+    {
+        $now = now();
+        $oneDayAgo = $now->copy()->subDay()->toDateTimeString();
+        $sevenDaysAgo = $now->copy()->subDays(7)->toDateTimeString();
+        $thirtyDaysAgo = $now->copy()->subDays(30)->toDateTimeString();
+
+        $definitions = [
+            ['bucket' => '0_24h', 'where' => 'created_at >= ?', 'params' => [$oneDayAgo]],
+            ['bucket' => '1_7d', 'where' => 'created_at < ? AND created_at >= ?', 'params' => [$oneDayAgo, $sevenDaysAgo]],
+            ['bucket' => '8_30d', 'where' => 'created_at < ? AND created_at >= ?', 'params' => [$sevenDaysAgo, $thirtyDaysAgo]],
+            ['bucket' => '31d_plus', 'where' => 'created_at < ?', 'params' => [$thirtyDaysAgo]],
+            ['bucket' => 'unknown_created_at', 'where' => 'created_at IS NULL', 'params' => []],
+        ];
+
+        $rows = [];
+        foreach ($definitions as $definition) {
+            $row = DB::selectOne(
+                'SELECT
+                    COUNT(*) AS pending,
+                    SUM(CASE WHEN priority >= ? THEN 1 ELSE 0 END) AS high_priority_pending,
+                    MIN(created_at) AS oldest_pending_at,
+                    MAX(created_at) AS newest_pending_at
+                 FROM agent_review_queue
+                 WHERE status = ? AND '.$definition['where'],
+                array_merge([$highPriorityThreshold, 'pending'], $definition['params'])
+            );
+
+            $pending = (int) ($row->pending ?? 0);
+            if ($pending === 0) {
+                continue;
+            }
+
+            $rows[] = [
+                'bucket' => $definition['bucket'],
+                'pending' => $pending,
+                'high_priority_pending' => (int) ($row->high_priority_pending ?? 0),
+                'oldest_pending_at' => $this->nullableString($row->oldest_pending_at ?? null),
+                'newest_pending_at' => $this->nullableString($row->newest_pending_at ?? null),
+            ];
+        }
+
+        return $rows;
     }
 
     private function pendingByType(int $highPriorityThreshold): array

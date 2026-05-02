@@ -61,6 +61,16 @@ class OpsReviewBacklogReportCommand extends Command
             $payload['captured_at'] ?? '-'
         ));
 
+        foreach (($payload['pending_by_age'] ?? []) as $row) {
+            $this->line(sprintf(
+                'age=%s pending=%s high_priority=%s oldest=%s',
+                $row['bucket'] ?? 'unknown',
+                $row['pending'] ?? 0,
+                $row['high_priority_pending'] ?? 0,
+                $row['oldest_pending_at'] ?? 'none'
+            ));
+        }
+
         foreach (array_slice(($payload['pending_by_type'] ?? []), 0, 10) as $row) {
             $this->line(sprintf(
                 'type=%s finding=%s pending=%s high_priority=%s oldest=%s',

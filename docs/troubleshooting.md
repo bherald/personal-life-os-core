@@ -89,6 +89,17 @@ After restart, inspect the process list or Horizon UI and confirm the local
 supervisors have `max-processes=1`. Keep Redis running; the goal is to reduce
 worker pressure, not to hide queue failures.
 
+For a lighter local desktop profile, set:
+
+```bash
+HORIZON_LOCAL_THIN=true
+```
+
+Then restart Horizon. This keeps Horizon and Redis active but runs one
+low-priority local worker across `high`, `default`, `low`, `long-running`,
+`workflow`, and `speculative` queues. Use the default local profile again when
+testing queue isolation or scheduler throughput.
+
 ## Media And GPU Issues
 
 Media and GPU profiles are optional. Common failures include missing OS

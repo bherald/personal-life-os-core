@@ -2,6 +2,57 @@
 
 use Illuminate\Support\Str;
 
+$localThin = filter_var(env('HORIZON_LOCAL_THIN', false), FILTER_VALIDATE_BOOLEAN);
+$localEnvironment = $localThin ? [
+    'supervisor-1' => [
+        'queue' => ['high', 'default', 'low', 'long-running', 'workflow', 'speculative'],
+        'balance' => 'simple',
+        'minProcesses' => 1,
+        'maxProcesses' => 1,
+        'balanceMaxShift' => 1,
+        'balanceCooldown' => 10,
+        'memory' => 256,
+        'tries' => 1,
+        'timeout' => 900,
+        'nice' => 10,
+    ],
+] : [
+    'supervisor-1' => [
+        'minProcesses' => 1,
+        'maxProcesses' => 1,
+        'balanceMaxShift' => 1,
+        'balanceCooldown' => 10,
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 600,
+        'nice' => 10,
+    ],
+    'supervisor-long' => [
+        'minProcesses' => 1,
+        'maxProcesses' => 1,
+        'memory' => 512,
+        'tries' => 1,
+        'timeout' => 1800,
+        'nice' => 10,
+    ],
+    'supervisor-workflow' => [
+        'minProcesses' => 1,
+        'maxProcesses' => 1,
+        'memory' => 256,
+        'tries' => 3,
+        'timeout' => 900,
+        'nice' => 10,
+    ],
+    'supervisor-speculative' => [
+        'minProcesses' => 1,
+        'maxProcesses' => 1,
+        'memory' => 256,
+        'tries' => 1,
+        'timeout' => 1200,
+        'nice' => 10,
+    ],
+];
+
 return [
 
     /*
@@ -295,41 +346,6 @@ return [
             ],
         ],
 
-        'local' => [
-            'supervisor-1' => [
-                'minProcesses' => 1,
-                'maxProcesses' => 1,
-                'balanceMaxShift' => 1,
-                'balanceCooldown' => 10,
-                'memory' => 256,
-                'tries' => 3,
-                'timeout' => 600,
-                'nice' => 10,
-            ],
-            'supervisor-long' => [
-                'minProcesses' => 1,
-                'maxProcesses' => 1,
-                'memory' => 512,
-                'tries' => 1,
-                'timeout' => 1800,
-                'nice' => 10,
-            ],
-            'supervisor-workflow' => [
-                'minProcesses' => 1,
-                'maxProcesses' => 1,
-                'memory' => 256,
-                'tries' => 3,
-                'timeout' => 900,
-                'nice' => 10,
-            ],
-            'supervisor-speculative' => [
-                'minProcesses' => 1,
-                'maxProcesses' => 1,
-                'memory' => 256,
-                'tries' => 1,
-                'timeout' => 1200,
-                'nice' => 10,
-            ],
-        ],
+        'local' => $localEnvironment,
     ],
 ];

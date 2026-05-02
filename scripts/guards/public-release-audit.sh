@@ -33,6 +33,7 @@ public_privacy_scan_excludes=(
     ':!.claude.json'
     ':!.mcp.json'
     ':!CLAUDE.md'
+    ':!docs/active-priority-list.md'
     ':!docs/PROJECT.md'
     ':!docs/PROD-MAINTENANCE.md'
     ':!docs/future-enhancements.md'
@@ -160,19 +161,7 @@ flag_lines "Public-candidate files referencing non-exported planning paths" \
 
 flag_lines "Files containing private paths, LAN hosts, usernames, or machine-specific values" \
     git grep -l -I -E '(/home/bill|192\.168\.8\.|ai-wphc-production|bill@|bherald)' -- . \
-        ':!.claude.json' \
-        ':!.mcp.json' \
-        ':!CLAUDE.md' \
-        ':!scripts/guards/public-release-audit.sh' \
-        ':!docs/PROJECT.md' \
-        ':!docs/PROD-MAINTENANCE.md' \
-        ':!docs/future-enhancements.md' \
-        ':!docs/planning' \
-        ':!docs/planning/**' \
-        ':!docs/plos-focus-report-*' \
-        ':!docs/plos-research-ledger.md' \
-        ':!mcp-server/node_modules' \
-        ':!vendor'
+        "${public_privacy_scan_excludes[@]}"
 
 flag_lines "Operator-specific Nextcloud library root literal (/MASTER)" \
     git grep -n -I -E '/MASTER' -- \

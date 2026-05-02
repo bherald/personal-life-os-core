@@ -417,6 +417,8 @@ return [
         'serena.replace_symbol_body' => ['relative_path'],
         'serena.rename_symbol' => ['relative_path'],
         'serena.safe_delete_symbol' => ['relative_path'],
+        'prompt-compressor.prompt_token_count' => ['path'],
+        'prompt-compressor.compress_file' => ['path'],
     ],
 
     // Deprecated (kept for back-compat with any caller still reading it).
@@ -479,6 +481,15 @@ return [
         'serena.rename_memory' => 'bounded-write',
         'serena.execute_shell_command' => 'command-dangerous',
         'serena.restart_language_server' => 'command-safe',
+
+        // --- prompt-compressor (repo-local context compression) ---
+        'prompt-compressor.prompt_token_count' => 'read',
+        'prompt-compressor.compress_prompt' => 'read',
+        'prompt-compressor.compress_file' => 'read',
+        'prompt-compressor.compress_diff' => 'read',
+        'prompt-compressor.context_retrieve' => 'read',
+        'prompt-compressor.context_list' => 'read',
+        'prompt-compressor.context_store' => 'bounded-write',
 
         // --- ops (internal) ---
         'ops.ops_health_check' => 'read',

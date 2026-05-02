@@ -1133,6 +1133,11 @@ class PublicExportPackagingTest extends TestCase
             $script,
             'Brand path scan must not include private planning docs.'
         );
+        $this->assertStringContainsString(
+            ':!docs/active-priority-list.md',
+            $script,
+            'Private operator TODOs must stay excluded from broad public audit scans.'
+        );
 
         foreach ([
             'Files containing private paths, LAN hosts, usernames, or machine-specific values',
@@ -1146,6 +1151,12 @@ class PublicExportPackagingTest extends TestCase
 
             $next = strpos($script, "\n\nflag_lines", $start + 1);
             $section = substr($script, $start, $next === false ? null : $next - $start);
+
+            if ($title === 'Files containing private paths, LAN hosts, usernames, or machine-specific values') {
+                $this->assertStringContainsString('public_privacy_scan_excludes', $section, "{$title} must use the shared private-doc exclusions.");
+
+                continue;
+            }
 
             $this->assertStringContainsString(':!docs/planning', $section, "{$title} must exclude docs/planning.");
             $this->assertStringContainsString(':!docs/planning/**', $section, "{$title} must exclude docs/planning descendants.");

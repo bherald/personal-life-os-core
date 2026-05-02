@@ -130,6 +130,55 @@ return [
 
         /*
         |--------------------------------------------------------------------------
+        | Prompt Compressor MCP Server (External)
+        |--------------------------------------------------------------------------
+        |
+        | Repo-local context compression for agents and MCP clients. Provides
+        | deterministic extractive compression and optional local Ollama
+        | compression for large prompts, diffs, files, and handoff context.
+        |
+        | Tools provided (7):
+        | - prompt_token_count: Estimate token/line/word counts
+        | - compress_prompt: Compress pasted prompt/context
+        | - compress_file: Read and compress an allowed repo file
+        | - compress_diff: Compress git diff summaries and hunks
+        | - context_store: Store bulky context in a local cache
+        | - context_retrieve: Retrieve stored context as compressed output
+        | - context_list: List stored context ids without full text
+        |
+        | Disabled by default because the server is source-built and stores local
+        | context blobs. Enable explicitly in trusted dev/operator environments
+        | with PROMPT_COMPRESSOR_MCP_ENABLED=true after running npm install/build.
+        |
+        */
+        'prompt-compressor' => [
+            'enabled' => env('PROMPT_COMPRESSOR_MCP_ENABLED', false),
+            'type' => 'external',
+            'command' => env('PROMPT_COMPRESSOR_COMMAND', 'node'),
+            'args' => [
+                env('PROMPT_COMPRESSOR_ENTRY', base_path('mcp-servers/prompt-compressor/dist/index.js')),
+            ],
+            'env' => [
+                'PROMPT_COMPRESSOR_ALLOWED_ROOTS' => env('PROMPT_COMPRESSOR_ALLOWED_ROOTS', base_path()),
+                'PROMPT_COMPRESSOR_STORE_DIR' => env('PROMPT_COMPRESSOR_STORE_DIR', storage_path('app/mcp/prompt-compressor')),
+                'PROMPT_COMPRESSOR_AUTO_OLLAMA' => env('PROMPT_COMPRESSOR_AUTO_OLLAMA', 'false'),
+                'PROMPT_COMPRESSOR_OLLAMA_HOST' => env('PROMPT_COMPRESSOR_OLLAMA_HOST', env('OLLAMA_API_URL', env('OLLAMA_HOST', 'http://127.0.0.1:11434'))),
+                'PROMPT_COMPRESSOR_OLLAMA_SECONDARY_HOSTS' => env('PROMPT_COMPRESSOR_OLLAMA_SECONDARY_HOSTS', env('OLLAMA_SECONDARY_URLS', '')),
+                'PROMPT_COMPRESSOR_ALLOW_PROTECTED_READS' => env('PROMPT_COMPRESSOR_ALLOW_PROTECTED_READS', 'false'),
+            ],
+            'tools' => 7,
+            'description' => 'Prompt, diff, file, and context compression for token reduction',
+            'trust_boundary' => 'plos_local',
+            'transport' => 'external_process',
+            'network_required' => 'lan_only',
+            'write_scope' => 'local_context_cache',
+            'secret_surface_risk' => 'medium',
+            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
+            'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'],
+        ],
+
+        /*
+        |--------------------------------------------------------------------------
         | Serena MCP Server (External, Optional)
         |--------------------------------------------------------------------------
         |

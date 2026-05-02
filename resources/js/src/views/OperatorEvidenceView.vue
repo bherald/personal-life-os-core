@@ -87,7 +87,7 @@
         </div>
         <div class="bg-black border-2 border-ops-plum rounded-r-lg px-4 py-3">
           <div class="text-[11px] text-ops-text-muted uppercase tracking-wide">Pending Operator Reviews</div>
-          <div class="mt-1 text-xl font-bold text-ops-lilac">{{ topMetric('agent_failures_stale_work', 'counts.pending_reviews') }}</div>
+          <div class="mt-1 text-xl font-bold text-ops-lilac">{{ topMetric('review_backlog', 'counts.pending_total') }}</div>
         </div>
       </div>
 
@@ -277,6 +277,29 @@ const SECTION_DEFINITIONS = [
     ],
   },
   {
+    key: 'rag_scale_baseline',
+    title: 'RAG Scale Baseline',
+    code: 'TODO-018',
+    metrics: [
+      { label: 'Documents', path: 'counts.documents' },
+      { label: 'Relation', path: 'counts.rag_documents_relation_mb', format: formatMegabytes },
+      { label: 'Index', path: 'counts.rag_documents_index_mb', format: formatMegabytes },
+      { label: 'Avg Chars', path: 'counts.avg_content_chars' },
+      { label: 'Max Chars', path: 'counts.max_content_chars' },
+      { label: 'Compressed', path: 'counts.compressed_ratio', format: formatPercent },
+      { label: 'Context', path: 'counts.contextualized_ratio', format: formatPercent },
+      { label: 'Sparse', path: 'counts.sparse_documents' },
+      { label: 'HYPE', path: 'counts.hype_documents' },
+      { label: 'Sentence Embeds', path: 'counts.sentence_embedding_rows' },
+      { label: 'KG Triples', path: 'counts.kg_triple_rows' },
+      { label: 'KG Entities', path: 'counts.kg_entity_rows' },
+      { label: 'KG Vectors', path: 'counts.kg_entity_embedding_rows' },
+      { label: 'Missing Tables', path: 'counts.scale_tables_missing' },
+      { label: 'Missing Columns', path: 'counts.missing_optional_columns' },
+      { label: 'Recommendations', path: 'counts.recommendations' },
+    ],
+  },
+  {
     key: 'genealogy_pending_approvals',
     title: 'Genealogy Proposal Approvals',
     code: 'Proposal tables',
@@ -302,6 +325,30 @@ const SECTION_DEFINITIONS = [
       { label: 'Accept Rate', path: 'counts.acceptance_rate', format: formatPercent },
       { label: 'Top Reject Codes', path: 'counts.top_reject_codes', format: formatKeyValues },
       { label: 'Latest', path: 'counts.latest_reviewed_at', format: formatTimestamp },
+    ],
+  },
+  {
+    key: 'genealogy_evidence_sprint',
+    title: 'Genealogy Evidence Sprint',
+    code: 'Review packets',
+    metrics: [
+      { label: 'State', path: 'counts.source_status' },
+      { label: 'Target', path: 'counts.target_packets' },
+      { label: 'Source-Backed', path: 'counts.source_backed_packets' },
+      { label: 'Pending', path: 'counts.source_backed_pending' },
+      { label: 'Reviewed', path: 'counts.reviewed_preview_only' },
+      { label: 'Deferred', path: 'counts.deferred_packets' },
+      { label: 'Clarify', path: 'counts.clarification_requested' },
+      { label: 'Rejected', path: 'counts.rejected_packets' },
+      { label: 'Remaining', path: 'counts.remaining_to_target' },
+      { label: 'Boundary Needed', path: 'counts.needs_operator_boundary', format: formatBoolean },
+      { label: 'Preview Guard', path: 'counts.mutation_guard_ok', format: formatBoolean },
+      { label: 'Ready', path: 'counts.ready_for_five_packet_review', format: formatBoolean },
+      { label: 'Identity', path: 'counts.packets_with_identity' },
+      { label: 'Privacy', path: 'counts.packets_with_privacy_clearance' },
+      { label: 'Claims', path: 'counts.packets_with_claims' },
+      { label: 'Reason Codes', path: 'counts.top_reason_codes', format: formatKeyValues },
+      { label: 'Errors', path: 'counts.evidence_errors' },
     ],
   },
   {
@@ -358,6 +405,29 @@ const SECTION_DEFINITIONS = [
       { label: 'Malformed Trace', path: 'counts.trace_malformed_lines_24h' },
       { label: 'Critical Checks', path: 'counts.critical_checks' },
       { label: 'Warning Checks', path: 'counts.warning_checks' },
+    ],
+  },
+  {
+    key: 'review_backlog',
+    title: 'Review Backlog',
+    code: 'Operator decisions',
+    metrics: [
+      { label: 'Mode', path: 'counts.mode' },
+      { label: 'Pending', path: 'counts.pending_total' },
+      { label: 'Stale Pending', path: 'counts.stale_pending' },
+      { label: 'High Priority', path: 'counts.high_priority_pending' },
+      { label: 'Stale Window', path: 'counts.stale_days', format: formatDays },
+      { label: 'Priority Floor', path: 'counts.high_priority_threshold' },
+      { label: 'Oldest', path: 'counts.oldest_pending_at', format: formatTimestamp },
+      { label: 'Newest', path: 'counts.newest_pending_at', format: formatTimestamp },
+      { label: 'Age Groups', path: 'counts.pending_age_groups' },
+      { label: 'Type Groups', path: 'counts.pending_type_groups' },
+      { label: 'Agent Groups', path: 'counts.pending_agent_groups' },
+      { label: 'Age Buckets', path: 'counts.top_pending_age_buckets', format: formatKeyValues },
+      { label: 'Top Types', path: 'counts.top_pending_types', format: formatKeyValues },
+      { label: 'Top Agents', path: 'counts.top_pending_agents', format: formatKeyValues },
+      { label: 'Status Counts', path: 'counts.status_counts', format: formatKeyValues },
+      { label: 'Recommendations', path: 'counts.recommendations' },
     ],
   },
   {
@@ -634,6 +704,12 @@ function formatMinutes(value) {
   const number = Number(value)
   if (!Number.isFinite(number)) return String(value)
   return `${formatNumber(number)} min`
+}
+
+function formatMegabytes(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return String(value)
+  return `${formatNumber(number)} MB`
 }
 
 function formatPercent(value) {

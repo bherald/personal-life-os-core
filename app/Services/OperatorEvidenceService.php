@@ -4,8 +4,10 @@ namespace App\Services;
 
 use App\Services\AgentMetrics\AwoReplayService;
 use App\Services\AgentMetrics\GenealogyAgentTriageService;
+use App\Services\Genealogy\GenealogyEvidenceSprintReadinessService;
 use App\Services\Ops\AgentDoctorService;
 use App\Services\Ops\DbaTelemetryReportService;
+use App\Services\Ops\ReviewBacklogReportService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -27,6 +29,12 @@ class OperatorEvidenceService
 
     private const AGENT_DOCTOR_CACHE_KEY = 'operator_evidence:agent_doctor:v1';
 
+    private const REVIEW_BACKLOG_CACHE_KEY = 'operator_evidence:review_backlog:v1';
+
+    private const RAG_SCALE_CACHE_KEY = 'operator_evidence:rag_scale:v1';
+
+    private const GENEALOGY_EVIDENCE_SPRINT_CACHE_KEY = 'operator_evidence:genealogy_evidence_sprint:v1';
+
     private const GENEALOGY_AUTOMATION_TARGETS = [
         'genealogy_analyst',
         'genealogy_auto_research',
@@ -47,6 +55,8 @@ class OperatorEvidenceService
         private readonly ?NewsBiasCoverageService $newsBiasCoverage = null,
         private readonly ?AgentDoctorService $agentDoctor = null,
         private readonly ?LLMPoolManagerService $llmPool = null,
+        private readonly ?ReviewBacklogReportService $reviewBacklog = null,
+        private readonly ?GenealogyEvidenceSprintReadinessService $genealogyEvidenceSprint = null,
     ) {}
 
     public function collect(): array
@@ -62,10 +72,13 @@ class OperatorEvidenceService
             'dba_telemetry' => $this->collectDbaTelemetry($sampledAt),
             'kg_backlog' => $this->collectKgBacklog($sampledAt, $ragMetrics, $ragNetBurn),
             'raptor_sentence_drained' => $this->collectRaptorSentenceDrained($sampledAt, $ragMetrics, $ragNetBurn),
+            'rag_scale_baseline' => $this->collectRagScaleBaseline($sampledAt),
             'genealogy_pending_approvals' => $this->collectGenealogyPendingApprovals($sampledAt),
             'genealogy_review_feedback' => $this->collectGenealogyReviewFeedback($sampledAt),
+            'genealogy_evidence_sprint' => $this->collectGenealogyEvidenceSprint($sampledAt),
             'awo_replay' => $this->collectAwoReplay($sampledAt),
             'agent_doctor' => $this->collectAgentDoctor($sampledAt),
+            'review_backlog' => $this->collectReviewBacklog($sampledAt),
             'news_bias_coverage' => $this->collectNewsBiasCoverage($sampledAt),
             'face_match_link_backlog' => $this->collectFaceMatchLinkBacklog($sampledAt),
             'offline_degraded_state' => $this->collectOfflineDegradedState($sampledAt),
@@ -222,6 +235,141 @@ class OperatorEvidenceService
             );
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['NewsBiasCoverageService', 'bias_ratings'], $e, 'News bias coverage query failed.');
+        }
+    }
+
+    private function collectReviewBacklog(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::REVIEW_BACKLOG_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->reviewBacklog ?? app(ReviewBacklogReportService::class))->collect()
+            );
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $pendingByAge = array_values(array_filter((array) ($payload['pending_by_age'] ?? []), 'is_array'));
+            $pendingByType = array_values(array_filter((array) ($payload['pending_by_type'] ?? []), 'is_array'));
+            $pendingByAgent = array_values(array_filter((array) ($payload['pending_by_agent'] ?? []), 'is_array'));
+            $statusCounts = array_values(array_filter((array) ($payload['status_counts'] ?? []), 'is_array'));
+            $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
+            $status = $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning'));
+
+            $counts = [
+                'mode' => $this->nullableString($payload['mode'] ?? null),
+                'dry_run' => (bool) ($payload['dry_run'] ?? false),
+                'stale_days' => (int) ($payload['stale_days'] ?? 7),
+                'high_priority_threshold' => (int) ($payload['high_priority_threshold'] ?? 8),
+                'pending_total' => (int) ($summary['pending_total'] ?? 0),
+                'stale_pending' => (int) ($summary['stale_pending'] ?? 0),
+                'high_priority_pending' => (int) ($summary['high_priority_pending'] ?? 0),
+                'oldest_pending_at' => $this->nullableString($summary['oldest_pending_at'] ?? null),
+                'newest_pending_at' => $this->nullableString($summary['newest_pending_at'] ?? null),
+                'pending_age_groups' => count($pendingByAge),
+                'pending_type_groups' => count($pendingByType),
+                'pending_agent_groups' => count($pendingByAgent),
+                'top_pending_age_buckets' => $this->reviewBacklogAgeSummary($pendingByAge),
+                'top_pending_types' => $this->reviewBacklogTypeSummary($pendingByType),
+                'top_pending_agents' => $this->reviewBacklogAgentSummary($pendingByAgent),
+                'status_counts' => $this->reviewBacklogStatusSummary($statusCounts),
+                'recommendations' => count($recommendations),
+            ];
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['ReviewBacklogReportService', 'agent_review_queue'],
+                $counts,
+                $status === 'healthy'
+                    ? null
+                    : 'Review ops:review-backlog-report --json before clearing aged or high-priority review rows.',
+                [
+                    'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['ReviewBacklogReportService', 'agent_review_queue'], $e, 'Review backlog evidence query failed.');
+        }
+    }
+
+    private function collectRagScaleBaseline(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::RAG_SCALE_CACHE_KEY,
+                now()->addMinutes(30),
+                fn (): array => $this->ragBacklog->getScaleBaseline()
+            );
+
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $storage = is_array($payload['storage'] ?? null) ? $payload['storage'] : [];
+            $schema = is_array($payload['schema'] ?? null) ? $payload['schema'] : [];
+            $embeddingTables = array_values(array_filter((array) ($payload['embedding_tables'] ?? []), 'is_array'));
+            $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
+
+            $tableRows = [];
+            $missingTables = 0;
+            foreach ($embeddingTables as $row) {
+                $table = $this->nullableString($row['table'] ?? null);
+                if ($table === null) {
+                    continue;
+                }
+                if (($row['exists'] ?? true) === false) {
+                    $missingTables++;
+
+                    continue;
+                }
+                $tableRows[$table] = (int) ($row['rows'] ?? 0);
+            }
+
+            $counts = [
+                'mode' => $this->nullableString($payload['mode'] ?? null),
+                'documents' => (int) ($summary['documents'] ?? 0),
+                'parent_documents' => (int) ($summary['parent_documents'] ?? 0),
+                'child_documents' => (int) ($summary['child_documents'] ?? 0),
+                'content_chars' => (int) ($summary['content_chars'] ?? 0),
+                'avg_content_chars' => (int) ($summary['avg_content_chars'] ?? 0),
+                'max_content_chars' => (int) ($summary['max_content_chars'] ?? 0),
+                'compressed_documents' => (int) ($summary['compressed_documents'] ?? 0),
+                'compressed_ratio' => $summary['compressed_ratio'] ?? null,
+                'contextualized_documents' => (int) ($summary['contextualized_documents'] ?? 0),
+                'contextualized_ratio' => $summary['contextualized_ratio'] ?? null,
+                'sparse_documents' => (int) ($summary['sparse_documents'] ?? 0),
+                'hype_documents' => (int) ($summary['hype_documents'] ?? 0),
+                'image_embedding_documents' => (int) ($summary['image_embedding_documents'] ?? 0),
+                'rag_documents_relation_mb' => $storage['total_relation_mb'] ?? null,
+                'rag_documents_heap_mb' => $storage['heap_mb'] ?? null,
+                'rag_documents_index_mb' => $storage['index_mb'] ?? null,
+                'scale_tables_available' => count(array_filter($embeddingTables, fn (array $row): bool => ($row['exists'] ?? true) !== false)),
+                'scale_tables_missing' => max($missingTables, count((array) ($schema['missing_tables'] ?? []))),
+                'missing_optional_columns' => count((array) ($schema['missing_optional_columns'] ?? [])),
+                'sentence_embedding_rows' => $tableRows['rag_sentence_embeddings'] ?? 0,
+                'raptor_summary_rows' => $tableRows['raptor_summaries'] ?? 0,
+                'kg_triple_rows' => $tableRows['knowledge_graph'] ?? 0,
+                'kg_entity_rows' => $tableRows['knowledge_graph_entities'] ?? 0,
+                'kg_entity_embedding_rows' => $tableRows['knowledge_graph_entity_embeddings'] ?? 0,
+                'kg_hyperedge_rows' => $tableRows['knowledge_graph_hyperedges'] ?? 0,
+                'recommendations' => count($recommendations),
+            ];
+
+            $status = $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning'));
+            if ($counts['max_content_chars'] > 100000 || $counts['missing_optional_columns'] > 0 || $counts['scale_tables_missing'] > 0) {
+                $status = $this->maxStatus($status, 'watch');
+            }
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['RagBacklogService', 'pgsql_rag.rag_documents', 'pgsql_rag.information_schema'],
+                $counts,
+                $status === 'healthy' ? null : 'Review rag:scale-baseline --json before RAG chunking, compression, vector, or indexing changes.',
+                [
+                    'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
+                    'cache_ttl_minutes' => 30,
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['RagBacklogService', 'pgsql_rag.rag_documents'], $e, 'RAG scale baseline query failed.');
         }
     }
 
@@ -421,6 +569,72 @@ class OperatorEvidenceService
         }
 
         return $max;
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $rows
+     * @return array<string,int>
+     */
+    private function reviewBacklogAgeSummary(array $rows): array
+    {
+        $summary = [];
+
+        foreach (array_slice($rows, 0, 5) as $row) {
+            $bucket = $this->nullableString($row['bucket'] ?? null) ?? 'unknown';
+            $summary[$bucket] = (int) ($row['pending'] ?? 0);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $rows
+     * @return array<string,int>
+     */
+    private function reviewBacklogTypeSummary(array $rows): array
+    {
+        $summary = [];
+
+        foreach (array_slice($rows, 0, 5) as $row) {
+            $reviewType = $this->nullableString($row['review_type'] ?? null) ?? 'unknown';
+            $findingType = $this->nullableString($row['finding_type'] ?? null);
+            $key = $findingType === null ? $reviewType : $reviewType.'/'.$findingType;
+            $summary[$key] = (int) ($row['pending'] ?? 0);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $rows
+     * @return array<string,int>
+     */
+    private function reviewBacklogAgentSummary(array $rows): array
+    {
+        $summary = [];
+
+        foreach (array_slice($rows, 0, 5) as $row) {
+            $agentId = $this->nullableString($row['agent_id'] ?? null) ?? 'unknown';
+            $summary[$agentId] = (int) ($row['pending'] ?? 0);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $rows
+     * @return array<string,int>
+     */
+    private function reviewBacklogStatusSummary(array $rows): array
+    {
+        $summary = [];
+
+        foreach ($rows as $row) {
+            $status = $this->nullableString($row['status'] ?? null) ?? 'unknown';
+            $summary[$status] = (int) ($row['rows'] ?? 0);
+        }
+
+        return $summary;
     }
 
     private function collectQueueHealth(Carbon $sampledAt): array
@@ -714,6 +928,88 @@ class OperatorEvidenceService
             );
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['AgentProceduralMemoryService', 'agent_review_queue'], $e, 'Genealogy review feedback rollup failed.');
+        }
+    }
+
+    private function collectGenealogyEvidenceSprint(Carbon $sampledAt): array
+    {
+        $missing = $this->missingTables(['agent_review_queue']);
+        if ($missing !== []) {
+            return $this->section('blocked', $sampledAt, ['GenealogyEvidenceSprintReadinessService', 'agent_review_queue'], [
+                'missing_tables' => $missing,
+            ], 'Restore agent review evidence before evaluating the genealogy evidence sprint.');
+        }
+
+        try {
+            $payload = Cache::remember(
+                self::GENEALOGY_EVIDENCE_SPRINT_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->genealogyEvidenceSprint ?? app(GenealogyEvidenceSprintReadinessService::class))->collect(30, 500)
+            );
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $readiness = is_array($payload['readiness'] ?? null) ? $payload['readiness'] : [];
+            $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
+            $errors = array_values(array_filter((array) ($payload['evidence_errors'] ?? []), 'is_string'));
+            $sourceStatus = (string) ($payload['status'] ?? 'needs_source_backed_packets');
+
+            $counts = [
+                'source_status' => $sourceStatus,
+                'window_days' => (int) ($payload['window_days'] ?? 30),
+                'target_packets' => (int) ($payload['target_packets'] ?? 5),
+                'packet_rows_total' => (int) ($summary['packet_rows_total'] ?? 0),
+                'packet_rows_window' => (int) ($summary['packet_rows_window'] ?? 0),
+                'source_backed_packets' => (int) ($summary['source_backed_packets'] ?? 0),
+                'source_backed_pending' => (int) ($summary['source_backed_pending'] ?? 0),
+                'source_backed_decided' => (int) ($summary['source_backed_decided'] ?? 0),
+                'pending_packets' => (int) ($summary['pending_packets'] ?? 0),
+                'reviewed_preview_only' => (int) ($summary['reviewed_preview_only'] ?? 0),
+                'deferred_packets' => (int) ($summary['deferred_packets'] ?? 0),
+                'clarification_requested' => (int) ($summary['clarification_requested'] ?? 0),
+                'rejected_packets' => (int) ($summary['rejected_packets'] ?? 0),
+                'preview_only_packets' => (int) ($summary['preview_only_packets'] ?? 0),
+                'mutating_preview_packets' => (int) ($summary['mutating_preview_packets'] ?? 0),
+                'packets_with_identity' => (int) ($summary['packets_with_identity'] ?? 0),
+                'packets_with_privacy_clearance' => (int) ($summary['packets_with_privacy_clearance'] ?? 0),
+                'packets_with_claims' => (int) ($summary['packets_with_claims'] ?? 0),
+                'packets_with_decision_log' => (int) ($summary['packets_with_decision_log'] ?? 0),
+                'operator_boundary_packets' => (int) ($summary['operator_boundary_packets'] ?? 0),
+                'malformed_details' => (int) ($summary['malformed_details'] ?? 0),
+                'remaining_to_target' => (int) ($readiness['remaining_to_target'] ?? 5),
+                'needs_operator_boundary' => (bool) ($readiness['needs_operator_boundary'] ?? true),
+                'mutation_guard_ok' => (bool) ($readiness['mutation_guard_ok'] ?? false),
+                'ready_for_five_packet_review' => (bool) ($readiness['ready_for_five_packet_review'] ?? false),
+                'top_reason_codes' => array_slice((array) ($payload['top_reason_codes'] ?? []), 0, 5, true),
+                'recommendations' => count($recommendations),
+                'evidence_errors' => count($errors),
+                'truncated' => (bool) ($payload['truncated'] ?? false),
+            ];
+
+            $status = match ($sourceStatus) {
+                'ready_for_review' => 'healthy',
+                'blocked' => 'blocked',
+                'in_progress', 'ready_for_operator_boundary', 'needs_source_backed_packets' => 'watch',
+                default => 'degraded',
+            };
+
+            if ($counts['evidence_errors'] > 0 || ! $counts['mutation_guard_ok']) {
+                $status = $this->maxStatus($status, 'blocked');
+            }
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['GenealogyEvidenceSprintReadinessService', 'agent_review_queue'],
+                $counts,
+                $status === 'healthy'
+                    ? null
+                    : 'Run genealogy:evidence-sprint-report --json before materializing or reviewing the five-packet sprint.',
+                [
+                    'generated_at' => $this->nullableString($payload['generated_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['GenealogyEvidenceSprintReadinessService', 'agent_review_queue'], $e, 'Genealogy evidence sprint readiness query failed.');
         }
     }
 
