@@ -4,14 +4,17 @@ Status on 2026-05-02: **public-extraction candidate files pass the local audit,
 repeatable local export smoke, deploy smoke/health gates, focused media/face
 regression tests, fixture/Joplin provenance checks, CI parity checks, npm/Python
 license snapshot checks, npm audit gates for exported workspaces, and a
-disposable Docker/live-database proof for the core Compose stack**. A separate
-Ubuntu Hyper-V proof VM also passes the history-free public export smoke from
-scratch and boots the Docker Compose core stack with live MySQL,
-PostgreSQL/pgvector, Redis, app, web, worker, and scheduler services. The first
-public push still needs GitHub Actions validation in a fresh public repository
-plus formal dependency freeze/signoff, final native/ML package signoff,
-license-warning triage, and any optional media add-on proof advertised beyond
-the current evidence. On 2026-05-01, the operator approved this Ubuntu Hyper-V
+disposable Docker/live-database proof for the core Compose stack**. The first
+private-staged public GitHub repository now passes GitHub Actions validation
+for both `Public Readiness` and `Repository Governance`; rerun and require
+green Actions again after any later public-bound commit before making the repo
+visible or tagging. A separate Ubuntu Hyper-V proof VM also passes the
+history-free public export smoke from scratch and boots the Docker Compose core
+stack with live MySQL, PostgreSQL/pgvector, Redis, app, web, worker, and
+scheduler services. Remaining formal release gates are dependency
+freeze/signoff, final native/ML package signoff, license-warning triage, and
+any optional media add-on proof advertised beyond the current evidence. On
+2026-05-01, the operator approved this Ubuntu Hyper-V
 VM as the designated clean media proof machine for first-release core + media
 evidence, with no private prod data attached. GPU is approved as
 optional/experimental for the first public release; clean-host GPU proof is
@@ -127,23 +130,25 @@ tests / 20,117 assertions. The first-push working tree at
 `2026-05-01T13:07:49Z` with 1,584 tracked files staged.
 
 2026-05-02 current smoke evidence: after refreshing public smoke blockers,
-adding the read-only genealogy remediation preview slice, and deploying the
-read-only review backlog report,
+adding the read-only genealogy remediation preview slice, deploying the
+read-only review backlog report, and fixing first-push GitHub Actions cache and
+Python-version parity,
 `scripts/public-smoke.sh --force "$HOME/tmp/personal-life-os-core-smoke"`
-passed from source commit `23e9a62248403e97b1a2212a3f496543a04d5c2b`. The
-exported manifest was generated at `2026-05-02T14:11:15Z` with 1,611 tracked
+passed from source commit `9e486a86dd7c31c21c6e4f0e18c4064db4548f13`. The
+exported manifest was generated at `2026-05-02T15:06:21Z` with 1,611 tracked
 files staged. Public audit, Composer install, root/MCP workspace `npm ci`, root
 and MCP workspace `npm audit`, Python core venv install through the pinned core
 constraints, key generation, frontend build, setup doctor core and media smoke
 slices, npm/Python license snapshot checks, license audit with 12 documented
 warnings, script syntax, staged diff checks, and focused public tests passed.
-Result: 138 tests / 22,081 assertions. The media setup doctor slice still
+Result: 138 tests / 22,089 assertions. The media setup doctor slice still
 reports expected optional/recommended warnings for missing local add-on assets
 and writable directories; those remain documentation/signoff scope, not current
 smoke blockers. The first-push working tree at `$HOME/tmp/personal-life-os-core`
-was later refreshed from source commit
-`23e9a62248403e97b1a2212a3f496543a04d5c2b`; its manifest was generated at
-`2026-05-02T14:11:52Z` with 1,611 tracked files staged.
+was refreshed after the smoke and CI follow-up work; `PUBLIC_EXPORT_MANIFEST.md`
+records the exact current source commit, generated time, and 1,611 tracked files
+for the final pushed tree. The private-staged GitHub repository passed both
+`Public Readiness` and `Repository Governance` after the CI follow-up commits.
 
 2026-05-01 foreign VM proof: the history-free export from source commit
 `1db129e171cab9667bb13f0f7956d42c9f028b5b` was copied to a separate Ubuntu
@@ -196,7 +201,7 @@ GPU behavior.
 
 ## Current Blockers
 
-1. **Clean extraction proof is complete for local and Docker core paths, but the first public repository still needs final push validation**: do not publish this private repository or its history directly. `scripts/public-export.sh` provides the reviewed allowlist, and `scripts/public-smoke.sh` proves the non-Docker local export path. On 2026-05-02 the latest smoke passed Composer install, root and MCP-workspace `npm ci`, root and MCP-workspace `npm audit`, Python venv core requirements pinned by `requirements-core.constraints.txt`, key generation, frontend build, `setup:doctor --profile=core --skip-services`, `setup:doctor --profile=media --skip-services --only=assets,browser,docker`, public audit, npm/Python license snapshot checks, license audit with 12 documented warnings, script syntax checks, staged diff checks, and focused public tests with 138 tests / 22,081 assertions from a 1,611-file export at source commit `23e9a62248403e97b1a2212a3f496543a04d5c2b`. The PostgreSQL schema dump was refreshed from prod so public bootstrap includes current RAG eligibility columns. A disposable Docker proof also built the app image, started MySQL, PostgreSQL/pgvector, Redis, app, web, worker, and scheduler, loaded both schema dumps through the database containers, ran `PublicBaselineSeeder`, returned HTTP 200 through Nginx, started Horizon and the scheduler, and passed the Docker-safe setup/test slice. The public CI workflow now includes public audit, public-release shell linting, Docker Compose config validation, exported MCP workspace installs, npm/Python license snapshot checks, npm audits, setup doctor slices, and focused public tests. Remaining proof is a real GitHub Actions run on the fresh public repository plus final dependency/native-ML signoff before tagging.
+1. **Clean extraction proof is complete for local, Docker core, and first GitHub Actions paths**: do not publish this private repository or its history directly. `scripts/public-export.sh` provides the reviewed allowlist, and `scripts/public-smoke.sh` proves the non-Docker local export path. On 2026-05-02 the latest clean smoke passed Composer install, root and MCP-workspace `npm ci`, root and MCP-workspace `npm audit`, Python venv core requirements pinned by `requirements-core.constraints.txt`, key generation, frontend build, `setup:doctor --profile=core --skip-services`, `setup:doctor --profile=media --skip-services --only=assets,browser,docker`, public audit, npm/Python license snapshot checks, license audit with 12 documented warnings, script syntax checks, staged diff checks, and focused public tests with 138 tests / 22,089 assertions from a 1,611-file export at source commit `9e486a86dd7c31c21c6e4f0e18c4064db4548f13`. The private-staged public GitHub repository passed `Public Readiness` and `Repository Governance`; keep the current GitHub `main` green after any follow-up public-bound commit before visibility or tagging. The PostgreSQL schema dump was refreshed from prod so public bootstrap includes current RAG eligibility columns. A disposable Docker proof also built the app image, started MySQL, PostgreSQL/pgvector, Redis, app, web, worker, and scheduler, loaded both schema dumps through the database containers, ran `PublicBaselineSeeder`, returned HTTP 200 through Nginx, started Horizon and the scheduler, and passed the Docker-safe setup/test slice. The public CI workflow now includes public audit, public-release shell linting, Docker Compose config validation, exported MCP workspace installs, npm/Python license snapshot checks, npm audits, setup doctor slices, and focused public tests. Remaining proof is final dependency/native-ML signoff before tagging, optional media add-on proof if advertised, and GPU proof only if GPU is advertised beyond experimental.
    A separate Ubuntu proof VM also passed the public smoke from scratch on
    2026-05-01 with 131 tests / 20,082 assertions and 0 npm audit
    vulnerabilities in the root and MCP workspaces, then booted the Docker core
@@ -206,8 +211,8 @@ GPU behavior.
    media functional checks for XMP parsing, OCR, ffmpeg/ffprobe, and Python
    graph/cluster imports. This closes the foreign clean-host core-control proof,
    first media install proof, and basic media functional proof. GPU remains
-   optional/experimental for first release; open gates are GitHub Actions,
-   optional media add-on proof if advertised, and final signoff. On 2026-05-01,
+   optional/experimental for first release; open gates are optional media add-on
+   proof if advertised and final signoff. On 2026-05-01,
    the operator approved this Ubuntu Hyper-V VM as the official clean media
    proof machine for first-release core + media evidence, excluding GPU proof.
 2. **License and provenance review**: the root `LICENSE` exists, public fixtures have provenance rows, all Python tiers have constraints snapshots, core/media Python license snapshots exist, `docs/model-runtime-license-map.md` records model/runtime asset posture, `docs/python-constraints-license-snapshot.md` records Python package watch items, `docs/native-ml-package-review.md` records the optional native/ML/GPU package posture, and the Joplin/Photo/media reviewed surfaces have non-derivation guardrails. The media constraints now have disposable venv install/import proof in the local verification environment after pinning `setuptools<81` for `face_recognition_models` plus a separate Ubuntu proof VM install and basic generated-fixture functional proof. The GPU constraints remain a Linux x86_64/Python 3.12/default-PyPI resolver snapshot, not final legal or host-compatibility signoff. Remaining formal release work is dependency-license signoff, optional media add-on proof if Playwright/Tika/SearXNG/Nextcloud/dlib model files are advertised as proven, and host-specific GPU proof if GPU is advertised beyond experimental. If PLOS stays permissive, use Gramps, Gramps Web, webtrees, PhotoPrism, LibrePhotos, and Joplin as workflow/data-model/interoperability references only.

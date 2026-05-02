@@ -713,7 +713,7 @@ class PublicExportPackagingTest extends TestCase
             'npm audit gates for exported workspaces',
             '130 tests / 19,901 assertions',
             '131 tests / 20,082 assertions',
-            '138 tests / 22,081 assertions',
+            '138 tests / 22,089 assertions',
             'foreign VM proof',
             'COMPOSE_PROJECT_NAME=personal_life_os_core_public_proof',
         ] as $token) {

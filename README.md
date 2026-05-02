@@ -16,8 +16,14 @@ optional Ollama-compatible local AI.
   external providers behind explicit policy gates.
 - Use agent and MCP tooling with offline/hybrid policy checks and audit
   receipts.
-- Enable optional media, face-region metadata, genealogy, browser automation,
-  Joplin, Nextcloud, Thunderbird, YouTube, research, and notification modules.
+- Work with public preview surfaces for genealogy research, family-tree review
+  UI, source-backed review packets, and operator-approved data quality queues.
+- Enable optional media, face-region metadata, browser automation, Joplin,
+  Nextcloud, Thunderbird, YouTube, research, and notification modules.
+
+The public extraction ships code and docs, not private data. Genealogy,
+connector, agent, and media workflows are local/operator-configured surfaces;
+destructive or sensitive changes should stay behind explicit human approval.
 
 ## Quick Start: Docker
 

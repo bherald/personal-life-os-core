@@ -10,7 +10,7 @@ public direction without exporting the private active priority list.
 - Keep public smoke, CI, license audit, fixture provenance, and privacy guards
   passing.
 - Finish public docs information architecture cleanup.
-- Validate the first public GitHub Actions run in a fresh repository.
+- Keep the first public GitHub Actions validation green as release docs change.
 
 ## Medium Term
 
