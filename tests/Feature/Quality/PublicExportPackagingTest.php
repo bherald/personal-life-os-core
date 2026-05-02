@@ -90,6 +90,13 @@ class PublicExportPackagingTest extends TestCase
         $this->assertStringNotContainsString("printf '\\nPYTHON_BINARY=.venv/bin/python\\n' >> .env", $workflow);
         $this->assertStringContainsString('-c requirements-core.constraints.txt -r requirements-core.txt', $smokeScript);
         $this->assertStringContainsString('-c requirements-core.constraints.txt -r requirements-core.txt', $workflow);
+        $this->assertStringContainsString('actions/checkout@v6', $workflow);
+        $this->assertStringContainsString('actions/setup-node@v6', $workflow);
+        $this->assertStringContainsString('node-version: "24"', $workflow);
+        $this->assertStringContainsString('actions/setup-python@v6', $workflow);
+        $this->assertStringContainsString('cache-dependency-path: |', $workflow);
+        $this->assertStringContainsString('requirements-core.txt', $workflow);
+        $this->assertStringContainsString('requirements-core.constraints.txt', $workflow);
         $this->assertStringContainsString('npm ci --prefix mcp-server', $workflow);
         $this->assertStringContainsString('npm ci --prefix mcp-servers/plos', $workflow);
         $this->assertStringContainsString('test -x .venv/bin/python', $smokeScript);
