@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Keep reports public-safe. Do not include private evidence that cannot be summarized safely in public.
+        Keep reports public-safe. Do not include real personal data, credentials, private hostnames, private paths, private provider account details, private connector output, or private evidence that cannot be summarized safely in public.
   - type: input
     id: target
     attributes:

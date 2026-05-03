@@ -9,13 +9,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        Do not file vulnerabilities, leaked credentials, private data, private paths, private hostnames, or suspected privacy-boundary failures as public issues. Use SECURITY.md and GitHub private vulnerability reporting if enabled. Public issues containing sensitive details may be deleted or redacted.
+        Do not file vulnerabilities, leaked credentials, real personal data, private data, private paths, private hostnames, or suspected privacy-boundary failures as public issues. Use SECURITY.md and GitHub private vulnerability reporting if enabled. Public issues containing sensitive details may be deleted or redacted.
   - type: checkboxes
     id: confirmation
     attributes:
       label: Public-safety confirmation
       options:
-        - label: This issue contains no secrets, private data, private paths, private hostnames, exploit details, or non-public evidence.
+        - label: This issue contains no secrets, real personal data, private data, private paths, private hostnames, exploit details, or non-public evidence.
           required: true
   - type: textarea
     id: public_question

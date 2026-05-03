@@ -5,6 +5,10 @@ labels:
   - "type: roadmap"
   - "status: accepted"
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep this public-safe. Do not include real personal data, credentials, private hostnames, private paths, private provider account details, or private connector output.
   - type: textarea
     id: outcome
     attributes:
