@@ -1,0 +1,43 @@
+name: Feature request
+description: Bounded public-core improvement proposal.
+title: "[Feature]: "
+labels:
+  - "type: enhancement"
+  - "status: needs-info"
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+    validations:
+      required: true
+  - type: textarea
+    id: public_core_fit
+    attributes:
+      label: Why does this belong in the public core?
+      description: Explain why this is not better as a private overlay, local connector, or unsupported integration.
+    validations:
+      required: true
+  - type: dropdown
+    id: fixture_safe
+    attributes:
+      label: Can this work with synthetic fixtures and local-first operation?
+      options:
+        - "Yes"
+        - "No"
+        - "Not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: proof
+    attributes:
+      label: What public docs or tests would prove it?
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundary check
+      options:
+        - label: This does not require private data, private deployment access, hosted operations, or private provider accounts.
+          required: true
+        - label: This does not imply enterprise support or custom commercial integration work.
+          required: true

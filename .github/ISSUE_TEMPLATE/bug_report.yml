@@ -1,0 +1,72 @@
+name: Bug report
+description: Reproducible public-core behavior is wrong.
+title: "[Bug]: "
+labels:
+  - "type: bug"
+  - "status: needs-repro"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include real personal data, credentials, private hostnames, private paths, private provider account details, or private connector output. If this involves a suspected vulnerability or data leak, stop and follow SECURITY.md instead.
+  - type: input
+    id: version
+    attributes:
+      label: Public repo commit or tag
+      placeholder: v0.1.0 or commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: install_path
+    attributes:
+      label: Install path
+      options:
+        - Docker quickstart
+        - Bare metal
+        - MCP-only
+        - Docs-only
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS plus relevant Docker/Compose, PHP, Composer, Node/npm, and database versions.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Exact command or UI action using public-safe data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or screenshots
+      description: Remove secrets, personal data, hostnames, paths, and provider account details.
+      render: text
+  - type: dropdown
+    id: fixtures
+    attributes:
+      label: Reproduces with public fixtures or synthetic data?
+      options:
+        - "Yes"
+        - "No"
+        - "Not tested"
+    validations:
+      required: true

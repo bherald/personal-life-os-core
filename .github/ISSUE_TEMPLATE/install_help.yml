@@ -1,0 +1,73 @@
+name: Install help or first-boot problem
+description: Setup, Docker, dependency, database, or first-run problem.
+title: "[Install]: "
+labels:
+  - "type: install"
+  - "status: needs-info"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep this public-safe. Do not include credentials, personal data, private hostnames, private paths, private provider accounts, or private connector output.
+  - type: input
+    id: version
+    attributes:
+      label: Public repo commit or tag
+      placeholder: v0.1.0 or commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: install_path
+    attributes:
+      label: Install path attempted
+      options:
+        - Docker quickstart
+        - Bare metal
+        - MCP server
+        - Optional media
+        - Optional GPU
+        - Optional genealogy
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: core_doctor
+    attributes:
+      label: Does core setup:doctor pass before optional modules are enabled?
+      options:
+        - "Yes"
+        - "No"
+        - "Not run"
+        - "Not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor_output
+    attributes:
+      label: Redacted setup:doctor output
+      render: text
+  - type: textarea
+    id: compose_validation
+    attributes:
+      label: Docker Compose validation output, if using Docker
+      render: text
+  - type: dropdown
+    id: database_bootstrap
+    attributes:
+      label: Database bootstrap path
+      options:
+        - Schema dump
+        - Migrations
+        - Seeder
+        - Existing database
+        - Not sure
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: failure
+    attributes:
+      label: What failed?
+      description: Exact command, error, and what you expected to happen.
+    validations:
+      required: true

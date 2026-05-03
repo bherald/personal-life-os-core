@@ -1,0 +1,42 @@
+name: Provenance or license concern
+description: Attribution, copied-code, fixture provenance, dependency, or model/runtime concern.
+title: "[Provenance]: "
+labels:
+  - "type: provenance"
+  - "status: needs-info"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep reports public-safe. Do not include private evidence that cannot be summarized safely in public.
+  - type: input
+    id: target
+    attributes:
+      label: File, dependency, fixture, model, service, or docs section
+    validations:
+      required: true
+  - type: input
+    id: suspected_source
+    attributes:
+      label: Suspected source project or license
+  - type: dropdown
+    id: concern_type
+    attributes:
+      label: Concern type
+      options:
+        - Copied implementation
+        - Linked dependency
+        - Protocol interoperability
+        - Documentation wording
+        - Generated fixture or data
+        - Attribution
+        - Model/runtime provenance
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Public evidence links or explanation
+    validations:
+      required: true

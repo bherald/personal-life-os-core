@@ -1,0 +1,41 @@
+name: Documentation gap
+description: Public docs are missing, misleading, stale, or unclear.
+title: "[Docs]: "
+labels:
+  - "type: docs"
+  - "area: docs"
+  - "status: needs-info"
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page or file
+      placeholder: README.md, docs/quickstart.md, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: What were you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: confusing_part
+    attributes:
+      label: What was confusing, missing, stale, or misleading?
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested wording or example, if known
+  - type: dropdown
+    id: safety_impact
+    attributes:
+      label: Could this cause security, privacy, license, or install mistakes?
+      options:
+        - "No"
+        - "Maybe"
+        - "Yes"
+    validations:
+      required: true

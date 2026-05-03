@@ -1,0 +1,40 @@
+name: Maintainer roadmap task
+description: Maintainer-only accepted public roadmap work.
+title: "[Roadmap]: "
+labels:
+  - "type: roadmap"
+  - "status: accepted"
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Public user-visible outcome
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Public scope and non-goals
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Test and documentation expectations
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Boundary checks
+      options:
+        - label: Does not expose private active priorities, private incidents, private operator architecture, or internal capacity notes.
+          required: true
+        - label: Privacy, security, provenance, and support-boundary implications were reviewed.
+          required: true
