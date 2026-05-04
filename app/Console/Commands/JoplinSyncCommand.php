@@ -78,14 +78,18 @@ class JoplinSyncCommand extends Command
             if ($this->option('json')) {
                 $this->emitJson($this->syncPayload($stats));
 
-                return ($stats['errors'] ?? 0) > 0 ? self::FAILURE : self::SUCCESS;
+                return ! empty($stats['deferred']) || ($stats['errors'] ?? 0) <= 0
+                    ? self::SUCCESS
+                    : self::FAILURE;
             }
 
             $this->newLine();
-            if (! empty($stats['deferred'])) {
+            $deferred = ! empty($stats['deferred']);
+            $errorCount = (int) ($stats['errors'] ?? 0);
+
+            if ($deferred) {
                 $this->warn('Sync deferred: '.($stats['defer_reason'] ?? 'unknown reason'));
-            }
-            if (($stats['errors'] ?? 0) > 0) {
+            } elseif ($errorCount > 0) {
                 $this->warn('Sync completed with errors.');
             } else {
                 $this->info('✓ Sync completed successfully!');
@@ -106,8 +110,10 @@ class JoplinSyncCommand extends Command
                 ]
             );
 
-            if ($stats['errors'] > 0) {
-                $this->warn('⚠ Some files failed to process. Check logs for details.');
+            if ($deferred || $errorCount > 0) {
+                if ($errorCount > 0) {
+                    $this->warn('⚠ Some files failed to process. Check logs for details.');
+                }
                 $errorSamples = $stats['error_samples'] ?? [];
                 if (! empty($errorSamples)) {
                     $this->warn('Recent error samples:');
@@ -118,7 +124,7 @@ class JoplinSyncCommand extends Command
                     }
                 }
 
-                return self::FAILURE;
+                return $deferred ? self::SUCCESS : self::FAILURE;
             }
 
             $this->newLine();
