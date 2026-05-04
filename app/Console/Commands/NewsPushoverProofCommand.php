@@ -48,11 +48,16 @@ class NewsPushoverProofCommand extends Command
             'status' => 'inconclusive',
             'run' => $this->summarizeRun($run),
             'pushover' => $this->summarizePushover($this->fetchPushoverExecutions((int) $run->id)),
+            'current_pushover_config' => $this->summarizeCurrentPushoverConfig((int) $run->workflow_id),
             'status_reasons' => [
                 'fail' => [],
                 'inconclusive' => [],
             ],
         ];
+        $report['pacing_config'] = $this->summarizePacingConfig(
+            $report['pushover'],
+            $report['current_pushover_config']
+        );
 
         if ((string) $run->workflow_name !== $workflow) {
             $report['status_reasons']['fail'][] = "workflow_runs.id {$run->id} belongs to workflow '{$run->workflow_name}', not '{$workflow}'.";
@@ -78,6 +83,8 @@ class NewsPushoverProofCommand extends Command
                 'proof_state' => 'absent',
                 'reason' => 'Pushover node was not found.',
             ],
+            'current_pushover_config' => null,
+            'pacing_config' => null,
             'status_reasons' => [
                 'fail' => $status === 'fail' ? $reasons : [],
                 'inconclusive' => $status === 'inconclusive' ? $reasons : [],
@@ -255,6 +262,103 @@ class NewsPushoverProofCommand extends Command
         return $summary;
     }
 
+    private function summarizeCurrentPushoverConfig(int $workflowId): ?array
+    {
+        $rows = DB::select(
+            'SELECT
+                wn.id,
+                wn.node_order,
+                wn.node_type,
+                wnc.config_value AS inter_chunk_delay_seconds
+             FROM workflow_nodes wn
+             LEFT JOIN workflow_node_configs wnc
+                ON wnc.workflow_node_id = wn.id
+               AND wnc.config_key = ?
+             WHERE wn.workflow_id = ?
+               AND (wn.node_type = ? OR wn.node_type LIKE ?)
+             ORDER BY wn.node_order ASC, wn.id ASC',
+            ['inter_chunk_delay_seconds', $workflowId, 'PushoverNotify', '%\\PushoverNotify']
+        );
+
+        if ($rows === []) {
+            return null;
+        }
+
+        $last = $rows[array_key_last($rows)];
+        $configuredDelay = $this->intOrNull($last->inter_chunk_delay_seconds);
+
+        return [
+            'node_id' => (int) $last->id,
+            'node_order' => (int) $last->node_order,
+            'node_type' => (string) $last->node_type,
+            'configured_inter_chunk_delay_seconds' => $configuredDelay,
+            'effective_inter_chunk_delay_seconds' => $configuredDelay ?? 2,
+        ];
+    }
+
+    private function summarizePacingConfig(array $pushover, ?array $currentConfig): array
+    {
+        if (($pushover['present'] ?? false) !== true) {
+            return [
+                'state' => 'pushover_absent',
+                'reason' => 'Pushover node was not found in the inspected run.',
+                'run_inter_chunk_delay_seconds' => null,
+                'current_effective_inter_chunk_delay_seconds' => $currentConfig['effective_inter_chunk_delay_seconds'] ?? null,
+                'matches_current_config' => null,
+            ];
+        }
+
+        if ($currentConfig === null) {
+            return [
+                'state' => 'current_config_absent',
+                'reason' => 'Current workflow Pushover node config was not found.',
+                'run_inter_chunk_delay_seconds' => $pushover['inter_chunk_delay_seconds'] ?? null,
+                'current_effective_inter_chunk_delay_seconds' => null,
+                'matches_current_config' => null,
+            ];
+        }
+
+        $runDelay = $this->intOrNull($pushover['inter_chunk_delay_seconds'] ?? null);
+        $currentDelay = $this->intOrNull($currentConfig['effective_inter_chunk_delay_seconds'] ?? null);
+        if ($runDelay === null) {
+            return [
+                'state' => 'run_metadata_missing',
+                'reason' => 'Inspected run did not record inter_chunk_delay_seconds; use the next natural run for pacing proof.',
+                'run_inter_chunk_delay_seconds' => null,
+                'current_effective_inter_chunk_delay_seconds' => $currentDelay,
+                'matches_current_config' => null,
+            ];
+        }
+
+        if ($currentDelay === null) {
+            return [
+                'state' => 'current_config_unknown',
+                'reason' => 'Current workflow Pushover inter-chunk delay could not be parsed.',
+                'run_inter_chunk_delay_seconds' => $runDelay,
+                'current_effective_inter_chunk_delay_seconds' => null,
+                'matches_current_config' => null,
+            ];
+        }
+
+        if ($runDelay === $currentDelay) {
+            return [
+                'state' => 'matches_current_config',
+                'reason' => 'Inspected run recorded the current Pushover inter-chunk delay.',
+                'run_inter_chunk_delay_seconds' => $runDelay,
+                'current_effective_inter_chunk_delay_seconds' => $currentDelay,
+                'matches_current_config' => true,
+            ];
+        }
+
+        return [
+            'state' => 'differs_from_current_config',
+            'reason' => "Inspected run recorded delay {$runDelay}s, but current workflow config is {$currentDelay}s; use the next natural run for post-config pacing proof.",
+            'run_inter_chunk_delay_seconds' => $runDelay,
+            'current_effective_inter_chunk_delay_seconds' => $currentDelay,
+            'matches_current_config' => false,
+        ];
+    }
+
     private function determineStatus(array $report): array
     {
         $fail = $report['status_reasons']['fail'] ?? [];
@@ -425,6 +529,7 @@ class NewsPushoverProofCommand extends Command
                 'duration_ms' => $report['pushover']['duration_ms'] ?? null,
                 'timeout_seconds' => $report['pushover']['timeout_seconds'] ?? null,
             ],
+            'pacing_config' => $report['pacing_config'] ?? null,
             'status_reasons' => $report['status_reasons'] ?? [
                 'fail' => [],
                 'inconclusive' => [],
@@ -452,6 +557,15 @@ class NewsPushoverProofCommand extends Command
             .' delay_s='.($pushover['inter_chunk_delay_seconds'] ?? 'n/a')
             .' timeout='.var_export($pushover['timed_out'], true)
             .' duration_ms='.($pushover['duration_ms'] ?? 'n/a'));
+
+        if (! empty($report['pacing_config'])) {
+            $pacing = $report['pacing_config'];
+            $this->line('Pacing config: state='.$pacing['state']
+                .' run_delay_s='.($pacing['run_inter_chunk_delay_seconds'] ?? 'n/a')
+                .' current_delay_s='.($pacing['current_effective_inter_chunk_delay_seconds'] ?? 'n/a')
+                .' matches='.var_export($pacing['matches_current_config'] ?? null, true)
+                .' reason='.$pacing['reason']);
+        }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
             $this->line('FAIL: '.$reason);
@@ -481,6 +595,15 @@ class NewsPushoverProofCommand extends Command
             .' delay_s='.($pushover['inter_chunk_delay_seconds'] ?? 'n/a')
             .' timeout='.var_export($pushover['timed_out'] ?? null, true)
             .' duration_ms='.($pushover['duration_ms'] ?? 'n/a'));
+
+        if (! empty($report['pacing_config'])) {
+            $pacing = $report['pacing_config'];
+            $this->line('Pacing config: state='.$pacing['state']
+                .' run_delay_s='.($pacing['run_inter_chunk_delay_seconds'] ?? 'n/a')
+                .' current_delay_s='.($pacing['current_effective_inter_chunk_delay_seconds'] ?? 'n/a')
+                .' matches='.var_export($pacing['matches_current_config'] ?? null, true)
+                .' reason='.$pacing['reason']);
+        }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
             $this->line('FAIL: '.$reason);
