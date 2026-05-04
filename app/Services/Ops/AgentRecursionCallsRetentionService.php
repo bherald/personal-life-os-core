@@ -28,6 +28,7 @@ class AgentRecursionCallsRetentionService
             'version' => 1,
             'mode' => $execute ? 'execute' : 'dry_run',
             'execute' => $execute,
+            'environment' => $this->environmentSummary(),
             'table' => $this->tableSummary(),
             'retention_days' => $retentionDays,
             'cutoff' => $cutoff,
@@ -89,6 +90,20 @@ class AgentRecursionCallsRetentionService
         $payload['status'] = $this->status($payload);
 
         return $payload;
+    }
+
+    private function environmentSummary(): array
+    {
+        $connection = (string) config('database.default', 'unknown');
+        $database = config("database.connections.{$connection}.database");
+
+        return [
+            'app_env' => (string) config('app.env', 'unknown'),
+            'app_url' => (string) config('app.url', ''),
+            'hostname' => gethostname() ?: php_uname('n'),
+            'database_connection' => $connection,
+            'database_name' => is_scalar($database) ? (string) $database : '',
+        ];
     }
 
     private function tableSummary(): array

@@ -70,8 +70,11 @@ class OpsArcRetentionCommand extends Command
         }
 
         $this->line(sprintf(
-            'ARC retention: %s mode=%s retention_days=%d cutoff=%s deleted=%d batches=%d stopped=%s',
+            'ARC retention: %s env=%s host=%s database=%s mode=%s retention_days=%d cutoff=%s deleted=%d batches=%d stopped=%s',
             $payload['status'] ?? 'unknown',
+            $payload['environment']['app_env'] ?? 'unknown',
+            $payload['environment']['hostname'] ?? 'unknown',
+            $payload['environment']['database_name'] ?? 'unknown',
             $payload['mode'] ?? 'unknown',
             (int) ($payload['retention_days'] ?? 0),
             (string) ($payload['cutoff'] ?? '-'),
