@@ -13,6 +13,8 @@ class GenealogyEvidenceSprintReadinessService
 
     private const TARGET_PACKETS = 5;
 
+    private ?GenealogyReviewPacketValidatorService $packetValidator = null;
+
     public function collect(int $days = 30, int $limit = 500): array
     {
         $days = max(1, min(365, $days));
@@ -83,7 +85,7 @@ class GenealogyEvidenceSprintReadinessService
         }
 
         if ($summary['mutating_preview_packets'] > 0) {
-            $errors[] = "{$summary['mutating_preview_packets']} packet row(s) advertise mutating apply_preview behavior.";
+            $errors[] = "{$summary['mutating_preview_packets']} packet row(s) advertise unsafe apply_preview metadata.";
         }
 
         $status = $this->statusFor($summary, $readiness, $errors);
@@ -408,7 +410,7 @@ class GenealogyEvidenceSprintReadinessService
                 $summary['preview_only_packets']++;
             }
 
-            if (($details['apply_preview']['mutates_accepted_facts'] ?? null) === true) {
+            if ($this->hasUnsafeApplyPreviewMetadata($details)) {
                 $summary['mutating_preview_packets']++;
             }
 
@@ -583,18 +585,12 @@ class GenealogyEvidenceSprintReadinessService
 
     private function hasSourceEvidence(array $details): bool
     {
-        foreach (['sources', 'source_locators', 'source_locator', 'evidence_sources'] as $key) {
-            $value = $details[$key] ?? null;
-            if (is_array($value) && $value !== []) {
-                return true;
-            }
+        return $this->packetValidator()->collectSourceLocators($details) !== [];
+    }
 
-            if (is_string($value) && trim($value) !== '') {
-                return true;
-            }
-        }
-
-        return false;
+    private function packetValidator(): GenealogyReviewPacketValidatorService
+    {
+        return $this->packetValidator ??= new GenealogyReviewPacketValidatorService;
     }
 
     private function isPreviewOnly(array $details): bool
@@ -605,8 +601,68 @@ class GenealogyEvidenceSprintReadinessService
         }
 
         return ($preview['mutates_accepted_facts'] ?? null) === false
-            || ($preview['mode'] ?? null) === 'preview_only'
-            || ($preview['mutation_mode'] ?? null) === 'preview_only';
+            && ! $this->hasUnsafeApplyPreviewMetadata($details);
+    }
+
+    private function hasUnsafeApplyPreviewMetadata(array $details): bool
+    {
+        $preview = $details['apply_preview'] ?? null;
+        if (! is_array($preview)) {
+            return false;
+        }
+
+        if ($this->previewFlagEnabled($preview['mutates_accepted_facts'] ?? null)) {
+            return true;
+        }
+
+        if ($this->hasAcceptedFactMutations($preview['accepted_fact_mutations'] ?? [])) {
+            return true;
+        }
+
+        $operations = $preview['operations'] ?? [];
+        if (! is_array($operations)) {
+            return false;
+        }
+
+        foreach ($operations as $operation) {
+            if (! is_array($operation)) {
+                continue;
+            }
+
+            if ($this->previewFlagEnabled($operation['mutates_accepted_facts'] ?? null)) {
+                return true;
+            }
+
+            if ($this->previewFlagEnabled($operation['apply_enabled'] ?? null)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function hasAcceptedFactMutations(mixed $acceptedFactMutations): bool
+    {
+        if (is_array($acceptedFactMutations)) {
+            return $acceptedFactMutations !== [];
+        }
+
+        return $acceptedFactMutations !== null
+            && $acceptedFactMutations !== false
+            && $acceptedFactMutations !== '';
+    }
+
+    private function previewFlagEnabled(mixed $value): bool
+    {
+        if ($value === null || $value === false || $value === 0 || $value === '') {
+            return false;
+        }
+
+        if (is_string($value)) {
+            return ! in_array(strtolower(trim($value)), ['0', 'false', 'no', 'off'], true);
+        }
+
+        return true;
     }
 
     private function hasIdentity(array $details): bool

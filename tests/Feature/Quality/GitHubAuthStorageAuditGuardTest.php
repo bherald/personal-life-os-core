@@ -112,13 +112,90 @@ class GitHubAuthStorageAuditGuardTest extends TestCase
         $calls = file($callLog, FILE_IGNORE_NEW_LINES);
 
         $this->assertCount(2, $calls);
-        $this->assertSame('GH_CONFIG_DIR='.$persistentConfigDir, $calls[0]);
+        $this->assertStringContainsString('GH_CONFIG_DIR='.$persistentConfigDir, $calls[0]);
         $this->assertStringStartsWith('GH_CONFIG_DIR=', $calls[1]);
 
-        $isolatedConfigDir = substr($calls[1], strlen('GH_CONFIG_DIR='));
+        $isolatedConfigDir = explode(' ', substr($calls[1], strlen('GH_CONFIG_DIR=')), 2)[0];
 
         $this->assertNotSame($persistentConfigDir, $isolatedConfigDir);
         $this->assertStringContainsString('plos-gh-auth-session.', $isolatedConfigDir);
+    }
+
+    public function test_env_host_is_used_for_persistent_and_isolated_auth_checks(): void
+    {
+        $fixture = $this->makeFixture();
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runGuard($fixture, ['--require-session-token'], [
+            'GH_AUTH_AUDIT_HOST' => 'github.internal.example',
+            'GH_TOKEN' => 'session-secret',
+            'FAKE_GH_CALL_LOG' => $callLog,
+        ]);
+
+        $this->assertSame(0, $result->getExitCode());
+        $this->assertStringContainsString('INFO: GitHub host: github.internal.example', $result->getOutput());
+        $this->assertStringNotContainsString('session-secret', $result->getOutput());
+
+        $calls = file($callLog, FILE_IGNORE_NEW_LINES);
+
+        $this->assertCount(2, $calls);
+        $this->assertStringContainsString('HOST=github.internal.example', $calls[0]);
+        $this->assertStringContainsString('HOST=github.internal.example', $calls[1]);
+    }
+
+    public function test_cli_host_overrides_env_host_for_persistent_and_isolated_auth_checks(): void
+    {
+        $fixture = $this->makeFixture();
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runGuard($fixture, ['--host', 'github.enterprise.example', '--require-session-token'], [
+            'GH_AUTH_AUDIT_HOST' => 'github.internal.example',
+            'GH_TOKEN' => 'session-secret',
+            'FAKE_GH_CALL_LOG' => $callLog,
+        ]);
+
+        $this->assertSame(0, $result->getExitCode());
+        $this->assertStringContainsString('INFO: GitHub host: github.enterprise.example', $result->getOutput());
+        $this->assertStringNotContainsString('github.internal.example', $result->getOutput());
+        $this->assertStringNotContainsString('session-secret', $result->getOutput());
+
+        $calls = file($callLog, FILE_IGNORE_NEW_LINES);
+
+        $this->assertCount(2, $calls);
+        $this->assertStringContainsString('HOST=github.enterprise.example', $calls[0]);
+        $this->assertStringContainsString('HOST=github.enterprise.example', $calls[1]);
+    }
+
+    public function test_option_like_env_host_fails_before_invoking_gh(): void
+    {
+        $fixture = $this->makeFixture();
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runGuard($fixture, [], [
+            'GH_AUTH_AUDIT_HOST' => '--help',
+            'FAKE_GH_CALL_LOG' => $callLog,
+        ]);
+
+        $this->assertSame(2, $result->getExitCode());
+        $this->assertStringContainsString('GitHub host must be a hostname', $result->getErrorOutput());
+        $this->assertFileDoesNotExist($callLog);
+        $this->assertStringNotContainsString('Token:', $result->getOutput().$result->getErrorOutput());
+    }
+
+    public function test_option_like_cli_host_fails_before_invoking_gh(): void
+    {
+        $fixture = $this->makeFixture();
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runGuard($fixture, ['--host', '--require-session-token'], [
+            'FAKE_GH_CALL_LOG' => $callLog,
+            'GH_TOKEN' => 'session-secret',
+        ]);
+
+        $this->assertSame(2, $result->getExitCode());
+        $this->assertStringContainsString('Usage:', $result->getErrorOutput());
+        $this->assertFileDoesNotExist($callLog);
+        $this->assertStringNotContainsString('session-secret', $result->getOutput().$result->getErrorOutput());
     }
 
     public function test_require_workflow_scope_fails_when_scope_is_not_reported(): void
@@ -204,8 +281,17 @@ class GitHubAuthStorageAuditGuardTest extends TestCase
         file_put_contents($bin.'/gh', <<<'SH'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+    host=""
+    for ((i = 3; i <= $#; i++)); do
+        arg="${!i}"
+        if [[ "$arg" == "-h" || "$arg" == "--hostname" ]]; then
+            next=$((i + 1))
+            host="${!next:-}"
+            break
+        fi
+    done
     if [[ -n "${FAKE_GH_CALL_LOG:-}" ]]; then
-        printf 'GH_CONFIG_DIR=%s\n' "${GH_CONFIG_DIR:-}" >> "$FAKE_GH_CALL_LOG"
+        printf 'GH_CONFIG_DIR=%s HOST=%s\n' "${GH_CONFIG_DIR:-}" "$host" >> "$FAKE_GH_CALL_LOG"
     fi
     if [[ -n "${FAKE_GH_FAIL_ISOLATED:-}" && "${GH_CONFIG_DIR:-}" == *plos-gh-auth-session.* ]]; then
         echo "Logged in to github.com"

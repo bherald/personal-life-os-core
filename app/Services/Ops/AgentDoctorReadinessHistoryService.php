@@ -284,6 +284,7 @@ class AgentDoctorReadinessHistoryService
             'scheduled_success_runs_window' => 0,
             'scheduled_empty_success_outputs_window' => 0,
             'scheduled_cjk_output_runs_window' => 0,
+            'scheduled_non_ascii_output_runs_window' => 0,
             'scheduled_guarded_output_runs_window' => 0,
         ];
     }
@@ -301,6 +302,7 @@ class AgentDoctorReadinessHistoryService
             'scheduled_success_runs_window' => max(0, (int) ($value['scheduled_success_runs_window'] ?? 0)),
             'scheduled_empty_success_outputs_window' => max(0, (int) ($value['scheduled_empty_success_outputs_window'] ?? 0)),
             'scheduled_cjk_output_runs_window' => max(0, (int) ($value['scheduled_cjk_output_runs_window'] ?? 0)),
+            'scheduled_non_ascii_output_runs_window' => max(0, (int) ($value['scheduled_non_ascii_output_runs_window'] ?? 0)),
             'scheduled_guarded_output_runs_window' => max(0, (int) ($value['scheduled_guarded_output_runs_window'] ?? 0)),
         ];
     }

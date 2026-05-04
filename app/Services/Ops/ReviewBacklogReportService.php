@@ -106,6 +106,128 @@ class ReviewBacklogReportService
         return $payload;
     }
 
+    public function nextTarget(int $staleDays = 7, int $highPriorityThreshold = 8, bool $dryRun = false): array
+    {
+        $staleDays = max(1, $staleDays);
+        $highPriorityThreshold = max(1, $highPriorityThreshold);
+
+        $payload = [
+            'version' => 1,
+            'mode' => 'observe',
+            'status' => 'observe_ok',
+            'dry_run' => $dryRun,
+            'queries_executed' => false,
+            'query_state' => $dryRun ? 'dry_run_no_queries' : 'not_started',
+            'stale_days' => $staleDays,
+            'high_priority_threshold' => $highPriorityThreshold,
+            'captured_at' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
+            'next_target' => null,
+        ];
+
+        if ($dryRun) {
+            return $payload;
+        }
+
+        if (! Schema::hasTable('agent_review_queue')) {
+            $payload['status'] = 'blocked';
+            $payload['query_state'] = 'blocked_missing_table';
+
+            return $payload;
+        }
+
+        $payload['queries_executed'] = true;
+
+        $rows = DB::table('agent_review_queue')
+            ->select(['id', 'token', 'review_type', 'finding_type', 'priority', 'created_at', 'details'])
+            ->where('status', 'pending')
+            ->orderBy('created_at')
+            ->limit(500)
+            ->get();
+
+        $candidates = [];
+        foreach ($rows as $row) {
+            $candidates[] = $this->nextTargetCandidate($row, $staleDays, $highPriorityThreshold);
+        }
+        $candidates = array_values(array_filter($candidates));
+
+        if ($candidates === []) {
+            $payload['query_state'] = 'no_pending_review_rows';
+
+            return $payload;
+        }
+
+        usort($candidates, fn (array $left, array $right): int => $this->compareNextTargetCandidates($left, $right));
+        $target = $candidates[0];
+
+        unset($target['_sort_rank'], $target['_sort_created_ts'], $target['_sort_priority']);
+
+        $payload['status'] = 'review_required';
+        $payload['query_state'] = 'next_target_selected';
+        $payload['next_target'] = $target;
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    public function toNextTargetText(array $payload): string
+    {
+        $target = is_array($payload['next_target'] ?? null) ? $payload['next_target'] : null;
+        if ($target === null) {
+            return sprintf(
+                'Review backlog next target: %s query_state=%s target=none captured=%s',
+                $payload['status'] ?? 'unknown',
+                $payload['query_state'] ?? 'unknown',
+                $payload['captured_at'] ?? '-',
+            )."\n";
+        }
+
+        return sprintf(
+            'Review backlog next target: %s unified_id=%s type=%s finding=%s classification=%s priority=%s created=%s action=%s',
+            $payload['status'] ?? 'unknown',
+            $target['unified_id'] ?? 'unknown',
+            $target['review_type'] ?? 'unknown',
+            $target['finding_type'] ?? 'none',
+            $target['classification'] ?? 'unknown',
+            $target['priority'] ?? 0,
+            $target['created_at'] ?? 'unknown',
+            $target['next_action'] ?? 'Review one at a time.',
+        )."\n";
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    public function toNextTargetMarkdown(array $payload): string
+    {
+        $target = is_array($payload['next_target'] ?? null) ? $payload['next_target'] : null;
+        if ($target === null) {
+            return implode("\n", [
+                '# Review Backlog Next Target',
+                '',
+                '- Status: `'.($payload['status'] ?? 'unknown').'`',
+                '- Query state: `'.($payload['query_state'] ?? 'unknown').'`',
+                '- Target: `none`',
+                '',
+            ]);
+        }
+
+        return implode("\n", [
+            '# Review Backlog Next Target',
+            '',
+            '- Status: `'.($payload['status'] ?? 'unknown').'`',
+            '- Unified ID: `'.($target['unified_id'] ?? 'unknown').'`',
+            '- Review type: `'.($target['review_type'] ?? 'unknown').'`',
+            '- Finding type: `'.($target['finding_type'] ?? 'none').'`',
+            '- Classification: `'.($target['classification'] ?? 'unknown').'`',
+            '- Priority: `'.($target['priority'] ?? 0).'`',
+            '- Created: `'.($target['created_at'] ?? 'unknown').'`',
+            '- Next action: '.($target['next_action'] ?? 'Review one at a time.'),
+            '',
+        ]);
+    }
+
     public function toMarkdown(array $payload): string
     {
         $summary = $payload['summary'] ?? [];
@@ -1110,6 +1232,126 @@ class ReviewBacklogReportService
         }
 
         return $recommendations;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function nextTargetCandidate(object $row, int $staleDays, int $highPriorityThreshold): array
+    {
+        $reviewType = $this->nullableString($row->review_type ?? null) ?? 'unknown';
+        $findingType = $this->nullableString($row->finding_type ?? null);
+        $priority = (int) ($row->priority ?? 0);
+        $createdAt = $this->nullableString($row->created_at ?? null);
+        $isHighPriority = $priority >= $highPriorityThreshold;
+        $isStale = $this->isStaleCreatedAt($createdAt, $staleDays);
+        [$classification, $nextAction] = $this->classificationNeeded($reviewType, $findingType);
+
+        if ($isHighPriority) {
+            $classification = 'high_priority_pending_review';
+            $nextAction = 'Review one high-priority pending row first; classify only, and do not bulk approve or reject.';
+        }
+
+        $details = json_decode((string) ($row->details ?? ''), true);
+        $malformedDetails = ! is_array($details);
+        $details = is_array($details) ? $details : [];
+        $hasApplyPreview = is_array($details['apply_preview'] ?? null);
+        $familySignals = $this->familyContextSignals($details);
+        $hasFamilyContext = in_array(true, $familySignals, true);
+        $hasSourceContext = $this->hasSourceProposedChangeIds($details);
+        $hasSourceIds = $this->hasSourceDuplicateIds($details);
+        $hasFamilyIds = $this->hasFamilyRemediationIds($details);
+        $hasChangeTypeTypo = false;
+        foreach ($this->changeTypes($details) as $changeType) {
+            if (isset(self::CHANGE_TYPE_TYPO_SUGGESTIONS[$changeType])) {
+                $hasChangeTypeTypo = true;
+                break;
+            }
+        }
+
+        return [
+            'unified_id' => $this->unifiedReviewId($row, $reviewType),
+            'review_type' => $reviewType,
+            'finding_type' => $findingType,
+            'classification' => $classification,
+            'created_at' => $createdAt,
+            'priority' => $priority,
+            'next_action' => $nextAction,
+            'evidence_flags' => [
+                'stale' => $isStale,
+                'high_priority' => $isHighPriority,
+                'typed_remediation' => in_array($findingType, self::REMEDIATION_FINDING_TYPES, true),
+                'source_backed_context' => $reviewType === 'genealogy_finding'
+                    || $reviewType === 'source_add'
+                    || ($findingType !== null && str_contains($findingType, 'genealogy')),
+                'has_apply_preview' => $hasApplyPreview,
+                'preview_only' => $this->isPreviewOnly($details),
+                'supported_preview_operation' => $this->supportedPreviewOperations($details) !== [],
+                'context_ready_without_preview' => ($hasSourceContext || $hasFamilyContext) && ! $hasApplyPreview,
+                'without_materialized_ids' => ! $hasSourceIds && ! $hasFamilyIds,
+                'malformed_details' => $malformedDetails,
+                'possible_change_type_typo' => $hasChangeTypeTypo,
+            ],
+            '_sort_rank' => $this->nextTargetRank($classification, $isHighPriority, $isStale),
+            '_sort_created_ts' => $createdAt !== null ? strtotime($createdAt) ?: PHP_INT_MAX : PHP_INT_MAX,
+            '_sort_priority' => $priority,
+        ];
+    }
+
+    private function compareNextTargetCandidates(array $left, array $right): int
+    {
+        foreach (['_sort_rank', '_sort_created_ts'] as $key) {
+            $comparison = ((int) ($left[$key] ?? 0)) <=> ((int) ($right[$key] ?? 0));
+            if ($comparison !== 0) {
+                return $comparison;
+            }
+        }
+
+        return ((int) ($right['_sort_priority'] ?? 0)) <=> ((int) ($left['_sort_priority'] ?? 0));
+    }
+
+    private function nextTargetRank(string $classification, bool $isHighPriority, bool $isStale): int
+    {
+        if ($isHighPriority) {
+            return 0;
+        }
+
+        if (! $isStale) {
+            return 50;
+        }
+
+        return match ($classification) {
+            'stale_infrastructure_relevance_check' => 1,
+            'typed_preview_needed' => 2,
+            'source_backed_packet_needed' => 3,
+            'actionable_or_obsolete_triage' => 4,
+            'routine_stale_review' => 5,
+            default => 10,
+        };
+    }
+
+    private function unifiedReviewId(object $row, string $reviewType): string
+    {
+        $token = $this->nullableString($row->token ?? null);
+        if ($token !== null) {
+            return $reviewType.':'.$token;
+        }
+
+        return $reviewType.':'.(int) ($row->id ?? 0);
+    }
+
+    private function isStaleCreatedAt(?string $createdAt, int $staleDays): bool
+    {
+        if ($createdAt === null) {
+            return false;
+        }
+
+        $createdTs = strtotime($createdAt);
+        if ($createdTs === false) {
+            return false;
+        }
+
+        return $createdTs <= now()->subDays($staleDays)->getTimestamp();
     }
 
     /**

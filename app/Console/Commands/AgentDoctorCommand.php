@@ -18,8 +18,15 @@ class AgentDoctorCommand extends Command
 
     public function handle(AgentDoctorService $doctor): int
     {
+        $windowHours = filter_var($this->option('since'), FILTER_VALIDATE_INT);
+        if (! is_int($windowHours) || $windowHours < 1 || $windowHours > 168) {
+            $this->error('Since must be an integer from 1 to 168 hours.');
+
+            return self::INVALID;
+        }
+
         $payload = $doctor->collect(
-            windowHours: (int) $this->option('since'),
+            windowHours: $windowHours,
             agent: $this->option('agent') ? (string) $this->option('agent') : null,
             quick: (bool) $this->option('quick')
         );
@@ -56,10 +63,11 @@ class AgentDoctorCommand extends Command
             (int) $summary['review_queue_pending'],
         ));
         $this->line(sprintf(
-            'Scheduled output: success_runs=%d  empty_success=%d  cjk_signals=%d  guarded=%d',
+            'Scheduled output: success_runs=%d  empty_success=%d  cjk_signals=%d  non_ascii_markers=%d  guarded=%d',
             (int) ($summary['scheduled_success_runs_window'] ?? 0),
             (int) ($summary['scheduled_empty_success_outputs_window'] ?? 0),
             (int) ($summary['scheduled_cjk_output_runs_window'] ?? 0),
+            (int) ($summary['scheduled_non_ascii_output_runs_window'] ?? 0),
             (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
         ));
         $this->line(sprintf(
@@ -128,6 +136,7 @@ class AgentDoctorCommand extends Command
     {
         $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
         $recursion = is_array($payload['recursion'] ?? null) ? $payload['recursion'] : [];
+        $trace = is_array($payload['trace'] ?? null) ? $payload['trace'] : [];
         $agents = is_array($payload['agents'] ?? null) ? $payload['agents'] : [];
 
         return [
@@ -152,6 +161,7 @@ class AgentDoctorCommand extends Command
                 'success_runs' => (int) ($summary['scheduled_success_runs_window'] ?? 0),
                 'empty_success' => (int) ($summary['scheduled_empty_success_outputs_window'] ?? 0),
                 'cjk_signals' => (int) ($summary['scheduled_cjk_output_runs_window'] ?? 0),
+                'non_ascii_markers' => (int) ($summary['scheduled_non_ascii_output_runs_window'] ?? 0),
                 'guarded' => (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
             ],
             'memory_evidence' => [
@@ -166,6 +176,17 @@ class AgentDoctorCommand extends Command
                 'calls_7d' => (int) ($recursion['calls_7d'] ?? 0),
                 'move_on_rate_7d' => $recursion['move_on_rate_7d'] ?? null,
                 'master_enabled' => $recursion['master_enabled'] ?? null,
+            ],
+            'trace_readiness' => [
+                'status' => (string) ($trace['status'] ?? 'unknown'),
+                'enabled' => (bool) ($trace['enabled'] ?? false),
+                'scan_status' => (string) ($trace['scan_status'] ?? 'unknown'),
+                'directory_writable' => (bool) ($trace['directory_writable'] ?? false),
+                'retention_days' => (int) ($trace['retention_days'] ?? 0),
+                'files_over_retention' => (int) ($trace['files_over_retention'] ?? 0),
+                'events_24h' => $trace['events_24h'] ?? null,
+                'events_24h_exact' => (bool) ($trace['events_24h_exact'] ?? false),
+                'malformed_lines_24h' => $trace['malformed_lines_24h'] ?? null,
             ],
             'top_agents' => [
                 'critical' => $this->topAgentIds($agents, 'critical'),
@@ -200,6 +221,7 @@ class AgentDoctorCommand extends Command
         $scheduledOutput = $compact['scheduled_output'];
         $memory = $compact['memory_evidence'];
         $recursion = $compact['recursion'];
+        $trace = $compact['trace_readiness'];
         $topAgents = $compact['top_agents'];
         $moveOnRate = $recursion['move_on_rate_7d'] ?? null;
         $masterEnabled = match ($recursion['master_enabled'] ?? null) {
@@ -220,10 +242,11 @@ class AgentDoctorCommand extends Command
             (int) ($reviewQueue['pending'] ?? 0),
         ));
         $this->line(sprintf(
-            'Scheduled output: success_runs=%d  empty_success=%d  cjk_signals=%d  guarded=%d',
+            'Scheduled output: success_runs=%d  empty_success=%d  cjk_signals=%d  non_ascii_markers=%d  guarded=%d',
             (int) ($scheduledOutput['success_runs'] ?? 0),
             (int) ($scheduledOutput['empty_success'] ?? 0),
             (int) ($scheduledOutput['cjk_signals'] ?? 0),
+            (int) ($scheduledOutput['non_ascii_markers'] ?? 0),
             (int) ($scheduledOutput['guarded'] ?? 0),
         ));
         $this->line(sprintf(
@@ -241,6 +264,18 @@ class AgentDoctorCommand extends Command
             $moveOnRate === null ? 'n/a' : number_format((float) $moveOnRate * 100, 1).'%',
             $masterEnabled,
         ));
+        $this->line(sprintf(
+            'Trace readiness: %s  enabled=%s  scan=%s  writable=%s  retention_days=%d  files_over_retention=%d  events_24h=%s  exact=%s  malformed=%s',
+            strtoupper((string) ($trace['status'] ?? 'unknown')),
+            $this->boolWord($trace['enabled'] ?? false),
+            (string) ($trace['scan_status'] ?? 'unknown'),
+            $this->boolWord($trace['directory_writable'] ?? false),
+            (int) ($trace['retention_days'] ?? 0),
+            (int) ($trace['files_over_retention'] ?? 0),
+            $trace['events_24h'] === null ? 'n/a' : (string) $trace['events_24h'],
+            $this->boolWord($trace['events_24h_exact'] ?? false),
+            $trace['malformed_lines_24h'] === null ? 'n/a' : (string) $trace['malformed_lines_24h'],
+        ));
         $this->line('Critical agents: '.$this->formatAgentIdList($topAgents['critical'] ?? []));
         $this->line('Warning agents: '.$this->formatAgentIdList($topAgents['warning'] ?? []));
     }
@@ -251,5 +286,10 @@ class AgentDoctorCommand extends Command
     private function formatAgentIdList(array $agentIds): string
     {
         return $agentIds === [] ? 'none' : implode(', ', $agentIds);
+    }
+
+    private function boolWord(mixed $value): string
+    {
+        return $value === true ? 'yes' : 'no';
     }
 }

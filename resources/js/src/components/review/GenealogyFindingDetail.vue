@@ -113,6 +113,59 @@
       <div class="text-sm text-ops-text-muted italic">No structured field diffs available for this proposal.</div>
     </section>
 
+    <section v-if="isTypedRemediationAdvisory" class="typed-preview-section">
+      <div class="typed-preview-heading">
+        <span>Typed remediation preview</span>
+        <span class="typed-preview-status">inspection only</span>
+      </div>
+      <div class="typed-preview-note">
+        This row is advisory. The preview is generated for inspection only and does not write back to queue details or canonical genealogy data.
+      </div>
+
+      <div class="typed-preview-meta">
+        <span>persisted: {{ String(typedPreviewMeta.persisted === true) }}</span>
+        <span>generated: {{ String(typedPreviewMeta.generated === true) }}</span>
+        <span>writeback: {{ String(typedPreviewMeta.writeback === true) }}</span>
+        <span>mutates accepted facts: {{ String(typedRemediationPreview.mutates_accepted_facts === true) }}</span>
+      </div>
+
+      <div v-if="typedPreviewSummaryRows.length" class="typed-preview-kv">
+        <div v-for="row in typedPreviewSummaryRows" :key="row.key" class="typed-preview-kv-row">
+          <span class="typed-preview-kv-key">{{ row.label }}</span>
+          <span class="typed-preview-kv-value">{{ row.value }}</span>
+        </div>
+      </div>
+
+      <div v-if="typedPreviewOperations.length" class="typed-preview-ops">
+        <div v-for="(operation, idx) in typedPreviewOperations" :key="typedPreviewOperationKey(operation, idx)" class="typed-preview-op">
+          <div class="typed-preview-op-head">
+            <span class="typed-preview-op-name">{{ operation.operation || `operation ${idx + 1}` }}</span>
+            <span v-if="operation.operation_type" class="typed-preview-op-pill">{{ operation.operation_type }}</span>
+            <span v-if="operation.status" class="typed-preview-op-pill">{{ operation.status }}</span>
+          </div>
+          <div class="typed-preview-kv compact">
+            <div v-for="row in typedPreviewOperationRows(operation)" :key="row.key" class="typed-preview-kv-row">
+              <span class="typed-preview-kv-key">{{ row.label }}</span>
+              <span class="typed-preview-kv-value">{{ row.value }}</span>
+            </div>
+          </div>
+          <div v-if="typedPreviewGuards(operation).length" class="typed-preview-guards">
+            <div
+              v-for="(guard, guardIdx) in typedPreviewGuards(operation)"
+              :key="typedPreviewGuardKey(guard, guardIdx)"
+              class="typed-preview-guard"
+              :class="typedPreviewGuardClass(guard)"
+            >
+              <span>{{ guard.name || `guard ${guardIdx + 1}` }}</span>
+              <span>{{ guard.status || 'unknown' }}</span>
+              <span>{{ guard.message || '-' }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-else class="typed-preview-empty">No preview operations were generated.</div>
+    </section>
+
     <!-- Phase 2: FAN cluster overlap (only when there are matches) -->
     <FANClusterOverlap :overlap="context.fan_overlap || []" />
 
@@ -150,6 +203,7 @@
         :title="hasAnyDecision ? 'POST per-field decisions to /apply-fields' : 'Mark at least one row accept or reject'"
       >Apply selected ({{ acceptedCount + rejectedCount }})</button>
       <button
+        v-if="!isTypedRemediationAdvisory"
         type="button"
         class="ops-btn ops-btn-green"
         :disabled="actioning"
@@ -260,10 +314,38 @@ const decisions = reactive({})
 const freeTextNotes = ref('')
 const applyError = ref(null)
 
-// Per-field accept is wired only for genealogy_finding (Phase 3 scope).
+const typedRemediationPreview = computed(() => objectValue(props.context?.typed_remediation_preview))
+const typedPreviewMeta = computed(() => objectValue(props.context?.typed_remediation_preview_meta))
+const isTypedRemediationAdvisory = computed(
+  () => Object.keys(typedRemediationPreview.value).length > 0
+       || typedPreviewMeta.value.generated === true
+)
+const typedPreviewOperations = computed(
+  () => arrayValue(typedRemediationPreview.value.operations).filter(isPlainObject)
+)
+const typedPreviewSummaryRows = computed(() => {
+  const rows = []
+  for (const key of ['status', 'operation_count']) {
+    if (typedRemediationPreview.value[key] !== undefined) {
+      rows.push(toKvRow(key, typedRemediationPreview.value[key]))
+    }
+  }
+  const summary = objectValue(typedRemediationPreview.value.summary)
+  for (const row of kvRows(summary)) {
+    rows.push({
+      ...row,
+      key: `summary.${row.key}`,
+      label: `summary ${row.label}`,
+    })
+  }
+  return rows
+})
+
+// Per-field accept is wired only for non-advisory genealogy_finding rows.
 const canPerFieldApply = computed(
   () => props.context?.item?.review_type === 'genealogy_finding'
        && fieldDiffs.value.length > 0
+       && !isTypedRemediationAdvisory.value
 )
 
 watch(() => props.context?.item?.unified_id, () => {
@@ -287,6 +369,73 @@ function setReasonCode(idx, value) {
 }
 function setConflictChoice(idx, value) {
   ensureDecision(idx).conflictChoice = value
+}
+
+function objectValue(value) {
+  return isPlainObject(value) ? value : {}
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : []
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function kvRows(value) {
+  if (!isPlainObject(value)) return []
+  return Object.entries(value)
+    .filter(([_, val]) => val !== undefined)
+    .map(([key, val]) => toKvRow(key, val))
+}
+
+function toKvRow(key, value) {
+  return {
+    key,
+    label: String(key).replace(/_/g, ' '),
+    value: displayValue(value),
+  }
+}
+
+function displayValue(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  if (value === true) return 'true'
+  if (value === false) return 'false'
+  if (Array.isArray(value) || isPlainObject(value)) return compactJson(value)
+  return String(value)
+}
+
+function compactJson(value) {
+  try {
+    return JSON.stringify(value)
+  } catch (e) {
+    return String(value)
+  }
+}
+
+function typedPreviewOperationKey(operation, idx) {
+  return `${operation.index ?? operation.operation ?? 'operation'}-${idx}`
+}
+
+function typedPreviewOperationRows(operation) {
+  const hidden = ['index', 'operation', 'operation_type', 'guards', 'current_state', 'proposed_effect']
+  return kvRows(operation).filter((row) => !hidden.includes(row.key))
+}
+
+function typedPreviewGuards(operation) {
+  return arrayValue(operation?.guards).filter(isPlainObject)
+}
+
+function typedPreviewGuardKey(guard, idx) {
+  return `${guard.name || 'guard'}-${guard.status || 'status'}-${idx}`
+}
+
+function typedPreviewGuardClass(guard) {
+  const status = String(guard?.status || '').toLowerCase()
+  if (status === 'pass') return 'guard-pass'
+  if (status === 'fail') return 'guard-fail'
+  return 'guard-warn'
 }
 
 const acceptedCount = computed(
@@ -504,6 +653,125 @@ const confidenceClass = computed(() => {
   font-weight: 600;
 }
 .col-status { text-align: right; }
+.typed-preview-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  background: rgba(93, 169, 255, 0.08);
+  border: 1px solid rgba(93, 169, 255, 0.28);
+  border-radius: 0.5rem;
+}
+.typed-preview-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: #bfe1ff;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.typed-preview-status,
+.typed-preview-op-pill {
+  color: #b5f5b5;
+  background: rgba(0, 170, 0, 0.16);
+  border: 1px solid rgba(0, 170, 0, 0.28);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.typed-preview-note,
+.typed-preview-empty {
+  color: #b39ddb;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+.typed-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.typed-preview-meta span {
+  color: #d8ecff;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(102, 102, 102, 0.28);
+  border-radius: 0.25rem;
+  padding: 0.16rem 0.45rem;
+  font-size: 0.68rem;
+}
+.typed-preview-kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.35rem 0.6rem;
+}
+.typed-preview-kv.compact { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+.typed-preview-kv-row {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+}
+.typed-preview-kv-key {
+  color: #8fbfe8;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.typed-preview-kv-value {
+  color: #ffe5b3;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.typed-preview-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.typed-preview-op {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(102, 102, 102, 0.28);
+  border-radius: 0.375rem;
+}
+.typed-preview-op-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+.typed-preview-op-name {
+  color: #bfe1ff;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.typed-preview-guards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.typed-preview-guard {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.8fr) 4.5rem minmax(0, 1.6fr);
+  gap: 0.5rem;
+  align-items: start;
+  color: #d8ecff;
+  font-size: 0.72rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.25rem;
+  background: rgba(102, 102, 102, 0.12);
+}
+.typed-preview-guard.guard-pass { border-left: 3px solid #00aa00; }
+.typed-preview-guard.guard-fail { border-left: 3px solid #cc0000; }
+.typed-preview-guard.guard-warn { border-left: 3px solid #cc8800; }
 .detail-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .phase3-summary {
   display: flex;

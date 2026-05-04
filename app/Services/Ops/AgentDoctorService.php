@@ -250,6 +250,7 @@ class AgentDoctorService
         $successfulRuns = 0;
         $emptySuccessOutputs = 0;
         $cjkOutputRuns = 0;
+        $nonAsciiOutputRuns = 0;
         $guardedOutputRuns = 0;
 
         foreach ($runs as $run) {
@@ -269,6 +270,10 @@ class AgentDoctorService
                 $cjkOutputRuns++;
             }
 
+            if ($this->containsNonAsciiMarker($output)) {
+                $nonAsciiOutputRuns++;
+            }
+
             if ($this->containsAgentOutputGuard($output)) {
                 $guardedOutputRuns++;
             }
@@ -278,6 +283,7 @@ class AgentDoctorService
             'successful_runs_24h' => $successfulRuns,
             'empty_success_output_runs_24h' => $emptySuccessOutputs,
             'cjk_output_runs_24h' => $cjkOutputRuns,
+            'non_ascii_output_runs_24h' => $nonAsciiOutputRuns,
             'guarded_output_runs_24h' => $guardedOutputRuns,
         ];
     }
@@ -285,6 +291,11 @@ class AgentDoctorService
     private function containsCjkScript(string $value): bool
     {
         return preg_match('/[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]/u', $value) === 1;
+    }
+
+    private function containsNonAsciiMarker(string $value): bool
+    {
+        return preg_match('/[^\x00-\x7F]/u', $value) === 1;
     }
 
     private function containsAgentOutputGuard(string $value): bool
@@ -680,6 +691,11 @@ class AgentDoctorService
             $warnings[] = "{$cjkOutputs} scheduled output(s) contain CJK/non-English script markers";
         }
 
+        $nonAsciiOutputs = (int) ($scheduledJob['non_ascii_output_runs_24h'] ?? 0);
+        if ($nonAsciiOutputs > 0) {
+            $warnings[] = "{$nonAsciiOutputs} scheduled output(s) contain non-ASCII markers";
+        }
+
         $guardedOutputs = (int) ($scheduledJob['guarded_output_runs_24h'] ?? 0);
         if ($guardedOutputs > 0) {
             $warnings[] = "{$guardedOutputs} scheduled output(s) were suppressed by Agent Output Guard";
@@ -1034,6 +1050,7 @@ class AgentDoctorService
         $scheduledSuccessRuns = 0;
         $scheduledEmptySuccessOutputs = 0;
         $scheduledCjkOutputRuns = 0;
+        $scheduledNonAsciiOutputRuns = 0;
         $scheduledGuardedOutputRuns = 0;
 
         foreach ($agents as $agent) {
@@ -1050,6 +1067,7 @@ class AgentDoctorService
             $scheduledSuccessRuns += (int) ($agent['scheduled_job']['successful_runs_24h'] ?? 0);
             $scheduledEmptySuccessOutputs += (int) ($agent['scheduled_job']['empty_success_output_runs_24h'] ?? 0);
             $scheduledCjkOutputRuns += (int) ($agent['scheduled_job']['cjk_output_runs_24h'] ?? 0);
+            $scheduledNonAsciiOutputRuns += (int) ($agent['scheduled_job']['non_ascii_output_runs_24h'] ?? 0);
             $scheduledGuardedOutputRuns += (int) ($agent['scheduled_job']['guarded_output_runs_24h'] ?? 0);
             if (((int) ($agent['memory']['episodes_window'] ?? 0)) > 0 && ((int) ($agent['memory']['summaries_window'] ?? 0)) === 0) {
                 $memoryUndistilledEpisodes += (int) ($agent['memory']['episodes_window'] ?? 0);
@@ -1079,6 +1097,7 @@ class AgentDoctorService
             'scheduled_success_runs_window' => $scheduledSuccessRuns,
             'scheduled_empty_success_outputs_window' => $scheduledEmptySuccessOutputs,
             'scheduled_cjk_output_runs_window' => $scheduledCjkOutputRuns,
+            'scheduled_non_ascii_output_runs_window' => $scheduledNonAsciiOutputRuns,
             'scheduled_guarded_output_runs_window' => $scheduledGuardedOutputRuns,
         ];
     }
@@ -1110,6 +1129,7 @@ class AgentDoctorService
         }));
         $lowQualityProcedures = array_sum(array_map(fn (array $agent): int => (int) ($agent['memory']['procedures_low_quality'] ?? 0), $agents));
         $cjkOutputRuns = array_sum(array_map(fn (array $agent): int => (int) ($agent['scheduled_job']['cjk_output_runs_24h'] ?? 0), $agents));
+        $nonAsciiOutputRuns = array_sum(array_map(fn (array $agent): int => (int) ($agent['scheduled_job']['non_ascii_output_runs_24h'] ?? 0), $agents));
         $guardedOutputRuns = array_sum(array_map(fn (array $agent): int => (int) ($agent['scheduled_job']['guarded_output_runs_24h'] ?? 0), $agents));
 
         return [
@@ -1145,8 +1165,8 @@ class AgentDoctorService
             ),
             $this->check(
                 'agent_output_quality',
-                $cjkOutputRuns > 0 || $guardedOutputRuns > 0 ? 'warning' : 'ok',
-                "{$cjkOutputRuns} scheduled output(s) contain CJK/non-English script markers; {$guardedOutputRuns} guarded output(s)"
+                $cjkOutputRuns > 0 || $nonAsciiOutputRuns > 0 || $guardedOutputRuns > 0 ? 'warning' : 'ok',
+                "{$cjkOutputRuns} scheduled output(s) contain CJK/non-English script markers; {$nonAsciiOutputRuns} non-ASCII output(s); {$guardedOutputRuns} guarded output(s)"
             ),
         ];
     }
@@ -1259,6 +1279,7 @@ class AgentDoctorService
             'successful_runs_24h' => 0,
             'empty_success_output_runs_24h' => 0,
             'cjk_output_runs_24h' => 0,
+            'non_ascii_output_runs_24h' => 0,
             'guarded_output_runs_24h' => 0,
         ];
     }

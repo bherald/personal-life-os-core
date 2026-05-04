@@ -245,6 +245,7 @@ class NewsPushoverProofCommand extends Command
             'provider' => $this->stringOrNull($meta['provider'] ?? null),
             'priority' => $this->intOrNull($meta['priority'] ?? null),
             'format_type' => $this->stringOrNull($data['format_type'] ?? $meta['format_type'] ?? null),
+            'source_group' => $this->stringOrNull($data['source_group'] ?? $meta['source_group'] ?? null),
             'notification_sent' => $this->boolOrNull($data['notification_sent'] ?? null),
             'notification_suppressed' => $this->boolOrNull($data['notification_suppressed'] ?? null),
             'total_parts' => $this->intOrNull($data['total_parts'] ?? null),
@@ -465,6 +466,19 @@ class NewsPushoverProofCommand extends Command
             $inconclusive[] = (string) ($pushover['reason'] ?? 'Pushover notification delivery proof is inconclusive.');
         }
 
+        $totalParts = $this->intOrNull($pushover['total_parts'] ?? null);
+        if ($totalParts !== null && $totalParts > 1) {
+            $partProof = $report['part_number_proof'] ?? [];
+            if (! in_array(($partProof['state'] ?? null), ['exact_reverse_sequence'], true)) {
+                $inconclusive[] = (string) ($partProof['reason'] ?? 'Multipart part-number proof is inconclusive.');
+            }
+
+            $pacing = $report['pacing_config'] ?? [];
+            if (! in_array(($pacing['state'] ?? null), ['matches_current_config'], true)) {
+                $inconclusive[] = (string) ($pacing['reason'] ?? 'Multipart Pushover pacing proof is inconclusive.');
+            }
+        }
+
         $status = $fail !== [] ? 'fail' : ($inconclusive !== [] ? 'inconclusive' : 'pass');
 
         return [
@@ -605,6 +619,7 @@ class NewsPushoverProofCommand extends Command
                 'state' => $report['pushover']['state'] ?? null,
                 'notification_sent' => $report['pushover']['notification_sent'] ?? null,
                 'notification_suppressed' => $report['pushover']['notification_suppressed'] ?? null,
+                'source_group' => $report['pushover']['source_group'] ?? null,
                 'parts_sent' => $report['pushover']['parts_sent'] ?? null,
                 'total_parts' => $report['pushover']['total_parts'] ?? null,
                 'part_numbers_sent' => $report['pushover']['part_numbers_sent'] ?? [],
@@ -638,6 +653,7 @@ class NewsPushoverProofCommand extends Command
             .' reason='.$pushover['reason']
             .' sent='.var_export($pushover['notification_sent'], true)
             .' suppressed='.var_export($pushover['notification_suppressed'], true)
+            .' source_group='.($pushover['source_group'] ?? 'n/a')
             .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
             .' failed_parts='.implode(',', $pushover['part_numbers_failed'] ?? [])
             .' delay_s='.($pushover['inter_chunk_delay_seconds'] ?? 'n/a')
@@ -685,6 +701,7 @@ class NewsPushoverProofCommand extends Command
             .' state='.($pushover['proof_state'] ?? 'unknown')
             .' sent='.var_export($pushover['notification_sent'] ?? null, true)
             .' suppressed='.var_export($pushover['notification_suppressed'] ?? null, true)
+            .' source_group='.($pushover['source_group'] ?? 'n/a')
             .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
             .' failed_parts='.implode(',', $pushover['part_numbers_failed'] ?? [])
             .' delay_s='.($pushover['inter_chunk_delay_seconds'] ?? 'n/a')

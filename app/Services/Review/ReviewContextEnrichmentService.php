@@ -46,6 +46,23 @@ class ReviewContextEnrichmentService
         'genealogy_review_packet' => true,
     ];
 
+    private const TYPED_REMEDIATION_FINDING_TYPES = [
+        'data_quality_review',
+        'genealogy_data_quality',
+        'genealogy_source_cleanup',
+        'source_duplicate_cleanup',
+    ];
+
+    private const TYPED_REMEDIATION_CHANGE_TYPES = [
+        'data_quality_review',
+        'genealogy_data_quality',
+        'genealogy_source_cleanup',
+        'source_duplicate_cleanup',
+        'source_duplicate_mark',
+        'family_duplicate_mark',
+        'family_child_unlink',
+    ];
+
     /**
      * Phase 2: heuristic source-classification table (Mills trio).
      *
@@ -133,6 +150,9 @@ class ReviewContextEnrichmentService
                 'confidence' => $row->confidence !== null ? (float) $row->confidence : null,
                 'priority' => $row->priority !== null ? (int) $row->priority : null,
                 'status' => (string) ($row->status ?? 'pending'),
+                'finding_type' => isset($row->finding_type) && is_scalar($row->finding_type)
+                    ? (string) $row->finding_type
+                    : null,
                 'created_at' => $row->created_at,
                 'expires_at' => $row->expires_at,
                 'details' => $details,
@@ -159,7 +179,112 @@ class ReviewContextEnrichmentService
             $context = array_merge($context, $this->buildGenealogyReviewPacketContext($details));
         }
 
+        if ($type === 'genealogy_finding') {
+            $context = array_merge($context, $this->buildTypedRemediationFindingContext($row, $details));
+        }
+
         return $context;
+    }
+
+    /**
+     * Pending typed-remediation genealogy_finding rows are advisory until
+     * a later materialization/apply path exists. Generate a display-only
+     * preview from the current details payload, but never write it back to
+     * agent_review_queue.details and never advertise canonical writeback.
+     *
+     * @param  array<string, mixed>  $details
+     * @return array<string, mixed>
+     */
+    private function buildTypedRemediationFindingContext(object $row, array $details): array
+    {
+        if ((string) ($row->status ?? 'pending') !== 'pending'
+            || ! $this->isTypedRemediationFinding($row, $details)) {
+            return [];
+        }
+
+        $preview = $this->reviewPacketApplyPreview->preview($details);
+        $preview['generated_from_details'] = true;
+        $preview['persisted'] = false;
+
+        return [
+            'typed_remediation_preview' => $preview,
+            'typed_remediation_preview_meta' => [
+                'persisted' => false,
+                'generated' => true,
+                'source' => 'generated_from_finding_details',
+                'writeback' => false,
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     */
+    private function isTypedRemediationFinding(object $row, array $details): bool
+    {
+        $findingType = isset($row->finding_type) && is_scalar($row->finding_type)
+            ? trim((string) $row->finding_type)
+            : '';
+        if (in_array($findingType, self::TYPED_REMEDIATION_FINDING_TYPES, true)) {
+            return true;
+        }
+
+        foreach ($this->typedRemediationTypeCandidates($details) as $type) {
+            if (in_array($type, self::TYPED_REMEDIATION_CHANGE_TYPES, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @return array<int, string>
+     */
+    private function typedRemediationTypeCandidates(array $details): array
+    {
+        $candidates = [];
+        foreach (['change_type', 'operation_type', 'operation', 'type', 'finding_type'] as $key) {
+            $this->appendScalarTypeCandidate($candidates, $details[$key] ?? null);
+        }
+
+        foreach (['remediation', 'remediation_packet'] as $key) {
+            $value = $details[$key] ?? null;
+            if (! is_array($value)) {
+                continue;
+            }
+            foreach (['change_type', 'operation_type', 'operation', 'type'] as $nestedKey) {
+                $this->appendScalarTypeCandidate($candidates, $value[$nestedKey] ?? null);
+            }
+        }
+
+        foreach (['proposals', 'claims', 'remediations', 'remediation_packets'] as $key) {
+            $items = $details[$key] ?? null;
+            if (! is_array($items)) {
+                continue;
+            }
+            foreach ($items as $item) {
+                if (! is_array($item)) {
+                    continue;
+                }
+                foreach (['change_type', 'operation_type', 'operation', 'type'] as $nestedKey) {
+                    $this->appendScalarTypeCandidate($candidates, $item[$nestedKey] ?? null);
+                }
+            }
+        }
+
+        return array_values(array_unique($candidates));
+    }
+
+    /**
+     * @param  array<int, string>  $candidates
+     */
+    private function appendScalarTypeCandidate(array &$candidates, mixed $value): void
+    {
+        if (is_scalar($value) && trim((string) $value) !== '') {
+            $candidates[] = trim((string) $value);
+        }
     }
 
     /**

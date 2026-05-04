@@ -264,7 +264,7 @@ class GenealogyReviewPacketValidatorService
             }
         }
 
-        foreach (['sources', 'evidence_sources', 'citations', 'media'] as $key) {
+        foreach (['sources', 'source_locators', 'evidence_sources', 'citations', 'media'] as $key) {
             foreach ((array) ($packet[$key] ?? []) as $source) {
                 $sources = array_merge($sources, $this->normalizeSourceValue($source, $key));
             }
@@ -337,7 +337,7 @@ class GenealogyReviewPacketValidatorService
         }
 
         if (is_scalar($value) && trim((string) $value) !== '') {
-            return [[$fallbackKey => trim((string) $value), 'locator' => trim((string) $value)]];
+            return [$this->normalizeScalarSource(trim((string) $value), $fallbackKey)];
         }
 
         return [];
@@ -354,10 +354,38 @@ class GenealogyReviewPacketValidatorService
         }
 
         if (is_scalar($value) && trim((string) $value) !== '') {
-            return [$fallbackKey => trim((string) $value), 'locator' => trim((string) $value)];
+            return $this->normalizeScalarSource(trim((string) $value), $fallbackKey);
         }
 
         return null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function normalizeScalarSource(string $value, string $fallbackKey): array
+    {
+        $source = [$fallbackKey => $value];
+
+        if (in_array($fallbackKey, ['citation', 'citations'], true)) {
+            $source['citation'] = $value;
+        } elseif (in_array($fallbackKey, ['source_locator', 'source_locators'], true) || $this->looksLikeLocator($value)) {
+            $source['locator'] = $value;
+        }
+
+        return $source;
+    }
+
+    private function looksLikeLocator(string $value): bool
+    {
+        return preg_match('/^[a-z][a-z0-9+.-]*:\/\//i', $value) === 1
+            || preg_match('/^(ark:|doi:|urn:)/i', $value) === 1
+            || str_starts_with($value, '/')
+            || str_starts_with($value, './')
+            || str_starts_with($value, '../')
+            || str_starts_with($value, '~')
+            || preg_match('/^[A-Za-z]:[\/\\\\]/', $value) === 1
+            || preg_match('/\.(pdf|jpg|jpeg|png|tif|tiff|txt|md|csv|json|xml|ged|gedcom|html?)($|[?#])/i', $value) === 1;
     }
 
     /**

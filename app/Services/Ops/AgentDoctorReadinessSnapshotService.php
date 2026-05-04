@@ -161,6 +161,7 @@ class AgentDoctorReadinessSnapshotService
                 'scheduled_success_runs_window' => $this->boundedInt($summary['scheduled_success_runs_window'] ?? 0),
                 'scheduled_empty_success_outputs_window' => $this->boundedInt($summary['scheduled_empty_success_outputs_window'] ?? 0),
                 'scheduled_cjk_output_runs_window' => $this->boundedInt($summary['scheduled_cjk_output_runs_window'] ?? 0),
+                'scheduled_non_ascii_output_runs_window' => $this->boundedInt($summary['scheduled_non_ascii_output_runs_window'] ?? 0),
                 'scheduled_guarded_output_runs_window' => $this->boundedInt($summary['scheduled_guarded_output_runs_window'] ?? 0),
             ],
         ];

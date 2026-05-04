@@ -162,12 +162,14 @@ class PushoverNotify extends BaseNode
                 'part_numbers_failed' => $failedParts,
                 'format_type' => $formatType,
                 'has_url' => $url !== null,
+                'source_group' => $sourceGroup,
                 'inter_chunk_delay_seconds' => $interChunkDelaySeconds,
                 'max_retries_per_chunk' => $maxRetriesPerChunk,
             ], [
                 'provider' => 'pushover',
                 'priority' => $priority,
                 'format_type' => $formatType,
+                'source_group' => $sourceGroup,
             ]);
 
         } catch (Exception $e) {

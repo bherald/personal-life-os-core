@@ -13,6 +13,7 @@ class OpsReviewBacklogReportCommand extends Command
         {--markdown : Emit Markdown}
         {--json : Emit machine-readable JSON}
         {--compact : Emit routine-check compact output}
+        {--next-target : Emit one sanitized next review target only}
         {--dry-run : Validate command shape without running review backlog queries}';
 
     protected $description = 'Observe-only review backlog summary grouped by age, type, agent, and priority';
@@ -25,10 +26,45 @@ class OpsReviewBacklogReportCommand extends Command
             return self::FAILURE;
         }
 
+        $staleDays = (int) $this->option('stale-days');
+        $highPriority = (int) $this->option('high-priority');
+        $dryRun = (bool) $this->option('dry-run');
+
+        if ($this->option('next-target')) {
+            $payload = $report->nextTarget(
+                staleDays: $staleDays,
+                highPriorityThreshold: $highPriority,
+                dryRun: $dryRun
+            );
+
+            if ($this->option('json')) {
+                $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+                if ($json === false) {
+                    $this->error('Failed to encode review backlog next target JSON.');
+
+                    return self::FAILURE;
+                }
+
+                $this->line($json);
+
+                return self::SUCCESS;
+            }
+
+            if ($this->option('markdown')) {
+                $this->line($report->toNextTargetMarkdown($payload));
+
+                return self::SUCCESS;
+            }
+
+            $this->line($report->toNextTargetText($payload));
+
+            return self::SUCCESS;
+        }
+
         $payload = $report->collect(
-            staleDays: (int) $this->option('stale-days'),
-            highPriorityThreshold: (int) $this->option('high-priority'),
-            dryRun: (bool) $this->option('dry-run')
+            staleDays: $staleDays,
+            highPriorityThreshold: $highPriority,
+            dryRun: $dryRun
         );
 
         if ($this->option('json')) {

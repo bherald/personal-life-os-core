@@ -14,6 +14,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:review-backlog-report --compact',
     'ops:review-backlog-report --json --compact',
     'ops:review-backlog-report --markdown --compact',
+    'ops:review-backlog-report --next-target',
+    'ops:review-backlog-report --json --next-target',
     'ops:offline-status --json',
     'ops:offline-smoke --json',
     'ops:agent-doctor --json --since=24',
@@ -75,6 +77,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'rag:scale-baseline --markdown',
     'rag:scale-review --json',
     'rag:scale-review --markdown',
+    'rag:scale-review --compact',
+    'rag:scale-review --json --compact',
     'graph:audit-provenance --json',
     'graph:quality-metrics --stats --json',
   ]) {
@@ -90,11 +94,14 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:review-backlog-report --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --json --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --markdown --compact/);
+  assert.match(listing, /php artisan ops:review-backlog-report --next-target/);
+  assert.match(listing, /php artisan ops:review-backlog-report --json --next-target/);
   assert.match(listing, /php artisan ops:offline-smoke --json/);
   assert.match(listing, /php artisan ops:agent-doctor --json --since=24/);
   assert.match(listing, /php artisan ops:agent-doctor --compact/);
   assert.match(listing, /php artisan ops:agent-doctor --json --compact/);
   assert.match(listing, /php artisan plos:agent-doctor --compact/);
+  assert.match(listing, /php artisan plos:agent-doctor --json --compact/);
   assert.match(listing, /php artisan ops:agent-doctor-snapshot --dry-run --json/);
   assert.match(listing, /php artisan ops:agent-doctor-history --json --days=7/);
   assert.match(listing, /php artisan ops:mcp-health --compact/);
@@ -106,6 +113,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan rag:scale-baseline --json/);
   assert.match(listing, /php artisan rag:scale-review --json/);
   assert.match(listing, /php artisan rag:scale-review --markdown/);
+  assert.match(listing, /php artisan rag:scale-review --compact/);
+  assert.match(listing, /php artisan rag:scale-review --json --compact/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json/);
@@ -185,6 +194,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(reorderedCompactResult, /Blocked:/);
   assert.match(reorderedCompactResult, /Use command "list"/);
 
+  const arbitraryNextTargetVariantResult = await plosArtisan({
+    command: 'ops:review-backlog-report --next-target --include-details',
+    on_prod: false,
+  });
+
+  assert.match(arbitraryNextTargetVariantResult, /Blocked:/);
+  assert.match(arbitraryNextTargetVariantResult, /Use command "list"/);
+
   const arbitraryRunProofResult = await plosArtisan({
     command: 'news:pushover-proof --workflow=news_brief --run-id=1185 --json --compact',
     on_prod: false,
@@ -200,6 +217,22 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(ragScaleReviewFileResult, /Blocked:/);
   assert.match(ragScaleReviewFileResult, /Use command "list"/);
+
+  const ragScaleReviewReorderedCompactResult = await plosArtisan({
+    command: 'rag:scale-review --compact --json',
+    on_prod: false,
+  });
+
+  assert.match(ragScaleReviewReorderedCompactResult, /Blocked:/);
+  assert.match(ragScaleReviewReorderedCompactResult, /Use command "list"/);
+
+  const ragScaleReviewCompactFileResult = await plosArtisan({
+    command: 'rag:scale-review --json --compact --retrieval-file=/tmp/evidence.json',
+    on_prod: false,
+  });
+
+  assert.match(ragScaleReviewCompactFileResult, /Blocked:/);
+  assert.match(ragScaleReviewCompactFileResult, /Use command "list"/);
 
   const graphQualityRunResult = await plosArtisan({
     command: 'graph:quality-metrics --run --json',

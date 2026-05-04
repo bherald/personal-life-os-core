@@ -1,5 +1,14 @@
 <?php
 
+$filesystemMcpAllowedDirs = array_values(array_filter(
+    array_map('trim', explode(',', (string) env('FILESYSTEM_MCP_ALLOWED_DIRS', base_path('storage')))),
+    static fn (string $path): bool => $path !== ''
+));
+
+if ($filesystemMcpAllowedDirs === []) {
+    $filesystemMcpAllowedDirs = [base_path('storage')];
+}
+
 return [
     /*
     |--------------------------------------------------------------------------
@@ -869,9 +878,7 @@ return [
         'filesystem' => [
             'enabled' => true,
             'command' => base_path('node_modules/.bin/mcp-server-filesystem'),
-            'args' => [
-                env('FILESYSTEM_MCP_ALLOWED_DIRS', base_path('storage')),
-            ],
+            'args' => $filesystemMcpAllowedDirs,
             'env' => [],
             'tools' => 8,
             'description' => 'Secure local file operations',

@@ -21,6 +21,18 @@ return [
             'requires_human_review' => false,
             'stages' => ['chunk', 'compress', 'validate_json'],
         ],
+        'log_summarization' => [
+            'route' => 'local_first',
+            'model_role' => 'fast',
+            'purpose' => 'Summarize bounded operational logs into short diagnostic notes.',
+            'input_kind' => 'operational_log',
+            'output_schema' => 'diagnostic_summary_text',
+            'chunk_chars' => 12000,
+            'target_output_chars' => 1600,
+            'requires_human_review' => false,
+            'deterministic_validation' => false,
+            'stages' => ['bound_window', 'summarize', 'redact_sensitive_values'],
+        ],
         'ocr_cleanup' => [
             'route' => 'local_first',
             'model_role' => 'fast',

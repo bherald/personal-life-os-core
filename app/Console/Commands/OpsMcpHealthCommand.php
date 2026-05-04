@@ -91,11 +91,13 @@ class OpsMcpHealthCommand extends Command
             }
 
             $this->line(sprintf(
-                'attention=%s status=%s enabled=%s process_running=%s missing_entries=%d',
+                'attention=%s status=%s enabled=%s process_matchable=%s process_running=%s process_marker_count=%d missing_entries=%d',
                 (string) ($server['name'] ?? ''),
                 (string) ($server['status'] ?? 'unknown'),
                 ((bool) ($server['enabled'] ?? false)) ? 'true' : 'false',
+                ((bool) ($server['process_matchable'] ?? false)) ? 'true' : 'false',
                 ((bool) ($server['process_running'] ?? false)) ? 'true' : 'false',
+                (int) ($server['process_marker_count'] ?? 0),
                 (int) ($server['missing_entries'] ?? 0),
             ));
         }

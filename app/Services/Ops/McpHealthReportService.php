@@ -57,7 +57,9 @@ class McpHealthReportService
                     'status' => (string) ($server['status'] ?? 'unknown'),
                     'enabled' => (bool) ($server['enabled'] ?? false),
                     'transport' => (string) ($server['transport'] ?? 'unknown'),
+                    'process_matchable' => (bool) data_get($server, 'process.matchable', false),
                     'process_running' => (bool) data_get($server, 'process.running', false),
+                    'process_marker_count' => (int) data_get($server, 'process.marker_count', 0),
                     'missing_entries' => (int) ($server['missing_entries'] ?? 0),
                 ])
                 ->values()
@@ -80,7 +82,8 @@ class McpHealthReportService
         $entries = $this->entryChecks($args);
         $missingEntries = collect($entries)->where('exists', false)->count();
         $expectsProcess = $this->expectsProcess($server, $transport);
-        $matches = $expectsProcess ? $this->processMatches($command, $args, $process['lines']) : [];
+        $processMarkers = $expectsProcess ? $this->processMarkers($command, $args) : [];
+        $matches = $expectsProcess ? $this->processMatches($processMarkers, $process['lines']) : [];
 
         return [
             'name' => $name,
@@ -99,6 +102,8 @@ class McpHealthReportService
             'process' => [
                 'expected' => $expectsProcess,
                 'checked' => $process['available'],
+                'matchable' => $processMarkers !== [],
+                'marker_count' => count($processMarkers),
                 'running' => $matches !== [],
                 'matches' => count($matches),
             ],
@@ -214,11 +219,9 @@ class McpHealthReportService
     }
 
     /**
-     * @param  list<string>  $args
-     * @param  list<string>  $lines
      * @return list<string>
      */
-    private function processMatches(?string $command, array $args, array $lines): array
+    private function processMarkers(?string $command, array $args): array
     {
         $markers = [];
 
@@ -233,6 +236,16 @@ class McpHealthReportService
             }
         }
 
+        return array_values(array_unique($markers));
+    }
+
+    /**
+     * @param  list<string>  $markers
+     * @param  list<string>  $lines
+     * @return list<string>
+     */
+    private function processMatches(array $markers, array $lines): array
+    {
         if ($markers === [] || $lines === []) {
             return [];
         }

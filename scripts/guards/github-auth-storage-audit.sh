@@ -14,6 +14,14 @@ usage() {
     printf 'Target posture: use session-scoped GH_TOKEN/GITHUB_TOKEN for CLI/API work.\n'
 }
 
+validate_host() {
+    if [[ -z "$host" || "$host" == -* ]]; then
+        printf 'FAIL: GitHub host must be a hostname, not an empty or option-like value.\n' >&2
+        usage >&2
+        exit 2
+    fi
+}
+
 print_redacted_status() {
     local prefix="$1"
     local file="$2"
@@ -67,7 +75,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --host)
-            if [[ -z "${2:-}" ]]; then
+            if [[ -z "${2:-}" || "${2:-}" == -* ]]; then
                 usage >&2
                 exit 2
             fi
@@ -80,6 +88,8 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+validate_host
 
 config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
 gh_config_dir="${GH_CONFIG_DIR:-$config_home/gh}"

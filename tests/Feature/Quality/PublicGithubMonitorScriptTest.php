@@ -208,6 +208,38 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('Strict latest-workflows check: pass', $process->getOutput());
     }
 
+    public function test_traffic_endpoint_failure_is_redacted_and_informational(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+            ],
+            base_path(),
+            [
+                'GH_TOKEN' => 'fake-session-token',
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_TRAFFIC_VIEWS' => 'unavailable',
+            ]
+        );
+
+        $process->run();
+
+        $combined = $process->getOutput().$process->getErrorOutput();
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('views: unavailable', $process->getOutput());
+        $this->assertStringContainsString('clones: clones=77 uniques=27', $process->getOutput());
+        $this->assertStringNotContainsString('fake-session-token', $combined);
+        $this->assertStringNotContainsString('fake-gh-token', $combined);
+        $this->assertStringNotContainsString('traffic leaked stderr', $combined);
+    }
+
     public function test_strict_latest_workflows_passes_when_latest_runs_are_green(): void
     {
         $fixture = $this->makeFixture();
@@ -276,6 +308,7 @@ class PublicGithubMonitorScriptTest extends TestCase
             ],
             base_path(),
             [
+                'GH_TOKEN' => 'fake-session-token',
                 'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
                 'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
                 'PUBLIC_GITHUB_MONITOR_FAKE_RUN_LIST' => 'unavailable',
@@ -284,10 +317,15 @@ class PublicGithubMonitorScriptTest extends TestCase
 
         $process->run();
 
+        $combined = $process->getOutput().$process->getErrorOutput();
+
         $this->assertSame(1, $process->getExitCode());
         $this->assertStringContainsString("== Latest Workflow Status ==\nunavailable", $process->getOutput());
         $this->assertStringContainsString("== Recent Workflow Runs ==\nunavailable", $process->getOutput());
         $this->assertStringContainsString('STRICT FAIL: workflow runs unavailable', $process->getOutput());
+        $this->assertStringNotContainsString('fake-session-token', $combined);
+        $this->assertStringNotContainsString('fake-gh-token', $combined);
+        $this->assertStringNotContainsString('run list leaked stderr', $combined);
     }
 
     public function test_strict_latest_workflows_fails_when_workflow_run_listing_is_empty(): void
@@ -454,7 +492,7 @@ if [[ "${1:-}" == "run" && "${2:-}" == "list" ]]; then
     log_call "run list --repo ${4:-}"
     case "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_LIST:-available}" in
         unavailable)
-            printf 'run list unavailable\n' >&2
+            printf 'run list leaked stderr Token: fake-gh-token\n' >&2
             exit 1
             ;;
         empty)
@@ -479,6 +517,10 @@ if [[ "${1:-}" == "api" ]]; then
             printf 'disabled=false\n'
             ;;
         repos/example/personal-life-os-core/traffic/views)
+            if [[ "${PUBLIC_GITHUB_MONITOR_FAKE_TRAFFIC_VIEWS:-available}" == "unavailable" ]]; then
+                printf 'traffic leaked stderr Token: fake-gh-token\n' >&2
+                exit 1
+            fi
             printf 'views=49 uniques=1\n'
             ;;
         repos/example/personal-life-os-core/traffic/clones)

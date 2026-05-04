@@ -42,6 +42,37 @@
       <div v-else class="empty-line">No decision has been recorded.</div>
     </section>
 
+    <div v-if="hasPersonSnapshot || fieldDiffs.length" class="packet-context-grid">
+      <section v-if="hasPersonSnapshot" class="packet-section">
+        <div class="section-heading">
+          <span>On-file person</span>
+        </div>
+        <PersonSnapshotCard :person="personSnapshot" />
+      </section>
+
+      <section v-if="fieldDiffs.length" class="packet-section">
+        <div class="section-heading">
+          <span>Claim diffs</span>
+          <span class="section-count">{{ fieldDiffs.length }}</span>
+        </div>
+        <div class="packet-diff-heading">
+          <div class="col-label">Field</div>
+          <div class="col-label">On file</div>
+          <div class="col-label">Proposed</div>
+          <div class="col-label col-status">Status</div>
+        </div>
+        <div class="packet-diff-list">
+          <FieldCompareRow
+            v-for="(diff, idx) in fieldDiffs"
+            :key="fieldDiffKey(diff, idx)"
+            :diff="diff"
+            :classification="classificationForIndex(idx)"
+            :interactive="false"
+          />
+        </div>
+      </section>
+    </div>
+
     <section class="packet-section">
       <div class="section-heading">
         <span>Source locators</span>
@@ -454,6 +485,8 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import PersonSnapshotCard from './PersonSnapshotCard.vue'
+import FieldCompareRow from './FieldCompareRow.vue'
 
 const props = defineProps({
   context: { type: Object, required: true },
@@ -500,6 +533,13 @@ const validation = computed(() => objectValue(props.context?.validation, details
 const applyPreview = computed(() => objectValue(props.context?.apply_preview, details.value.apply_preview))
 const decisionLog = computed(() => arrayValue(props.context?.decision_log, details.value.decision_log).filter(isPlainObject))
 const mediaRefs = computed(() => arrayValue(props.context?.media_refs).filter(isPlainObject))
+const personSnapshot = computed(() => {
+  const person = props.context?.person
+  return isPlainObject(person) && Object.keys(person).length ? person : null
+})
+const hasPersonSnapshot = computed(() => personSnapshot.value !== null)
+const fieldDiffs = computed(() => arrayValue(props.context?.comparison?.field_diffs).filter(isPlainObject))
+const classifications = computed(() => arrayValue(props.context?.source_classifications).filter(isPlainObject))
 
 const packetStatus = computed(() => {
   const value = props.context?.packet_status ?? details.value.packet_status
@@ -684,6 +724,16 @@ function mediaRefHref(media) {
 
 function sourceKey(source, idx) {
   return `${source.locator || source.source_locator || source.url || source.path || source.id || 'source'}-${idx}`
+}
+
+function fieldDiffKey(diff, idx) {
+  return `${diff.field || diff.change_type || 'diff'}-${idx}`
+}
+
+function classificationForIndex(idx) {
+  if (!classifications.value.length) return null
+  const exact = classifications.value.find((classification) => classification.proposal_index === idx)
+  return exact || classifications.value[idx] || null
 }
 
 function claimKey(claim, idx) {
@@ -1246,7 +1296,8 @@ a.media-ref-card:hover {
 }
 
 .packet-two-col,
-.validation-grid {
+.validation-grid,
+.packet-context-grid {
   display: grid;
   grid-template-columns: 1fr;
   gap: 0.75rem;
@@ -1254,8 +1305,32 @@ a.media-ref-card:hover {
 
 @media (min-width: 900px) {
   .packet-two-col,
-  .validation-grid {
+  .validation-grid,
+  .packet-context-grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.packet-diff-heading {
+  display: none;
+}
+
+.packet-diff-list {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+@media (min-width: 760px) {
+  .packet-diff-heading {
+    display: grid;
+    grid-template-columns: 8rem 1fr 1.5fr auto;
+    gap: 0.75rem;
+    padding: 0 0.5rem 0.35rem;
+    color: #b39ddb;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
   }
 }
 

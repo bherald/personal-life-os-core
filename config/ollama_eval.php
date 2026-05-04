@@ -44,6 +44,21 @@ return [
         ],
     ],
 
+    'non_pipeline_task_classes' => [
+        'ambiguous_evidence_approval' => [
+            'route' => 'never_local_alone',
+            'reason' => 'Human-only approval sentinel for ambiguous evidence; local models may summarize context but must not approve.',
+        ],
+        'weak_source_genealogy_proof' => [
+            'route' => 'never_local_alone',
+            'reason' => 'Human-only proof sentinel for weak-source genealogy claims; local models must not finalize proof alone.',
+        ],
+        'conflict_resolution_without_human_review' => [
+            'route' => 'never_local_alone',
+            'reason' => 'Human-only conflict-resolution sentinel; deterministic and operator review gates decide final action.',
+        ],
+    ],
+
     'scorecard_fields' => [
         'ollama_path',
         'hosting_mode',
