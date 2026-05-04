@@ -74,6 +74,28 @@ class RepositoryGovernanceTest extends TestCase
     }
 
     #[Test]
+    public function fix_commit_touching_production_paths_with_inline_required_body_passes(): void
+    {
+        $repo = $this->makeRepo();
+
+        try {
+            $this->writeFile($repo, 'app/Services/DemoService.php', "<?php\n\nfinal class DemoService {}\n");
+            $this->commit(
+                $repo,
+                'fix: guard demo service',
+                "Root cause: Demo drifted.\n\nBehavior changed: Demo is guarded.\n\nVerification: Focused test.\n\nDeployment/rollback: No special rollback."
+            );
+
+            $process = $this->runGuard($repo);
+
+            $this->assertTrue($process->isSuccessful(), $process->getErrorOutput());
+            $this->assertStringContainsString('PASS:', $process->getOutput());
+        } finally {
+            $this->removeTree($repo);
+        }
+    }
+
+    #[Test]
     public function docs_only_fix_commit_without_required_body_passes(): void
     {
         $repo = $this->makeRepo();

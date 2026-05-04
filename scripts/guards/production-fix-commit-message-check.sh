@@ -99,7 +99,7 @@ missing_required_headings() {
         'Verification:' \
         'Deployment/rollback:'
     do
-        if ! grep -Eiq "^${heading}[[:space:]]*$" <<< "$message"; then
+        if ! grep -Eiq "^${heading}([[:space:]].*)?$" <<< "$message"; then
             missing+=("$heading")
         fi
     done
