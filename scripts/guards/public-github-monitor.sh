@@ -4,13 +4,15 @@ set -euo pipefail
 repo="${PLOS_PUBLIC_GITHUB_REPO:-}"
 run_limit=6
 strict_public_core=false
+strict_latest_workflows=false
 
 usage() {
-    printf 'Usage: %s --repo owner/name [--run-limit N] [--strict-public-core]\n' "$0"
+    printf 'Usage: %s --repo owner/name [--run-limit N] [--strict-public-core] [--strict-latest-workflows]\n' "$0"
     printf '\n'
     printf 'Read-only public GitHub release monitor using gh. Prints aggregate repo,\n'
     printf 'workflow, issue/PR, and traffic posture without printing credential values.\n'
     printf 'Use --strict-public-core to fail on public-core settings drift.\n'
+    printf 'Use --strict-latest-workflows to fail when latest workflow runs are not green.\n'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -37,6 +39,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --strict-public-core)
             strict_public_core=true
+            shift
+            ;;
+        --strict-latest-workflows)
+            strict_latest_workflows=true
             shift
             ;;
         *)
@@ -69,6 +75,7 @@ print_header() {
 }
 
 strict_failures=()
+strict_workflow_failures=()
 
 strict_expect_line() {
     local haystack="$1"
@@ -144,6 +151,10 @@ if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,s
         while IFS= read -r run_line; do
             workflow="${run_line#*workflow=}"
             workflow="${workflow%% status=*}"
+            status="$(run_field "$run_line" status)"
+            conclusion="$(run_field "$run_line" conclusion)"
+            branch="$(run_field "$run_line" branch)"
+            sha="$(run_field "$run_line" sha)"
 
             if [[ -n "${seen_workflows[$workflow]+x}" ]]; then
                 continue
@@ -152,13 +163,18 @@ if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,s
             seen_workflows[$workflow]=1
             printf 'workflow=%s latest_status=%s latest_conclusion=%s branch=%s sha=%s\n' \
                 "$workflow" \
-                "$(run_field "$run_line" status)" \
-                "$(run_field "$run_line" conclusion)" \
-                "$(run_field "$run_line" branch)" \
-                "$(run_field "$run_line" sha)"
+                "$status" \
+                "$conclusion" \
+                "$branch" \
+                "$sha"
+
+            if [[ "$status" != "completed" || "$conclusion" != "success" ]]; then
+                strict_workflow_failures+=("$workflow latest_status=$status latest_conclusion=$conclusion branch=$branch sha=$sha")
+            fi
         done <<< "$runs"
     else
         printf 'none\n'
+        strict_workflow_failures+=("no workflow runs available")
     fi
 
     print_header "Recent Workflow Runs"
@@ -170,6 +186,7 @@ if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,s
 else
     print_header "Latest Workflow Status"
     printf 'unavailable\n'
+    strict_workflow_failures+=("workflow runs unavailable")
 
     print_header "Recent Workflow Runs"
     printf 'unavailable\n'
@@ -208,6 +225,19 @@ if [[ "$strict_public_core" == "true" ]]; then
     fi
 
     printf 'Strict public-core check: pass\n'
+fi
+
+if [[ "$strict_latest_workflows" == "true" ]]; then
+    print_header "Strict Latest Workflows Check"
+
+    if [[ "${#strict_workflow_failures[@]}" -gt 0 ]]; then
+        for failure in "${strict_workflow_failures[@]}"; do
+            printf 'STRICT FAIL: %s\n' "$failure"
+        done
+        exit 1
+    fi
+
+    printf 'Strict latest-workflows check: pass\n'
 fi
 
 printf '\nResult: public GitHub monitor completed.\n'
