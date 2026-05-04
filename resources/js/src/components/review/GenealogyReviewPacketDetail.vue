@@ -382,17 +382,89 @@
       <summary>Packet JSON</summary>
       <pre>{{ formatJson(packet) }}</pre>
     </details>
+
+    <section class="packet-section packet-actions">
+      <div class="section-heading">
+        <span>Packet action</span>
+        <span class="section-status preview">preview only</span>
+      </div>
+
+      <div class="action-fields">
+        <label class="action-field">
+          <span class="action-label">Notes</span>
+          <textarea
+            v-model="decisionNotes"
+            class="action-notes"
+            :disabled="actioning || !canAct"
+            rows="3"
+            maxlength="1200"
+          ></textarea>
+        </label>
+        <label class="action-field action-reason">
+          <span class="action-label">Reason</span>
+          <select v-model="decisionReasonCode" class="action-select" :disabled="actioning || !canAct">
+            <option value="">None</option>
+            <option v-for="option in reasonCodeOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+        </label>
+      </div>
+
+      <div class="action-buttons">
+        <button
+          type="button"
+          class="packet-action primary"
+          :disabled="actioning || !canAct"
+          @click="submitDecision('approve')"
+        >
+          Mark reviewed
+        </button>
+        <button
+          type="button"
+          class="packet-action danger"
+          :disabled="actioning || !canAct"
+          @click="submitDecision('reject')"
+        >
+          Reject
+        </button>
+        <button
+          type="button"
+          class="packet-action"
+          :disabled="actioning || !canAct"
+          @click="submitDecision('clarify')"
+        >
+          Clarify
+        </button>
+        <button
+          type="button"
+          class="packet-action"
+          :disabled="actioning || !canAct"
+          @click="submitDecision('defer')"
+        >
+          Defer
+        </button>
+        <button type="button" class="packet-action ghost" :disabled="actioning" @click="emit('close')">
+          Close
+        </button>
+      </div>
+    </section>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   context: { type: Object, required: true },
   actioning: { type: Boolean, default: false },
   decisionResetToken: { type: Number, default: 0 },
 })
+
+const emit = defineEmits(['approve', 'reject', 'clarify', 'defer', 'close'])
+
+const decisionNotes = ref('')
+const decisionReasonCode = ref('')
 
 const STATUS_CLASS_BY_STATUS = {
   accepted: 'status-ok',
@@ -406,6 +478,16 @@ const STATUS_CLASS_BY_STATUS = {
   deferred: 'status-warning',
   pending: 'status-pending',
 }
+
+const reasonCodeOptions = [
+  { value: 'missing_source_locator', label: 'Missing source locator' },
+  { value: 'source_needs_review', label: 'Source needs review' },
+  { value: 'identity_unclear', label: 'Identity unclear' },
+  { value: 'weak_evidence', label: 'Weak evidence' },
+  { value: 'privacy_review_needed', label: 'Privacy review needed' },
+  { value: 'duplicate_packet', label: 'Duplicate packet' },
+  { value: 'other', label: 'Other' },
+]
 
 const item = computed(() => objectValue(props.context?.item))
 const details = computed(() => objectValue(props.context?.item?.details))
@@ -425,6 +507,8 @@ const packetStatus = computed(() => {
 })
 
 const packetStatusLabel = computed(() => packetStatus.value || item.value.status || 'pending')
+
+const canAct = computed(() => String(item.value.status || '').toLowerCase() === 'pending')
 
 const latestDecision = computed(() => {
   for (let idx = decisionLog.value.length - 1; idx >= 0; idx--) {
@@ -499,6 +583,9 @@ const validationStatusClass = computed(() => {
 
 const applyPreviewMutates = computed(() => applyPreview.value.mutates_accepted_facts === true)
 const previewOperations = computed(() => arrayValue(applyPreview.value.operations).filter(isPlainObject))
+
+watch(() => props.context?.item?.unified_id, () => resetDecisionInputs())
+watch(() => props.decisionResetToken, () => resetDecisionInputs())
 
 const applyPreviewSummaryRows = computed(() => {
   const rows = []
@@ -837,6 +924,24 @@ function decisionReason(entry) {
     if (typeof value === 'string' && value.trim() !== '') return value.trim()
   }
   return null
+}
+
+function submitDecision(action) {
+  const notes = decisionNotes.value.trim()
+  const reasonCode = decisionReasonCode.value.trim()
+  const payload = {
+    unifiedId: item.value.unified_id,
+    notes,
+  }
+  if (action !== 'approve' && reasonCode) {
+    payload.reasonCode = reasonCode
+  }
+  emit(action, payload)
+}
+
+function resetDecisionInputs() {
+  decisionNotes.value = ''
+  decisionReasonCode.value = ''
 }
 
 function formatDate(value) {
@@ -1405,5 +1510,118 @@ a.media-ref-card:hover {
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+.packet-actions {
+  border-color: rgba(99, 179, 237, 0.24);
+}
+
+.action-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+@media (min-width: 900px) {
+  .action-fields {
+    grid-template-columns: minmax(0, 1fr) minmax(11rem, 0.32fr);
+  }
+}
+
+.action-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.action-label {
+  color: #b39ddb;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.action-notes,
+.action-select {
+  width: 100%;
+  min-width: 0;
+  color: #f0e6ff;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid rgba(102, 102, 102, 0.38);
+  border-radius: 0.35rem;
+  font-size: 0.82rem;
+}
+
+.action-notes {
+  resize: vertical;
+  min-height: 4.5rem;
+  padding: 0.55rem 0.6rem;
+  line-height: 1.35;
+}
+
+.action-select {
+  height: 2.35rem;
+  padding: 0 0.55rem;
+}
+
+.action-notes:focus,
+.action-select:focus {
+  border-color: rgba(99, 179, 237, 0.70);
+  outline: none;
+}
+
+.action-notes:disabled,
+.action-select:disabled {
+  color: #9b8bb5;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.65rem;
+}
+
+.packet-action {
+  min-height: 2.25rem;
+  border: 1px solid rgba(99, 179, 237, 0.28);
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.65rem;
+  color: #d8efff;
+  background: rgba(99, 179, 237, 0.12);
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.packet-action.primary {
+  border-color: rgba(47, 158, 68, 0.55);
+  color: #d9ffd9;
+  background: rgba(47, 158, 68, 0.22);
+}
+
+.packet-action.danger {
+  border-color: rgba(204, 68, 68, 0.55);
+  color: #ffd9d9;
+  background: rgba(204, 68, 68, 0.20);
+}
+
+.packet-action.ghost {
+  border-color: rgba(102, 102, 102, 0.34);
+  color: #d8d0e4;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.packet-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.packet-action:not(:disabled):hover {
+  border-color: rgba(255, 255, 255, 0.45);
 }
 </style>

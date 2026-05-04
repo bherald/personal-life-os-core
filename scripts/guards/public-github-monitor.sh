@@ -88,6 +88,12 @@ print_header() {
 strict_failures=()
 strict_workflow_failures=()
 declare -A latest_workflows_seen=()
+repo_error_file="$(mktemp "${TMPDIR:-/tmp}/plos-public-github-monitor-repo.XXXXXX")"
+
+cleanup() {
+    rm -f "$repo_error_file"
+}
+trap cleanup EXIT
 
 strict_expect_line() {
     local haystack="$1"
@@ -130,9 +136,12 @@ printf 'Repository: %s\n' "$repo"
 printf 'Mode: read-only aggregate check\n'
 
 print_header "Repository"
-repo_output="$(gh repo view "$repo" \
+if ! repo_output="$(gh repo view "$repo" \
     --json url,visibility,isPrivate,description,defaultBranchRef,latestRelease,repositoryTopics,stargazerCount,forkCount,watchers \
-    --jq '"url=\(.url)\nvisibility=\(.visibility)\nprivate=\(.isPrivate)\ndefault_branch=\(.defaultBranchRef.name)\nrelease=\(.latestRelease.tagName // "none")\nstars=\(.stargazerCount)\nforks=\(.forkCount)\nwatchers=\(.watchers.totalCount)\ntopics=\([.repositoryTopics[].name] | join(","))"')"
+    --jq '"url=\(.url)\nvisibility=\(.visibility)\nprivate=\(.isPrivate)\ndefault_branch=\(.defaultBranchRef.name)\nrelease=\(.latestRelease.tagName // "none")\nstars=\(.stargazerCount)\nforks=\(.forkCount)\nwatchers=\(.watchers.totalCount)\ntopics=\([.repositoryTopics[].name] | join(","))"' 2>"$repo_error_file")"; then
+    printf 'FAIL: repository metadata unavailable for %s.\n' "$repo" >&2
+    exit 1
+fi
 printf '%s\n' "$repo_output"
 
 print_header "Repository Settings"

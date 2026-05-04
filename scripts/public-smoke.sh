@@ -99,11 +99,11 @@ PUBLIC_AUDIT_LIMIT="${PUBLIC_AUDIT_LIMIT:-120}" scripts/guards/public-release-au
 scripts/snapshot-npm-licenses.sh --check
 scripts/snapshot-python-licenses.sh --tier=core --check
 scripts/audit-licenses.sh
-bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-licenses.sh scripts/snapshot-python-licenses.sh scripts/audit-licenses.sh scripts/guards/production-fix-commit-message-check.sh
+bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-licenses.sh scripts/snapshot-python-licenses.sh scripts/audit-licenses.sh scripts/guards/production-fix-commit-message-check.sh scripts/guards/public-github-monitor.sh scripts/guards/github-auth-storage-audit.sh
 git diff --check --cached
 
 if [[ "${PLOS_PUBLIC_SMOKE_SKIP_TESTS:-0}" != "1" ]]; then
-    php artisan test tests/Unit/Setup tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicGithubMonitorScriptTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
+    php artisan test tests/Unit/Setup tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicGithubMonitorScriptTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
 fi
 
 printf 'Public smoke passed: %s\n' "$DEST"

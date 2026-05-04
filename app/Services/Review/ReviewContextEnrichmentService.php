@@ -2,6 +2,7 @@
 
 namespace App\Services\Review;
 
+use App\Services\Genealogy\GenealogyReviewPacketApplyPreviewService;
 use App\Services\Genealogy\PersonService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -78,7 +79,14 @@ class ReviewContextEnrichmentService
         '~wikipedia|wikitree~i' => ['authored',   'secondary', 'indirect', 'Wiki'],
     ];
 
-    public function __construct(private readonly PersonService $personService) {}
+    private readonly GenealogyReviewPacketApplyPreviewService $reviewPacketApplyPreview;
+
+    public function __construct(
+        private readonly PersonService $personService,
+        ?GenealogyReviewPacketApplyPreviewService $reviewPacketApplyPreview = null,
+    ) {
+        $this->reviewPacketApplyPreview = $reviewPacketApplyPreview ?? new GenealogyReviewPacketApplyPreviewService;
+    }
 
     /**
      * Build the enriched detail-pane payload for a single review item.
@@ -164,6 +172,8 @@ class ReviewContextEnrichmentService
      */
     private function buildGenealogyReviewPacketContext(array $details): array
     {
+        [$applyPreview, $applyPreviewMeta] = $this->packetApplyPreviewContext($details);
+
         return [
             'packet' => $this->detailArray($details, 'packet'),
             'packet_status' => isset($details['packet_status']) && is_scalar($details['packet_status'])
@@ -178,8 +188,58 @@ class ReviewContextEnrichmentService
             'identity' => $this->detailArray($details, 'identity'),
             'privacy' => $this->detailArray($details, 'privacy'),
             'validation' => $this->detailArray($details, 'validation'),
-            'apply_preview' => $this->detailArray($details, 'apply_preview'),
+            'apply_preview' => $applyPreview,
+            'apply_preview_meta' => $applyPreviewMeta,
             'decision_log' => $this->detailArray($details, 'decision_log'),
+        ];
+    }
+
+    /**
+     * Display-only packet previews may be generated on the fly for older
+     * context-ready packet rows that predate persisted apply_preview details.
+     * The generated preview is never written back; approval still requires
+     * the persisted preview guard in GenealogyReviewPacketDecisionService.
+     *
+     * @param  array<string, mixed>  $details
+     * @return array{0: array<string, mixed>, 1: array<string, mixed>}
+     */
+    private function packetApplyPreviewContext(array $details): array
+    {
+        if (array_key_exists('apply_preview', $details)) {
+            if (is_array($details['apply_preview'])) {
+                return [
+                    $details['apply_preview'],
+                    [
+                        'persisted' => true,
+                        'generated' => false,
+                        'source' => 'agent_review_queue.details.apply_preview',
+                    ],
+                ];
+            }
+
+            return [
+                [],
+                [
+                    'persisted' => false,
+                    'generated' => false,
+                    'source' => 'agent_review_queue.details.apply_preview',
+                    'warning' => 'persisted_apply_preview_not_array',
+                ],
+            ];
+        }
+
+        $preview = $this->reviewPacketApplyPreview->preview($details);
+        $preview['generated_from_details'] = true;
+        $preview['persisted'] = false;
+
+        return [
+            $preview,
+            [
+                'persisted' => false,
+                'generated' => true,
+                'source' => 'generated_from_packet_details',
+                'writeback' => false,
+            ],
         ];
     }
 

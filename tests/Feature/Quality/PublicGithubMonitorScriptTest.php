@@ -116,6 +116,38 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('Strict public-core check: pass', $process->getOutput());
     }
 
+    public function test_repo_view_failure_does_not_print_gh_stderr_or_tokens(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+            ],
+            base_path(),
+            [
+                'GH_TOKEN' => 'fake-session-token',
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_REPO_VIEW' => 'unavailable',
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString(
+            'FAIL: repository metadata unavailable for example/personal-life-os-core.',
+            $process->getErrorOutput()
+        );
+        $this->assertStringNotContainsString('fake-session-token', $process->getOutput().$process->getErrorOutput());
+        $this->assertStringNotContainsString('fake-gh-token', $process->getOutput().$process->getErrorOutput());
+        $this->assertStringNotContainsString('gh repo view leaked stderr', $process->getOutput().$process->getErrorOutput());
+    }
+
     public function test_strict_public_core_fails_on_settings_drift(): void
     {
         $fixture = $this->makeFixture();
@@ -286,7 +318,7 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('STRICT FAIL: no workflow runs available', $process->getOutput());
     }
 
-    public function test_strict_latest_workflows_passes_when_required_workflow_is_present(): void
+    public function test_strict_latest_workflows_passes_when_documented_required_workflows_are_present(): void
     {
         $fixture = $this->makeFixture();
 
@@ -298,18 +330,23 @@ class PublicGithubMonitorScriptTest extends TestCase
                 'example/personal-life-os-core',
                 '--strict-latest-workflows',
                 '--require-workflow',
+                'Repository Governance',
+                '--require-workflow',
                 'Public Readiness',
             ],
             base_path(),
             [
                 'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
                 'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_INCLUDE_GOVERNANCE' => 'true',
             ]
         );
 
         $process->run();
 
         $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('workflow=Repository Governance latest_status=completed latest_conclusion=success branch=main sha=5812537', $process->getOutput());
+        $this->assertStringContainsString('workflow=Public Readiness latest_status=completed latest_conclusion=success branch=main sha=5812537', $process->getOutput());
         $this->assertStringContainsString('Strict latest-workflows check: pass', $process->getOutput());
     }
 
@@ -381,6 +418,10 @@ log_call() {
 
 if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
     log_call "repo view ${3:-}"
+    if [[ "${PUBLIC_GITHUB_MONITOR_FAKE_REPO_VIEW:-available}" == "unavailable" ]]; then
+        printf 'gh repo view leaked stderr Token: fake-gh-token\n' >&2
+        exit 1
+    fi
     printf 'url=https://github.com/example/personal-life-os-core\n'
     printf 'visibility=PUBLIC\n'
     printf 'private=false\n'

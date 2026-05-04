@@ -43,6 +43,7 @@ class PublicExportPackagingTest extends TestCase
         $smokeOnlyPaths = [
             // Keep this in local/export smoke until public GitHub auth has
             // workflow scope for updating the public Actions file.
+            'tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php',
             'tests/Feature/Quality/PublicGithubMonitorScriptTest.php',
         ];
 
@@ -587,6 +588,7 @@ class PublicExportPackagingTest extends TestCase
         $this->assertStringContainsString('scripts/audit-licenses.sh', $exportScript);
         $this->assertStringContainsString('scripts/snapshot-npm-licenses.sh', $exportScript);
         $this->assertStringContainsString('scripts/snapshot-python-licenses.sh', $exportScript);
+        $this->assertStringContainsString('tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php', $exportScript);
         $this->assertStringContainsString('scripts/snapshot-npm-licenses.sh --check', file_get_contents(base_path('scripts/public-smoke.sh')));
         $this->assertStringContainsString('scripts/snapshot-python-licenses.sh --tier=core --check', file_get_contents(base_path('scripts/public-smoke.sh')));
         $this->assertStringContainsString('npm ci --prefix mcp-server', file_get_contents(base_path('scripts/public-smoke.sh')));
@@ -599,6 +601,8 @@ class PublicExportPackagingTest extends TestCase
         $this->assertStringContainsString('npm audit --prefix mcp-servers/plos', file_get_contents(base_path('scripts/public-smoke.sh')));
         $this->assertStringContainsString('bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-licenses.sh scripts/snapshot-python-licenses.sh scripts/audit-licenses.sh', file_get_contents(base_path('.github/workflows/public-readiness.yml')));
         $this->assertStringContainsString('bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-licenses.sh scripts/snapshot-python-licenses.sh scripts/audit-licenses.sh', file_get_contents(base_path('scripts/public-smoke.sh')));
+        $this->assertStringContainsString('scripts/guards/public-github-monitor.sh', file_get_contents(base_path('scripts/public-smoke.sh')));
+        $this->assertStringContainsString('scripts/guards/github-auth-storage-audit.sh', file_get_contents(base_path('scripts/public-smoke.sh')));
         $this->assertStringContainsString('public-release/npm-license-snapshot.md', file_get_contents(base_path('docs/README.md')));
         $docsReadme = file_get_contents(base_path('docs/README.md'));
         $this->assertStringContainsString('public-release/python-license-snapshot-core.md', $docsReadme);
