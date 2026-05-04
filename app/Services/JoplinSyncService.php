@@ -216,6 +216,7 @@ class JoplinSyncService
                 'notes_skipped' => 0,
                 'attachments_processed' => 0,
                 'errors' => 0,
+                'error_samples' => [],
             ];
 
             if (($changedCount ?? $notesToProcess) > 0 && ! $this->hasFastEmbeddingProvider()) {
@@ -317,6 +318,7 @@ class JoplinSyncService
                             'error' => $e->getMessage(),
                         ]);
                         $stats['errors']++;
+                        $this->appendErrorSample($stats, $noteData, $e);
                         // Track failure for quarantine
                         $this->recordSyncFailure(
                             $noteData['id'] ?? 'unknown',
@@ -389,6 +391,7 @@ class JoplinSyncService
                 'notes_indexed' => $stats['notes_indexed'],
                 'notes_skipped' => $stats['notes_skipped'] + ($totalFiles - $notesToProcess),
                 'errors' => $stats['errors'],
+                'error_samples' => $stats['error_samples'],
                 'duration_seconds' => $durationSeconds,
                 'start_time' => $startTime,
                 'end_time' => $endTime,
@@ -440,6 +443,7 @@ class JoplinSyncService
                 'deleted' => 0,
                 'attachments_processed' => 0,
                 'errors' => 0,
+                'error_samples' => [],
             ];
 
             // Process each note
@@ -504,6 +508,7 @@ class JoplinSyncService
                         'error' => $e->getMessage(),
                     ]);
                     $stats['errors']++;
+                    $this->appendErrorSample($stats, $noteData, $e);
                     // Track failure for quarantine
                     $this->recordSyncFailure(
                         $noteData['id'] ?? 'unknown',
@@ -1886,6 +1891,23 @@ PROMPT;
 
         // Cache for quarantine duration + buffer
         Cache::put($key, $failures, now()->addHours(self::QUARANTINE_HOURS + 24));
+    }
+
+    private function appendErrorSample(array &$stats, array $noteData, \Throwable $e): void
+    {
+        if (! isset($stats['error_samples']) || ! is_array($stats['error_samples'])) {
+            $stats['error_samples'] = [];
+        }
+
+        if (count($stats['error_samples']) >= 5) {
+            return;
+        }
+
+        $noteId = (string) ($noteData['id'] ?? 'unknown');
+        $stats['error_samples'][] = [
+            'note_hash' => substr(hash('sha256', $noteId), 0, 12),
+            'error' => substr($e->getMessage(), 0, 200),
+        ];
     }
 
     /**

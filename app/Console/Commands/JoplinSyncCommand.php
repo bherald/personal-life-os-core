@@ -63,10 +63,14 @@ class JoplinSyncCommand extends Command
             $stats = $syncService->syncAll($limit);
 
             $this->newLine();
-            if (!empty($stats['deferred'])) {
-                $this->warn('Sync deferred: ' . ($stats['defer_reason'] ?? 'unknown reason'));
+            if (! empty($stats['deferred'])) {
+                $this->warn('Sync deferred: '.($stats['defer_reason'] ?? 'unknown reason'));
             }
-            $this->info('✓ Sync completed successfully!');
+            if (($stats['errors'] ?? 0) > 0) {
+                $this->warn('Sync completed with errors.');
+            } else {
+                $this->info('✓ Sync completed successfully!');
+            }
             $this->newLine();
 
             // Display results
@@ -75,9 +79,9 @@ class JoplinSyncCommand extends Command
                 [
                     ['Total Files Found', $stats['total_files']],
                     ['Notes Indexed', $stats['notes_indexed']],
-                    ['Notes Skipped', $stats['notes_skipped'] . ' (folders/resources)'],
+                    ['Notes Skipped', $stats['notes_skipped'].' (folders/resources)'],
                     ['Errors', $stats['errors']],
-                    ['Duration', $stats['duration_seconds'] . ' seconds'],
+                    ['Duration', $stats['duration_seconds'].' seconds'],
                     ['Started', $stats['start_time']->format('Y-m-d H:i:s')],
                     ['Completed', $stats['end_time']->format('Y-m-d H:i:s')],
                 ]
@@ -85,6 +89,16 @@ class JoplinSyncCommand extends Command
 
             if ($stats['errors'] > 0) {
                 $this->warn('⚠ Some files failed to process. Check logs for details.');
+                $errorSamples = $stats['error_samples'] ?? [];
+                if (! empty($errorSamples)) {
+                    $this->warn('Recent error samples:');
+                    foreach ($errorSamples as $sample) {
+                        $note = $sample['note_hash'] ?? 'unknown';
+                        $error = $sample['error'] ?? 'unknown error';
+                        $this->line("  - note {$note}: {$error}");
+                    }
+                }
+
                 return self::FAILURE;
             }
 
@@ -96,7 +110,7 @@ class JoplinSyncCommand extends Command
 
             return self::SUCCESS;
         } catch (\Exception $e) {
-            $this->error('✗ Sync failed: ' . $e->getMessage());
+            $this->error('✗ Sync failed: '.$e->getMessage());
             $this->newLine();
             $this->comment('Check logs for more details:');
             $this->line('  tail -f storage/logs/laravel.log');
