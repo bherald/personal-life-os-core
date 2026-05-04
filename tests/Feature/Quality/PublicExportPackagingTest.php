@@ -45,6 +45,7 @@ class PublicExportPackagingTest extends TestCase
             // workflow scope for updating the public Actions file.
             'tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php',
             'tests/Feature/Quality/PublicGithubMonitorScriptTest.php',
+            'tests/Feature/Console/OpsMcpHealthCommandTest.php',
             'tests/Unit/Commands/RagScaleReviewCommandTest.php',
             'tests/Unit/Nodes/PushoverNotifyTest.php',
             'tests/Feature/Console/OpsReviewBacklogReportCommandTest.php',

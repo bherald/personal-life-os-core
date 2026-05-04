@@ -130,6 +130,7 @@ class OperatorEvidenceService
             'offline_runtime' => $this->compactOfflineRuntimeHeadline($sections),
             'scheduler' => $this->compactSchedulerHeadline($sections),
             'dba_arc' => $this->compactDbaArcHeadline($sections),
+            'genealogy_evidence_sprint' => $this->compactGenealogyEvidenceSprintHeadline($sections),
         ];
 
         if (is_array($sections['agent_doctor'] ?? null)) {
@@ -301,6 +302,36 @@ class OperatorEvidenceService
             'redis_used_memory_mb' => (float) ($counts['redis_used_memory_mb'] ?? 0.0),
             'redis_fragmentation_ratio' => $counts['redis_fragmentation_ratio'] ?? null,
             'redis_key_count' => (int) ($counts['redis_key_count'] ?? 0),
+        ];
+    }
+
+    private function compactGenealogyEvidenceSprintHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'genealogy_evidence_sprint');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'source_status' => $this->nullableString($counts['source_status'] ?? null),
+            'target_packets' => (int) ($counts['target_packets'] ?? 0),
+            'source_backed_packets' => (int) ($counts['source_backed_packets'] ?? 0),
+            'source_backed_pending' => (int) ($counts['source_backed_pending'] ?? 0),
+            'reviewable_pending_packets' => (int) ($counts['reviewable_pending_packets'] ?? 0),
+            'remaining_to_target' => (int) ($counts['remaining_to_target'] ?? 0),
+            'remaining_reviewable_to_target' => (int) ($counts['remaining_reviewable_to_target'] ?? 0),
+            'source_backed_pending_not_packet_pending' => (int) ($counts['source_backed_pending_not_packet_pending'] ?? 0),
+            'source_backed_pending_missing_preview_only' => (int) ($counts['source_backed_pending_missing_preview_only'] ?? 0),
+            'source_backed_pending_missing_identity' => (int) ($counts['source_backed_pending_missing_identity'] ?? 0),
+            'source_backed_pending_missing_privacy_clearance' => (int) ($counts['source_backed_pending_missing_privacy_clearance'] ?? 0),
+            'source_backed_pending_missing_claims' => (int) ($counts['source_backed_pending_missing_claims'] ?? 0),
+            'source_backed_pending_missing_boundary' => (int) ($counts['source_backed_pending_missing_boundary'] ?? 0),
+            'needs_reviewable_packet_details' => (bool) ($counts['needs_reviewable_packet_details'] ?? false),
+            'needs_operator_boundary' => (bool) ($counts['needs_operator_boundary'] ?? true),
+            'boundary_consistent' => (bool) ($counts['boundary_consistent'] ?? false),
+            'mutation_guard_ok' => (bool) ($counts['mutation_guard_ok'] ?? true),
+            'ready_for_five_packet_review' => (bool) ($counts['ready_for_five_packet_review'] ?? false),
+            'recommendations' => (int) ($counts['recommendations'] ?? 0),
+            'evidence_errors' => (int) ($counts['evidence_errors'] ?? 0),
         ];
     }
 
@@ -1451,6 +1482,13 @@ class OperatorEvidenceService
                 'source_backed_packets' => (int) ($summary['source_backed_packets'] ?? 0),
                 'source_backed_pending' => (int) ($summary['source_backed_pending'] ?? 0),
                 'source_backed_decided' => (int) ($summary['source_backed_decided'] ?? 0),
+                'reviewable_pending_packets' => (int) ($summary['reviewable_pending_packets'] ?? 0),
+                'source_backed_pending_not_packet_pending' => (int) ($summary['source_backed_pending_not_packet_pending'] ?? 0),
+                'source_backed_pending_missing_preview_only' => (int) ($summary['source_backed_pending_missing_preview_only'] ?? 0),
+                'source_backed_pending_missing_identity' => (int) ($summary['source_backed_pending_missing_identity'] ?? 0),
+                'source_backed_pending_missing_privacy_clearance' => (int) ($summary['source_backed_pending_missing_privacy_clearance'] ?? 0),
+                'source_backed_pending_missing_claims' => (int) ($summary['source_backed_pending_missing_claims'] ?? 0),
+                'source_backed_pending_missing_boundary' => (int) ($summary['source_backed_pending_missing_boundary'] ?? 0),
                 'pending_packets' => (int) ($summary['pending_packets'] ?? 0),
                 'reviewed_preview_only' => (int) ($summary['reviewed_preview_only'] ?? 0),
                 'deferred_packets' => (int) ($summary['deferred_packets'] ?? 0),
@@ -1468,7 +1506,9 @@ class OperatorEvidenceService
                 'boundary_mismatch_packets' => (int) ($summary['boundary_mismatch_packets'] ?? 0),
                 'malformed_details' => (int) ($summary['malformed_details'] ?? 0),
                 'remaining_to_target' => (int) ($readiness['remaining_to_target'] ?? 5),
+                'remaining_reviewable_to_target' => (int) ($readiness['remaining_reviewable_to_target'] ?? 5),
                 'needs_operator_boundary' => (bool) ($readiness['needs_operator_boundary'] ?? true),
+                'needs_reviewable_packet_details' => (bool) ($readiness['needs_reviewable_packet_details'] ?? false),
                 'boundary_consistent' => (bool) ($readiness['boundary_consistent'] ?? false),
                 'mutation_guard_ok' => (bool) ($readiness['mutation_guard_ok'] ?? false),
                 'ready_for_five_packet_review' => (bool) ($readiness['ready_for_five_packet_review'] ?? false),

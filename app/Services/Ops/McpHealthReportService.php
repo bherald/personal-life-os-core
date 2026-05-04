@@ -341,6 +341,10 @@ class McpHealthReportService
             'warning' => collect($reports)->where('status', 'warning')->count(),
             'critical' => collect($reports)->where('status', 'critical')->count(),
             'missing_entries' => collect($reports)->sum(fn (array $server): int => (int) ($server['missing_entries'] ?? 0)),
+            'enabled_missing_entries' => collect($reports)->filter(fn (array $server): bool => (bool) ($server['enabled'] ?? false))
+                ->sum(fn (array $server): int => (int) ($server['missing_entries'] ?? 0)),
+            'disabled_missing_entries' => collect($reports)->filter(fn (array $server): bool => ! (bool) ($server['enabled'] ?? false))
+                ->sum(fn (array $server): int => (int) ($server['missing_entries'] ?? 0)),
             'external_not_running' => collect($reports)->filter(fn (array $server): bool => (bool) ($server['enabled'] ?? false)
                 && (bool) data_get($server, 'process.expected', false)
                 && ! (bool) data_get($server, 'process.running', false))->count(),

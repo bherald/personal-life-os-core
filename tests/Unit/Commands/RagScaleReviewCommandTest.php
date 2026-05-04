@@ -270,6 +270,71 @@ class RagScaleReviewCommandTest extends TestCase
         $this->assertStringNotContainsString('Private previous result title', $output);
     }
 
+    public function test_previous_file_comparison_redacts_raw_previous_query_and_result_text_in_all_outputs(): void
+    {
+        $previousFile = $this->writeRetrievalEvidence([
+            'version' => 1,
+            'status' => 'observe_ok',
+            'captured_at' => '2037-05-01T12:00:00Z',
+            'scale' => [
+                'documents' => 80,
+                'evidence_error_count' => 0,
+            ],
+            'backlog' => [
+                'documents' => 80,
+                'kg_pending' => 30,
+                'kg_fresh_pending' => 20,
+                'kg_stale_pending' => 10,
+                'raptor_pending' => 4,
+                'sentence_pending' => 5,
+                'evidence_error_count' => 0,
+            ],
+            'net_burn' => [
+                'kg_net_burn_per_day' => 1,
+                'evidence_error_count' => 0,
+            ],
+            'retrieval' => [
+                'query_set_hash' => 'previous-redaction-query-set',
+                'latency_p95_ms' => 999,
+                'top_similarity_avg' => 0.42,
+                'queries' => [
+                    [
+                        'query' => 'TODO-018 raw previous query must stay private',
+                        'results' => [
+                            [
+                                'title' => 'TODO-018 raw previous result title must stay private',
+                                'preview' => 'TODO-018 raw previous result preview must stay private',
+                            ],
+                        ],
+                    ],
+                ],
+                'results' => [
+                    [
+                        'title' => 'TODO-018 top-level previous result title must stay private',
+                        'content' => 'TODO-018 top-level previous result body must stay private',
+                    ],
+                ],
+            ],
+        ]);
+
+        foreach ($this->previousFileOutputOptions() as $label => $options) {
+            $this->mockRagService();
+
+            $exit = Artisan::call('rag:scale-review', [
+                '--previous-file' => $previousFile,
+                ...$options,
+            ]);
+            $output = Artisan::output();
+
+            $this->assertSame(0, $exit, $label);
+            $this->assertStringNotContainsString('TODO-018 raw previous query must stay private', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 raw previous result title must stay private', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 raw previous result preview must stay private', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 top-level previous result title must stay private', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 top-level previous result body must stay private', $output, $label);
+        }
+    }
+
     public function test_json_output_accepts_legacy_latency_keys_for_saved_draft_files(): void
     {
         $retrievalFile = $this->writeRetrievalEvidence([
@@ -449,6 +514,20 @@ class RagScaleReviewCommandTest extends TestCase
         $service->shouldReceive('getDigestMetrics')->once()->andReturn($this->backlogPayload());
         $service->shouldReceive('getNetBurn')->once()->with(7)->andReturn($this->netBurnPayload());
         $this->app->instance(RagBacklogService::class, $service);
+    }
+
+    /**
+     * @return array<string, array<string, bool>>
+     */
+    private function previousFileOutputOptions(): array
+    {
+        return [
+            'full text' => [],
+            'compact text' => ['--compact' => true],
+            'markdown' => ['--markdown' => true],
+            'full json' => ['--json' => true],
+            'compact json' => ['--json' => true, '--compact' => true],
+        ];
     }
 
     /**

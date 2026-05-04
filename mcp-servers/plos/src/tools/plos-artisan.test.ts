@@ -234,6 +234,30 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(ragScaleReviewCompactFileResult, /Blocked:/);
   assert.match(ragScaleReviewCompactFileResult, /Use command "list"/);
 
+  const mcpHealthFullJsonResult = await plosArtisan({
+    command: 'ops:mcp-health --json',
+    on_prod: false,
+  });
+
+  assert.match(mcpHealthFullJsonResult, /Blocked:/);
+  assert.match(mcpHealthFullJsonResult, /Use command "list"/);
+
+  const mcpHealthReorderedCompactResult = await plosArtisan({
+    command: 'ops:mcp-health --compact --json',
+    on_prod: false,
+  });
+
+  assert.match(mcpHealthReorderedCompactResult, /Blocked:/);
+  assert.match(mcpHealthReorderedCompactResult, /Use command "list"/);
+
+  const mcpHealthProcessDetailsResult = await plosArtisan({
+    command: 'ops:mcp-health --json --compact --include-process-lines',
+    on_prod: false,
+  });
+
+  assert.match(mcpHealthProcessDetailsResult, /Blocked:/);
+  assert.match(mcpHealthProcessDetailsResult, /Use command "list"/);
+
   const graphQualityRunResult = await plosArtisan({
     command: 'graph:quality-metrics --run --json',
     on_prod: false,
