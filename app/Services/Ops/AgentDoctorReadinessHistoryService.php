@@ -102,6 +102,7 @@ class AgentDoctorReadinessHistoryService
             'agent_count_delta' => null,
             'trace_events_24h_delta' => null,
             'recursion_calls_7d_delta' => null,
+            'latest_output_quality' => $this->emptyOutputQuality(),
             'trend' => 'insufficient_data',
         ];
     }
@@ -140,6 +141,7 @@ class AgentDoctorReadinessHistoryService
         $summary['agent_count_delta'] = (int) $latest['agent_count'] - (int) $oldest['agent_count'];
         $summary['trace_events_24h_delta'] = (int) ($latest['trace_events_24h'] ?? 0) - (int) ($oldest['trace_events_24h'] ?? 0);
         $summary['recursion_calls_7d_delta'] = (int) ($latest['recursion_calls_7d'] ?? 0) - (int) ($oldest['recursion_calls_7d'] ?? 0);
+        $summary['latest_output_quality'] = $latest['output_quality'] ?? $this->emptyOutputQuality();
         $summary['trend'] = $this->trend($latest, $oldest, $summary);
 
         return $summary;
@@ -170,6 +172,7 @@ class AgentDoctorReadinessHistoryService
             'recursion_calls_7d' => $this->nullableInt($row->recursion_calls_7d ?? null),
             'warning_check_ids' => $checks['warning_check_ids'],
             'critical_check_ids' => $checks['critical_check_ids'],
+            'output_quality' => $checks['output_quality'],
         ];
     }
 
@@ -252,7 +255,7 @@ class AgentDoctorReadinessHistoryService
     }
 
     /**
-     * @return array{warning_check_ids:list<string>,critical_check_ids:list<string>}
+     * @return array{warning_check_ids:list<string>,critical_check_ids:list<string>,output_quality:array<string,int>}
      */
     private function decodeChecksSummary(mixed $value): array
     {
@@ -261,12 +264,44 @@ class AgentDoctorReadinessHistoryService
             return [
                 'warning_check_ids' => [],
                 'critical_check_ids' => [],
+                'output_quality' => $this->emptyOutputQuality(),
             ];
         }
 
         return [
             'warning_check_ids' => $this->stringList($decoded['warning_check_ids'] ?? []),
             'critical_check_ids' => $this->stringList($decoded['critical_check_ids'] ?? []),
+            'output_quality' => $this->outputQuality($decoded['output_quality'] ?? []),
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function emptyOutputQuality(): array
+    {
+        return [
+            'scheduled_success_runs_window' => 0,
+            'scheduled_empty_success_outputs_window' => 0,
+            'scheduled_cjk_output_runs_window' => 0,
+            'scheduled_guarded_output_runs_window' => 0,
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function outputQuality(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return $this->emptyOutputQuality();
+        }
+
+        return [
+            'scheduled_success_runs_window' => max(0, (int) ($value['scheduled_success_runs_window'] ?? 0)),
+            'scheduled_empty_success_outputs_window' => max(0, (int) ($value['scheduled_empty_success_outputs_window'] ?? 0)),
+            'scheduled_cjk_output_runs_window' => max(0, (int) ($value['scheduled_cjk_output_runs_window'] ?? 0)),
+            'scheduled_guarded_output_runs_window' => max(0, (int) ($value['scheduled_guarded_output_runs_window'] ?? 0)),
         ];
     }
 

@@ -132,6 +132,14 @@ class GenealogyReviewPacketDecisionService
                     'error' => $previewGuardError,
                 ];
             }
+
+            $validationGuardError = $this->validationGuardError($details);
+            if ($validationGuardError !== null) {
+                return [
+                    'success' => false,
+                    'error' => $validationGuardError,
+                ];
+            }
         }
 
         $details = $this->decisionLog->append($details, $action, 'operator', $notes, $meta);
@@ -220,8 +228,71 @@ class GenealogyReviewPacketDecisionService
         }
 
         $acceptedFactMutations = $preview['accepted_fact_mutations'] ?? [];
-        if (is_array($acceptedFactMutations) && $acceptedFactMutations !== []) {
+        if ($this->hasAcceptedFactMutations($acceptedFactMutations)) {
             return 'Review packet apply preview lists accepted fact mutations; approve remains blocked.';
+        }
+
+        $operations = $preview['operations'] ?? [];
+        if (is_array($operations)) {
+            foreach ($operations as $operation) {
+                if (! is_array($operation)) {
+                    continue;
+                }
+
+                if ($this->previewFlagEnabled($operation['mutates_accepted_facts'] ?? null)) {
+                    return 'Review packet apply preview operation mutates accepted facts; approve remains blocked.';
+                }
+
+                if ($this->previewFlagEnabled($operation['apply_enabled'] ?? null)) {
+                    return 'Review packet apply preview operation is apply-enabled; approve remains blocked.';
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function hasAcceptedFactMutations(mixed $acceptedFactMutations): bool
+    {
+        if (is_array($acceptedFactMutations)) {
+            return $acceptedFactMutations !== [];
+        }
+
+        return $acceptedFactMutations !== null
+            && $acceptedFactMutations !== false
+            && $acceptedFactMutations !== '';
+    }
+
+    private function previewFlagEnabled(mixed $value): bool
+    {
+        if ($value === null || $value === false || $value === 0 || $value === '') {
+            return false;
+        }
+
+        if (is_string($value)) {
+            return ! in_array(strtolower(trim($value)), ['0', 'false', 'no', 'off'], true);
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     */
+    private function validationGuardError(array $details): ?string
+    {
+        $validation = $details['validation'] ?? null;
+        if (! is_array($validation)) {
+            return null;
+        }
+
+        $errors = $validation['errors'] ?? [];
+        if (is_array($errors) && $errors !== []) {
+            return 'Review packet validation has errors; approve remains blocked.';
+        }
+
+        if (($validation['valid'] ?? null) === false) {
+            return 'Review packet validation is not valid; approve remains blocked.';
         }
 
         return null;

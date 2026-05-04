@@ -2,7 +2,6 @@
 
 namespace App\Traits;
 
-use App\DTOs\RecursionResult;
 use App\Services\RecursiveCallService;
 use Illuminate\Support\Facades\Log;
 
@@ -26,6 +25,9 @@ trait RecursionAware
 {
     private ?RecursiveCallService $recursionService = null;
 
+    /** @var array<string, bool> */
+    private static array $activeRecursiveServices = [];
+
     /**
      * Inject RecursiveCallService. Called by Laravel container or manually.
      */
@@ -37,12 +39,12 @@ trait RecursionAware
     /**
      * Try recursive execution. Returns null if recursion is disabled/unavailable.
      *
-     * @param string   $serviceName  Config key in recursion_config table
-     * @param string   $strategy     partition_map, quality_gate_retry, evidence_chase, hierarchical_summarize
-     * @param array    $context      Input data to process
-     * @param callable $processFn    fn(array $subContext): mixed — the service's existing logic
-     * @param array    $parentBudget Optional parent budget [tokens, time, cost]
-     * @return array|null            Aggregated result, or null if recursion not used
+     * @param  string  $serviceName  Config key in recursion_config table
+     * @param  string  $strategy  partition_map, quality_gate_retry, evidence_chase, hierarchical_summarize
+     * @param  array  $context  Input data to process
+     * @param  callable  $processFn  fn(array $subContext): mixed — the service's existing logic
+     * @param  array  $parentBudget  Optional parent budget [tokens, time, cost]
+     * @return array|null Aggregated result, or null if recursion not used
      */
     protected function tryRecursive(
         string $serviceName,
@@ -58,8 +60,21 @@ trait RecursionAware
             } catch (\Throwable) {
                 return null;
             }
+
+            // Unit tests should not inherit operator runtime recursion flags
+            // from the local database unless a test injects the service.
+            if (app()->runningUnitTests()) {
+                return null;
+            }
         }
 
+        if (self::$activeRecursiveServices[$serviceName] ?? false) {
+            Log::debug("RLM[{$serviceName}]: recursive self-entry bypassed");
+
+            return null;
+        }
+
+        self::$activeRecursiveServices[$serviceName] = true;
         try {
             $result = $this->recursionService->execute(
                 $serviceName,
@@ -69,7 +84,7 @@ trait RecursionAware
                 $parentBudget ?: null
             );
 
-            if (!$result->recursionUsed) {
+            if (! $result->recursionUsed) {
                 return null; // Fall back to normal path
             }
 
@@ -81,7 +96,10 @@ trait RecursionAware
             Log::warning("RLM[{$serviceName}]: recursion failed, falling back", [
                 'error' => $e->getMessage(),
             ]);
+
             return null;
+        } finally {
+            unset(self::$activeRecursiveServices[$serviceName]);
         }
     }
 

@@ -2306,7 +2306,8 @@ class MCPRouter
         Cache::forget('mcp:tool_catalog');          // legacy fixed key
         Cache::forget('mcp:tool_catalog:static');   // dynamic_discovery_enabled=false
         Cache::forget('mcp:tool_catalog:dynamic');  // dynamic_discovery_enabled=true
-        Cache::forget($this->toolCatalogCacheKey());
+        Cache::forget($this->toolCatalogCacheKey(false));
+        Cache::forget($this->toolCatalogCacheKey(true));
     }
 
     /**
@@ -2314,9 +2315,9 @@ class MCPRouter
      * the catalog shape (static schemas vs. live-discovered schemas), so
      * each mode gets its own slot and cannot shadow the other.
      */
-    private function toolCatalogCacheKey(): string
+    private function toolCatalogCacheKey(?bool $dynamicDiscoveryEnabled = null): string
     {
-        $mode = (bool) config('mcp.dynamic_discovery_enabled', false) ? 'dynamic' : 'static';
+        $mode = ($dynamicDiscoveryEnabled ?? (bool) config('mcp.dynamic_discovery_enabled', false)) ? 'dynamic' : 'static';
         $fingerprint = md5(json_encode($this->config, JSON_UNESCAPED_SLASHES) ?: '[]');
 
         return "mcp:tool_catalog:{$mode}:{$fingerprint}";

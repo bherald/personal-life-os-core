@@ -2,39 +2,45 @@
 
 namespace App\Engine;
 
+use App\Exceptions\NodeTimeoutException;
+use App\Services\ExecutionState;
 use App\Services\WorkflowEventService;
 use App\Services\WorkflowReplayer;
-use App\Services\ExecutionState;
+use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use Exception;
 
 class WorkflowEngine
 {
     private NodeLoader $nodeLoader;
+
     private DatabaseLayer $databaseLayer;
+
     private WorkflowEventService $eventService;
+
     private WorkflowReplayer $replayer;
+
     private ?array $workflowDefaults = null;
+
     private ?string $currentExecutionId = null;
 
     public function __construct(
         ?WorkflowEventService $eventService = null,
         ?WorkflowReplayer $replayer = null
     ) {
-        $this->nodeLoader = new NodeLoader();
-        $this->databaseLayer = new DatabaseLayer();
-        $this->eventService = $eventService ?? new WorkflowEventService();
+        $this->nodeLoader = new NodeLoader;
+        $this->databaseLayer = new DatabaseLayer;
+        $this->eventService = $eventService ?? new WorkflowEventService;
         $this->replayer = $replayer ?? new WorkflowReplayer($this->eventService);
     }
 
     /**
      * Execute a workflow by name
      *
-     * @param string $workflowName Workflow name
-     * @param array $initialInput Input data for the workflow
-     * @param array $options ['idempotency_key' => string, 'skip_idempotency_check' => bool]
+     * @param  string  $workflowName  Workflow name
+     * @param  array  $initialInput  Input data for the workflow
+     * @param  array  $options  ['idempotency_key' => string, 'skip_idempotency_check' => bool]
      * @return array Execution result
      */
     public function executeWorkflow(string $workflowName, array $initialInput = [], array $options = []): array
@@ -42,16 +48,16 @@ class WorkflowEngine
         // Load workflow configuration
         $workflow = $this->databaseLayer->getWorkflow($workflowName);
 
-        if (!$workflow) {
+        if (! $workflow) {
             throw new Exception("Workflow not found: {$workflowName}");
         }
 
-        if (!$workflow->active) {
+        if (! $workflow->active) {
             throw new Exception("Workflow is not active: {$workflowName}");
         }
 
         // Check idempotency unless explicitly skipped
-        if (!($options['skip_idempotency_check'] ?? false) && !empty($initialInput)) {
+        if (! ($options['skip_idempotency_check'] ?? false) && ! empty($initialInput)) {
             $idempotencyCheck = $this->databaseLayer->checkIdempotency(
                 $workflow->id,
                 $initialInput,
@@ -59,7 +65,7 @@ class WorkflowEngine
             );
 
             if ($idempotencyCheck['skip']) {
-                Log::info("Skipping duplicate workflow execution (idempotency)", [
+                Log::info('Skipping duplicate workflow execution (idempotency)', [
                     'workflow' => $workflowName,
                     'idempotency_key' => $idempotencyCheck['key'],
                     'existing_run_id' => $idempotencyCheck['existing_run']->id,
@@ -91,11 +97,11 @@ class WorkflowEngine
         // Generate execution ID for checkpointing
         $this->currentExecutionId = (string) Str::uuid();
 
-        if (!empty($initialInput)) {
+        if (! empty($initialInput)) {
             $this->databaseLayer->logWorkflowRunInputs($runId, $initialInput);
         }
 
-        Log::info("Starting workflow execution", [
+        Log::info('Starting workflow execution', [
             'workflow' => $workflowName,
             'run_id' => $runId,
             'execution_id' => $this->currentExecutionId,
@@ -106,7 +112,7 @@ class WorkflowEngine
             $retryConfig = $this->databaseLayer->getRetryConfig($workflow->id);
 
             // Execute workflow with retry logic
-            $output = $this->executeWithRetry(function() use ($workflow, $runId, $initialInput) {
+            $output = $this->executeWithRetry(function () use ($workflow, $runId, $initialInput) {
                 return $this->executeNodes($workflow, $runId, $initialInput);
             }, $retryConfig);
 
@@ -114,7 +120,7 @@ class WorkflowEngine
             $this->databaseLayer->updateWorkflowRun($runId, 'completed');
             $this->databaseLayer->logWorkflowRunOutputs($runId, $output);
 
-            Log::info("Workflow execution completed", [
+            Log::info('Workflow execution completed', [
                 'workflow' => $workflowName,
                 'run_id' => $runId,
                 'execution_id' => $this->currentExecutionId,
@@ -124,18 +130,18 @@ class WorkflowEngine
                 'success' => true,
                 'run_id' => $runId,
                 'execution_id' => $this->currentExecutionId,
-                'output' => $output
+                'output' => $output,
             ];
 
         } catch (\Throwable $e) {
             // Mark workflow as failed
             $this->databaseLayer->updateWorkflowRun($runId, 'failed', $e->getMessage());
 
-            Log::error("Workflow execution failed", [
+            Log::error('Workflow execution failed', [
                 'workflow' => $workflowName,
                 'run_id' => $runId,
                 'execution_id' => $this->currentExecutionId,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
 
             throw $e;
@@ -145,8 +151,8 @@ class WorkflowEngine
     /**
      * Resume a failed workflow execution from the last checkpoint
      *
-     * @param string $executionId UUID of the failed execution
-     * @param array $overrideInput Optional input to override context
+     * @param  string  $executionId  UUID of the failed execution
+     * @param  array  $overrideInput  Optional input to override context
      * @return array Execution result
      */
     public function resumeWorkflow(string $executionId, array $overrideInput = []): array
@@ -154,7 +160,7 @@ class WorkflowEngine
         // Get resume point from replayer
         $resumePoint = $this->replayer->getResumePoint($executionId);
 
-        if (!$resumePoint['can_resume']) {
+        if (! $resumePoint['can_resume']) {
             throw new Exception("Cannot resume execution: {$executionId}");
         }
 
@@ -171,7 +177,7 @@ class WorkflowEngine
         // Get context from state, merge with any overrides
         $resumeContext = array_merge($state->getContext(), $overrideInput);
 
-        Log::info("Resuming workflow execution", [
+        Log::info('Resuming workflow execution', [
             'execution_id' => $executionId,
             'last_completed' => $resumePoint['last_completed_node'],
             'failed_node' => $resumePoint['failed_node'],
@@ -182,12 +188,12 @@ class WorkflowEngine
         $firstEvent = $events[0];
         $workflowName = $firstEvent->metadata['workflow_name'] ?? null;
 
-        if (!$workflowName) {
-            throw new Exception("Cannot determine workflow name from events");
+        if (! $workflowName) {
+            throw new Exception('Cannot determine workflow name from events');
         }
 
         $workflow = $this->databaseLayer->getWorkflow($workflowName);
-        if (!$workflow) {
+        if (! $workflow) {
             throw new Exception("Workflow not found: {$workflowName}");
         }
 
@@ -207,7 +213,7 @@ class WorkflowEngine
             $this->databaseLayer->updateWorkflowRun($runId, 'completed');
             $this->databaseLayer->logWorkflowRunOutputs($runId, $output);
 
-            Log::info("Resumed workflow execution completed", [
+            Log::info('Resumed workflow execution completed', [
                 'execution_id' => $executionId,
                 'run_id' => $runId,
             ]);
@@ -217,16 +223,16 @@ class WorkflowEngine
                 'run_id' => $runId,
                 'execution_id' => $executionId,
                 'resumed' => true,
-                'output' => $output
+                'output' => $output,
             ];
 
         } catch (\Throwable $e) {
             $this->databaseLayer->updateWorkflowRun($runId, 'failed', $e->getMessage());
 
-            Log::error("Resumed workflow execution failed", [
+            Log::error('Resumed workflow execution failed', [
                 'execution_id' => $executionId,
                 'run_id' => $runId,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
 
             throw $e;
@@ -235,8 +241,6 @@ class WorkflowEngine
 
     /**
      * Get the current execution ID
-     *
-     * @return string|null
      */
     public function getCurrentExecutionId(): ?string
     {
@@ -257,10 +261,11 @@ class WorkflowEngine
                 $currentInput = $this->executeNode($node, $currentInput, $runId, $workflow->id, $workflow->name);
             } catch (\Throwable $e) {
                 if ($errorHandling === 'continue') {
-                    Log::warning("Node execution failed, continuing to next node", [
+                    Log::warning('Node execution failed, continuing to next node', [
                         'node_type' => $node->node_type,
-                        'error' => $e->getMessage()
+                        'error' => $e->getMessage(),
                     ]);
+
                     continue;
                 }
                 throw $e;
@@ -295,10 +300,11 @@ class WorkflowEngine
                 if ($previousOutput) {
                     $currentInput = array_merge($currentInput, $previousOutput);
                 }
-                Log::debug("Skipping completed node during resume", [
+                Log::debug('Skipping completed node during resume', [
                     'node_id' => $nodeId,
                     'node_type' => $node->node_type,
                 ]);
+
                 continue;
             }
 
@@ -306,10 +312,11 @@ class WorkflowEngine
                 $currentInput = $this->executeNode($node, $currentInput, $runId, $workflow->id, $workflow->name);
             } catch (\Throwable $e) {
                 if ($errorHandling === 'continue') {
-                    Log::warning("Node execution failed during resume, continuing", [
+                    Log::warning('Node execution failed during resume, continuing', [
                         'node_type' => $node->node_type,
-                        'error' => $e->getMessage()
+                        'error' => $e->getMessage(),
                     ]);
+
                     continue;
                 }
                 throw $e;
@@ -342,11 +349,12 @@ class WorkflowEngine
             ?? 300; // 5 minute default
 
         // Check "only_if" condition
-        if (isset($finalConfig['only_if']) && !$this->evaluateCondition($finalConfig['only_if'], $input)) {
-            Log::info("Node skipped due to only_if condition", [
+        if (isset($finalConfig['only_if']) && ! $this->evaluateCondition($finalConfig['only_if'], $input)) {
+            Log::info('Node skipped due to only_if condition', [
                 'node_type' => $node->node_type,
-                'condition' => $finalConfig['only_if']
+                'condition' => $finalConfig['only_if'],
             ]);
+
             return $input; // Pass through input unchanged
         }
 
@@ -359,7 +367,7 @@ class WorkflowEngine
         );
 
         // Log input
-        if (!empty($input)) {
+        if (! empty($input)) {
             $this->databaseLayer->logNodeExecutionInputs($executionId, $input);
         }
 
@@ -384,13 +392,19 @@ class WorkflowEngine
             // Load and execute node with timeout
             $nodeInstance = $this->nodeLoader->loadNode($node->node_type, $finalConfig);
             $output = $this->executeWithTimeout(
-                fn() => $nodeInstance->execute($input),
+                fn () => $nodeInstance->execute($input),
                 $timeoutSeconds,
                 $node->node_type
             );
 
             // Calculate duration
-            $durationMs = (int)((microtime(true) - $startTime) * 1000);
+            $durationMs = (int) ((microtime(true) - $startTime) * 1000);
+            $this->failIfTimeoutWasReturnedAsOutput(
+                $output,
+                $node->node_type,
+                $timeoutSeconds,
+                $durationMs
+            );
 
             // Update execution record with timeout info
             $this->databaseLayer->updateNodeExecutionWithTimeout(
@@ -416,7 +430,7 @@ class WorkflowEngine
                 $output = $output['streams']['default']['data'] ?? [];
             } else {
                 // Log single output
-                if (!empty($output)) {
+                if (! empty($output)) {
                     $this->databaseLayer->logNodeExecutionOutputs($executionId, $output);
                 }
             }
@@ -435,19 +449,19 @@ class WorkflowEngine
                 );
             }
 
-            Log::debug("Node executed successfully", [
+            Log::debug('Node executed successfully', [
                 'node_type' => $node->node_type,
                 'execution_id' => $executionId,
-                'duration_ms' => $durationMs
+                'duration_ms' => $durationMs,
             ]);
 
             return $output;
 
         } catch (\Throwable $e) {
-            $durationMs = (int)((microtime(true) - $startTime) * 1000);
+            $durationMs = (int) ((microtime(true) - $startTime) * 1000);
             $timedOut = str_contains($e->getMessage(), 'timed out')
                 || str_contains($e->getMessage(), 'Node timeout:')
-                || $e instanceof \App\Exceptions\NodeTimeoutException;
+                || $e instanceof NodeTimeoutException;
 
             $this->databaseLayer->updateNodeExecutionWithTimeout(
                 $executionId,
@@ -476,7 +490,7 @@ class WorkflowEngine
                 );
             }
 
-            Log::error("Node execution failed", [
+            Log::error('Node execution failed', [
                 'node_type' => $node->node_type,
                 'execution_id' => $executionId,
                 'error' => $e->getMessage(),
@@ -490,14 +504,17 @@ class WorkflowEngine
     /**
      * Execute a callable with timeout
      *
-     * @param callable $callable The function to execute
-     * @param int $timeoutSeconds Timeout in seconds
-     * @param string $context Context for error messages
+     * @param  callable  $callable  The function to execute
+     * @param  int  $timeoutSeconds  Timeout in seconds
+     * @param  string  $context  Context for error messages
      * @return mixed Result of the callable
+     *
      * @throws Exception If execution times out
      */
     private function executeWithTimeout(callable $callable, int $timeoutSeconds, string $context): mixed
     {
+        $startedAt = microtime(true);
+
         if (function_exists('pcntl_alarm') && function_exists('pcntl_signal')) {
             $previousAsync = pcntl_async_signals(true);
 
@@ -509,13 +526,6 @@ class WorkflowEngine
             // Capture the current handler BEFORE installing ours
             $previousHandler = pcntl_signal_get_handler(SIGALRM);
 
-            // Install handler that throws — this interrupts blocking calls
-            pcntl_signal(SIGALRM, function () use ($context, $timeoutSeconds) {
-                throw new \RuntimeException(
-                    "Node timeout: {$context} exceeded {$timeoutSeconds}s limit"
-                );
-            });
-
             // Use the lesser of node timeout and remaining parent alarm
             // to ensure we don't exceed the parent's deadline
             $effectiveTimeout = $timeoutSeconds;
@@ -523,10 +533,35 @@ class WorkflowEngine
                 $effectiveTimeout = min($timeoutSeconds, $remainingParentAlarm);
             }
 
+            // Install handler that throws — this interrupts blocking calls when
+            // signals are delivered promptly by the runtime.
+            pcntl_signal(SIGALRM, function () use ($context, $timeoutSeconds, $startedAt) {
+                $elapsedSeconds = max(1, (int) ceil(microtime(true) - $startedAt));
+
+                throw new NodeTimeoutException(
+                    $context,
+                    $timeoutSeconds,
+                    $elapsedSeconds,
+                    "Node timeout: {$context} exceeded {$timeoutSeconds}s limit"
+                );
+            });
+
             pcntl_alarm($effectiveTimeout);
 
             try {
                 $result = $callable();
+                $this->failIfTimeoutWasReturnedAsOutput(
+                    $result,
+                    $context,
+                    $timeoutSeconds,
+                    (int) ((microtime(true) - $startedAt) * 1000)
+                );
+                $this->assertWithinNodeTimeLimit(
+                    $context,
+                    $timeoutSeconds,
+                    $startedAt,
+                    $effectiveTimeout
+                );
                 pcntl_alarm(0); // Cancel node alarm
                 pcntl_async_signals($previousAsync);
 
@@ -547,12 +582,87 @@ class WorkflowEngine
 
         // Fallback: wall-clock enforcement via polling
         $startTime = microtime(true);
-        Log::debug("Executing node without pcntl timeout", [
+        Log::debug('Executing node without pcntl timeout', [
             'context' => $context,
             'timeout_seconds' => $timeoutSeconds,
         ]);
 
-        return $callable();
+        $result = $callable();
+        $this->failIfTimeoutWasReturnedAsOutput(
+            $result,
+            $context,
+            $timeoutSeconds,
+            (int) ((microtime(true) - $startedAt) * 1000)
+        );
+        $this->assertWithinNodeTimeLimit($context, $timeoutSeconds, $startedAt, $timeoutSeconds);
+
+        return $result;
+    }
+
+    private function assertWithinNodeTimeLimit(
+        string $context,
+        int $timeoutSeconds,
+        float $startedAt,
+        int $effectiveTimeout
+    ): void {
+        $elapsedSeconds = max(0, (int) ceil(microtime(true) - $startedAt));
+        $limit = max(1, $effectiveTimeout);
+
+        if ($elapsedSeconds <= $limit) {
+            return;
+        }
+
+        $message = $effectiveTimeout < $timeoutSeconds
+            ? "Node timeout: {$context} exceeded {$effectiveTimeout}s effective limit ({$timeoutSeconds}s configured)"
+            : "Node timeout: {$context} exceeded {$timeoutSeconds}s limit";
+
+        throw new NodeTimeoutException($context, $timeoutSeconds, $elapsedSeconds, $message);
+    }
+
+    private function failIfTimeoutWasReturnedAsOutput(
+        mixed $output,
+        string $context,
+        int $timeoutSeconds,
+        int $durationMs
+    ): void {
+        $message = $this->timeoutMessageFromOutput($output);
+        if ($message === null) {
+            return;
+        }
+
+        $elapsedSeconds = max(1, (int) ceil($durationMs / 1000));
+
+        throw new NodeTimeoutException($context, $timeoutSeconds, $elapsedSeconds, $message);
+    }
+
+    private function timeoutMessageFromOutput(mixed $output): ?string
+    {
+        if (! is_array($output)) {
+            return null;
+        }
+
+        $meta = isset($output['meta']) && is_array($output['meta']) ? $output['meta'] : [];
+        foreach ([
+            $output['error'] ?? null,
+            $meta['error_message'] ?? null,
+        ] as $candidate) {
+            if (! is_scalar($candidate)) {
+                continue;
+            }
+
+            $message = trim((string) $candidate);
+            if ($this->isNodeTimeoutMessage($message)) {
+                return $message;
+            }
+        }
+
+        return null;
+    }
+
+    private function isNodeTimeoutMessage(string $message): bool
+    {
+        return str_contains($message, 'Node timeout:')
+            || preg_match("/\\bNode '.+' execution timed out after \\d+s \\(limit: \\d+s\\)/", $message) === 1;
     }
 
     /**
@@ -579,7 +689,7 @@ class WorkflowEngine
     /**
      * Truncate large data for event storage
      *
-     * @param array $data Data to truncate
+     * @param  array  $data  Data to truncate
      * @return array Truncated data
      */
     private function truncateForEvent(array $data): array
@@ -594,11 +704,12 @@ class WorkflowEngine
         // Truncate large string values
         return array_map(function ($value) {
             if (is_string($value) && strlen($value) > 1000) {
-                return substr($value, 0, 1000) . '... [truncated]';
+                return substr($value, 0, 1000).'... [truncated]';
             }
             if (is_array($value)) {
                 return $this->truncateForEvent($value);
             }
+
             return $value;
         }, $data);
     }
@@ -609,7 +720,7 @@ class WorkflowEngine
         $retryConfigId = $retryConfig->id ?? null;
         $notifyProvider = $retryConfig->notify_on_failure ?? 'pushover';
 
-        if (!is_string($notifyProvider) || trim($notifyProvider) === '') {
+        if (! is_string($notifyProvider) || trim($notifyProvider) === '') {
             $notifyProvider = 'pushover';
         }
 
@@ -629,10 +740,10 @@ class WorkflowEngine
 
                 $delay = $backoffSeconds[min($attempt - 1, count($backoffSeconds) - 1)] ?? 5;
 
-                Log::info("Workflow execution failed, retrying", [
+                Log::info('Workflow execution failed, retrying', [
                     'attempt' => $attempt,
                     'max_attempts' => $maxAttempts,
-                    'backoff_seconds' => $delay
+                    'backoff_seconds' => $delay,
                 ]);
 
                 sleep($delay);
@@ -665,7 +776,7 @@ class WorkflowEngine
 
             // Schedule a summary alert when cooldown expires
             // Use a separate key to track if summary is already scheduled
-            if (!Cache::has('workflow_failure_summary_scheduled')) {
+            if (! Cache::has('workflow_failure_summary_scheduled')) {
                 Cache::put('workflow_failure_summary_scheduled', true, $cooldownSeconds + 30);
 
                 // Dispatch a delayed closure to send the summary
@@ -681,12 +792,12 @@ class WorkflowEngine
                         $errorSummary = implode("\n• ", array_slice($uniqueErrors, 0, 5));
 
                         try {
-                            $controller = new \App\Controllers\NotificationController();
+                            $controller = new \App\Controllers\NotificationController;
                             $controller->send($provider, [
                                 'source_group' => 'workflow_node_notifications',
                                 'title' => "⚠️ {$count} Workflow Failures (Summary)",
                                 'message' => "{$count} workflow failure(s) were suppressed during rate limiting.\n\nErrors:\n• {$errorSummary}"
-                                    . (count($uniqueErrors) > 5 ? "\n...and " . (count($uniqueErrors) - 5) . " more" : ''),
+                                    .(count($uniqueErrors) > 5 ? "\n...and ".(count($uniqueErrors) - 5).' more' : ''),
                                 'priority' => 1,
                             ]);
                         } catch (\Throwable $e) {
@@ -714,17 +825,17 @@ class WorkflowEngine
         }
 
         try {
-            $controller = new \App\Controllers\NotificationController();
+            $controller = new \App\Controllers\NotificationController;
             $controller->send($provider, [
                 'source_group' => 'workflow_node_notifications',
                 'title' => 'Workflow Execution Failed',
                 'message' => $message,
-                'priority' => 1
+                'priority' => 1,
             ]);
         } catch (\Throwable $e) {
-            Log::error("Failed to send failure notification", [
+            Log::error('Failed to send failure notification', [
                 'provider' => $provider,
-                'error' => $e->getMessage()
+                'error' => $e->getMessage(),
             ]);
         }
     }
@@ -733,16 +844,17 @@ class WorkflowEngine
      * Evaluate a condition expression against input data
      * Supports simple comparisons: variable > value, variable == value, etc.
      *
-     * @param string $condition Condition expression (e.g., "count > 0")
-     * @param array $input Input data to evaluate against
+     * @param  string  $condition  Condition expression (e.g., "count > 0")
+     * @param  array  $input  Input data to evaluate against
      * @return bool True if condition is met, false otherwise
      */
     private function evaluateCondition(string $condition, array $input): bool
     {
         // Parse condition: variable operator value
         // Supported operators: >, <, >=, <=, ==, !=
-        if (!preg_match('/^\s*(\w+)\s*(>|<|>=|<=|==|!=)\s*(.+?)\s*$/', $condition, $matches)) {
-            Log::warning("Invalid condition syntax, treating as false", ['condition' => $condition]);
+        if (! preg_match('/^\s*(\w+)\s*(>|<|>=|<=|==|!=)\s*(.+?)\s*$/', $condition, $matches)) {
+            Log::warning('Invalid condition syntax, treating as false', ['condition' => $condition]);
+
             return false;
         }
 
@@ -762,15 +874,15 @@ class WorkflowEngine
             $expectedValue = null;
         } elseif (is_numeric($expectedValue)) {
             $expectedValue = strpos($expectedValue, '.') !== false
-                ? (float)$expectedValue
-                : (int)$expectedValue;
+                ? (float) $expectedValue
+                : (int) $expectedValue;
         } else {
             // Remove quotes from string values
             $expectedValue = trim($expectedValue, '"\'');
         }
 
         // Evaluate condition
-        $result = match($operator) {
+        $result = match ($operator) {
             '>' => $actualValue > $expectedValue,
             '<' => $actualValue < $expectedValue,
             '>=' => $actualValue >= $expectedValue,
@@ -780,13 +892,13 @@ class WorkflowEngine
             default => false
         };
 
-        Log::debug("Condition evaluated", [
+        Log::debug('Condition evaluated', [
             'condition' => $condition,
             'variable' => $variable,
             'actual_value' => $actualValue,
             'operator' => $operator,
             'expected_value' => $expectedValue,
-            'result' => $result
+            'result' => $result,
         ]);
 
         return $result;
@@ -796,8 +908,8 @@ class WorkflowEngine
      * Extract a value from input data by variable name
      * Checks multiple locations: direct key, data array, meta array
      *
-     * @param string $variable Variable name
-     * @param array $input Input data
+     * @param  string  $variable  Variable name
+     * @param  array  $input  Input data
      * @return mixed Value or null if not found
      */
     private function extractValue(string $variable, array $input): mixed

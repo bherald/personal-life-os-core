@@ -312,6 +312,10 @@ class YouTubeTranscriptService
                 'language' => $language,
             ]);
         } else {
+            foreach ($this->languagePolicy->allowedLanguages() as $allowedLanguage) {
+                Cache::forget($this->getCacheKey($videoId, $allowedLanguage));
+            }
+
             // Clear all language variants for this video via Redis SCAN
             $cachePrefix = config('cache.prefix', config('database.redis.options.prefix', ''));
             $dbPrefix = config('database.redis.options.prefix', '');

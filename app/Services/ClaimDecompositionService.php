@@ -2,10 +2,10 @@
 
 namespace App\Services;
 
+use App\Traits\RecursionAware;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
-use App\Traits\RecursionAware;
 
 /**
  * Claim Decomposition Service
@@ -41,21 +41,27 @@ class ClaimDecompositionService
     /**
      * Decompose text into atomic, verifiable claims
      *
-     * @param string $text Source text to decompose
-     * @param array $options Options:
-     *   - source_document_id: int - Link claims to source document
-     *   - persist: bool - Save claims to database (default: true)
-     *   - checkworthiness_threshold: float - Override default threshold
+     * @param  string  $text  Source text to decompose
+     * @param  array  $options  Options:
+     *                          - source_document_id: int - Link claims to source document
+     *                          - persist: bool - Save claims to database (default: true)
+     *                          - checkworthiness_threshold: float - Override default threshold
      * @return array Decomposed claims with metadata
      */
     public function decompose(string $text, array $options = []): array
     {
-        // RLM: Try recursive claim decomposition
-        $rlm = $this->tryRecursive('claim_decomposition', 'partition_map', ['text' => $text, 'options' => $options], function ($ctx) {
-            return $this->decompose($ctx['text'] ?? $ctx['data'], $ctx['options'] ?? []);
-        });
-        if ($rlm !== null) {
-            return is_array($rlm) && isset($rlm[0]) ? end($rlm) : $rlm;
+        // RLM: Try recursive claim decomposition. Recursive sub-calls must use
+        // the normal path so an enabled runtime config cannot self-reenter.
+        if (! ($options['disable_recursion'] ?? false)) {
+            $rlm = $this->tryRecursive('claim_decomposition', 'partition_map', ['text' => $text, 'options' => $options], function ($ctx) {
+                $subOptions = $ctx['options'] ?? [];
+                $subOptions['disable_recursion'] = true;
+
+                return $this->decompose($ctx['text'] ?? $ctx['data'], $subOptions);
+            });
+            if ($rlm !== null) {
+                return is_array($rlm) && isset($rlm[0]) ? end($rlm) : $rlm;
+            }
         }
 
         $startTime = microtime(true);
@@ -90,7 +96,7 @@ class ClaimDecompositionService
                 $stageStart = microtime(true);
                 $verifiability = $this->isVerifiable($sentence);
 
-                if (!$verifiability['verifiable']) {
+                if (! $verifiability['verifiable']) {
                     continue;
                 }
                 $stats['verifiable_sentences']++;
@@ -103,6 +109,7 @@ class ClaimDecompositionService
                     Log::debug('ClaimDecomposition: Could not disambiguate', [
                         'sentence' => substr($sentence['text'], 0, 100),
                     ]);
+
                     continue;
                 }
                 $stats['disambiguated']++;
@@ -174,7 +181,7 @@ class ClaimDecompositionService
     /**
      * Stage 1: Split text into sentences preserving context
      *
-     * @param string $text Source text
+     * @param  string  $text  Source text
      * @return array Array of ['text' => sentence, 'context' => surrounding text]
      */
     public function splitWithContext(string $text): array
@@ -204,7 +211,7 @@ class ClaimDecompositionService
 
             $sentences[] = [
                 'text' => $sentence,
-                'context' => trim($contextBefore . ' [CURRENT] ' . $contextAfter),
+                'context' => trim($contextBefore.' [CURRENT] '.$contextAfter),
                 'position' => $i,
                 'total_sentences' => $total,
             ];
@@ -216,7 +223,7 @@ class ClaimDecompositionService
     /**
      * Stage 2: Check if a sentence contains verifiable factual claims
      *
-     * @param array $sentence Sentence with context
+     * @param  array  $sentence  Sentence with context
      * @return array ['verifiable' => bool, 'reason' => string]
      */
     public function isVerifiable(array $sentence): array
@@ -250,7 +257,7 @@ PROMPT;
             'max_tokens' => 150,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             // On AI failure, assume not verifiable to avoid noise
             return ['verifiable' => false, 'reason' => 'AI analysis failed'];
         }
@@ -266,7 +273,7 @@ PROMPT;
     /**
      * Stage 3: Disambiguate pronouns and ambiguous references
      *
-     * @param array $sentence Sentence with context
+     * @param  array  $sentence  Sentence with context
      * @return string|null Disambiguated sentence, or null if impossible
      */
     public function disambiguate(array $sentence): ?string
@@ -274,7 +281,7 @@ PROMPT;
         $text = $sentence['text'];
 
         // Quick check: if no pronouns or ambiguous references, return as-is
-        if (!preg_match('/\b(he|she|they|it|this|that|these|those|the company|the organization|the government)\b/i', $text)) {
+        if (! preg_match('/\b(he|she|they|it|this|that|these|those|the company|the organization|the government)\b/i', $text)) {
             return $text;
         }
 
@@ -303,13 +310,13 @@ PROMPT;
             'max_tokens' => 300,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return $text; // Return original on AI failure
         }
 
         $parsed = $this->parseJsonResponse($result['response']);
 
-        if (!($parsed['success'] ?? false)) {
+        if (! ($parsed['success'] ?? false)) {
             return null; // Could not disambiguate
         }
 
@@ -319,7 +326,7 @@ PROMPT;
     /**
      * Stage 4: Extract atomic claims from a sentence
      *
-     * @param string $text Disambiguated sentence
+     * @param  string  $text  Disambiguated sentence
      * @return array Array of ['claim' => string, 'entities' => array]
      */
     public function extractAtomicClaims(string $text): array
@@ -350,14 +357,14 @@ PROMPT;
             'max_tokens' => 500,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             // Fallback: return original as single claim
             return [['claim' => $text, 'entities' => []]];
         }
 
         $parsed = $this->parseJsonResponse($result['response'], true);
 
-        if (empty($parsed) || !is_array($parsed)) {
+        if (empty($parsed) || ! is_array($parsed)) {
             return [['claim' => $text, 'entities' => []]];
         }
 
@@ -382,13 +389,13 @@ PROMPT;
             ];
         }
 
-        return !empty($claims) ? $claims : [['claim' => $text, 'entities' => []]];
+        return ! empty($claims) ? $claims : [['claim' => $text, 'entities' => []]];
     }
 
     /**
      * Assess how checkworthy a claim is (worth fact-checking)
      *
-     * @param array $atomic Atomic claim with entities
+     * @param  array  $atomic  Atomic claim with entities
      * @return array ['score' => float 0-1, 'factors' => array]
      */
     /**
@@ -534,18 +541,18 @@ PROMPT;
     /**
      * Persist a claim to the database
      *
-     * @param array $claimData Claim data to persist
+     * @param  array  $claimData  Claim data to persist
      * @return int Inserted claim ID
      */
     private function persistClaim(array $claimData): int
     {
-        $result = DB::connection('pgsql_rag')->select("
+        $result = DB::connection('pgsql_rag')->select('
             INSERT INTO claims (
                 source_text, normalized_claim, checkworthiness_score,
                 entities, source_document_id, decomposition_context, created_at
             ) VALUES (?, ?, ?, ?::jsonb, ?, ?::jsonb, CURRENT_TIMESTAMP)
             RETURNING id
-        ", [
+        ', [
             $claimData['source_text'],
             $claimData['normalized_claim'],
             $claimData['checkworthiness_score'],
@@ -560,36 +567,36 @@ PROMPT;
     /**
      * Get claims by source document
      *
-     * @param int $documentId Source document ID
-     * @param float|null $minCheckworthiness Minimum checkworthiness score
+     * @param  int  $documentId  Source document ID
+     * @param  float|null  $minCheckworthiness  Minimum checkworthiness score
      * @return array Claims
      */
     public function getClaimsByDocument(int $documentId, ?float $minCheckworthiness = null): array
     {
         $threshold = $minCheckworthiness ?? self::CHECKWORTHINESS_THRESHOLD;
 
-        return DB::connection('pgsql_rag')->select("
+        return DB::connection('pgsql_rag')->select('
             SELECT id, source_text, normalized_claim, checkworthiness_score,
                    entities, decomposition_context, created_at
             FROM claims
             WHERE source_document_id = ?
               AND checkworthiness_score >= ?
             ORDER BY checkworthiness_score DESC
-        ", [$documentId, $threshold]);
+        ', [$documentId, $threshold]);
     }
 
     /**
      * Get unverified claims (claims without verdicts)
      *
-     * @param int $limit Maximum claims to return
-     * @param float|null $minCheckworthiness Minimum checkworthiness score
+     * @param  int  $limit  Maximum claims to return
+     * @param  float|null  $minCheckworthiness  Minimum checkworthiness score
      * @return array Claims awaiting verification
      */
     public function getUnverifiedClaims(int $limit = 50, ?float $minCheckworthiness = null): array
     {
         $threshold = $minCheckworthiness ?? self::CHECKWORTHINESS_THRESHOLD;
 
-        return DB::connection('pgsql_rag')->select("
+        return DB::connection('pgsql_rag')->select('
             SELECT c.id, c.source_text, c.normalized_claim, c.checkworthiness_score,
                    c.entities, c.created_at
             FROM claims c
@@ -598,14 +605,14 @@ PROMPT;
               AND c.checkworthiness_score >= ?
             ORDER BY c.checkworthiness_score DESC, c.created_at ASC
             LIMIT ?
-        ", [$threshold, $limit]);
+        ', [$threshold, $limit]);
     }
 
     /**
      * Parse JSON response from AI, handling common formatting issues
      *
-     * @param string $response AI response text
-     * @param bool $expectArray Whether to expect an array result
+     * @param  string  $response  AI response text
+     * @param  bool  $expectArray  Whether to expect an array result
      * @return array Parsed JSON or empty array on failure
      */
     private function parseJsonResponse(string $response, bool $expectArray = false): array
@@ -622,6 +629,7 @@ PROMPT;
                 'error' => json_last_error_msg(),
                 'response' => substr($response, 0, 200),
             ]);
+
             return $expectArray ? [] : ['verifiable' => false];
         }
 

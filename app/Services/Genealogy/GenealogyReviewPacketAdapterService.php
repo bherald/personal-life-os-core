@@ -38,6 +38,7 @@ class GenealogyReviewPacketAdapterService
                 'claims' => $claims,
                 'identity' => $this->identityPayload($packet),
                 'privacy' => $this->privacyPayload($packet),
+                'sprint' => is_array($packet['sprint'] ?? null) ? $packet['sprint'] : [],
                 'validation' => $this->validator->validate($packet),
                 'apply_preview' => $this->applyPreview->preview($packet),
                 'decision_log' => [],

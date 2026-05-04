@@ -2,6 +2,7 @@
 
 namespace App\Controllers;
 
+use App\Exceptions\NodeTimeoutException;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -198,6 +199,10 @@ class NotificationController
             ];
 
         } catch (Exception $e) {
+            if ($e instanceof NodeTimeoutException || str_contains($e->getMessage(), 'Node timeout:')) {
+                throw $e;
+            }
+
             Log::error('Pushover notification exception', ['error' => $e->getMessage()]);
 
             return ['success' => false, 'error' => $e->getMessage()];

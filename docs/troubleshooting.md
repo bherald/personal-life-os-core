@@ -100,6 +100,19 @@ low-priority local worker across `high`, `default`, `low`, `long-running`,
 `workflow`, and `speculative` queues. Use the default local profile again when
 testing queue isolation or scheduler throughput.
 
+`composer dev` starts `php artisan queue:listen --tries=1`; it does not start
+Horizon. To avoid starting a queue worker while working on only the web UI or
+frontend assets, run only the pieces you need:
+
+```bash
+php artisan serve
+npm run dev
+php artisan pail --timeout=0
+```
+
+Start Horizon separately only when you are testing Horizon behavior or queue
+supervisor layout.
+
 ## Media And GPU Issues
 
 Media and GPU profiles are optional. Common failures include missing OS

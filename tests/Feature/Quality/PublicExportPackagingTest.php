@@ -46,6 +46,7 @@ class PublicExportPackagingTest extends TestCase
             'tests/Feature/Console/SetupDoctorCommandTest.php',
             'tests/Feature/Quality/FixturesProvenanceTest.php',
             'tests/Feature/Quality/PublicExportPackagingTest.php',
+            'tests/Feature/Quality/PublicGithubMonitorScriptTest.php',
             'tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php',
             'tests/Feature/Quality/RepositoryGovernanceTest.php',
         ] as $path) {

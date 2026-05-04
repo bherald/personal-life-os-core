@@ -131,6 +131,7 @@ class NotificationHubNode extends BaseNode
                     Log::warning("NotificationHubNode: Delivery suppressed via {$channel}", [
                         'source_group' => $result['source_group'] ?? null,
                     ]);
+
                     continue;
                 }
 
@@ -238,7 +239,7 @@ class NotificationHubNode extends BaseNode
             'urgent' => 2,
         ];
 
-        $controller = new NotificationController;
+        $controller = app(NotificationController::class);
         $sourceGroup = (string) $this->getConfigValue('source_group', 'workflow_node_notifications');
 
         $payload = [

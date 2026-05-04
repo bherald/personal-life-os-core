@@ -143,7 +143,8 @@ class RagBacklogService
         $availableTables = $this->scaleAvailableTables($errors);
         $summary = $this->scaleSummary($errors, $ragDocumentColumns);
         $documentTypes = $this->scaleDocumentTypes($errors, $ragDocumentColumns);
-        $storage = $this->scaleStorage($errors);
+        $storage = $this->scaleStorage($errors, $summary);
+        $postgres = $this->scalePostgresEvidence($errors);
         $embeddingTables = $this->scaleEmbeddingTables($errors, $availableTables);
 
         return [
@@ -154,6 +155,7 @@ class RagBacklogService
             'summary' => $summary,
             'document_types' => $documentTypes,
             'storage' => $storage,
+            'postgres' => $postgres,
             'embedding_tables' => $embeddingTables,
             'schema' => [
                 'rag_documents_columns' => $ragDocumentColumns,
@@ -164,7 +166,7 @@ class RagBacklogService
                     fn (string $table): bool => ! isset($availableTables[$table])
                 )),
             ],
-            'recommendations' => $this->scaleRecommendations($summary, $storage, $errors),
+            'recommendations' => $this->scaleRecommendations($summary, $storage, $postgres, $errors),
             'evidence_errors' => $errors,
             'note' => 'Scale baseline is read-only; do not change chunking, compression, vector dimensions, or indexing policy from this report alone.',
         ];
@@ -174,6 +176,9 @@ class RagBacklogService
     {
         $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
         $storage = is_array($payload['storage'] ?? null) ? $payload['storage'] : [];
+        $postgres = is_array($payload['postgres'] ?? null) ? $payload['postgres'] : [];
+        $tableHealth = is_array($postgres['table_health'] ?? null) ? $postgres['table_health'] : [];
+        $indexSummary = is_array($postgres['index_summary'] ?? null) ? $postgres['index_summary'] : [];
         $lines = [
             '# RAG Scale Baseline',
             '',
@@ -187,6 +192,14 @@ class RagBacklogService
             '- Compressed documents: `'.(int) ($summary['compressed_documents'] ?? 0).'`',
             '- Contextualized documents: `'.(int) ($summary['contextualized_documents'] ?? 0).'`',
             '- Total relation MB: `'.(float) ($storage['total_relation_mb'] ?? 0.0).'`',
+            '- Total bytes per document: `'.($storage['total_bytes_per_document'] ?? 'n/a').'`',
+            '- Total bytes per content char: `'.($storage['total_bytes_per_content_char'] ?? 'n/a').'`',
+            '- PostgreSQL dead tuples: `'.(int) ($tableHealth['dead_tuples'] ?? 0).'`',
+            '- PostgreSQL dead tuple ratio: `'.($tableHealth['dead_tuple_ratio'] ?? 'n/a').'`',
+            '- PostgreSQL indexes: `'.(int) ($indexSummary['index_count'] ?? 0).'`',
+            '- PostgreSQL zero-scan indexes: `'.(int) ($indexSummary['zero_scan_indexes'] ?? 0).'`',
+            '- PostgreSQL invalid indexes: `'.(int) ($indexSummary['invalid_indexes'] ?? 0).'`',
+            '- Largest PostgreSQL index MB: `'.($indexSummary['largest_index_mb'] ?? 'n/a').'`',
             '',
             '## Document Types',
             '',
@@ -228,6 +241,26 @@ class RagBacklogService
                 (string) ($row['table'] ?? 'unknown'),
                 (int) ($row['rows'] ?? 0)
             );
+        }
+
+        $lines[] = '';
+        $lines[] = '## PostgreSQL Index Evidence';
+        $lines[] = '';
+        foreach (($postgres['indexes'] ?? []) as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+            $lines[] = sprintf(
+                '- `%s`: `%s` MB, scans `%d`, valid `%s`, primary `%s`',
+                (string) ($row['index_name'] ?? 'unknown'),
+                $row['index_mb'] ?? 'n/a',
+                (int) ($row['idx_scan'] ?? 0),
+                ($row['is_valid'] ?? false) ? 'yes' : 'no',
+                ($row['is_primary'] ?? false) ? 'yes' : 'no'
+            );
+        }
+        if (($postgres['indexes'] ?? []) === []) {
+            $lines[] = '- None.';
         }
 
         $lines[] = '';
@@ -385,9 +418,10 @@ class RagBacklogService
 
     /**
      * @param  list<array<string, mixed>>  $errors
-     * @return array<string, float|int>
+     * @param  array<string, mixed>  $summary
+     * @return array<string, float|int|null>
      */
-    private function scaleStorage(array &$errors): array
+    private function scaleStorage(array &$errors, array $summary): array
     {
         try {
             $row = DB::connection(self::CONNECTION)->selectOne(
@@ -400,6 +434,8 @@ class RagBacklogService
             $total = (int) ($row->rag_documents_total_bytes ?? 0);
             $heap = (int) ($row->rag_documents_heap_bytes ?? 0);
             $index = (int) ($row->rag_documents_index_bytes ?? 0);
+            $documents = (int) ($summary['documents'] ?? 0);
+            $contentChars = (int) ($summary['content_chars'] ?? 0);
 
             return [
                 'rag_documents_total_bytes' => $total,
@@ -408,6 +444,9 @@ class RagBacklogService
                 'total_relation_mb' => round($total / 1048576, 2),
                 'heap_mb' => round($heap / 1048576, 2),
                 'index_mb' => round($index / 1048576, 2),
+                'total_bytes_per_document' => $documents > 0 ? round($total / $documents, 2) : null,
+                'index_bytes_per_document' => $documents > 0 ? round($index / $documents, 2) : null,
+                'total_bytes_per_content_char' => $contentChars > 0 ? round($total / $contentChars, 4) : null,
             ];
         } catch (\Throwable $e) {
             $this->recordScaleError($errors, 'rag_scale_storage_failed', $e);
@@ -419,7 +458,178 @@ class RagBacklogService
                 'total_relation_mb' => 0.0,
                 'heap_mb' => 0.0,
                 'index_mb' => 0.0,
+                'total_bytes_per_document' => null,
+                'index_bytes_per_document' => null,
+                'total_bytes_per_content_char' => null,
             ];
+        }
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $errors
+     * @return array<string, mixed>
+     */
+    private function scalePostgresEvidence(array &$errors): array
+    {
+        $tableHealth = $this->scalePostgresTableHealth($errors);
+        $indexes = $this->scalePostgresIndexes($errors);
+
+        $largestIndex = $indexes[0] ?? null;
+        $invalidIndexes = count(array_filter($indexes, fn (array $row): bool => ($row['is_valid'] ?? true) === false));
+        $unreadyIndexes = count(array_filter($indexes, fn (array $row): bool => ($row['is_ready'] ?? true) === false));
+        $zeroScanIndexes = count(array_filter(
+            $indexes,
+            fn (array $row): bool => (int) ($row['idx_scan'] ?? 0) === 0 && ($row['is_primary'] ?? false) === false
+        ));
+
+        return [
+            'table_health' => $tableHealth,
+            'index_summary' => [
+                'index_count' => count($indexes),
+                'zero_scan_indexes' => $zeroScanIndexes,
+                'invalid_indexes' => $invalidIndexes,
+                'unready_indexes' => $unreadyIndexes,
+                'largest_index_name' => is_array($largestIndex) ? (string) ($largestIndex['index_name'] ?? 'unknown') : null,
+                'largest_index_mb' => is_array($largestIndex) ? ($largestIndex['index_mb'] ?? null) : null,
+                'total_index_mb' => round(array_sum(array_map(
+                    fn (array $row): int => (int) ($row['index_bytes'] ?? 0),
+                    $indexes
+                )) / 1048576, 2),
+            ],
+            'indexes' => $indexes,
+            'note' => 'PostgreSQL bloat/index evidence uses catalog statistics only; no content, query text, pgstattuple scan, or count-first scan is collected.',
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $errors
+     * @return array<string, float|int|string|null>
+     */
+    private function scalePostgresTableHealth(array &$errors): array
+    {
+        try {
+            $row = DB::connection(self::CONNECTION)->selectOne(
+                "SELECT
+                    relname AS table_name,
+                    n_live_tup,
+                    n_dead_tup,
+                    vacuum_count,
+                    autovacuum_count,
+                    analyze_count,
+                    autoanalyze_count,
+                    last_vacuum,
+                    last_autovacuum,
+                    last_analyze,
+                    last_autoanalyze
+                 FROM pg_stat_user_tables
+                 WHERE schemaname = 'public'
+                   AND relname = 'rag_documents'
+                 LIMIT 1"
+            );
+
+            if (! $row) {
+                return [
+                    'table' => 'rag_documents',
+                    'estimate_source' => 'pg_stat_user_tables',
+                    'live_tuples' => 0,
+                    'dead_tuples' => 0,
+                    'dead_tuple_ratio' => null,
+                    'vacuum_count' => 0,
+                    'autovacuum_count' => 0,
+                    'analyze_count' => 0,
+                    'autoanalyze_count' => 0,
+                    'last_vacuum_at' => null,
+                    'last_autovacuum_at' => null,
+                    'last_analyze_at' => null,
+                    'last_autoanalyze_at' => null,
+                ];
+            }
+
+            $liveTuples = (int) ($row->n_live_tup ?? 0);
+            $deadTuples = (int) ($row->n_dead_tup ?? 0);
+            $tupleTotal = $liveTuples + $deadTuples;
+
+            return [
+                'table' => (string) ($row->table_name ?? 'rag_documents'),
+                'estimate_source' => 'pg_stat_user_tables',
+                'live_tuples' => $liveTuples,
+                'dead_tuples' => $deadTuples,
+                'dead_tuple_ratio' => $tupleTotal > 0 ? round($deadTuples / $tupleTotal, 4) : null,
+                'vacuum_count' => (int) ($row->vacuum_count ?? 0),
+                'autovacuum_count' => (int) ($row->autovacuum_count ?? 0),
+                'analyze_count' => (int) ($row->analyze_count ?? 0),
+                'autoanalyze_count' => (int) ($row->autoanalyze_count ?? 0),
+                'last_vacuum_at' => $this->stringifyScaleValue($row->last_vacuum ?? null),
+                'last_autovacuum_at' => $this->stringifyScaleValue($row->last_autovacuum ?? null),
+                'last_analyze_at' => $this->stringifyScaleValue($row->last_analyze ?? null),
+                'last_autoanalyze_at' => $this->stringifyScaleValue($row->last_autoanalyze ?? null),
+            ];
+        } catch (\Throwable $e) {
+            $this->recordScaleError($errors, 'rag_scale_postgres_table_health_failed', $e);
+
+            return [
+                'table' => 'rag_documents',
+                'estimate_source' => 'pg_stat_user_tables',
+                'live_tuples' => 0,
+                'dead_tuples' => 0,
+                'dead_tuple_ratio' => null,
+                'vacuum_count' => 0,
+                'autovacuum_count' => 0,
+                'analyze_count' => 0,
+                'autoanalyze_count' => 0,
+                'last_vacuum_at' => null,
+                'last_autovacuum_at' => null,
+                'last_analyze_at' => null,
+                'last_autoanalyze_at' => null,
+            ];
+        }
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $errors
+     * @return list<array<string, bool|float|int|string|null>>
+     */
+    private function scalePostgresIndexes(array &$errors): array
+    {
+        try {
+            $rows = DB::connection(self::CONNECTION)->select(
+                "SELECT
+                    ix.relname AS index_name,
+                    pg_relation_size(ix.oid) AS index_bytes,
+                    COALESCE(sui.idx_scan, 0) AS idx_scan,
+                    COALESCE(sui.idx_tup_read, 0) AS idx_tup_read,
+                    COALESCE(sui.idx_tup_fetch, 0) AS idx_tup_fetch,
+                    i.indisunique AS is_unique,
+                    i.indisprimary AS is_primary,
+                    i.indisvalid AS is_valid,
+                    i.indisready AS is_ready
+                 FROM pg_class t
+                 JOIN pg_namespace ns ON ns.oid = t.relnamespace
+                 JOIN pg_index i ON i.indrelid = t.oid
+                 JOIN pg_class ix ON ix.oid = i.indexrelid
+                 LEFT JOIN pg_stat_user_indexes sui ON sui.indexrelid = ix.oid
+                 WHERE ns.nspname = 'public'
+                   AND t.relname = 'rag_documents'
+                 ORDER BY pg_relation_size(ix.oid) DESC, ix.relname ASC
+                 LIMIT 25"
+            );
+
+            return array_map(fn (object $row): array => [
+                'index_name' => (string) ($row->index_name ?? 'unknown'),
+                'index_bytes' => (int) ($row->index_bytes ?? 0),
+                'index_mb' => round(((int) ($row->index_bytes ?? 0)) / 1048576, 2),
+                'idx_scan' => (int) ($row->idx_scan ?? 0),
+                'idx_tup_read' => (int) ($row->idx_tup_read ?? 0),
+                'idx_tup_fetch' => (int) ($row->idx_tup_fetch ?? 0),
+                'is_unique' => (bool) ($row->is_unique ?? false),
+                'is_primary' => (bool) ($row->is_primary ?? false),
+                'is_valid' => (bool) ($row->is_valid ?? false),
+                'is_ready' => (bool) ($row->is_ready ?? false),
+            ], $rows);
+        } catch (\Throwable $e) {
+            $this->recordScaleError($errors, 'rag_scale_postgres_indexes_failed', $e);
+
+            return [];
         }
     }
 
@@ -526,12 +736,15 @@ class RagBacklogService
     /**
      * @param  array<string, mixed>  $summary
      * @param  array<string, mixed>  $storage
+     * @param  array<string, mixed>  $postgres
      * @param  list<array<string, mixed>>  $errors
      * @return list<string>
      */
-    private function scaleRecommendations(array $summary, array $storage, array $errors): array
+    private function scaleRecommendations(array $summary, array $storage, array $postgres, array $errors): array
     {
         $recommendations = [];
+        $tableHealth = is_array($postgres['table_health'] ?? null) ? $postgres['table_health'] : [];
+        $indexSummary = is_array($postgres['index_summary'] ?? null) ? $postgres['index_summary'] : [];
 
         if ($errors !== []) {
             $recommendations[] = 'Fix missing scale-baseline evidence before making RAG storage or indexing changes.';
@@ -549,9 +762,38 @@ class RagBacklogService
             $recommendations[] = 'rag_documents is above 10 GB; collect index/bloat and query latency evidence before bulk indexing growth.';
         }
 
+        if ((float) ($tableHealth['dead_tuple_ratio'] ?? 0.0) >= 0.2 && ((int) ($tableHealth['live_tuples'] ?? 0) + (int) ($tableHealth['dead_tuples'] ?? 0)) > 10000) {
+            $recommendations[] = 'rag_documents dead tuple ratio is elevated; review vacuum/analyze health before changing RAG write volume.';
+        }
+
+        if ((int) ($indexSummary['invalid_indexes'] ?? 0) > 0 || (int) ($indexSummary['unready_indexes'] ?? 0) > 0) {
+            $recommendations[] = 'rag_documents has invalid or unready PostgreSQL indexes; resolve index health before retrieval/indexing policy changes.';
+        }
+
+        if ((int) ($indexSummary['zero_scan_indexes'] ?? 0) > 0) {
+            $recommendations[] = 'Treat zero-scan index evidence as a review signal only; confirm PostgreSQL stats reset timing before any index removal proposal.';
+        }
+
         $recommendations[] = 'Keep TODO-018 in observe/planning mode until this baseline is compared with retrieval quality and job runtime evidence.';
 
         return $recommendations;
+    }
+
+    private function stringifyScaleValue(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:sP');
+        }
+
+        if (is_scalar($value)) {
+            return (string) $value;
+        }
+
+        return null;
     }
 
     /**

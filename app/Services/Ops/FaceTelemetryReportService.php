@@ -148,6 +148,264 @@ class FaceTelemetryReportService
         return implode("\n", $lines)."\n";
     }
 
+    public function toCompactPayload(array $payload): array
+    {
+        $sections = $payload['sections'] ?? [];
+        $registry = $this->summary($sections, 'mysql_face_registry');
+        $queue = $this->summary($sections, 'review_queue');
+        $decisions = $this->summary($sections, 'candidate_decisions');
+        $bridge = $this->summary($sections, 'bridge_alignment');
+        $vectors = $this->summary($sections, 'postgres_face_vectors');
+        $jobs = $this->summary($sections, 'face_jobs');
+        $breaches = array_values(array_filter(
+            $payload['threshold_breaches'] ?? [],
+            fn (mixed $breach): bool => is_array($breach)
+        ));
+
+        return [
+            'version' => $payload['version'] ?? 1,
+            'compact' => true,
+            'mode' => $payload['mode'] ?? 'observe',
+            'dry_run' => (bool) ($payload['dry_run'] ?? false),
+            'window_hours' => $payload['window_hours'] ?? null,
+            'captured_at' => $payload['captured_at'] ?? null,
+            'status' => $payload['status'] ?? 'unknown',
+            'threshold_breaches' => [
+                'count' => count($breaches),
+                'ids' => array_values(array_filter(array_map(
+                    fn (array $breach): ?string => isset($breach['id']) ? (string) $breach['id'] : null,
+                    $breaches
+                ))),
+                'status_counts' => $this->statusCounts($breaches),
+            ],
+            'recommendation_count' => count($payload['recommendations'] ?? []),
+            'sections' => [
+                'mysql_face_registry' => [
+                    'status' => $this->sectionStatus($sections, 'mysql_face_registry'),
+                    'total_faces' => $this->intValue($registry['total_faces'] ?? 0),
+                    'visible_faces' => $this->intValue($registry['visible_faces'] ?? 0),
+                    'genealogy_linked_faces' => $this->intValue($registry['genealogy_linked_faces'] ?? 0),
+                    'named_only_faces' => $this->intValue($registry['named_only_faces'] ?? 0),
+                    'unclustered_visible_faces' => $this->intValue($registry['unclustered_visible_faces'] ?? 0),
+                ],
+                'review_queue' => [
+                    'status' => $this->sectionStatus($sections, 'review_queue'),
+                    'total_queue_items' => $this->intValue($queue['total_queue_items'] ?? 0),
+                    'pending_items' => $this->intValue($queue['pending_items'] ?? 0),
+                    'stale_pending_items' => $this->intValue($queue['stale_pending_items'] ?? 0),
+                    'recent_updates' => $this->intValue($queue['recent_updates'] ?? 0),
+                    'oldest_pending_at' => $this->nullableString($queue['oldest_pending_at'] ?? null),
+                ],
+                'candidate_decisions' => [
+                    'status' => $this->sectionStatus($sections, 'candidate_decisions'),
+                    'decision_rows' => $this->intValue($decisions['decision_rows'] ?? 0),
+                    'decided_faces' => $this->intValue($decisions['decided_faces'] ?? 0),
+                    'recent_decisions' => $this->intValue($decisions['recent_decisions'] ?? 0),
+                    'latest_decision_at' => $this->nullableString($decisions['latest_decision_at'] ?? null),
+                    'terminal_decisions' => $this->intValue($decisions['terminal_decisions'] ?? 0),
+                    'actions' => [
+                        'keep_name_only' => $this->intValue($decisions['keep_name_only'] ?? 0),
+                        'outside_tree' => $this->intValue($decisions['outside_tree'] ?? 0),
+                        'too_vague' => $this->intValue($decisions['too_vague'] ?? 0),
+                        'not_this_person' => $this->intValue($decisions['not_this_person'] ?? 0),
+                        'defer' => $this->intValue($decisions['deferred'] ?? 0),
+                    ],
+                ],
+                'bridge_alignment' => [
+                    'status' => $this->sectionStatus($sections, 'bridge_alignment'),
+                    'linked_faces' => $this->intValue($bridge['linked_faces'] ?? 0),
+                    'aligned_faces' => $this->intValue($bridge['aligned_faces'] ?? 0),
+                    'missing_media_links' => $this->intValue($bridge['missing_media_links'] ?? 0),
+                    'missing_person_media_links' => $this->intValue($bridge['missing_person_media_links'] ?? 0),
+                    'face_confirmed_person_media' => $this->intValue($bridge['face_confirmed_person_media'] ?? 0),
+                    'person_media_with_regions' => $this->intValue($bridge['person_media_with_regions'] ?? 0),
+                ],
+                'postgres_face_vectors' => [
+                    'status' => $this->sectionStatus($sections, 'postgres_face_vectors'),
+                    'total_embeddings' => $this->intValue($vectors['total_embeddings'] ?? 0),
+                    'linked_registry_embeddings' => $this->intValue($vectors['linked_registry_embeddings'] ?? 0),
+                    'clustered_embeddings' => $this->intValue($vectors['clustered_embeddings'] ?? 0),
+                    'total_clusters' => $this->intValue($vectors['total_clusters'] ?? 0),
+                    'confirmed_clusters' => $this->intValue($vectors['confirmed_clusters'] ?? 0),
+                    'genealogy_linked_clusters' => $this->intValue($vectors['genealogy_linked_clusters'] ?? 0),
+                    'unreviewed_clusters' => $this->intValue($vectors['unreviewed_clusters'] ?? 0),
+                ],
+                'face_jobs' => [
+                    'status' => $this->sectionStatus($sections, 'face_jobs'),
+                    'total_jobs' => $this->intValue($jobs['total_jobs'] ?? 0),
+                    'enabled_jobs' => $this->intValue($jobs['enabled_jobs'] ?? 0),
+                    'running_jobs' => $this->intValue($jobs['running_jobs'] ?? 0),
+                    'recent_runs' => $this->intValue($jobs['recent_runs'] ?? 0),
+                    'recent_success_runs' => $this->intValue($jobs['recent_success_runs'] ?? 0),
+                    'recent_failed_runs' => $this->intValue($jobs['recent_failed_runs'] ?? 0),
+                    'latest_run_at' => $this->nullableString($jobs['latest_run_at'] ?? null),
+                    'next_run_at' => $this->nullableString($jobs['next_run_at'] ?? null),
+                ],
+            ],
+        ];
+    }
+
+    public function toCompactMarkdown(array $payload): string
+    {
+        $compact = $this->toCompactPayload($payload);
+        $sections = $compact['sections'];
+
+        $lines = [
+            '# Face Telemetry Compact Report',
+            '',
+            '- Mode: `'.$compact['mode'].'`',
+            '- Status: `'.$compact['status'].'`',
+            '- Captured: `'.($compact['captured_at'] ?? 'unknown').'`',
+            '- Window Hours: `'.($compact['window_hours'] ?? 'unknown').'`',
+            '- Threshold Breaches: `'.$compact['threshold_breaches']['count'].'`',
+            '- Breach IDs: `'.$this->joinIds($compact['threshold_breaches']['ids']).'`',
+            '- Recommendations: `'.$compact['recommendation_count'].'`',
+            '',
+            '## Headlines',
+            '',
+            sprintf(
+                '- Face registry: `%s`, total=`%s`, visible=`%s`, linked=`%s`, named_only=`%s`, unclustered_visible=`%s`',
+                $sections['mysql_face_registry']['status'],
+                $sections['mysql_face_registry']['total_faces'],
+                $sections['mysql_face_registry']['visible_faces'],
+                $sections['mysql_face_registry']['genealogy_linked_faces'],
+                $sections['mysql_face_registry']['named_only_faces'],
+                $sections['mysql_face_registry']['unclustered_visible_faces']
+            ),
+            sprintf(
+                '- Review queue: `%s`, pending=`%s`, stale=`%s`, recent_updates=`%s`, oldest_pending=`%s`',
+                $sections['review_queue']['status'],
+                $sections['review_queue']['pending_items'],
+                $sections['review_queue']['stale_pending_items'],
+                $sections['review_queue']['recent_updates'],
+                $sections['review_queue']['oldest_pending_at'] ?? 'none'
+            ),
+            sprintf(
+                '- Candidate decisions: `%s`, rows=`%s`, recent=`%s`, terminal=`%s`, latest=`%s`',
+                $sections['candidate_decisions']['status'],
+                $sections['candidate_decisions']['decision_rows'],
+                $sections['candidate_decisions']['recent_decisions'],
+                $sections['candidate_decisions']['terminal_decisions'],
+                $sections['candidate_decisions']['latest_decision_at'] ?? 'none'
+            ),
+            sprintf(
+                '- Bridge alignment: `%s`, linked=`%s`, aligned=`%s`, missing_media=`%s`, missing_person_media=`%s`',
+                $sections['bridge_alignment']['status'],
+                $sections['bridge_alignment']['linked_faces'],
+                $sections['bridge_alignment']['aligned_faces'],
+                $sections['bridge_alignment']['missing_media_links'],
+                $sections['bridge_alignment']['missing_person_media_links']
+            ),
+            sprintf(
+                '- Vectors: `%s`, embeddings=`%s`, linked=`%s`, clustered=`%s`, clusters=`%s`',
+                $sections['postgres_face_vectors']['status'],
+                $sections['postgres_face_vectors']['total_embeddings'],
+                $sections['postgres_face_vectors']['linked_registry_embeddings'],
+                $sections['postgres_face_vectors']['clustered_embeddings'],
+                $sections['postgres_face_vectors']['total_clusters']
+            ),
+            sprintf(
+                '- Face jobs: `%s`, total=`%s`, enabled=`%s`, running=`%s`, recent_failed=`%s`, next=`%s`',
+                $sections['face_jobs']['status'],
+                $sections['face_jobs']['total_jobs'],
+                $sections['face_jobs']['enabled_jobs'],
+                $sections['face_jobs']['running_jobs'],
+                $sections['face_jobs']['recent_failed_runs'],
+                $sections['face_jobs']['next_run_at'] ?? 'none'
+            ),
+        ];
+
+        return implode("\n", $lines)."\n";
+    }
+
+    public function toCompactText(array $payload): string
+    {
+        $compact = $this->toCompactPayload($payload);
+        $sections = $compact['sections'];
+
+        return implode("\n", [
+            sprintf(
+                'Face telemetry compact: %s mode=%s dry_run=%s window_hours=%s captured=%s',
+                $compact['status'],
+                $compact['mode'],
+                $compact['dry_run'] ? 'true' : 'false',
+                $compact['window_hours'] ?? '-',
+                $compact['captured_at'] ?? '-'
+            ),
+            sprintf(
+                'thresholds: count=%s ids=%s recommendations=%s',
+                $compact['threshold_breaches']['count'],
+                $this->joinIds($compact['threshold_breaches']['ids']),
+                $compact['recommendation_count']
+            ),
+            sprintf(
+                'face-registry: %s total=%s visible=%s linked=%s named_only=%s unclustered_visible=%s',
+                $sections['mysql_face_registry']['status'],
+                $sections['mysql_face_registry']['total_faces'],
+                $sections['mysql_face_registry']['visible_faces'],
+                $sections['mysql_face_registry']['genealogy_linked_faces'],
+                $sections['mysql_face_registry']['named_only_faces'],
+                $sections['mysql_face_registry']['unclustered_visible_faces']
+            ),
+            sprintf(
+                'review-queue: %s total=%s pending=%s stale=%s recent_updates=%s oldest_pending=%s',
+                $sections['review_queue']['status'],
+                $sections['review_queue']['total_queue_items'],
+                $sections['review_queue']['pending_items'],
+                $sections['review_queue']['stale_pending_items'],
+                $sections['review_queue']['recent_updates'],
+                $sections['review_queue']['oldest_pending_at'] ?? 'none'
+            ),
+            sprintf(
+                'candidate-decisions: %s rows=%s faces=%s recent=%s latest=%s terminal=%s keep=%s outside=%s vague=%s not-this=%s defer=%s',
+                $sections['candidate_decisions']['status'],
+                $sections['candidate_decisions']['decision_rows'],
+                $sections['candidate_decisions']['decided_faces'],
+                $sections['candidate_decisions']['recent_decisions'],
+                $sections['candidate_decisions']['latest_decision_at'] ?? 'none',
+                $sections['candidate_decisions']['terminal_decisions'],
+                $sections['candidate_decisions']['actions']['keep_name_only'],
+                $sections['candidate_decisions']['actions']['outside_tree'],
+                $sections['candidate_decisions']['actions']['too_vague'],
+                $sections['candidate_decisions']['actions']['not_this_person'],
+                $sections['candidate_decisions']['actions']['defer']
+            ),
+            sprintf(
+                'bridge-alignment: %s linked=%s aligned=%s missing_media=%s missing_person_media=%s confirmed_media=%s region_rows=%s',
+                $sections['bridge_alignment']['status'],
+                $sections['bridge_alignment']['linked_faces'],
+                $sections['bridge_alignment']['aligned_faces'],
+                $sections['bridge_alignment']['missing_media_links'],
+                $sections['bridge_alignment']['missing_person_media_links'],
+                $sections['bridge_alignment']['face_confirmed_person_media'],
+                $sections['bridge_alignment']['person_media_with_regions']
+            ),
+            sprintf(
+                'vectors: %s embeddings=%s linked=%s clustered=%s clusters=%s confirmed=%s genealogy_linked=%s unreviewed=%s',
+                $sections['postgres_face_vectors']['status'],
+                $sections['postgres_face_vectors']['total_embeddings'],
+                $sections['postgres_face_vectors']['linked_registry_embeddings'],
+                $sections['postgres_face_vectors']['clustered_embeddings'],
+                $sections['postgres_face_vectors']['total_clusters'],
+                $sections['postgres_face_vectors']['confirmed_clusters'],
+                $sections['postgres_face_vectors']['genealogy_linked_clusters'],
+                $sections['postgres_face_vectors']['unreviewed_clusters']
+            ),
+            sprintf(
+                'face-jobs: %s total=%s enabled=%s running=%s recent=%s success=%s failed=%s latest=%s next=%s',
+                $sections['face_jobs']['status'],
+                $sections['face_jobs']['total_jobs'],
+                $sections['face_jobs']['enabled_jobs'],
+                $sections['face_jobs']['running_jobs'],
+                $sections['face_jobs']['recent_runs'],
+                $sections['face_jobs']['recent_success_runs'],
+                $sections['face_jobs']['recent_failed_runs'],
+                $sections['face_jobs']['latest_run_at'] ?? 'none',
+                $sections['face_jobs']['next_run_at'] ?? 'none'
+            ),
+        ])."\n";
+    }
+
     private function collectMysqlFaceRegistry(int $hours): array
     {
         try {
@@ -593,6 +851,44 @@ class FaceTelemetryReportService
         }
 
         return $worst;
+    }
+
+    private function summary(array $sections, string $name): array
+    {
+        $summary = $sections[$name]['summary'] ?? [];
+
+        return is_array($summary) ? $summary : [];
+    }
+
+    private function sectionStatus(array $sections, string $name): string
+    {
+        return (string) ($sections[$name]['status'] ?? 'unknown');
+    }
+
+    private function statusCounts(array $items): array
+    {
+        $counts = [];
+
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $status = (string) ($item['status'] ?? 'unknown');
+            $counts[$status] = ($counts[$status] ?? 0) + 1;
+        }
+
+        ksort($counts);
+
+        return $counts;
+    }
+
+    /**
+     * @param  array<int, string>  $ids
+     */
+    private function joinIds(array $ids): string
+    {
+        return $ids === [] ? 'none' : implode(',', $ids);
     }
 
     private function intValue(mixed $value): int

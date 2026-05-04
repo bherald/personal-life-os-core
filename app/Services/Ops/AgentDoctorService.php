@@ -189,6 +189,7 @@ class AgentDoctorService
 
             $runs = $runsByJob[(int) $job->id] ?? collect();
             $lastRun = $runs->first();
+            $outputSignals = $this->scheduledOutputSignals($runs);
             $durations = $runs
                 ->pluck('duration_seconds')
                 ->filter(fn ($value): bool => $value !== null)
@@ -208,6 +209,7 @@ class AgentDoctorService
                 'consecutive_failures' => $this->consecutiveFailures($runs),
                 'p95_runtime_s_24h' => $this->percentile($durations, 0.95),
                 'stall_exempt' => (bool) ($job->stall_exempt ?? false),
+                ...$outputSignals,
             ];
         }
 
@@ -224,14 +226,71 @@ class AgentDoctorService
             return [];
         }
 
+        $columns = ['scheduled_job_id', 'status', 'started_at', 'completed_at', 'duration_seconds'];
+        if (Schema::hasColumn('scheduled_job_runs', 'output')) {
+            $columns[] = 'output';
+        }
+
         return DB::table('scheduled_job_runs')
-            ->select('scheduled_job_id', 'status', 'started_at', 'completed_at', 'duration_seconds')
+            ->select($columns)
             ->whereIn('scheduled_job_id', $jobIds->all())
             ->where('started_at', '>=', $since->toDateTimeString())
             ->orderByDesc('started_at')
             ->get()
             ->groupBy(fn (object $row): int => (int) $row->scheduled_job_id)
             ->all();
+    }
+
+    /**
+     * @param  Collection<int, object>  $runs
+     * @return array<string, int>
+     */
+    private function scheduledOutputSignals(Collection $runs): array
+    {
+        $successfulRuns = 0;
+        $emptySuccessOutputs = 0;
+        $cjkOutputRuns = 0;
+        $guardedOutputRuns = 0;
+
+        foreach ($runs as $run) {
+            if (($run->status ?? null) !== 'success') {
+                continue;
+            }
+
+            $successfulRuns++;
+            $output = trim((string) ($run->output ?? ''));
+            if ($output === '') {
+                $emptySuccessOutputs++;
+
+                continue;
+            }
+
+            if ($this->containsCjkScript($output)) {
+                $cjkOutputRuns++;
+            }
+
+            if ($this->containsAgentOutputGuard($output)) {
+                $guardedOutputRuns++;
+            }
+        }
+
+        return [
+            'successful_runs_24h' => $successfulRuns,
+            'empty_success_output_runs_24h' => $emptySuccessOutputs,
+            'cjk_output_runs_24h' => $cjkOutputRuns,
+            'guarded_output_runs_24h' => $guardedOutputRuns,
+        ];
+    }
+
+    private function containsCjkScript(string $value): bool
+    {
+        return preg_match('/[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]/u', $value) === 1;
+    }
+
+    private function containsAgentOutputGuard(string $value): bool
+    {
+        return str_contains($value, 'Agent Output Guard')
+            && str_contains($value, 'Response Suppressed');
     }
 
     /**
@@ -616,6 +675,16 @@ class AgentDoctorService
             $warnings[] = "SKILL.md missing for {$agentId}";
         }
 
+        $cjkOutputs = (int) ($scheduledJob['cjk_output_runs_24h'] ?? 0);
+        if ($cjkOutputs > 0) {
+            $warnings[] = "{$cjkOutputs} scheduled output(s) contain CJK/non-English script markers";
+        }
+
+        $guardedOutputs = (int) ($scheduledJob['guarded_output_runs_24h'] ?? 0);
+        if ($guardedOutputs > 0) {
+            $warnings[] = "{$guardedOutputs} scheduled output(s) were suppressed by Agent Output Guard";
+        }
+
         $missingTools = count($registry['tools_missing'] ?? []);
         $disabledTools = count($registry['tools_disabled'] ?? []);
         $blockedTools = count($registry['tools_blocked'] ?? []);
@@ -962,6 +1031,10 @@ class AgentDoctorService
         $memorySummaries = 0;
         $memoryUndistilledEpisodes = 0;
         $proceduresLowQuality = 0;
+        $scheduledSuccessRuns = 0;
+        $scheduledEmptySuccessOutputs = 0;
+        $scheduledCjkOutputRuns = 0;
+        $scheduledGuardedOutputRuns = 0;
 
         foreach ($agents as $agent) {
             $sessionsActive += (int) ($agent['sessions']['active'] ?? 0);
@@ -974,6 +1047,10 @@ class AgentDoctorService
             $memoryTokens += (int) ($agent['memory']['tokens_window'] ?? 0);
             $memorySummaries += (int) ($agent['memory']['summaries_window'] ?? 0);
             $proceduresLowQuality += (int) ($agent['memory']['procedures_low_quality'] ?? 0);
+            $scheduledSuccessRuns += (int) ($agent['scheduled_job']['successful_runs_24h'] ?? 0);
+            $scheduledEmptySuccessOutputs += (int) ($agent['scheduled_job']['empty_success_output_runs_24h'] ?? 0);
+            $scheduledCjkOutputRuns += (int) ($agent['scheduled_job']['cjk_output_runs_24h'] ?? 0);
+            $scheduledGuardedOutputRuns += (int) ($agent['scheduled_job']['guarded_output_runs_24h'] ?? 0);
             if (((int) ($agent['memory']['episodes_window'] ?? 0)) > 0 && ((int) ($agent['memory']['summaries_window'] ?? 0)) === 0) {
                 $memoryUndistilledEpisodes += (int) ($agent['memory']['episodes_window'] ?? 0);
             }
@@ -999,6 +1076,10 @@ class AgentDoctorService
             'memory_summaries_window' => $memorySummaries,
             'memory_undistilled_episodes_window' => $memoryUndistilledEpisodes,
             'procedures_low_quality_total' => $proceduresLowQuality,
+            'scheduled_success_runs_window' => $scheduledSuccessRuns,
+            'scheduled_empty_success_outputs_window' => $scheduledEmptySuccessOutputs,
+            'scheduled_cjk_output_runs_window' => $scheduledCjkOutputRuns,
+            'scheduled_guarded_output_runs_window' => $scheduledGuardedOutputRuns,
         ];
     }
 
@@ -1028,6 +1109,8 @@ class AgentDoctorService
             return $hours !== null && (float) $hours >= (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0);
         }));
         $lowQualityProcedures = array_sum(array_map(fn (array $agent): int => (int) ($agent['memory']['procedures_low_quality'] ?? 0), $agents));
+        $cjkOutputRuns = array_sum(array_map(fn (array $agent): int => (int) ($agent['scheduled_job']['cjk_output_runs_24h'] ?? 0), $agents));
+        $guardedOutputRuns = array_sum(array_map(fn (array $agent): int => (int) ($agent['scheduled_job']['guarded_output_runs_24h'] ?? 0), $agents));
 
         return [
             $this->check(
@@ -1059,6 +1142,11 @@ class AgentDoctorService
                 'procedural_quality',
                 $lowQualityProcedures > 0 ? 'warning' : 'ok',
                 "{$lowQualityProcedures} low-quality procedure(s)"
+            ),
+            $this->check(
+                'agent_output_quality',
+                $cjkOutputRuns > 0 || $guardedOutputRuns > 0 ? 'warning' : 'ok',
+                "{$cjkOutputRuns} scheduled output(s) contain CJK/non-English script markers; {$guardedOutputRuns} guarded output(s)"
             ),
         ];
     }
@@ -1168,6 +1256,10 @@ class AgentDoctorService
             'consecutive_failures' => 0,
             'p95_runtime_s_24h' => null,
             'stall_exempt' => false,
+            'successful_runs_24h' => 0,
+            'empty_success_output_runs_24h' => 0,
+            'cjk_output_runs_24h' => 0,
+            'guarded_output_runs_24h' => 0,
         ];
     }
 

@@ -103,7 +103,7 @@ bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-li
 git diff --check --cached
 
 if [[ "${PLOS_PUBLIC_SMOKE_SKIP_TESTS:-0}" != "1" ]]; then
-    php artisan test tests/Unit/Setup tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
+    php artisan test tests/Unit/Setup tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicGithubMonitorScriptTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
 fi
 
 printf 'Public smoke passed: %s\n' "$DEST"

@@ -66,6 +66,8 @@ Use the review-backlog report when Agent Doctor reports aged pending reviews or
 when planning cleanup work:
 
 ```bash
+php artisan ops:review-backlog-report --compact
+php artisan ops:review-backlog-report --json --compact
 php artisan ops:review-backlog-report --json
 php artisan ops:review-backlog-report --markdown
 php artisan ops:review-backlog-report --dry-run
@@ -73,7 +75,52 @@ php artisan ops:review-backlog-report --dry-run
 
 The report groups pending review rows by age, review type, finding type, agent,
 and high-priority status. It is read-only and does not approve, reject, expire,
-archive, notify, or mutate review rows.
+archive, notify, or mutate review rows. Use `--compact` for routine operator
+or MCP checks that only need aggregate counts and cleanup guidance.
+
+Use genealogy agent triage before any genealogy research-agent re-enablement
+discussion:
+
+```bash
+php artisan genealogy:agent-triage --compact
+php artisan genealogy:agent-triage --json --compact
+php artisan genealogy:agent-triage --json
+```
+
+The compact report is read-only. It keeps target counts, per-target enabled
+state, sessions/reviews/AWO headline counts, next action, and recommendation
+count without dumping full scheduler, episode, nested review, or AWO details.
+
+Use compact reviewer-feedback summaries when checking Review Packet UX feedback
+signals:
+
+```bash
+php artisan genealogy:packet-reason-codes --compact
+php artisan genealogy:packet-reason-codes --json --compact
+php artisan genealogy:reject-codes --compact
+php artisan genealogy:reject-codes --json --compact
+php artisan genealogy:review-feedback --compact
+php artisan genealogy:review-feedback --json --compact
+```
+
+These commands are read-only. Compact output keeps only window, agent scope,
+row/agent counts, review/decision count, accepted/rejected proposal counts
+where applicable, acceptance rate where applicable, and top action/reason
+counts without dumping full daily rollup or per-agent summary arrays.
+
+## RAG And KG Evidence
+
+Use the compact backlog report for routine KG/RAG checks:
+
+```bash
+php artisan rag:backlog-report --compact
+php artisan rag:backlog-report --json --compact
+php artisan rag:backlog-report --json
+```
+
+The compact report is read-only. It keeps document count, RAPTOR/sentence/KG
+pending counts, KG fresh/stale/entity counts, throughput/ETA, net-burn trend,
+and evidence-error count without dumping the full net-burn lane payload.
 
 ## Local AI And Offline Mode
 
@@ -142,6 +189,13 @@ approval-worthy-output counts, and leave `promotion_decisions` empty. They do
 not enable `awo.recording_enabled`, approve or reject review rows, promote
 agents, or change scheduler behavior.
 
+The summary keeps completed-review metrics separate from scanned row signals.
+`hard_fail_count` is the legacy alias for completed-review hard fails, matching
+`completed_hard_fail_count`. `scanned_hard_fail_signal_count` includes every
+scanned item with a replay hard-fail signal, including pending rows, and
+`pending_hard_fail_signal_count` isolates signals that do not yet have a final
+operator decision.
+
 Use `--compare-scheduled` after the weekly `awo_replay_weekly_report` has at
 least one successful retained run. It compares the latest scheduled Markdown
 summary to a current replay and emits stop rules only; mismatches are review
@@ -150,7 +204,9 @@ evidence, not an automation trigger.
 Treat fewer than 10 completed reviews as insufficient data. Also require at
 least 10 completed reviews for an individual agent before using that agent's
 AWO rate as promotion evidence. Item-level JSON can include private review
-context, so public notes should use aggregate counts only.
+context, so public notes should use aggregate counts only. A pending item with
+`hard_fail=true` is review evidence, not a completed-review hard fail, until the
+operator decision is finalized.
 
 ## Database Telemetry
 
@@ -212,9 +268,10 @@ The trace commands are readers only. They do not grant tool access, run
 remediation, delete trace files, or promote dev-agent autonomy.
 `ops:agent-doctor-snapshot --dry-run --json` previews the same aggregate
 projection. Without `--dry-run`, the command appends one row to
-`dev_agent_readiness_snapshots` with only status/count fields and check ids for
-trend evidence. `ops:agent-doctor-history` reads that table only and reports
-aggregate history/deltas without re-running live diagnostics.
+`dev_agent_readiness_snapshots` with only status/count fields, check ids, and
+scheduled output-quality counts for trend evidence. `ops:agent-doctor-history`
+reads that table only and reports aggregate history/deltas without re-running
+live diagnostics.
 
 Relevant docs:
 

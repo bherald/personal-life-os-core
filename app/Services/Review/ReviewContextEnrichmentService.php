@@ -166,6 +166,9 @@ class ReviewContextEnrichmentService
     {
         return [
             'packet' => $this->detailArray($details, 'packet'),
+            'packet_status' => isset($details['packet_status']) && is_scalar($details['packet_status'])
+                ? (string) $details['packet_status']
+                : null,
             'claims' => $this->detailArray($details, 'claims'),
             'source_locator' => isset($details['source_locator']) && is_scalar($details['source_locator'])
                 ? (string) $details['source_locator']
@@ -201,25 +204,11 @@ class ReviewContextEnrichmentService
      * with auth.
      *
      * @param  array<string, mixed>  $details
-     * @return array<int, array{id: int, title: string, file_format: ?string, mime_type: ?string, media_type: ?string, nextcloud_path: ?string, view_url: string}>
+     * @return array<int, array{id: int, title: string, file_format: ?string, mime_type: ?string, media_type: ?string, nextcloud_path: ?string, file_exists: bool, view_url: ?string}>
      */
     private function resolveMediaReferences(array $details): array
     {
-        // Collect every text candidate where `media #N` could appear.
-        $haystack = [];
-        $proposals = $details['proposals'] ?? null;
-        if (is_array($proposals)) {
-            foreach ($proposals as $p) {
-                if (! is_array($p)) {
-                    continue;
-                }
-                foreach (['evidence_summary', 'proposed_value'] as $k) {
-                    if (isset($p[$k]) && is_string($p[$k])) {
-                        $haystack[] = $p[$k];
-                    }
-                }
-            }
-        }
+        $haystack = $this->mediaReferenceTextCandidates($details);
         $haystackText = implode(' ', $haystack);
         if ($haystackText === '') {
             return [];
@@ -247,10 +236,10 @@ class ReviewContextEnrichmentService
             return [];
         }
 
-        $out = [];
+        $outById = [];
         foreach ($rows as $row) {
             $path = (string) ($row->nextcloud_path ?? '');
-            $out[] = [
+            $outById[(int) $row->id] = [
                 'id' => (int) $row->id,
                 'title' => (string) ($row->title ?? ('Media #'.$row->id)),
                 'file_format' => $row->file_format,
@@ -264,7 +253,109 @@ class ReviewContextEnrichmentService
             ];
         }
 
+        $out = [];
+        foreach ($ids as $id) {
+            if (isset($outById[$id])) {
+                $out[] = $outById[$id];
+            }
+        }
+
         return $out;
+    }
+
+    /**
+     * Collect text fields where an agent may have written `media #N`.
+     * Review packets can carry those references inside claims or claim.raw
+     * instead of proposals, so this remains deliberately display-only and
+     * independent from proposal materialization.
+     *
+     * @param  array<string, mixed>  $details
+     * @return array<int, string>
+     */
+    private function mediaReferenceTextCandidates(array $details): array
+    {
+        $haystack = [];
+
+        foreach (['summary', 'source_locator', 'packet_label', 'packet_key'] as $key) {
+            $this->appendMediaTextCandidate($haystack, $details[$key] ?? null);
+        }
+
+        $packet = $details['packet'] ?? null;
+        if (is_array($packet)) {
+            foreach (['summary', 'description', 'packet_label', 'packet_key'] as $key) {
+                $this->appendMediaTextCandidate($haystack, $packet[$key] ?? null);
+            }
+        }
+
+        $proposals = $details['proposals'] ?? null;
+        if (is_array($proposals)) {
+            foreach ($proposals as $proposal) {
+                if (! is_array($proposal)) {
+                    continue;
+                }
+                foreach (['evidence_summary', 'proposed_value', 'summary', 'claim', 'claim_text', 'statement'] as $key) {
+                    $this->appendMediaTextCandidate($haystack, $proposal[$key] ?? null);
+                }
+                $this->appendMediaTextLeaves($haystack, $proposal['evidence_sources'] ?? null);
+            }
+        }
+
+        $claims = $details['claims'] ?? null;
+        if (is_array($claims)) {
+            foreach ($claims as $claim) {
+                if (! is_array($claim)) {
+                    continue;
+                }
+                foreach ([
+                    'claim',
+                    'claim_text',
+                    'statement',
+                    'extracted_claim',
+                    'extracted_text',
+                    'text',
+                    'source_ref',
+                    'source_locator',
+                    'evidence_summary',
+                    'proposed_value',
+                ] as $key) {
+                    $this->appendMediaTextCandidate($haystack, $claim[$key] ?? null);
+                }
+                $this->appendMediaTextLeaves($haystack, $claim['raw'] ?? null);
+            }
+        }
+
+        return $haystack;
+    }
+
+    /**
+     * @param  array<int, string>  $haystack
+     */
+    private function appendMediaTextCandidate(array &$haystack, mixed $value): void
+    {
+        if (is_scalar($value) && trim((string) $value) !== '') {
+            $haystack[] = trim((string) $value);
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $haystack
+     */
+    private function appendMediaTextLeaves(array &$haystack, mixed $value, int $depth = 0): void
+    {
+        if ($depth > 4) {
+            return;
+        }
+        if (is_scalar($value)) {
+            $this->appendMediaTextCandidate($haystack, $value);
+
+            return;
+        }
+        if (! is_array($value)) {
+            return;
+        }
+        foreach ($value as $child) {
+            $this->appendMediaTextLeaves($haystack, $child, $depth + 1);
+        }
     }
 
     /**

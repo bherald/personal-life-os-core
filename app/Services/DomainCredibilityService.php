@@ -37,7 +37,9 @@ class DomainCredibilityService
         'apnews.com' => 0.95,
         'nature.com' => 0.96,
         'bbc.com' => 0.92,
+        'nytimes.com' => 0.86,
         'wikipedia.org' => 0.72,
+        'dailymail.co.uk' => 0.42,
         'infowars.com' => 0.15,
         'naturalnews.com' => 0.10,
     ];
@@ -73,7 +75,7 @@ class DomainCredibilityService
 
         // 2. TLD pattern match
         foreach ($this->tldPatterns as $pattern => $score) {
-            if (str_ends_with($domain, '.' . $pattern)) {
+            if (str_ends_with($domain, '.'.$pattern)) {
                 return $score;
             }
         }
@@ -97,10 +99,19 @@ class DomainCredibilityService
     {
         $score = $this->getScore($domain);
 
-        if ($score >= 0.88) return 1;
-        if ($score >= 0.75) return 2;
-        if ($score >= 0.70) return 3;
-        if ($score >= 0.50) return 4;
+        if ($score >= 0.88) {
+            return 1;
+        }
+        if ($score >= 0.75) {
+            return 2;
+        }
+        if ($score >= 0.70) {
+            return 3;
+        }
+        if ($score >= 0.50) {
+            return 4;
+        }
+
         return 5;
     }
 
@@ -112,14 +123,15 @@ class DomainCredibilityService
     public function getAll(): array
     {
         try {
-            return DB::select("
+            return DB::select('
                 SELECT domain, credibility_score, tier, category, is_tld_pattern, is_active, notes
                 FROM domain_credibility
                 WHERE is_active = 1
                 ORDER BY tier ASC, credibility_score DESC
-            ");
+            ');
         } catch (\Exception $e) {
             Log::warning('DomainCredibilityService: Failed to load all scores', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -129,10 +141,10 @@ class DomainCredibilityService
      *
      * @return bool Success
      */
-    public function upsert(string $domain, float $score, int $tier, string $category = null, string $notes = null, bool $isTldPattern = false): bool
+    public function upsert(string $domain, float $score, int $tier, ?string $category = null, ?string $notes = null, bool $isTldPattern = false): bool
     {
         try {
-            DB::insert("
+            DB::insert('
                 INSERT INTO domain_credibility (domain, credibility_score, tier, category, is_tld_pattern, notes)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ON DUPLICATE KEY UPDATE
@@ -141,15 +153,17 @@ class DomainCredibilityService
                     category = COALESCE(VALUES(category), category),
                     notes = COALESCE(VALUES(notes), notes),
                     updated_at = NOW()
-            ", [$domain, $score, $tier, $category, $isTldPattern ? 1 : 0, $notes]);
+            ', [$domain, $score, $tier, $category, $isTldPattern ? 1 : 0, $notes]);
 
             $this->clearCache();
+
             return true;
         } catch (\Exception $e) {
             Log::error('DomainCredibilityService: Upsert failed', [
                 'domain' => $domain,
                 'error' => $e->getMessage(),
             ]);
+
             return false;
         }
     }
@@ -177,6 +191,7 @@ class DomainCredibilityService
         if ($cached !== null) {
             $this->scores = $cached['scores'];
             $this->tldPatterns = $cached['tld_patterns'];
+
             return;
         }
 
@@ -184,11 +199,11 @@ class DomainCredibilityService
         $this->tldPatterns = [];
 
         try {
-            $rows = DB::select("
+            $rows = DB::select('
                 SELECT domain, credibility_score, is_tld_pattern
                 FROM domain_credibility
                 WHERE is_active = 1
-            ");
+            ');
 
             foreach ($rows as $row) {
                 if ($row->is_tld_pattern) {

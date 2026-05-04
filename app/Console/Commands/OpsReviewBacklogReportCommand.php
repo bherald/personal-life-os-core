@@ -12,6 +12,7 @@ class OpsReviewBacklogReportCommand extends Command
         {--high-priority=8 : Priority threshold for high-priority pending review rows}
         {--markdown : Emit Markdown}
         {--json : Emit machine-readable JSON}
+        {--compact : Emit routine-check compact output}
         {--dry-run : Validate command shape without running review backlog queries}';
 
     protected $description = 'Observe-only review backlog summary grouped by age, type, agent, and priority';
@@ -31,7 +32,10 @@ class OpsReviewBacklogReportCommand extends Command
         );
 
         if ($this->option('json')) {
-            $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            $json = json_encode(
+                $this->option('compact') ? $report->compactPayload($payload) : $payload,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+            );
             if ($json === false) {
                 $this->error('Failed to encode review backlog JSON.');
 
@@ -44,7 +48,13 @@ class OpsReviewBacklogReportCommand extends Command
         }
 
         if ($this->option('markdown')) {
-            $this->line($report->toMarkdown($payload));
+            $this->line($this->option('compact') ? $report->toCompactMarkdown($payload) : $report->toMarkdown($payload));
+
+            return self::SUCCESS;
+        }
+
+        if ($this->option('compact')) {
+            $this->line($report->toCompactText($payload));
 
             return self::SUCCESS;
         }
@@ -80,6 +90,75 @@ class OpsReviewBacklogReportCommand extends Command
                 $row['high_priority_pending'] ?? 0,
                 $row['oldest_pending_at'] ?? 'none'
             ));
+        }
+
+        foreach (($payload['triage_buckets'] ?? []) as $row) {
+            $this->line(sprintf(
+                'triage=%s pending=%s high_priority=%s oldest=%s action=%s',
+                $row['category'] ?? 'unknown',
+                $row['pending'] ?? 0,
+                $row['high_priority_pending'] ?? 0,
+                $row['oldest_pending_at'] ?? 'none',
+                $row['next_action'] ?? 'Review one at a time.'
+            ));
+        }
+
+        foreach (($payload['next_classification_needed'] ?? []) as $row) {
+            $this->line(sprintf(
+                'next_classification=%s stale=%s high_priority=%s oldest=%s action=%s',
+                $row['classification'] ?? 'unknown',
+                $row['stale_pending'] ?? 0,
+                $row['high_priority_pending'] ?? 0,
+                $row['oldest_pending_at'] ?? 'none',
+                $row['next_action'] ?? 'Classify one at a time.'
+            ));
+        }
+
+        foreach (($payload['cleanup_sequence'] ?? []) as $row) {
+            $this->line(sprintf(
+                'cleanup_step=%s focus=%s pending=%s stale=%s high_priority=%s action=%s',
+                $row['rank'] ?? 0,
+                $row['focus'] ?? 'unknown',
+                $row['pending'] ?? 0,
+                $row['stale_pending'] ?? 0,
+                $row['high_priority_pending'] ?? 0,
+                $row['next_action'] ?? 'Review one at a time.'
+            ));
+        }
+
+        $readiness = $payload['remediation_readiness'] ?? [];
+        if ($readiness !== []) {
+            $this->line(sprintf(
+                'remediation_readiness sample_limit=%s pending_typed=%s apply_preview=%s preview_only=%s supported_preview=%s context_without_preview=%s without_ids=%s source_duplicate_ids=%s family_duplicate_ids=%s source_change_context=%s family_context=%s family_id_keys=%s family_ids=%s family_comparisons=%s malformed_details=%s',
+                $readiness['sample_limit'] ?? 0,
+                $readiness['pending_typed_remediation_rows'] ?? 0,
+                $readiness['apply_preview_rows'] ?? 0,
+                $readiness['preview_only_rows'] ?? 0,
+                $readiness['supported_preview_operation_rows'] ?? 0,
+                $readiness['context_ready_without_preview_rows'] ?? 0,
+                $readiness['without_materialized_ids'] ?? 0,
+                $readiness['source_duplicate_id_candidates'] ?? 0,
+                $readiness['family_duplicate_id_candidates'] ?? 0,
+                $readiness['source_proposed_change_id_rows'] ?? 0,
+                $readiness['family_context_rows'] ?? 0,
+                $readiness['family_id_key_context_rows'] ?? 0,
+                $readiness['family_ids_context_rows'] ?? 0,
+                $readiness['family_comparison_context_rows'] ?? 0,
+                $readiness['malformed_details'] ?? 0,
+            ));
+
+            foreach (($readiness['possible_change_type_typos'] ?? []) as $changeType => $typo) {
+                if (! is_array($typo)) {
+                    continue;
+                }
+
+                $this->line(sprintf(
+                    'remediation_change_type_typo=%s suggested=%s rows=%s',
+                    $changeType,
+                    $typo['suggested_change_type'] ?? 'unknown',
+                    $typo['rows'] ?? 0,
+                ));
+            }
         }
 
         foreach (($payload['recommendations'] ?? []) as $recommendation) {

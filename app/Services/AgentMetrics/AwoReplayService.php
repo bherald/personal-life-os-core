@@ -171,6 +171,9 @@ class AwoReplayService
             '- Review approval yield: `'.$this->percent($summary['review_approval_yield'] ?? null).'`',
             '- Operator rework rate: `'.$this->percent($summary['operator_rework_rate'] ?? null).'`',
             '- Hard fail count: `'.(int) ($summary['hard_fail_count'] ?? 0).'`',
+            '- Completed hard fails: `'.(int) ($summary['completed_hard_fail_count'] ?? $summary['hard_fail_count'] ?? 0).'`',
+            '- Pending hard-fail signals: `'.(int) ($summary['pending_hard_fail_signal_count'] ?? 0).'`',
+            '- Scanned hard-fail signals: `'.(int) ($summary['scanned_hard_fail_signal_count'] ?? $summary['hard_fail_count'] ?? 0).'`',
             '- Insufficient data: `'.(($summary['insufficient_data'] ?? true) ? 'yes' : 'no').'`',
             '',
             '## Guardrail',
@@ -207,6 +210,9 @@ class AwoReplayService
             '- Completed reviews: `'.(int) ($currentSummary['completed_reviews'] ?? 0).'`',
             '- Approval-worthy reviews: `'.(int) ($currentSummary['approval_worthy_reviews'] ?? 0).'`',
             '- Hard fail count: `'.(int) ($currentSummary['hard_fail_count'] ?? 0).'`',
+            '- Completed hard fails: `'.(int) ($currentSummary['completed_hard_fail_count'] ?? $currentSummary['hard_fail_count'] ?? 0).'`',
+            '- Pending hard-fail signals: `'.(int) ($currentSummary['pending_hard_fail_signal_count'] ?? 0).'`',
+            '- Scanned hard-fail signals: `'.(int) ($currentSummary['scanned_hard_fail_signal_count'] ?? $currentSummary['hard_fail_count'] ?? 0).'`',
             '',
             '## Scheduled Report',
             '',
@@ -222,6 +228,9 @@ class AwoReplayService
             $lines[] = '- Completed reviews: `'.(int) ($scheduledSummary['completed_reviews'] ?? 0).'`';
             $lines[] = '- Approval-worthy reviews: `'.(int) ($scheduledSummary['approval_worthy_reviews'] ?? 0).'`';
             $lines[] = '- Hard fail count: `'.(int) ($scheduledSummary['hard_fail_count'] ?? 0).'`';
+            $lines[] = '- Completed hard fails: `'.(int) ($scheduledSummary['completed_hard_fail_count'] ?? $scheduledSummary['hard_fail_count'] ?? 0).'`';
+            $lines[] = '- Pending hard-fail signals: `'.(int) ($scheduledSummary['pending_hard_fail_signal_count'] ?? 0).'`';
+            $lines[] = '- Scanned hard-fail signals: `'.(int) ($scheduledSummary['scanned_hard_fail_signal_count'] ?? $scheduledSummary['hard_fail_count'] ?? 0).'`';
         }
 
         $lines[] = '';
@@ -330,6 +339,9 @@ class AwoReplayService
         $approvalWorthyCount = count(array_filter($completed, fn (array $item): bool => $item['approval_worthy'] === true));
         $approvedCount = count(array_filter($completed, fn (array $item): bool => in_array($item['operator_decision'], ['approved', 'approved_with_notes'], true)));
         $hardFailCount = count(array_filter($completed, fn (array $item): bool => $item['hard_fail'] === true));
+        $scannedHardFailSignalCount = count(array_filter($items, fn (array $item): bool => $item['hard_fail'] === true));
+        $pendingHardFailSignalCount = count(array_filter($items, fn (array $item): bool => $item['hard_fail'] === true
+            && ! in_array($item['operator_decision'], ['approved', 'approved_with_notes', 'rejected'], true)));
         $reworkCount = count(array_filter($completed, fn (array $item): bool => $item['rework_required'] === true));
 
         return [
@@ -340,6 +352,9 @@ class AwoReplayService
             'review_approval_yield' => $completedCount > 0 ? round($approvedCount / $completedCount, 4) : null,
             'operator_rework_rate' => $completedCount > 0 ? round($reworkCount / $completedCount, 4) : null,
             'hard_fail_count' => $hardFailCount,
+            'completed_hard_fail_count' => $hardFailCount,
+            'pending_hard_fail_signal_count' => $pendingHardFailSignalCount,
+            'scanned_hard_fail_signal_count' => $scannedHardFailSignalCount,
             'insufficient_data' => $completedCount < 10,
         ];
     }
@@ -370,16 +385,28 @@ class AwoReplayService
                 'completed_reviews' => 0,
                 'approval_worthy_reviews' => 0,
                 'hard_fail_count' => 0,
+                'completed_hard_fail_count' => 0,
+                'pending_hard_fail_signal_count' => 0,
+                'scanned_hard_fail_signal_count' => 0,
                 'rework_count' => 0,
             ];
 
+            if ($item['hard_fail'] === true) {
+                $groups[$agentId]['scanned_hard_fail_signal_count']++;
+            }
+
             if (! in_array($item['operator_decision'], ['approved', 'approved_with_notes', 'rejected'], true)) {
+                if ($item['hard_fail'] === true) {
+                    $groups[$agentId]['pending_hard_fail_signal_count']++;
+                }
+
                 continue;
             }
 
             $groups[$agentId]['completed_reviews']++;
             $groups[$agentId]['approval_worthy_reviews'] += $item['approval_worthy'] ? 1 : 0;
             $groups[$agentId]['hard_fail_count'] += $item['hard_fail'] ? 1 : 0;
+            $groups[$agentId]['completed_hard_fail_count'] += $item['hard_fail'] ? 1 : 0;
             $groups[$agentId]['rework_count'] += $item['rework_required'] ? 1 : 0;
         }
 
@@ -400,6 +427,9 @@ class AwoReplayService
             'completed_reviews' => '/^- Completed reviews: `(\d+)`/m',
             'approval_worthy_reviews' => '/^- Approval-worthy reviews: `(\d+)`/m',
             'hard_fail_count' => '/^- Hard fail count: `(\d+)`/m',
+            'completed_hard_fail_count' => '/^- Completed hard fails: `(\d+)`/m',
+            'pending_hard_fail_signal_count' => '/^- Pending hard-fail signals: `(\d+)`/m',
+            'scanned_hard_fail_signal_count' => '/^- Scanned hard-fail signals: `(\d+)`/m',
             'insufficient_data' => '/^- Insufficient data: `(yes|no)`/m',
         ];
 
@@ -420,6 +450,15 @@ class AwoReplayService
                 'completed_reviews' => isset($parsed['completed_reviews']) ? (int) $parsed['completed_reviews'] : null,
                 'approval_worthy_reviews' => isset($parsed['approval_worthy_reviews']) ? (int) $parsed['approval_worthy_reviews'] : null,
                 'hard_fail_count' => isset($parsed['hard_fail_count']) ? (int) $parsed['hard_fail_count'] : null,
+                'completed_hard_fail_count' => isset($parsed['completed_hard_fail_count'])
+                    ? (int) $parsed['completed_hard_fail_count']
+                    : (isset($parsed['hard_fail_count']) ? (int) $parsed['hard_fail_count'] : null),
+                'pending_hard_fail_signal_count' => isset($parsed['pending_hard_fail_signal_count'])
+                    ? (int) $parsed['pending_hard_fail_signal_count']
+                    : (isset($parsed['hard_fail_count']) ? 0 : null),
+                'scanned_hard_fail_signal_count' => isset($parsed['scanned_hard_fail_signal_count'])
+                    ? (int) $parsed['scanned_hard_fail_signal_count']
+                    : (isset($parsed['hard_fail_count']) ? (int) $parsed['hard_fail_count'] : null),
                 'insufficient_data' => isset($parsed['insufficient_data']) ? $parsed['insufficient_data'] === 'yes' : null,
             ],
         ];
@@ -437,6 +476,9 @@ class AwoReplayService
             'completed_reviews',
             'approval_worthy_reviews',
             'hard_fail_count',
+            'completed_hard_fail_count',
+            'pending_hard_fail_signal_count',
+            'scanned_hard_fail_signal_count',
             'insufficient_data',
         ];
 

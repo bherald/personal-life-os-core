@@ -9,7 +9,8 @@ class SchedulerOptimizeReportCommand extends Command
 {
     protected $signature = 'scheduler:optimize-report
                             {--window=24h : time window, e.g. 60m, 24h, 7d}
-                            {--json : Emit machine-readable JSON}';
+                            {--json : Emit machine-readable JSON}
+                            {--compact : Emit compact counts and top recommendation identifiers}';
 
     protected $description = 'Read-only scheduler optimization recommendations for spacing, timeout, and failure hotspots';
 
@@ -23,6 +24,9 @@ class SchedulerOptimizeReportCommand extends Command
         }
 
         $payload = $reports->buildPayload($window);
+        if ($this->option('compact')) {
+            $payload = $reports->compactPayload($payload);
+        }
 
         if ($this->option('json')) {
             $this->line((string) json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -30,7 +34,9 @@ class SchedulerOptimizeReportCommand extends Command
             return self::SUCCESS;
         }
 
-        $this->renderText($payload);
+        $this->option('compact')
+            ? $this->renderCompactText($payload)
+            : $this->renderText($payload);
 
         return self::SUCCESS;
     }
@@ -59,5 +65,35 @@ class SchedulerOptimizeReportCommand extends Command
 
             $this->line('  reason: '.$recommendation['reason']);
         }
+    }
+
+    private function renderCompactText(array $payload): void
+    {
+        $this->line(sprintf(
+            'scheduler-optimize-report  mode=%s  window=%s  jobs=%d  recommendations=%d  compact=yes',
+            $payload['mode'],
+            $payload['window'],
+            $payload['job_count'],
+            $payload['recommendation_count']
+        ));
+
+        $this->line('severity_counts: '.$this->renderCounts($payload['severity_counts'] ?? []));
+        $this->line('category_counts: '.$this->renderCounts($payload['category_counts'] ?? []));
+
+        $topIds = $payload['top_recommendation_ids'] ?? [];
+        $this->line('top_recommendation_ids: '.($topIds === [] ? 'none' : implode(', ', $topIds)));
+    }
+
+    private function renderCounts(array $counts): string
+    {
+        if ($counts === []) {
+            return 'none';
+        }
+
+        return implode(', ', array_map(
+            static fn (string $key, int $count): string => $key.'='.$count,
+            array_keys($counts),
+            array_values($counts)
+        ));
     }
 }

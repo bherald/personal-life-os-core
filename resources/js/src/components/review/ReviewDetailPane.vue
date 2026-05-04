@@ -14,19 +14,24 @@
       <div class="text-ops-text-muted text-sm">Select a review item from the list to see the side-by-side compare.</div>
     </div>
 
-    <component
-      v-else
-      :is="layoutComponent"
-      :context="context"
-      :actioning="actioning"
-      :decision-reset-token="decisionResetToken"
-      @approve="handleApprove"
-      @reject="handleReject"
-      @clarify="handleClarify"
-      @defer="handleDefer"
-      @applied="handleApplied"
-      @close="$emit('close')"
-    />
+    <template v-else>
+      <div v-if="decisionError" class="decision-error" role="alert">
+        {{ decisionError }}
+      </div>
+
+      <component
+        :is="layoutComponent"
+        :context="context"
+        :actioning="actioning"
+        :decision-reset-token="decisionResetToken"
+        @approve="handleApprove"
+        @reject="handleReject"
+        @clarify="handleClarify"
+        @defer="handleDefer"
+        @applied="handleApplied"
+        @close="$emit('close')"
+      />
+    </template>
   </div>
 </template>
 
@@ -57,6 +62,7 @@ const emit = defineEmits(['approve', 'reject', 'clarify', 'defer', 'applied', 'c
 const context = ref(null)
 const loading = ref(false)
 const error = ref(null)
+const decisionError = ref(null)
 const actioning = ref(false)
 const decisionResetToken = ref(0)
 
@@ -94,6 +100,7 @@ async function fetchContext() {
   if (!props.unifiedId) return
   loading.value = true
   error.value = null
+  decisionError.value = null
   try {
     const { data } = await axios.get(`/api/research-hub/items/${encodeURIComponent(props.unifiedId)}/context`)
     context.value = data
@@ -128,6 +135,7 @@ async function postDecision(action, payload, eventName, options = {}) {
   if (!decision.unifiedId) return
 
   actioning.value = true
+  decisionError.value = null
   try {
     const { data } = await axios.post(
       `/api/research-hub/${action}/${encodeURIComponent(decision.unifiedId)}`,
@@ -142,7 +150,8 @@ async function postDecision(action, payload, eventName, options = {}) {
     })
     decisionResetToken.value++
   } catch (e) {
-    error.value = e.response?.data?.error || e.message || `${action} failed`
+    const payload = e.response?.data || {}
+    decisionError.value = payload.error || payload.message || e.message || `${action} failed`
   } finally {
     actioning.value = false
   }
@@ -204,4 +213,14 @@ function handleApplied(payload) {
   text-align: center;
 }
 .pane-error { color: #ff8080; }
+.decision-error {
+  border: 1px solid rgba(255, 128, 128, 0.45);
+  background: rgba(120, 32, 48, 0.22);
+  color: #ffb3b3;
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  margin-bottom: 0.875rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
 </style>

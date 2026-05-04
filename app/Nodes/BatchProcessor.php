@@ -2,6 +2,7 @@
 
 namespace App\Nodes;
 
+use App\Exceptions\NodeTimeoutException;
 use App\Services\AIService;
 use App\Services\BiasRatingService;
 use App\Traits\RecursionAware;
@@ -60,6 +61,11 @@ PROMPT;
             $aiPrompt = $this->getConfigValue('ai_prompt');
             $aiTimeout = (int) $this->getConfigValue('ai_timeout', 180);
             $pushoverFormat = $this->getConfigValue('pushover_format', 'html');
+            $nodeTimeout = (int) $this->getConfigValue('timeout_seconds', 300);
+            $notificationReserveSeconds = max(0, (int) $this->getConfigValue('notification_reserve_seconds', 60));
+            $minAiBatchTimeout = max(1, (int) $this->getConfigValue('min_ai_batch_timeout', 90));
+            $aiBudgetSeconds = max(0, $nodeTimeout - $notificationReserveSeconds);
+            $nodeStartedAt = microtime(true);
 
             if (! $aiPrompt) {
                 throw new Exception('ai_prompt configuration is required for BatchProcessor');
@@ -88,11 +94,19 @@ PROMPT;
             // Calculate batches
             $batches = array_chunk($articles, $batchSize);
             $batchCount = count($batches);
+            $minimumUsefulAiTimeout = min($minAiBatchTimeout, $aiTimeout);
+            $plannedAiBatchTimeout = $batchCount > 0
+                ? min($aiTimeout, (int) floor($aiBudgetSeconds / $batchCount))
+                : $aiTimeout;
+            $useDeterministicForAiBudget = $plannedAiBatchTimeout < $minimumUsefulAiTimeout;
 
             Log::info('BatchProcessor: Starting batch processing', [
                 'total_articles' => count($articles),
                 'batch_size' => $batchSize,
                 'batch_count' => $batchCount,
+                'ai_budget_seconds' => $aiBudgetSeconds,
+                'planned_ai_batch_timeout_seconds' => $plannedAiBatchTimeout,
+                'deterministic_for_ai_budget' => $useDeterministicForAiBudget,
             ]);
 
             // Process batches sequentially
@@ -103,6 +117,7 @@ PROMPT;
                 'sanitized_batches' => 0,
                 'fallback_batches' => 0,
                 'ai_failed_batches' => 0,
+                'budget_fallback_batches' => 0,
             ];
 
             foreach ($batches as $batchIndex => $batchArticles) {
@@ -141,77 +156,110 @@ PROMPT;
                     $pushoverFormat
                 );
 
-                // Step 4: Process with AI using AIService for resilience
-                $aiConfig = [
-                    'ai_timeout' => $aiTimeout,
-                    'ai_mode' => $this->config['ai_mode'] ?? 'auto',
-                    'temperature' => $this->config['temperature'] ?? 0.0,
-                    'model_role' => $this->config['model_role'] ?? 'quality',
-                    'max_tokens' => (int) ($this->config['max_tokens'] ?? 2048),
-                    'use_cache' => false,
-                    'dedup' => false,
-                    'suppressAlert' => true,
-                    'system_prompt' => $this->config['system_prompt'] ?? self::STRICT_FORMATTER_SYSTEM_PROMPT,
-                ];
+                $remainingBatches = max(1, $batchCount - $batchIndex);
+                $remainingAiBudget = max(0, $aiBudgetSeconds - (microtime(true) - $nodeStartedAt));
+                $batchAiTimeout = $useDeterministicForAiBudget
+                    ? 0
+                    : min($aiTimeout, (int) floor($remainingAiBudget / $remainingBatches));
 
-                $aiException = null;
-                $formattedText = '';
-
-                try {
-                    $result = $this->aiService->process($batchPrompt, $aiConfig);
-                } catch (Exception $e) {
-                    $result = null;
-                    $aiException = $e;
-                }
-
-                if ($aiException !== null) {
+                if ($batchAiTimeout < $minimumUsefulAiTimeout) {
                     $formattedText = $this->formatArticlesForNotification($enrichedArticles, $pushoverFormat);
-                    $enrichmentStats['ai_failed_batches']++;
                     $enrichmentStats['fallback_batches']++;
-                    Log::warning('BatchProcessor: Used deterministic notification fallback after AI batch exception', [
+                    $enrichmentStats['budget_fallback_batches']++;
+                    Log::warning('BatchProcessor: Used deterministic notification fallback for node time budget', [
                         'batch' => $batchNum,
                         'article_count' => count($batchArticles),
-                        'error' => $aiException->getMessage(),
-                    ]);
-                } elseif (! $result['success']) {
-                    $formattedText = $this->formatArticlesForNotification($enrichedArticles, $pushoverFormat);
-                    $enrichmentStats['ai_failed_batches']++;
-                    $enrichmentStats['fallback_batches']++;
-                    Log::warning('BatchProcessor: Used deterministic notification fallback after AI batch failure', [
-                        'batch' => $batchNum,
-                        'article_count' => count($batchArticles),
-                        'error' => $result['error'] ?? 'unknown error',
+                        'node_timeout_seconds' => $nodeTimeout,
+                        'remaining_ai_budget_seconds' => round($remainingAiBudget, 3),
+                        'batch_ai_timeout_seconds' => $batchAiTimeout,
+                        'min_ai_batch_timeout_seconds' => $minimumUsefulAiTimeout,
                     ]);
                 } else {
-                    $sanitized = $this->sanitizeAiOutput((string) $result['response'], count($batchArticles));
-                    $formattedText = $sanitized['text'];
+                    // Step 4: Process with AI using AIService for resilience
+                    $aiConfig = [
+                        'ai_timeout' => $batchAiTimeout,
+                        'ai_mode' => $this->config['ai_mode'] ?? 'auto',
+                        'temperature' => $this->config['temperature'] ?? 0.0,
+                        'model_role' => $this->config['model_role'] ?? 'quality',
+                        'max_tokens' => (int) ($this->config['max_tokens'] ?? 2048),
+                        'use_cache' => false,
+                        'dedup' => false,
+                        'suppressAlert' => true,
+                        'system_prompt' => $this->config['system_prompt'] ?? self::STRICT_FORMATTER_SYSTEM_PROMPT,
+                    ];
 
-                    if ($sanitized['leak_detected']) {
-                        $enrichmentStats['sanitized_batches']++;
-                        Log::warning('BatchProcessor: Removed AI prompt leakage from batch output', [
-                            'batch' => $batchNum,
-                            'article_count' => count($batchArticles),
-                            'kept_lines' => $sanitized['line_count'],
-                        ]);
+                    $aiException = null;
+                    $formattedText = '';
+
+                    try {
+                        $result = $this->aiService->process($batchPrompt, $aiConfig);
+                    } catch (Exception $e) {
+                        if ($this->isNodeTimeoutException($e)) {
+                            throw $e;
+                        }
+
+                        $result = null;
+                        $aiException = $e;
                     }
 
-                    if ($formattedText === '' && $fallbackFormattedText !== '') {
-                        Log::warning('BatchProcessor: Empty AI output; preserving upstream formatted text fallback', [
-                            'batch' => $batchNum,
-                            'article_count' => count($batchArticles),
-                        ]);
-                    } elseif ($formattedText === '' || $sanitized['line_count'] < count($batchArticles)) {
-                        $fallbackReason = $formattedText === ''
-                            ? 'empty_ai_output'
-                            : ($sanitized['leak_detected'] ? 'incomplete_after_prompt_leak' : 'incomplete_ai_output');
+                    if ($aiException !== null) {
                         $formattedText = $this->formatArticlesForNotification($enrichedArticles, $pushoverFormat);
+                        $enrichmentStats['ai_failed_batches']++;
                         $enrichmentStats['fallback_batches']++;
-                        Log::warning('BatchProcessor: Used deterministic notification fallback for batch', [
+                        Log::warning('BatchProcessor: Used deterministic notification fallback after AI batch exception', [
                             'batch' => $batchNum,
                             'article_count' => count($batchArticles),
-                            'line_count' => $sanitized['line_count'],
-                            'reason' => $fallbackReason,
+                            'error' => $aiException->getMessage(),
                         ]);
+                    } elseif (! $result['success']) {
+                        if ($this->isNodeTimeoutMessage($result['error'] ?? null)) {
+                            throw new NodeTimeoutException(
+                                'BatchProcessor',
+                                (int) $this->getConfigValue('timeout_seconds', $aiTimeout),
+                                max(1, (int) ceil(microtime(true) - $startTime)),
+                                (string) $result['error']
+                            );
+                        }
+
+                        $formattedText = $this->formatArticlesForNotification($enrichedArticles, $pushoverFormat);
+                        $enrichmentStats['ai_failed_batches']++;
+                        $enrichmentStats['fallback_batches']++;
+                        Log::warning('BatchProcessor: Used deterministic notification fallback after AI batch failure', [
+                            'batch' => $batchNum,
+                            'article_count' => count($batchArticles),
+                            'error' => $result['error'] ?? 'unknown error',
+                        ]);
+                    } else {
+                        $sanitized = $this->sanitizeAiOutput((string) $result['response'], count($batchArticles));
+                        $formattedText = $sanitized['text'];
+
+                        if ($sanitized['leak_detected']) {
+                            $enrichmentStats['sanitized_batches']++;
+                            Log::warning('BatchProcessor: Removed AI prompt leakage from batch output', [
+                                'batch' => $batchNum,
+                                'article_count' => count($batchArticles),
+                                'kept_lines' => $sanitized['line_count'],
+                            ]);
+                        }
+
+                        if ($formattedText === '' && $fallbackFormattedText !== '') {
+                            Log::warning('BatchProcessor: Empty AI output; preserving upstream formatted text fallback', [
+                                'batch' => $batchNum,
+                                'article_count' => count($batchArticles),
+                            ]);
+                        } elseif ($formattedText === '' || $sanitized['line_count'] < count($batchArticles)) {
+                            $fallbackReason = $formattedText === ''
+                                ? 'empty_ai_output'
+                                : ($sanitized['leak_detected'] ? 'incomplete_after_prompt_leak' : 'incomplete_ai_output');
+                            $formattedText = $this->formatArticlesForNotification($enrichedArticles, $pushoverFormat);
+                            $enrichmentStats['fallback_batches']++;
+                            Log::warning('BatchProcessor: Used deterministic notification fallback for batch', [
+                                'batch' => $batchNum,
+                                'article_count' => count($batchArticles),
+                                'line_count' => $sanitized['line_count'],
+                                'reason' => $fallbackReason,
+                            ]);
+                        }
                     }
                 }
 
@@ -254,6 +302,7 @@ PROMPT;
                 'sanitized_batches' => $enrichmentStats['sanitized_batches'],
                 'fallback_batches' => $enrichmentStats['fallback_batches'],
                 'ai_failed_batches' => $enrichmentStats['ai_failed_batches'],
+                'budget_fallback_batches' => $enrichmentStats['budget_fallback_batches'],
                 'enrichment_rate' => count($articles) > 0
                     ? round(($enrichmentStats['total_enriched'] / count($articles)) * 100, 1).'%'
                     : '0%',
@@ -268,6 +317,10 @@ PROMPT;
             ]);
 
         } catch (Exception $e) {
+            if ($this->isNodeTimeoutException($e)) {
+                throw $e;
+            }
+
             Log::error('BatchProcessor: Error', ['message' => $e->getMessage()]);
 
             return $this->standardOutput(
@@ -276,6 +329,18 @@ PROMPT;
                 'Batch processing failed: '.$e->getMessage()
             );
         }
+    }
+
+    private function isNodeTimeoutException(Exception $e): bool
+    {
+        return $e instanceof NodeTimeoutException
+            || $this->isNodeTimeoutMessage($e->getMessage());
+    }
+
+    private function isNodeTimeoutMessage(mixed $message): bool
+    {
+        return is_scalar($message)
+            && str_contains((string) $message, 'Node timeout:');
     }
 
     /**

@@ -1061,6 +1061,7 @@ class ScheduledJobService
 
         $messages = [];
         $toolCalls = [];
+        $failedToolNames = [];
 
         foreach ($toolNames as $toolName) {
             try {
@@ -1075,11 +1076,14 @@ class ScheduledJobService
                 ];
             }
 
-            $success = (bool) ($result['success'] ?? false);
+            $success = (bool) $result['success'];
             $toolCalls[] = [
                 'tool' => $toolName,
                 'success' => $success,
             ];
+            if (! $success) {
+                $failedToolNames[] = $toolName;
+            }
 
             $payload = $result['result'] ?? $result['result_text'] ?? ['error' => $result['error'] ?? 'unknown'];
             $encoded = is_string($payload)
@@ -1093,14 +1097,13 @@ class ScheduledJobService
         }
 
         $summary = $agentLoop->buildResearchAnalystOperationalSummary($messages, $toolCalls, 'No research analyst data available.');
-        $failedTools = array_filter($toolCalls, fn (array $call): bool => ! ($call['success'] ?? false));
 
         $output = 'Research analyst snapshot completed. Tools: '.count($toolCalls)
-            .', Failures: '.count($failedTools).'. Response: '.substr($summary, 0, 500);
+            .', Failures: '.count($failedToolNames).'. Response: '.substr($summary, 0, 500);
 
-        if ($failedTools !== []) {
+        if ($failedToolNames !== []) {
             Log::warning('ScheduledJobService: Research analyst snapshot completed with tool failures', [
-                'failed_tools' => array_values(array_column($failedTools, 'tool')),
+                'failed_tools' => $failedToolNames,
             ]);
         }
 
@@ -1886,43 +1889,6 @@ class ScheduledJobService
 
             return false;
         }
-    }
-
-    /**
-     * Parse command string into parts
-     */
-    private function parseCommand(string $command): array
-    {
-        // Handle quoted strings
-        preg_match_all('/(?:[^\s"\']+|"[^"]*"|\'[^\']*\')+/', $command, $matches);
-
-        return array_map(function ($part) {
-            return trim($part, '"\'');
-        }, $matches[0]);
-    }
-
-    /**
-     * Parse command arguments into array for Artisan::call
-     */
-    private function parseArguments(array $parts): array
-    {
-        $arguments = [];
-
-        foreach ($parts as $part) {
-            if (strpos($part, '=') !== false) {
-                // Named argument: --key=value
-                [$key, $value] = explode('=', $part, 2);
-                $arguments[$key] = $value;
-            } elseif (strpos($part, '--') === 0) {
-                // Flag: --flag
-                $arguments[$part] = true;
-            } else {
-                // Positional argument
-                $arguments[] = $part;
-            }
-        }
-
-        return $arguments;
     }
 
     /**

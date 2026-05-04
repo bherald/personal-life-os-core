@@ -37,8 +37,11 @@ class RagScaleBaselineCommand extends Command
 
         $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
         $storage = is_array($payload['storage'] ?? null) ? $payload['storage'] : [];
+        $postgres = is_array($payload['postgres'] ?? null) ? $payload['postgres'] : [];
+        $tableHealth = is_array($postgres['table_health'] ?? null) ? $postgres['table_health'] : [];
+        $indexSummary = is_array($postgres['index_summary'] ?? null) ? $postgres['index_summary'] : [];
         $this->line(sprintf(
-            'RAG scale baseline: %s docs=%s content_chars=%s avg_chars=%s max_chars=%s compressed=%s contextualized=%s relation_mb=%s captured=%s',
+            'RAG scale baseline: %s docs=%s content_chars=%s avg_chars=%s max_chars=%s compressed=%s contextualized=%s relation_mb=%s dead_tuples=%s dead_ratio=%s indexes=%s zero_scan_indexes=%s invalid_indexes=%s largest_index_mb=%s captured=%s',
             $payload['status'] ?? 'unknown',
             $summary['documents'] ?? 0,
             $summary['content_chars'] ?? 0,
@@ -47,6 +50,12 @@ class RagScaleBaselineCommand extends Command
             $summary['compressed_documents'] ?? 0,
             $summary['contextualized_documents'] ?? 0,
             $storage['total_relation_mb'] ?? 0,
+            $tableHealth['dead_tuples'] ?? 0,
+            $tableHealth['dead_tuple_ratio'] ?? 'n/a',
+            $indexSummary['index_count'] ?? 0,
+            $indexSummary['zero_scan_indexes'] ?? 0,
+            $indexSummary['invalid_indexes'] ?? 0,
+            $indexSummary['largest_index_mb'] ?? 'n/a',
             $payload['captured_at'] ?? '-'
         ));
 
@@ -61,6 +70,21 @@ class RagScaleBaselineCommand extends Command
                 $row['documents'] ?? 0,
                 $row['avg_content_chars'] ?? 0,
                 $row['content_chars'] ?? 0
+            ));
+        }
+
+        foreach (array_slice(($postgres['indexes'] ?? []), 0, 10) as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $this->line(sprintf(
+                'index=%s size_mb=%s scans=%s valid=%s primary=%s',
+                $row['index_name'] ?? 'unknown',
+                $row['index_mb'] ?? 'n/a',
+                $row['idx_scan'] ?? 0,
+                ($row['is_valid'] ?? false) ? 'yes' : 'no',
+                ($row['is_primary'] ?? false) ? 'yes' : 'no'
             ));
         }
 

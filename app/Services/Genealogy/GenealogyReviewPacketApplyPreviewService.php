@@ -6,6 +6,7 @@ class GenealogyReviewPacketApplyPreviewService
 {
     public function __construct(
         private readonly GenealogyFamilyRemediationPreviewService $familyRemediationPreview = new GenealogyFamilyRemediationPreviewService,
+        private readonly GenealogySourceRemediationPreviewService $sourceRemediationPreview = new GenealogySourceRemediationPreviewService,
     ) {}
 
     public function preview(array $packet): array
@@ -13,7 +14,7 @@ class GenealogyReviewPacketApplyPreviewService
         $operations = [];
 
         foreach ($this->remediationInputs($packet) as $index => $remediation) {
-            $operation = $this->familyRemediationPreview->preview($remediation, $index);
+            $operation = $this->remediationPreview($remediation, $index);
             if ($operation !== null) {
                 $operations[] = $operation;
             }
@@ -50,7 +51,20 @@ class GenealogyReviewPacketApplyPreviewService
             }
         }
 
-        if ($this->scalarText($packet, ['operation_type', 'operation', 'type']) === 'family_duplicate_mark') {
+        foreach (['remediations', 'remediation_packets'] as $key) {
+            $value = $packet[$key] ?? null;
+            if (! is_array($value) || ! $this->isList($value)) {
+                continue;
+            }
+
+            foreach ($value as $item) {
+                if (is_array($item)) {
+                    $inputs[] = array_merge($packet, $item);
+                }
+            }
+        }
+
+        if ($inputs === [] && $this->isRemediationPreviewType($this->scalarText($packet, ['operation_type', 'operation', 'type', 'change_type']))) {
             $inputs[] = $packet;
         }
 
@@ -93,7 +107,7 @@ class GenealogyReviewPacketApplyPreviewService
     private function operationForProposal(array $proposal, array $packet, int $index): ?array
     {
         $proposal = array_merge((array) ($proposal['proposal'] ?? []), $proposal);
-        $remediationPreview = $this->familyRemediationPreview->preview(array_merge($packet, $proposal), $index);
+        $remediationPreview = $this->remediationPreview(array_merge($packet, $proposal), $index);
         if ($remediationPreview !== null) {
             return $remediationPreview;
         }
@@ -196,7 +210,7 @@ class GenealogyReviewPacketApplyPreviewService
                 $counts['pending_person_changes']++;
             } elseif (($operation['target_table'] ?? null) === 'genealogy_proposed_relationships') {
                 $counts['pending_relationship_proposals']++;
-            } elseif (($operation['operation_type'] ?? null) === 'family_duplicate_mark') {
+            } elseif ($this->isRemediationPreviewType($operation['operation_type'] ?? null)) {
                 $counts['remediation_previews']++;
                 if (($operation['status'] ?? null) === 'blocked') {
                     $counts['blocked_remediation_previews']++;
@@ -207,5 +221,21 @@ class GenealogyReviewPacketApplyPreviewService
         }
 
         return $counts;
+    }
+
+    private function remediationPreview(array $payload, int $index): ?array
+    {
+        return $this->familyRemediationPreview->preview($payload, $index)
+            ?? $this->sourceRemediationPreview->preview($payload, $index);
+    }
+
+    private function isRemediationPreviewType(mixed $type): bool
+    {
+        return is_string($type) && in_array($type, [
+            'family_duplicate_mark',
+            'family_child_unlink',
+            'source_duplicate_mark',
+            'source_duplicate_cleanup',
+        ], true);
     }
 }

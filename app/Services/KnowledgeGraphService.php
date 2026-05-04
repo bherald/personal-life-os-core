@@ -819,9 +819,9 @@ RETRY_PROMPT;
                 'extracted_from' => $row->extracted_from,
                 'source_document_id' => $row->source_document_id,
                 'direction' => strtolower($row->subject) === strtolower($entity) ? 'outgoing' : 'incoming',
-                'valid_from' => $row->valid_from,
-                'valid_until' => $row->valid_until,
-                'temporal_type' => $row->temporal_type,
+                'valid_from' => $row->valid_from ?? null,
+                'valid_until' => $row->valid_until ?? null,
+                'temporal_type' => $row->temporal_type ?? 'unknown',
                 'created_at' => $row->created_at,
             ];
         }, $results);
@@ -1081,9 +1081,9 @@ RETRY_PROMPT;
                 'confidence' => (float) $row->confidence,
                 'extracted_from' => $row->extracted_from,
                 'source_document_id' => $row->source_document_id,
-                'valid_from' => $row->valid_from,
-                'valid_until' => $row->valid_until,
-                'temporal_type' => $row->temporal_type,
+                'valid_from' => $row->valid_from ?? null,
+                'valid_until' => $row->valid_until ?? null,
+                'temporal_type' => $row->temporal_type ?? 'unknown',
                 'created_at' => $row->created_at,
             ];
         }, $results);

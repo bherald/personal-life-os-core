@@ -10,7 +10,8 @@ class GenealogyReviewFeedbackCommand extends Command
     protected $signature = 'genealogy:review-feedback
                             {--agent= : Limit rollup to one agent_id}
                             {--days=30 : Lookback window in days}
-                            {--json : Output machine-readable JSON}';
+                            {--json : Output machine-readable JSON}
+                            {--compact : Output compact aggregate summary}';
 
     protected $description = 'Read-only rollup of Phase 3 genealogy reviewer accept/reject feedback';
 
@@ -38,6 +39,18 @@ class GenealogyReviewFeedbackCommand extends Command
             $payload['summaries'] = $summaries;
         }
 
+        if ($this->option('compact')) {
+            $compact = $this->compactPayload($payload);
+
+            if ($this->option('json')) {
+                $this->line(json_encode($compact, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+                return self::SUCCESS;
+            }
+
+            return $this->renderCompact($compact);
+        }
+
         if ($this->option('json')) {
             $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
@@ -45,6 +58,72 @@ class GenealogyReviewFeedbackCommand extends Command
         }
 
         return $this->renderTable($payload);
+    }
+
+    private function compactPayload(array $payload): array
+    {
+        $rows = isset($payload['summary'])
+            ? [$payload['summary']]
+            : ($payload['summaries'] ?? []);
+
+        $accepted = 0;
+        $rejected = 0;
+        $reviews = 0;
+        $rejectReasons = [];
+
+        foreach ($rows as $row) {
+            $reviews += (int) ($row['total_reviews'] ?? 0);
+            $accepted += (int) ($row['accepted_proposals'] ?? 0);
+            $rejected += (int) ($row['rejected_proposals'] ?? 0);
+
+            foreach (($row['reject_reason_histogram'] ?? []) as $reason => $count) {
+                $rejectReasons[$reason] = ($rejectReasons[$reason] ?? 0) + (int) $count;
+            }
+        }
+
+        $total = $accepted + $rejected;
+        $compact = [
+            'compact' => true,
+            'generated_at' => $payload['generated_at'] ?? now()->toIso8601String(),
+            'window_days' => (int) ($payload['window_days'] ?? 30),
+            'agent' => $payload['agent'] ?? null,
+            'total_agents' => isset($payload['summary']) ? 1 : (int) ($payload['total_agents'] ?? count($rows)),
+            'total_reviews' => $reviews,
+            'accepted_proposals' => $accepted,
+            'rejected_proposals' => $rejected,
+            'acceptance_rate' => $total > 0 ? round($accepted / $total, 4) : null,
+        ];
+
+        if ($rejectReasons !== []) {
+            arsort($rejectReasons);
+            $reason = array_key_first($rejectReasons);
+            $compact['top_reject_reason'] = $reason;
+            $compact['top_reject_count'] = $rejectReasons[$reason];
+        }
+
+        return $compact;
+    }
+
+    private function renderCompact(array $compact): int
+    {
+        $this->line(sprintf(
+            'Genealogy reviewer feedback: %d review(s), %d accepted, %d rejected, %s accepted over %d day(s).',
+            (int) $compact['total_reviews'],
+            (int) $compact['accepted_proposals'],
+            (int) $compact['rejected_proposals'],
+            $this->acceptancePercent($compact['acceptance_rate']),
+            (int) $compact['window_days']
+        ));
+
+        if (isset($compact['top_reject_reason'], $compact['top_reject_count'])) {
+            $this->line(sprintf(
+                'Top reject: %s (%d).',
+                (string) $compact['top_reject_reason'],
+                (int) $compact['top_reject_count']
+            ));
+        }
+
+        return self::SUCCESS;
     }
 
     private function renderTable(array $payload): int

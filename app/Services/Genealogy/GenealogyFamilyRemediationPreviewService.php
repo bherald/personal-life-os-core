@@ -9,15 +9,17 @@ class GenealogyFamilyRemediationPreviewService
     public function preview(array $payload, int $index = 0): ?array
     {
         $operationType = $this->operationType($payload);
-        if ($operationType !== 'family_duplicate_mark') {
-            return null;
-        }
 
-        $treeId = $this->positiveInt($payload['tree_id'] ?? $payload['target_tree_id'] ?? null);
-        $suspectFamilyId = $this->positiveInt($payload['suspect_family_id'] ?? $payload['duplicate_family_id'] ?? null);
-        $retainedFamilyId = $this->positiveInt($payload['retained_family_id'] ?? $payload['canonical_family_id'] ?? null);
-        $childPersonId = $this->positiveInt($payload['child_person_id'] ?? $payload['person_id'] ?? null);
+        return match ($operationType) {
+            'family_duplicate_mark' => $this->previewFamilyDuplicateMark($payload, $index),
+            'family_child_unlink' => $this->previewFamilyChildUnlink($payload, $index),
+            default => null,
+        };
+    }
 
+    private function previewFamilyDuplicateMark(array $payload, int $index): array
+    {
+        [$treeId, $suspectFamilyId, $retainedFamilyId, $childPersonId] = $this->familyRemediationIds($payload, true);
         $suspectFamily = $suspectFamilyId !== null ? $this->familySnapshot($suspectFamilyId) : null;
         $retainedFamily = $retainedFamilyId !== null ? $this->familySnapshot($retainedFamilyId) : null;
         $guards = $this->guards($treeId, $suspectFamilyId, $retainedFamilyId, $childPersonId, $suspectFamily, $retainedFamily);
@@ -56,16 +58,96 @@ class GenealogyFamilyRemediationPreviewService
         ];
     }
 
+    private function previewFamilyChildUnlink(array $payload, int $index): array
+    {
+        [$treeId, $suspectFamilyId, $retainedFamilyId, $childPersonId] = $this->familyRemediationIds($payload);
+        $suspectFamily = $suspectFamilyId !== null ? $this->familySnapshot($suspectFamilyId) : null;
+        $retainedFamily = $retainedFamilyId !== null ? $this->familySnapshot($retainedFamilyId) : null;
+        $suspectChildLinks = $suspectFamilyId !== null && $childPersonId !== null
+            ? $this->childLinksForFamilyAndPerson($suspectFamilyId, $childPersonId)
+            : [];
+        $retainedChildLinks = $retainedFamilyId !== null && $childPersonId !== null
+            ? $this->childLinksForFamilyAndPerson($retainedFamilyId, $childPersonId)
+            : [];
+        $guards = $this->childUnlinkGuards(
+            $treeId,
+            $suspectFamilyId,
+            $retainedFamilyId,
+            $childPersonId,
+            $suspectFamily,
+            $retainedFamily,
+            $suspectChildLinks,
+            $retainedChildLinks,
+        );
+        $blocked = collect($guards)->contains(fn (array $guard): bool => ($guard['status'] ?? null) === 'fail');
+        $state = [
+            'suspect_family' => $suspectFamily,
+            'retained_family' => $retainedFamily,
+            'suspect_child_links' => $suspectChildLinks,
+            'retained_child_links' => $retainedChildLinks,
+            'requested_child_person_id' => $childPersonId,
+        ];
+
+        return [
+            'index' => $index,
+            'operation' => 'family_child_unlink_preview',
+            'operation_type' => 'family_child_unlink',
+            'target_table' => 'genealogy_children',
+            'status' => $blocked ? 'blocked' : 'preview_only',
+            'apply_enabled' => false,
+            'mutates_accepted_facts' => false,
+            'tree_id' => $treeId,
+            'suspect_family_id' => $suspectFamilyId,
+            'retained_family_id' => $retainedFamilyId,
+            'child_person_id' => $childPersonId,
+            'guards' => $guards,
+            'current_state' => $state,
+            'stale_hash' => $this->hash($state),
+            'proposed_effect' => [
+                'type' => 'unlink_child_preview_only',
+                'description' => 'Would remove the requested child link from the suspect family only after a later approved apply path exists.',
+                'rows_that_would_be_touched' => array_map(fn (array $link): array => [
+                    'table' => 'genealogy_children',
+                    'id' => (int) $link['id'],
+                    'action' => 'unlink_child_preview_only',
+                ], $suspectChildLinks),
+            ],
+        ];
+    }
+
     private function operationType(array $payload): ?string
     {
         foreach (['operation_type', 'operation', 'type', 'change_type'] as $key) {
             $value = $payload[$key] ?? null;
-            if (is_scalar($value) && trim((string) $value) === 'family_duplicate_mark') {
-                return 'family_duplicate_mark';
+            if (! is_scalar($value)) {
+                continue;
+            }
+
+            $type = trim((string) $value);
+            if (in_array($type, ['family_duplicate_mark', 'family_child_unlink'], true)) {
+                return $type;
             }
         }
 
         return null;
+    }
+
+    /**
+     * @return array{0:?int,1:?int,2:?int,3:?int}
+     */
+    private function familyRemediationIds(array $payload, bool $acceptPrimaryFamilyAlias = false): array
+    {
+        $retainedFamilyId = $payload['retained_family_id'] ?? $payload['canonical_family_id'] ?? null;
+        if ($retainedFamilyId === null && $acceptPrimaryFamilyAlias) {
+            $retainedFamilyId = $payload['primary_family_id'] ?? null;
+        }
+
+        return [
+            $this->positiveInt($payload['tree_id'] ?? $payload['target_tree_id'] ?? null),
+            $this->positiveInt($payload['suspect_family_id'] ?? $payload['duplicate_family_id'] ?? $payload['family_id'] ?? null),
+            $this->positiveInt($retainedFamilyId),
+            $this->positiveInt($payload['child_person_id'] ?? $payload['person_id'] ?? null),
+        ];
     }
 
     /**
@@ -131,6 +213,17 @@ class GenealogyFamilyRemediationPreviewService
     }
 
     /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function childLinksForFamilyAndPerson(int $familyId, int $personId): array
+    {
+        return array_values(array_filter(
+            $this->childrenSnapshot($familyId),
+            fn (array $child): bool => (int) $child['person_id'] === $personId
+        ));
+    }
+
+    /**
      * @param  array<string, mixed>|null  $suspectFamily
      * @param  array<string, mixed>|null  $retainedFamily
      * @return array<int, array<string, string>>
@@ -184,6 +277,72 @@ class GenealogyFamilyRemediationPreviewService
             'name' => 'parent_consistency',
             'status' => $this->parentConflict($suspectFamily, $retainedFamily) ? 'fail' : 'pass',
             'message' => 'Parents/spouses must not conflict; missing parent fields are allowed for incomplete duplicate rows.',
+        ];
+
+        return $guards;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $suspectFamily
+     * @param  array<string, mixed>|null  $retainedFamily
+     * @param  array<int, array<string, mixed>>  $suspectChildLinks
+     * @param  array<int, array<string, mixed>>  $retainedChildLinks
+     * @return array<int, array<string, string>>
+     */
+    private function childUnlinkGuards(
+        ?int $treeId,
+        ?int $suspectFamilyId,
+        ?int $retainedFamilyId,
+        ?int $childPersonId,
+        ?array $suspectFamily,
+        ?array $retainedFamily,
+        array $suspectChildLinks,
+        array $retainedChildLinks,
+    ): array {
+        $guards = [
+            [
+                'name' => 'required_ids',
+                'status' => $suspectFamilyId !== null && $retainedFamilyId !== null && $childPersonId !== null ? 'pass' : 'fail',
+                'message' => 'suspect_family_id, retained_family_id, and child_person_id are required.',
+            ],
+            [
+                'name' => 'distinct_families',
+                'status' => $suspectFamilyId !== null && $retainedFamilyId !== null && $suspectFamilyId !== $retainedFamilyId ? 'pass' : 'fail',
+                'message' => 'Suspect and retained families must be different rows.',
+            ],
+            [
+                'name' => 'families_exist',
+                'status' => $suspectFamily !== null && $retainedFamily !== null ? 'pass' : 'fail',
+                'message' => 'Both family rows must still exist.',
+            ],
+            [
+                'name' => 'suspect_child_link_exists',
+                'status' => $suspectChildLinks !== [] ? 'pass' : 'fail',
+                'message' => 'The requested child link must still exist on the suspect family.',
+            ],
+            [
+                'name' => 'retained_child_link_exists',
+                'status' => $retainedChildLinks !== [] ? 'pass' : 'fail',
+                'message' => 'The retained family must still carry the requested child before unlinking the duplicate child link.',
+            ],
+        ];
+
+        if ($suspectFamily === null || $retainedFamily === null) {
+            return $guards;
+        }
+
+        $sameTree = $suspectFamily['tree_id'] === $retainedFamily['tree_id']
+            && ($treeId === null || $treeId === $suspectFamily['tree_id']);
+
+        $guards[] = [
+            'name' => 'same_tree',
+            'status' => $sameTree ? 'pass' : 'fail',
+            'message' => 'Families must belong to the same target tree.',
+        ];
+        $guards[] = [
+            'name' => 'parent_consistency',
+            'status' => $this->parentConflict($suspectFamily, $retainedFamily) ? 'fail' : 'pass',
+            'message' => 'Parents/spouses must not conflict before a duplicate child link can be removed.',
         ];
 
         return $guards;

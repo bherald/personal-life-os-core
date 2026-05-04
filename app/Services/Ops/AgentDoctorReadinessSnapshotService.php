@@ -37,7 +37,7 @@ class AgentDoctorReadinessSnapshotService
                 'command' => "ops:agent-doctor --json --since={$windowHours}",
                 'projection' => 'aggregate_only',
             ],
-            'note' => 'Manual aggregate readiness snapshot. Stores statuses, counts, and check ids only; excludes per-agent detail, raw trace events, prompts, completions, command output, and filesystem paths.',
+            'note' => 'Manual aggregate readiness snapshot. Stores statuses, counts, check ids, and output-quality counts only; excludes per-agent detail, raw trace events, prompts, completions, command output, and filesystem paths.',
         ];
     }
 
@@ -51,8 +51,9 @@ class AgentDoctorReadinessSnapshotService
         $checks = is_array($doctor['checks'] ?? null) ? $doctor['checks'] : [];
         $trace = is_array($doctor['trace'] ?? null) ? $doctor['trace'] : [];
         $recursion = is_array($doctor['recursion'] ?? null) ? $doctor['recursion'] : [];
+        $summary = is_array($doctor['summary'] ?? null) ? $doctor['summary'] : [];
         $capturedAt = $this->capturedAt($doctor['generated_at'] ?? null);
-        $checksSummary = $this->checksSummary($checks);
+        $checksSummary = $this->checksSummary($checks, $summary);
 
         return [
             'captured_at' => $capturedAt->toIso8601String(),
@@ -114,9 +115,10 @@ class AgentDoctorReadinessSnapshotService
 
     /**
      * @param  array<int, mixed>  $checks
+     * @param  array<string, mixed>  $summary
      * @return array<string, mixed>
      */
-    private function checksSummary(array $checks): array
+    private function checksSummary(array $checks, array $summary): array
     {
         $counts = [
             'ok' => 0,
@@ -155,6 +157,12 @@ class AgentDoctorReadinessSnapshotService
             'status_counts' => $counts,
             'warning_check_ids' => array_slice(array_values(array_unique($warningIds)), 0, 20),
             'critical_check_ids' => array_slice(array_values(array_unique($criticalIds)), 0, 20),
+            'output_quality' => [
+                'scheduled_success_runs_window' => $this->boundedInt($summary['scheduled_success_runs_window'] ?? 0),
+                'scheduled_empty_success_outputs_window' => $this->boundedInt($summary['scheduled_empty_success_outputs_window'] ?? 0),
+                'scheduled_cjk_output_runs_window' => $this->boundedInt($summary['scheduled_cjk_output_runs_window'] ?? 0),
+                'scheduled_guarded_output_runs_window' => $this->boundedInt($summary['scheduled_guarded_output_runs_window'] ?? 0),
+            ],
         ];
     }
 
@@ -173,6 +181,11 @@ class AgentDoctorReadinessSnapshotService
             return null;
         }
 
+        return $this->boundedInt($value);
+    }
+
+    private function boundedInt(mixed $value): int
+    {
         return max(0, (int) $value);
     }
 

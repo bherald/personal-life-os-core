@@ -37,6 +37,8 @@ public_privacy_scan_excludes=(
     ':!docs/PROJECT.md'
     ':!docs/PROD-MAINTENANCE.md'
     ':!docs/future-enhancements.md'
+    ':!docs/papers-and-newsletters'
+    ':!docs/papers-and-newsletters/**'
     ':!docs/planning'
     ':!docs/planning/**'
     ':!docs/plos-focus-report-*'
@@ -265,6 +267,8 @@ flag_lines "Files containing private database names or historical credential lit
         ':!docs/PROJECT.md' \
         ':!docs/PROD-MAINTENANCE.md' \
         ':!docs/future-enhancements.md' \
+        ':!docs/papers-and-newsletters' \
+        ':!docs/papers-and-newsletters/**' \
         ':!docs/planning' \
         ':!docs/planning/**' \
         ':!docs/plos-focus-report-*' \
@@ -293,6 +297,8 @@ flag_lines "Legacy private project brand terms to replace or private-only gate" 
         ':!docs/PROJECT.md' \
         ':!docs/PROD-MAINTENANCE.md' \
         ':!docs/future-enhancements.md' \
+        ':!docs/papers-and-newsletters' \
+        ':!docs/papers-and-newsletters/**' \
         ':!docs/planning' \
         ':!docs/planning/**' \
         ':!docs/plos-focus-report-*' \

@@ -11,6 +11,7 @@ class OpsFaceTelemetryReportCommand extends Command
         {--hours=24 : Recent activity window in hours}
         {--markdown : Emit Markdown}
         {--json : Emit machine-readable JSON}
+        {--compact : Emit routine-check compact output}
         {--dry-run : Validate command shape without running database probes}';
 
     protected $description = 'Observe-only face, genealogy bridge, review queue, and pgvector telemetry report';
@@ -29,7 +30,10 @@ class OpsFaceTelemetryReportCommand extends Command
         );
 
         if ($this->option('json')) {
-            $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            $json = json_encode(
+                $this->option('compact') ? $report->toCompactPayload($payload) : $payload,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+            );
             if ($json === false) {
                 $this->error('Failed to encode face telemetry JSON.');
 
@@ -42,7 +46,13 @@ class OpsFaceTelemetryReportCommand extends Command
         }
 
         if ($this->option('markdown')) {
-            $this->line($report->toMarkdown($payload));
+            $this->line($this->option('compact') ? $report->toCompactMarkdown($payload) : $report->toMarkdown($payload));
+
+            return self::SUCCESS;
+        }
+
+        if ($this->option('compact')) {
+            $this->line($report->toCompactText($payload));
 
             return self::SUCCESS;
         }

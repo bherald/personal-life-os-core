@@ -1,9 +1,9 @@
 # PLOS Public Export Manifest
 
-Generated: 2026-05-02T17:47:31Z
-Source commit: bc0956372e0e201fd9efefaea715c90fe23abc9f
+Generated: 2026-05-04T13:54:18Z
+Source commit: d114ec47789a6469f790edc24084a2503567e5fa
 Source tree status: reviewed tracked worktree contents copied from the source tree
-Tracked files copied: 1616
+Tracked files copied: 1633
 
 This export is a fresh public-candidate tree. It intentionally omits private
 repository history, production operations docs, local Claude/MCP control files,
@@ -41,5 +41,5 @@ docker compose --env-file .env.example config --quiet
 bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/guards/production-fix-commit-message-check.sh
 php artisan setup:doctor --profile=core --skip-services --json
 php artisan setup:doctor --profile=media --skip-services --only=assets,browser,docker --json
-php artisan test tests/Unit/Setup tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
+php artisan test tests/Unit/Setup tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicGithubMonitorScriptTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
 ```

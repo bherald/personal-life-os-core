@@ -3,9 +3,9 @@
 namespace App\Services;
 
 use App\Support\PgVector;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Sentence Window Retrieval Service
@@ -27,6 +27,7 @@ use Exception;
 class SentenceWindowRetrievalService
 {
     private AIService $aiService;
+
     private SemanticChunkerService $chunkerService;
 
     /** Default number of sentences before/after to include in window */
@@ -41,9 +42,9 @@ class SentenceWindowRetrievalService
     /**
      * Index a document with sentence-level embeddings
      *
-     * @param int $documentId RAG document ID
-     * @param string $content Document content
-     * @param bool $updateDocumentMode Update document's embedding_mode column
+     * @param  int  $documentId  RAG document ID
+     * @param  string  $content  Document content
+     * @param  bool  $updateDocumentMode  Update document's embedding_mode column
      * @return array Results with sentence count
      */
     public function indexDocument(int $documentId, string $content, bool $updateDocumentMode = true): array
@@ -56,6 +57,7 @@ class SentenceWindowRetrievalService
             $sentencesFound = $this->chunkerService->splitSentencesWithPositions($content);
             if (empty($sentencesFound)) {
                 $permanent = empty(trim($content)) || strlen(trim($content)) < 20;
+
                 return [
                     'success' => false,
                     'permanent' => true, // always permanent — no sentence structure, won't improve on retry
@@ -76,19 +78,19 @@ class SentenceWindowRetrievalService
             }
 
             // Clear existing sentence embeddings for this document
-            DB::connection('pgsql_rag')->delete("
+            DB::connection('pgsql_rag')->delete('
                 DELETE FROM rag_sentence_embeddings WHERE document_id = ?
-            ", [$documentId]);
+            ', [$documentId]);
 
             // Insert sentence embeddings
             foreach ($sentenceRecords as $record) {
                 $embeddingStr = PgVector::literal($record['embedding']);
 
-                DB::connection('pgsql_rag')->insert("
+                DB::connection('pgsql_rag')->insert('
                     INSERT INTO rag_sentence_embeddings
                     (document_id, sentence_index, sentence_text, char_start, char_end, embedding)
                     VALUES (?, ?, ?, ?, ?, ?::vector)
-                ", [
+                ', [
                     $record['document_id'],
                     $record['sentence_index'],
                     $record['sentence_text'],
@@ -99,7 +101,7 @@ class SentenceWindowRetrievalService
             }
 
             // Update document with sentence positions
-            $positions = array_map(fn($r) => [
+            $positions = array_map(fn ($r) => [
                 'index' => $r['sentence_index'],
                 'start' => $r['char_start'],
                 'end' => $r['char_end'],
@@ -112,7 +114,7 @@ class SentenceWindowRetrievalService
                 WHERE id = ?
             ", [json_encode($positions), $documentId]);
 
-            $durationMs = (int)((microtime(true) - $startTime) * 1000);
+            $durationMs = (int) ((microtime(true) - $startTime) * 1000);
 
             Log::info('SentenceWindowRetrieval: Document indexed', [
                 'document_id' => $documentId,
@@ -146,7 +148,7 @@ class SentenceWindowRetrievalService
      * Heuristics-only — no AI vetting (SE is less selective than RAPTOR).
      * Documents >= 2000 chars are always eligible.
      *
-     * @param object $doc RAG document row with id, content, document_type columns
+     * @param  object  $doc  RAG document row with id, content, document_type columns
      * @return bool true = eligible, false = ineligible (noise/structured/too short)
      */
     public function screenForIndexing(object $doc): bool
@@ -210,13 +212,13 @@ class SentenceWindowRetrievalService
     /**
      * Search with sentence-level retrieval and window expansion
      *
-     * @param string $query Search query
-     * @param array $options Search options:
-     *   - limit: int (default 5) - Number of sentences to retrieve
-     *   - window_size: int (default 2) - Sentences before/after to include
-     *   - document_type: string|null - Filter by document type
-     *   - min_similarity: float (default 0.5) - Minimum similarity threshold
-     *   - merge_overlapping: bool (default true) - Merge overlapping windows
+     * @param  string  $query  Search query
+     * @param  array  $options  Search options:
+     *                          - limit: int (default 5) - Number of sentences to retrieve
+     *                          - window_size: int (default 2) - Sentences before/after to include
+     *                          - document_type: string|null - Filter by document type
+     *                          - min_similarity: float (default 0.5) - Minimum similarity threshold
+     *                          - merge_overlapping: bool (default true) - Merge overlapping windows
      * @return array Search results with expanded context
      */
     public function search(string $query, array $options = []): array
@@ -230,14 +232,14 @@ class SentenceWindowRetrievalService
         try {
             // Generate query embedding
             $embeddingResult = $this->aiService->generateEmbedding($query);
-            if (!$embeddingResult['success']) {
+            if (! $embeddingResult['success']) {
                 return ['success' => false, 'error' => 'Failed to generate query embedding'];
             }
 
             $queryEmbedding = PgVector::literal($embeddingResult['embedding']);
 
             // Search sentence embeddings
-            $sql = "
+            $sql = '
                 SELECT
                     se.id,
                     se.document_id,
@@ -253,25 +255,25 @@ class SentenceWindowRetrievalService
                 FROM rag_sentence_embeddings se
                 JOIN rag_documents d ON d.id = se.document_id
                 WHERE 1=1
-            ";
+            ';
             $params = [$queryEmbedding];
 
             if ($documentType) {
-                $sql .= " AND d.document_type = ?";
+                $sql .= ' AND d.document_type = ?';
                 $params[] = $documentType;
             }
 
-            $sql .= "
+            $sql .= '
                 ORDER BY se.embedding <=> ?::vector
                 LIMIT ?
-            ";
+            ';
             $params[] = $queryEmbedding;
             $params[] = $limit * 3; // Get more to allow for filtering
 
             $sentences = DB::connection('pgsql_rag')->select($sql, $params);
 
             // Filter by similarity threshold
-            $sentences = array_filter($sentences, fn($s) => $s->similarity >= $minSimilarity);
+            $sentences = array_filter($sentences, fn ($s) => $s->similarity >= $minSimilarity);
             $sentences = array_slice($sentences, 0, $limit);
 
             if (empty($sentences)) {
@@ -337,12 +339,12 @@ class SentenceWindowRetrievalService
     private function expandWindow(int $documentId, int $sentenceIndex, int $windowSize, string $fullContent): array
     {
         // Get all sentences for this document
-        $sentences = DB::connection('pgsql_rag')->select("
+        $sentences = DB::connection('pgsql_rag')->select('
             SELECT sentence_index, sentence_text, char_start, char_end
             FROM rag_sentence_embeddings
             WHERE document_id = ?
             ORDER BY sentence_index
-        ", [$documentId]);
+        ', [$documentId]);
 
         if (empty($sentences)) {
             // Fallback to chunker if no sentence embeddings
@@ -382,7 +384,7 @@ class SentenceWindowRetrievalService
         $byDocument = [];
         foreach ($results as $result) {
             $docId = $result['document_id'];
-            if (!isset($byDocument[$docId])) {
+            if (! isset($byDocument[$docId])) {
                 $byDocument[$docId] = [];
             }
             $byDocument[$docId][] = $result;
@@ -392,11 +394,12 @@ class SentenceWindowRetrievalService
         foreach ($byDocument as $docId => $docResults) {
             if (count($docResults) === 1) {
                 $merged[] = $docResults[0];
+
                 continue;
             }
 
             // Sort by window start
-            usort($docResults, fn($a, $b) => $a['window_start'] - $b['window_start']);
+            usort($docResults, fn ($a, $b) => $a['window_start'] - $b['window_start']);
 
             // Merge overlapping
             $current = $docResults[0];
@@ -408,12 +411,12 @@ class SentenceWindowRetrievalService
                     // Merge
                     $current['window_end'] = max($current['window_end'], $next['window_end']);
                     $current['similarity'] = max($current['similarity'], $next['similarity']);
-                    $current['matched_sentence'] .= ' [...] ' . $next['matched_sentence'];
+                    $current['matched_sentence'] .= ' [...] '.$next['matched_sentence'];
 
                     // Regenerate expanded context
                     // (For simplicity, concatenate; in production, re-fetch from DB)
                     if ($next['expanded_context'] !== $current['expanded_context']) {
-                        $current['expanded_context'] = $current['expanded_context'] . ' ' . $next['expanded_context'];
+                        $current['expanded_context'] = $current['expanded_context'].' '.$next['expanded_context'];
                     }
                 } else {
                     $merged[] = $current;
@@ -424,7 +427,7 @@ class SentenceWindowRetrievalService
         }
 
         // Sort by similarity
-        usort($merged, fn($a, $b) => $b['similarity'] <=> $a['similarity']);
+        usort($merged, fn ($a, $b) => $b['similarity'] <=> $a['similarity']);
 
         return $merged;
     }
@@ -432,7 +435,7 @@ class SentenceWindowRetrievalService
     /**
      * Batch index documents with sentence-level embeddings
      *
-     * @param int $limit Maximum documents to process
+     * @param  int  $limit  Maximum documents to process
      * @return array Processing results
      */
     public function batchIndex(int $limit = 100): array
@@ -472,8 +475,8 @@ class SentenceWindowRetrievalService
      * Retrieves results from both chunk-level and sentence-level embeddings,
      * then combines and deduplicates.
      *
-     * @param string $query Search query
-     * @param array $options Search options
+     * @param  string  $query  Search query
+     * @param  array  $options  Search options
      * @return array Combined search results
      */
     public function hybridSearch(string $query, array $options = []): array
@@ -488,10 +491,10 @@ class SentenceWindowRetrievalService
         $seenDocs = [];
 
         // Prioritize sentence results (more precise)
-        if ($sentenceResults['success'] && !empty($sentenceResults['results'])) {
+        if ($sentenceResults['success'] && ! empty($sentenceResults['results'])) {
             foreach ($sentenceResults['results'] as $result) {
                 $docId = $result['document_id'];
-                if (!isset($seenDocs[$docId])) {
+                if (! isset($seenDocs[$docId])) {
                     $result['retrieval_method'] = 'sentence_window';
                     $combined[] = $result;
                     $seenDocs[$docId] = true;
@@ -500,10 +503,10 @@ class SentenceWindowRetrievalService
         }
 
         // Add chunk results that weren't found by sentence search
-        if ($chunkResults['success'] && !empty($chunkResults['results'])) {
+        if ($chunkResults['success'] && ! empty($chunkResults['results'])) {
             foreach ($chunkResults['results'] as $result) {
                 $docId = $result['document_id'];
-                if (!isset($seenDocs[$docId])) {
+                if (! isset($seenDocs[$docId])) {
                     $result['retrieval_method'] = 'chunk';
                     $combined[] = $result;
                     $seenDocs[$docId] = true;
@@ -521,6 +524,41 @@ class SentenceWindowRetrievalService
     }
 
     /**
+     * Get sentence-window indexing statistics.
+     */
+    public function getStatistics(): array
+    {
+        $indexed = DB::connection('pgsql_rag')->selectOne("
+            SELECT COUNT(*) AS cnt
+            FROM rag_documents
+            WHERE embedding_mode = 'sentence'
+        ");
+
+        $embeddings = DB::connection('pgsql_rag')->selectOne('
+            SELECT COUNT(*) AS cnt
+            FROM rag_sentence_embeddings
+        ');
+
+        $pending = DB::connection('pgsql_rag')->selectOne("
+            SELECT COUNT(*) AS cnt
+            FROM rag_documents
+            WHERE embedding_mode IS NULL OR embedding_mode = 'chunk'
+        ");
+
+        $indexedCount = (int) ($indexed->cnt ?? 0);
+        $embeddingCount = (int) ($embeddings->cnt ?? 0);
+
+        return [
+            'sentence_indexed_documents' => $indexedCount,
+            'total_sentence_embeddings' => $embeddingCount,
+            'pending_documents' => (int) ($pending->cnt ?? 0),
+            'avg_sentences_per_document' => $indexedCount > 0
+                ? round($embeddingCount / $indexedCount, 2)
+                : 0,
+        ];
+    }
+
+    /**
      * Basic chunk-level search for hybrid mode
      */
     private function chunkSearch(string $query, array $options = []): array
@@ -531,13 +569,13 @@ class SentenceWindowRetrievalService
 
         try {
             $embeddingResult = $this->aiService->generateEmbedding($query);
-            if (!$embeddingResult['success']) {
+            if (! $embeddingResult['success']) {
                 return ['success' => false, 'results' => []];
             }
 
             $queryEmbedding = PgVector::literal($embeddingResult['embedding']);
 
-            $sql = "
+            $sql = '
                 SELECT
                     id as document_id,
                     title,
@@ -547,18 +585,18 @@ class SentenceWindowRetrievalService
                     1 - (embedding <=> ?::vector) as similarity
                 FROM rag_documents
                 WHERE 1=1
-            ";
+            ';
             $params = [$queryEmbedding];
 
             if ($documentType) {
-                $sql .= " AND document_type = ?";
+                $sql .= ' AND document_type = ?';
                 $params[] = $documentType;
             }
 
-            $sql .= "
+            $sql .= '
                 ORDER BY embedding <=> ?::vector
                 LIMIT ?
-            ";
+            ';
             $params[] = $queryEmbedding;
             $params[] = $limit;
 

@@ -10,6 +10,7 @@ class NewsBiasTagsAuditCommand extends Command
 {
     protected $signature = 'news:bias-tags-audit
                             {--json : Output machine-readable JSON}
+                            {--compact : Output compact key evidence only}
                             {--run-id= : Inspect a specific workflow_runs.id instead of the latest completed natural news_brief run}';
 
     protected $description = 'Audit stored news_brief political-bias enrichment and visible tags without running workflows';
@@ -179,6 +180,9 @@ class NewsBiasTagsAuditCommand extends Command
                 ne.node_type,
                 ne.node_order,
                 ne.state,
+                ne.duration_ms,
+                ne.timeout_seconds,
+                ne.timed_out,
                 ne.error_message,
                 ne.executed_at,
                 ne.`output` AS execution_output,
@@ -203,6 +207,9 @@ class NewsBiasTagsAuditCommand extends Command
                     'node_type' => (string) $row->node_type,
                     'node_order' => (int) $row->node_order,
                     'state' => $row->state,
+                    'duration_ms' => $this->intOrNull($row->duration_ms),
+                    'timeout_seconds' => $this->intOrNull($row->timeout_seconds),
+                    'timed_out' => $this->boolOrNull($row->timed_out),
                     'error_message' => $this->stringOrNull($row->error_message),
                     'executed_at' => $this->formatDate($row->executed_at),
                     'outputs' => [],
@@ -395,12 +402,17 @@ class NewsBiasTagsAuditCommand extends Command
         $last = $executions[array_key_last($executions)];
         $data = $this->arrayValue($last['outputs']['data'] ?? null);
         $meta = $this->arrayValue($last['outputs']['meta'] ?? null);
+        [$error, $ignoredError] = $this->pushoverExecutionError($last, $data);
 
         return [
             'present' => true,
             'execution_ids' => array_map(fn (array $execution): int => $execution['id'], $executions),
             'state' => $last['state'],
-            'error' => $this->executionError($last),
+            'duration_ms' => $last['duration_ms'] ?? null,
+            'timeout_seconds' => $last['timeout_seconds'] ?? null,
+            'timed_out' => $last['timed_out'] ?? null,
+            'error' => $error,
+            'ignored_error' => $ignoredError,
             'provider' => $this->stringOrNull($meta['provider'] ?? null),
             'priority' => $this->intOrNull($meta['priority'] ?? null),
             'format_type' => $this->stringOrNull($data['format_type'] ?? $meta['format_type'] ?? null),
@@ -458,6 +470,20 @@ class NewsBiasTagsAuditCommand extends Command
 
         if ($report['prompt_leak']['detected']) {
             $fail[] = 'Prompt leak markers were found in BatchProcessor output.';
+        }
+
+        $pushover = $report['pushover'] ?? [];
+        if (($pushover['present'] ?? false) === true) {
+            $pushoverError = $this->stringOrNull($pushover['error'] ?? null);
+            if (($pushover['timed_out'] ?? null) === true || $this->isTimeoutError($pushoverError)) {
+                $inconclusive[] = 'Pushover reported a timeout; notification delivery proof is inconclusive.';
+            } elseif ($pushoverError !== null) {
+                $inconclusive[] = 'Pushover reported an error; notification delivery proof is inconclusive.';
+            } elseif (($pushover['notification_suppressed'] ?? null) === true) {
+                $inconclusive[] = 'Pushover notification was suppressed; notification delivery proof is inconclusive.';
+            } elseif (($pushover['notification_sent'] ?? null) === false) {
+                $inconclusive[] = 'Pushover did not confirm notification delivery.';
+            }
         }
 
         $status = $fail !== [] ? 'fail' : ($inconclusive !== [] ? 'inconclusive' : 'pass');
@@ -524,6 +550,74 @@ class NewsBiasTagsAuditCommand extends Command
         }
 
         return null;
+    }
+
+    private function pushoverExecutionError(array $execution, array $data): array
+    {
+        $outputs = $execution['outputs'];
+        $meta = $this->arrayValue($outputs['meta'] ?? null);
+        $ignoredError = null;
+
+        foreach ([
+            'output' => $outputs['error'] ?? null,
+            'meta' => $meta['error_message'] ?? null,
+            'execution' => $execution['error_message'] ?? null,
+        ] as $source => $candidate) {
+            $error = $this->stringOrNull($candidate);
+            if ($error === null) {
+                continue;
+            }
+
+            if (
+                $source === 'output'
+                && $this->isTimeoutError($error)
+                && $this->isSuccessfulShortPushoverExecution($execution, $data)
+            ) {
+                $ignoredError = $error;
+
+                continue;
+            }
+
+            return [$error, $ignoredError];
+        }
+
+        if (($execution['state'] ?? null) === 'failed') {
+            return ['Node execution state is failed.', $ignoredError];
+        }
+
+        return [null, $ignoredError];
+    }
+
+    private function isSuccessfulShortPushoverExecution(array $execution, array $data): bool
+    {
+        if (($execution['state'] ?? null) !== 'success') {
+            return false;
+        }
+
+        if (($execution['timed_out'] ?? null) === true) {
+            return false;
+        }
+
+        if ($this->boolOrNull($data['notification_sent'] ?? null) !== true) {
+            return false;
+        }
+
+        $durationMs = $this->intOrNull($execution['duration_ms'] ?? null);
+        $timeoutSeconds = $this->intOrNull($execution['timeout_seconds'] ?? null);
+        if ($durationMs === null || $timeoutSeconds === null || $timeoutSeconds <= 0) {
+            return false;
+        }
+
+        return $durationMs < ($timeoutSeconds * 1000);
+    }
+
+    private function isTimeoutError(?string $error): bool
+    {
+        if ($error === null) {
+            return false;
+        }
+
+        return preg_match('/\b(Node timeout|timed out|timeout)\b/iu', $error) === 1;
     }
 
     private function visibleTextCandidates(mixed $value): array
@@ -647,13 +741,141 @@ class NewsBiasTagsAuditCommand extends Command
 
     private function finish(array $report): int
     {
+        $output = $this->option('compact') ? $this->compactReport($report) : $report;
+
         if ($this->option('json')) {
-            $this->line(json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            $this->line(json_encode($output, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        } elseif ($this->option('compact')) {
+            $this->writeCompactHumanReport($output);
         } else {
             $this->writeHumanReport($report);
         }
 
         return ($report['status'] ?? 'fail') === 'fail' ? self::FAILURE : self::SUCCESS;
+    }
+
+    private function compactReport(array $report): array
+    {
+        [$pushoverState, $pushoverReason] = $this->pushoverProofState($report);
+
+        return [
+            'generated_at' => $report['generated_at'] ?? null,
+            'status' => $report['status'] ?? 'fail',
+            'run' => empty($report['run']) ? null : [
+                'id' => $report['run']['id'] ?? null,
+                'workflow_name' => $report['run']['workflow_name'] ?? null,
+                'status' => $report['run']['status'] ?? null,
+                'started_at' => $report['run']['started_at'] ?? null,
+                'completed_at' => $report['run']['completed_at'] ?? null,
+                'natural' => $report['run']['natural'] ?? null,
+            ],
+            'bias_tags' => [
+                'enriched_count' => $this->structuredEnrichmentCount($report),
+                'visible_count' => $report['visible_tags']['count'] ?? 0,
+                'visible_line_count' => $report['visible_tags']['line_count'] ?? 0,
+                'distribution' => $report['bias_rating_enrich']['distribution'] ?? null,
+            ],
+            'prompt_leak' => [
+                'detected' => $report['prompt_leak']['detected'] ?? false,
+                'markers' => $report['prompt_leak']['markers'] ?? [],
+            ],
+            'pushover' => [
+                'proof_state' => $pushoverState,
+                'reason' => $pushoverReason,
+                'state' => $report['pushover']['state'] ?? null,
+                'notification_sent' => $report['pushover']['notification_sent'] ?? null,
+                'notification_suppressed' => $report['pushover']['notification_suppressed'] ?? null,
+                'parts_sent' => $report['pushover']['parts_sent'] ?? null,
+                'total_parts' => $report['pushover']['total_parts'] ?? null,
+                'timed_out' => $report['pushover']['timed_out'] ?? null,
+                'duration_ms' => $report['pushover']['duration_ms'] ?? null,
+                'timeout_seconds' => $report['pushover']['timeout_seconds'] ?? null,
+            ],
+            'status_reasons' => $report['status_reasons'] ?? [
+                'fail' => [],
+                'inconclusive' => [],
+            ],
+        ];
+    }
+
+    private function pushoverProofState(array $report): array
+    {
+        $pushover = $report['pushover'] ?? [];
+        if (($pushover['present'] ?? false) !== true) {
+            return ['absent', 'Pushover node was not found.'];
+        }
+
+        $error = $this->stringOrNull($pushover['error'] ?? null);
+        if (($pushover['timed_out'] ?? null) === true || $this->isTimeoutError($error)) {
+            return ['timeout_inconclusive', $this->pushoverStatusReason($report, 'timeout')];
+        }
+
+        if ($error !== null) {
+            return ['error_inconclusive', $this->pushoverStatusReason($report, 'error')];
+        }
+
+        if (($pushover['notification_suppressed'] ?? null) === true) {
+            return ['suppressed_inconclusive', $this->pushoverStatusReason($report, 'suppressed')];
+        }
+
+        if (($pushover['notification_sent'] ?? null) === false) {
+            return ['not_sent_inconclusive', $this->pushoverStatusReason($report, 'did not confirm')];
+        }
+
+        if (($pushover['notification_sent'] ?? null) === true) {
+            return ['delivery_confirmed', 'Pushover reported notification delivery.'];
+        }
+
+        return ['unknown', 'Pushover delivery metadata was not found.'];
+    }
+
+    private function pushoverStatusReason(array $report, string $needle): string
+    {
+        foreach (($report['status_reasons']['inconclusive'] ?? []) as $reason) {
+            if (str_contains(strtolower((string) $reason), strtolower($needle))) {
+                return (string) $reason;
+            }
+        }
+
+        return 'Pushover notification delivery proof is inconclusive.';
+    }
+
+    private function writeCompactHumanReport(array $report): void
+    {
+        $this->line('News bias tags compact audit: '.strtoupper((string) $report['status']));
+
+        if (! empty($report['run'])) {
+            $run = $report['run'];
+            $this->line("Run: #{$run['id']} {$run['workflow_name']} status={$run['status']} natural=".var_export($run['natural'], true)
+                ." started={$run['started_at']} completed={$run['completed_at']}");
+        }
+
+        $tags = $report['bias_tags'];
+        $distribution = $tags['distribution'] === null ? 'n/a' : json_encode($tags['distribution'], JSON_UNESCAPED_SLASHES);
+        $this->line('Bias tags: enriched='.($tags['enriched_count'] ?? 'n/a')
+            ." visible={$tags['visible_count']}/{$tags['visible_line_count']}"
+            .' distribution='.$distribution);
+
+        $leak = $report['prompt_leak'];
+        $markers = $leak['markers'] === [] ? 'none' : implode(',', $leak['markers']);
+        $this->line('Prompt leak: detected='.($leak['detected'] ? 'yes' : 'no').' markers='.$markers);
+
+        $pushover = $report['pushover'];
+        $this->line('Pushover proof: state='.$pushover['proof_state']
+            .' reason='.$pushover['reason']
+            .' sent='.var_export($pushover['notification_sent'], true)
+            .' suppressed='.var_export($pushover['notification_suppressed'], true)
+            .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
+            .' timeout='.var_export($pushover['timed_out'], true)
+            .' duration_ms='.($pushover['duration_ms'] ?? 'n/a'));
+
+        foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
+            $this->line('FAIL: '.$reason);
+        }
+
+        foreach (($report['status_reasons']['inconclusive'] ?? []) as $reason) {
+            $this->line('INCONCLUSIVE: '.$reason);
+        }
     }
 
     private function writeHumanReport(array $report): void
@@ -698,7 +920,9 @@ class NewsBiasTagsAuditCommand extends Command
             $this->line('Pushover: sent='.var_export($pushover['notification_sent'] ?? null, true)
                 .' suppressed='.var_export($pushover['notification_suppressed'] ?? null, true)
                 .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
-                .' format='.($pushover['format_type'] ?? 'n/a'));
+                .' format='.($pushover['format_type'] ?? 'n/a')
+                .' timeout='.var_export($pushover['timed_out'] ?? null, true)
+                .' duration_ms='.($pushover['duration_ms'] ?? 'n/a'));
         } else {
             $this->line('Pushover: not found');
         }

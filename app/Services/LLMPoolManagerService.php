@@ -1284,6 +1284,7 @@ class LLMPoolManagerService
         $primaryUp = false;
         $secondaryUp = false;
         $details = [];
+        $localIndex = 0;
 
         foreach ($rows as $row) {
             $healthy = ((int) ($row->is_healthy ?? 0)) === 1
@@ -1294,12 +1295,13 @@ class LLMPoolManagerService
                 'host_affinity' => $row->host_affinity,
             ];
 
-            $affinity = (string) ($row->host_affinity ?? '');
-            $instanceId = (string) ($row->instance_id ?? '');
-            if ($instanceId === 'ollama_primary' || str_contains($affinity, 'primary')) {
+            $role = $this->localAvailabilityRole($row->host_affinity ?? null, $row->instance_id ?? null, $localIndex);
+            $localIndex++;
+
+            if ($role === 'primary') {
                 $primaryUp = $primaryUp || $healthy;
             }
-            if ($instanceId === 'ollama_secondary' || str_contains($affinity, 'secondary')) {
+            if ($role === 'secondary') {
                 $secondaryUp = $secondaryUp || $healthy;
             }
         }
@@ -1317,6 +1319,30 @@ class LLMPoolManagerService
             'secondary_up' => $secondaryUp,
             'details' => $details,
         ];
+    }
+
+    private function localAvailabilityRole(mixed $hostAffinity, mixed $instanceId, int $fallbackIndex): ?string
+    {
+        $affinity = strtolower((string) ($hostAffinity ?? ''));
+        $id = strtolower((string) ($instanceId ?? ''));
+
+        if (str_contains($affinity, 'primary') || str_contains($id, 'primary')) {
+            return 'primary';
+        }
+
+        if (str_contains($affinity, 'secondary') || str_contains($id, 'secondary')) {
+            return 'secondary';
+        }
+
+        if (str_contains($affinity, 'local')) {
+            return match ($fallbackIndex) {
+                0 => 'primary',
+                1 => 'secondary',
+                default => null,
+            };
+        }
+
+        return null;
     }
 
     /**
@@ -1554,7 +1580,7 @@ class LLMPoolManagerService
         }
 
         $user = posix_getpwuid(posix_geteuid());
-        $home = is_array($user) ? ($user['dir'] ?? null) : null;
+        $home = is_array($user) ? $user['dir'] : null;
 
         return is_string($home) && $home !== '' ? $home : null;
     }

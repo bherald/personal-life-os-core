@@ -11,7 +11,8 @@ class GenealogyEvidenceSprintReportCommand extends Command
                             {--days=30 : Lookback window in days}
                             {--limit=500 : Maximum review-packet rows to inspect}
                             {--json : Output machine-readable JSON}
-                            {--markdown : Output markdown report}';
+                            {--markdown : Output markdown report}
+                            {--compact : Emit routine-check compact output}';
 
     protected $description = 'Read-only readiness report for the five-packet genealogy evidence sprint';
 
@@ -34,7 +35,10 @@ class GenealogyEvidenceSprintReportCommand extends Command
         $payload = $service->collect($days, $limit);
 
         if ($this->option('json')) {
-            $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            $json = json_encode(
+                $this->option('compact') ? $service->compactPayload($payload) : $payload,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+            );
             if ($json === false) {
                 $this->error('Failed to encode genealogy evidence sprint readiness JSON.');
 
@@ -47,7 +51,13 @@ class GenealogyEvidenceSprintReportCommand extends Command
         }
 
         if ($this->option('markdown')) {
-            $this->line($service->toMarkdown($payload));
+            $this->line($this->option('compact') ? $service->toCompactMarkdown($payload) : $service->toMarkdown($payload));
+
+            return self::SUCCESS;
+        }
+
+        if ($this->option('compact')) {
+            $this->line($service->toCompactText($payload));
 
             return self::SUCCESS;
         }

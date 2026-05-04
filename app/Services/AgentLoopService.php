@@ -62,6 +62,22 @@ class AgentLoopService
 
     private const OPERATIONAL_SEVERITIES = ['critical', 'high', 'medium', 'low'];
 
+    private const CJK_GUARDED_OPERATIONAL_AGENTS = [
+        'ai-ops',
+        'data-removal-ops',
+        'email-ops',
+        'factcheck-ops',
+        'file-curator',
+        'file-ops',
+        'knowledge-curator',
+        'log-analyst',
+        'research-analyst',
+        'research-ops',
+        'system-guardian',
+        'workflow-ops',
+        'youtube-ops',
+    ];
+
     private function getAIService(): AIService
     {
         if ($this->aiService === null) {
@@ -7030,10 +7046,52 @@ class AgentLoopService
 
     public function stabilizeFinalResponse(string $agentId, string $finalResponse, array $messages, array $toolCalls): string
     {
-        return match ($agentId) {
+        $response = match ($agentId) {
             'research-analyst' => $this->buildResearchAnalystOperationalSummary($messages, $toolCalls, $finalResponse),
             default => $finalResponse,
         };
+
+        if ($this->shouldGuardCjkOperationalResponse($agentId, $response)) {
+            return $this->buildCjkGuardedOperationalSummary($agentId, $toolCalls);
+        }
+
+        return $response;
+    }
+
+    private function shouldGuardCjkOperationalResponse(string $agentId, string $response): bool
+    {
+        return in_array($agentId, self::CJK_GUARDED_OPERATIONAL_AGENTS, true)
+            && $this->containsCjkScript($response);
+    }
+
+    private function containsCjkScript(string $value): bool
+    {
+        return preg_match('/[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]/u', $value) === 1;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $toolCalls
+     */
+    private function buildCjkGuardedOperationalSummary(string $agentId, array $toolCalls): string
+    {
+        $failedTools = array_values(array_unique(array_filter(array_map(
+            fn (array $call): ?string => ($call['success'] ?? false) ? null : (string) ($call['tool'] ?? 'unknown'),
+            $toolCalls
+        ))));
+
+        $lines = [];
+        $lines[] = '**Agent Output Guard**';
+        $lines[] = '';
+        $lines[] = '- Status: Response Suppressed';
+        $lines[] = '- Agent: '.$agentId;
+        $lines[] = '- Reason: final response contained CJK/non-English script markers.';
+        $lines[] = '- Tool Calls: '.count($toolCalls).' total, '.count($failedTools).' failed';
+        if ($failedTools !== []) {
+            $lines[] = '- Failed Tools: '.implode(', ', $failedTools);
+        }
+        $lines[] = '- Action: review this agent session and tool outputs before trusting the report; repeated signals should prompt model or prompt routing review.';
+
+        return implode("\n", $lines);
     }
 
     public function buildResearchAnalystOperationalSummary(array $messages, array $toolCalls, string $fallback): string

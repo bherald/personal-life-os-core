@@ -3,6 +3,7 @@
 namespace App\Nodes;
 
 use App\Controllers\NotificationController;
+use App\Exceptions\NodeTimeoutException;
 use Exception;
 
 class PushoverNotify extends BaseNode
@@ -16,6 +17,8 @@ class PushoverNotify extends BaseNode
             $maxRetriesPerChunk = max(1, (int) $this->getConfigValue('max_retries_per_chunk', 2));
             $retryDelaySeconds = max(0, (int) $this->getConfigValue('retry_delay_seconds', 1));
             $interChunkDelaySeconds = max(0, (int) $this->getConfigValue('inter_chunk_delay_seconds', 2));
+            $timeoutSeconds = max(1, (int) $this->getConfigValue('timeout_seconds', 300));
+            $nodeStartedAt = microtime(true);
 
             // Enhanced formatting options
             $formatType = $this->getConfigValue('format_type', 'plain'); // 'plain', 'html', 'monospace'
@@ -56,6 +59,9 @@ class PushoverNotify extends BaseNode
             $totalChunks = count($chunks);
             $sentCount = 0;
             $suppressedCount = 0;
+            $sentParts = [];
+            $suppressedParts = [];
+            $failedParts = [];
             $sourceGroup = (string) $this->getConfigValue('source_group', 'workflow_node_notifications');
 
             // Send chunks in REVERSE order so they appear in correct reading order on Pushover
@@ -106,19 +112,34 @@ class PushoverNotify extends BaseNode
                 for ($attempt = 1; $attempt <= $maxRetriesPerChunk; $attempt++) {
                     $result = $controller->send('pushover', $payload);
 
+                    if ($this->isNodeTimeoutMessage($result['error'] ?? null)) {
+                        throw new NodeTimeoutException(
+                            'PushoverNotify',
+                            $timeoutSeconds,
+                            max(1, (int) ceil(microtime(true) - $nodeStartedAt)),
+                            (string) $result['error']
+                        );
+                    }
+
                     if (! empty($result['success']) && empty($result['suppressed'])) {
                         $sentCount++;
+                        $sentParts[] = $partNumber;
                         break;
                     }
 
                     if (! empty($result['suppressed'])) {
                         $suppressedCount++;
+                        $suppressedParts[] = $partNumber;
                         break;
                     }
 
                     if ($attempt < $maxRetriesPerChunk && $retryDelaySeconds > 0) {
                         sleep($retryDelaySeconds);
                     }
+                }
+
+                if (empty($result['success']) && empty($result['suppressed'])) {
+                    $failedParts[] = $partNumber;
                 }
 
                 // Delay between messages to ensure proper ordering (Pushover shows newest first)
@@ -136,8 +157,13 @@ class PushoverNotify extends BaseNode
                 'total_parts' => $totalChunks,
                 'parts_sent' => $sentCount,
                 'parts_suppressed' => $suppressedCount,
+                'part_numbers_sent' => $sentParts,
+                'part_numbers_suppressed' => $suppressedParts,
+                'part_numbers_failed' => $failedParts,
                 'format_type' => $formatType,
                 'has_url' => $url !== null,
+                'inter_chunk_delay_seconds' => $interChunkDelaySeconds,
+                'max_retries_per_chunk' => $maxRetriesPerChunk,
             ], [
                 'provider' => 'pushover',
                 'priority' => $priority,
@@ -145,6 +171,10 @@ class PushoverNotify extends BaseNode
             ]);
 
         } catch (Exception $e) {
+            if ($e instanceof NodeTimeoutException || str_contains($e->getMessage(), 'Node timeout:')) {
+                throw $e;
+            }
+
             return $this->standardOutput(null, [], $e->getMessage());
         }
     }
@@ -229,6 +259,18 @@ class PushoverNotify extends BaseNode
         $error = trim((string) $error);
 
         return $error === '' ? null : $error;
+    }
+
+    private function isNodeTimeoutMessage(mixed $message): bool
+    {
+        if (! is_scalar($message)) {
+            return false;
+        }
+
+        $message = (string) $message;
+
+        return str_contains($message, 'Node timeout:')
+            || preg_match("/\\bNode '.+' execution timed out after \\d+s \\(limit: \\d+s\\)/", $message) === 1;
     }
 
     /**

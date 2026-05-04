@@ -6,6 +6,8 @@ use Illuminate\Support\Facades\DB;
 
 class SchedulerOptimizeReportService
 {
+    private const COMPACT_RECOMMENDATION_LIMIT = 10;
+
     private const HEAVY_RESOURCE_PROFILES = [
         'ai',
         'faces',
@@ -40,6 +42,38 @@ class SchedulerOptimizeReportService
             'recommendation_count' => count($recommendations),
             'jobs' => array_values($jobSummaries),
             'recommendations' => $recommendations,
+        ];
+    }
+
+    public function compactPayload(array $payload): array
+    {
+        $recommendations = array_values($payload['recommendations'] ?? []);
+        $topRecommendations = array_slice($recommendations, 0, self::COMPACT_RECOMMENDATION_LIMIT);
+
+        return [
+            'version' => $payload['version'] ?? 1,
+            'captured_at' => $payload['captured_at'] ?? now()->utc()->format('Y-m-d\TH:i:s\Z'),
+            'mode' => $payload['mode'] ?? 'observe',
+            'window' => $payload['window'] ?? null,
+            'compact' => true,
+            'job_count' => (int) ($payload['job_count'] ?? 0),
+            'recommendation_count' => (int) ($payload['recommendation_count'] ?? count($recommendations)),
+            'severity_counts' => $this->countRecommendationValues($recommendations, 'severity'),
+            'category_counts' => $this->countRecommendationValues($recommendations, 'category'),
+            'top_recommendation_ids' => array_values(array_filter(array_map(
+                static fn (array $recommendation): ?string => isset($recommendation['id'])
+                    ? (string) $recommendation['id']
+                    : null,
+                $topRecommendations
+            ))),
+            'top_recommendations' => array_map(static function (array $recommendation): array {
+                return array_filter([
+                    'id' => isset($recommendation['id']) ? (string) $recommendation['id'] : null,
+                    'severity' => isset($recommendation['severity']) ? (string) $recommendation['severity'] : null,
+                    'category' => isset($recommendation['category']) ? (string) $recommendation['category'] : null,
+                    'job_id' => isset($recommendation['job_id']) ? (int) $recommendation['job_id'] : null,
+                ], static fn ($value): bool => $value !== null);
+            }, $topRecommendations),
         ];
     }
 
@@ -349,6 +383,24 @@ class SchedulerOptimizeReportService
         $index = max(0, min(count($values) - 1, $index));
 
         return round((float) $values[$index], 3);
+    }
+
+    private function countRecommendationValues(array $recommendations, string $key): array
+    {
+        $counts = [];
+
+        foreach ($recommendations as $recommendation) {
+            $value = isset($recommendation[$key]) ? (string) $recommendation[$key] : '';
+            if ($value === '') {
+                continue;
+            }
+
+            $counts[$value] = ($counts[$value] ?? 0) + 1;
+        }
+
+        ksort($counts);
+
+        return $counts;
     }
 
     private function mysqlTableExists(string $table): bool

@@ -98,13 +98,15 @@ class AwoReplayCommand extends Command
 
         $summary = $payload['summary'] ?? [];
         $this->line(sprintf(
-            'AWO replay: %s window=%s rows=%d completed=%d approval_worthy=%d hard_fails=%d',
+            'AWO replay: %s window=%s rows=%d completed=%d approval_worthy=%d completed_hard_fails=%d scanned_hard_fail_signals=%d pending_hard_fail_signals=%d',
             $payload['status'] ?? 'unknown',
             $payload['window'] ?? 'unknown',
             (int) ($summary['rows_scanned'] ?? 0),
             (int) ($summary['completed_reviews'] ?? 0),
             (int) ($summary['approval_worthy_reviews'] ?? 0),
-            (int) ($summary['hard_fail_count'] ?? 0),
+            (int) ($summary['completed_hard_fail_count'] ?? $summary['hard_fail_count'] ?? 0),
+            (int) ($summary['scanned_hard_fail_signal_count'] ?? $summary['hard_fail_count'] ?? 0),
+            (int) ($summary['pending_hard_fail_signal_count'] ?? 0),
         ));
 
         if (($summary['insufficient_data'] ?? true) === true) {

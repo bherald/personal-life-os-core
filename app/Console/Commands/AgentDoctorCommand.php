@@ -10,6 +10,7 @@ class AgentDoctorCommand extends Command
     protected $signature = 'ops:agent-doctor
         {--agent= : Limit diagnostics to one agent id}
         {--quick : Keep output compatible with quicker future probes}
+        {--compact : Emit a terse operator status summary without per-agent details}
         {--json : Emit machine-readable JSON}
         {--since=24 : Window size in hours, 1-168}';
 
@@ -24,7 +25,10 @@ class AgentDoctorCommand extends Command
         );
 
         if ($this->option('json')) {
-            $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            $json = json_encode(
+                $this->option('compact') ? $this->compactPayload($payload) : $payload,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+            );
             if ($json === false) {
                 $this->error('Failed to encode agent-doctor JSON.');
 
@@ -32,6 +36,12 @@ class AgentDoctorCommand extends Command
             }
 
             $this->line($json);
+
+            return self::SUCCESS;
+        }
+
+        if ($this->option('compact')) {
+            $this->writeCompactPayload($this->compactPayload($payload));
 
             return self::SUCCESS;
         }
@@ -44,6 +54,21 @@ class AgentDoctorCommand extends Command
             (int) $summary['sessions_active'],
             (int) $summary['sessions_stalled'],
             (int) $summary['review_queue_pending'],
+        ));
+        $this->line(sprintf(
+            'Scheduled output: success_runs=%d  empty_success=%d  cjk_signals=%d  guarded=%d',
+            (int) ($summary['scheduled_success_runs_window'] ?? 0),
+            (int) ($summary['scheduled_empty_success_outputs_window'] ?? 0),
+            (int) ($summary['scheduled_cjk_output_runs_window'] ?? 0),
+            (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
+        ));
+        $this->line(sprintf(
+            'Memory evidence: episodes=%d  summaries=%d  undistilled=%d  memory_errors=%d  low_quality_procedures=%d',
+            (int) ($summary['memory_episodes_window'] ?? 0),
+            (int) ($summary['memory_summaries_window'] ?? 0),
+            (int) ($summary['memory_undistilled_episodes_window'] ?? 0),
+            (int) ($summary['memory_error_episodes_window'] ?? 0),
+            (int) ($summary['procedures_low_quality_total'] ?? 0),
         ));
 
         $recursion = $payload['recursion'] ?? null;
@@ -93,5 +118,138 @@ class AgentDoctorCommand extends Command
         // Observe-only by design: critical state is reported in the payload,
         // but does not fail shell polling unless a future strict flag adds that.
         return self::SUCCESS;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function compactPayload(array $payload): array
+    {
+        $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+        $recursion = is_array($payload['recursion'] ?? null) ? $payload['recursion'] : [];
+        $agents = is_array($payload['agents'] ?? null) ? $payload['agents'] : [];
+
+        return [
+            'generated_at' => $payload['generated_at'] ?? null,
+            'window_hours' => (int) ($payload['window_hours'] ?? 0),
+            'compact' => true,
+            'overall_status' => (string) ($payload['overall_status'] ?? 'unknown'),
+            'agent_counts' => [
+                'total' => (int) ($summary['agents_total'] ?? 0),
+                'enabled' => (int) ($summary['agents_enabled'] ?? 0),
+                'warning' => (int) ($summary['agents_with_warnings'] ?? 0),
+                'critical' => (int) ($summary['agents_with_critical'] ?? 0),
+            ],
+            'sessions' => [
+                'active' => (int) ($summary['sessions_active'] ?? 0),
+                'stalled' => (int) ($summary['sessions_stalled'] ?? 0),
+            ],
+            'review_queue' => [
+                'pending' => (int) ($summary['review_queue_pending'] ?? 0),
+            ],
+            'scheduled_output' => [
+                'success_runs' => (int) ($summary['scheduled_success_runs_window'] ?? 0),
+                'empty_success' => (int) ($summary['scheduled_empty_success_outputs_window'] ?? 0),
+                'cjk_signals' => (int) ($summary['scheduled_cjk_output_runs_window'] ?? 0),
+                'guarded' => (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
+            ],
+            'memory_evidence' => [
+                'episodes' => (int) ($summary['memory_episodes_window'] ?? 0),
+                'summaries' => (int) ($summary['memory_summaries_window'] ?? 0),
+                'undistilled' => (int) ($summary['memory_undistilled_episodes_window'] ?? 0),
+                'memory_errors' => (int) ($summary['memory_error_episodes_window'] ?? 0),
+                'low_quality_procedures' => (int) ($summary['procedures_low_quality_total'] ?? 0),
+            ],
+            'recursion' => [
+                'status' => (string) ($recursion['status'] ?? 'unknown'),
+                'calls_7d' => (int) ($recursion['calls_7d'] ?? 0),
+                'move_on_rate_7d' => $recursion['move_on_rate_7d'] ?? null,
+                'master_enabled' => $recursion['master_enabled'] ?? null,
+            ],
+            'top_agents' => [
+                'critical' => $this->topAgentIds($agents, 'critical'),
+                'warning' => $this->topAgentIds($agents, 'warning'),
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<int, mixed>  $agents
+     * @return list<string>
+     */
+    private function topAgentIds(array $agents, string $status): array
+    {
+        return collect($agents)
+            ->filter(fn (mixed $agent): bool => is_array($agent) && ($agent['status'] ?? null) === $status)
+            ->map(fn (array $agent): string => (string) ($agent['agent_id'] ?? ''))
+            ->filter(fn (string $agentId): bool => $agentId !== '')
+            ->take(5)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $compact
+     */
+    private function writeCompactPayload(array $compact): void
+    {
+        $agentCounts = $compact['agent_counts'];
+        $sessions = $compact['sessions'];
+        $reviewQueue = $compact['review_queue'];
+        $scheduledOutput = $compact['scheduled_output'];
+        $memory = $compact['memory_evidence'];
+        $recursion = $compact['recursion'];
+        $topAgents = $compact['top_agents'];
+        $moveOnRate = $recursion['move_on_rate_7d'] ?? null;
+        $masterEnabled = match ($recursion['master_enabled'] ?? null) {
+            true => 'on',
+            false => 'off',
+            default => 'unknown',
+        };
+
+        $this->line(sprintf(
+            'Agent doctor compact: %s  agents=%d  enabled=%d  warning=%d  critical=%d  active_sessions=%d  stalled=%d  pending_reviews=%d',
+            strtoupper((string) ($compact['overall_status'] ?? 'unknown')),
+            (int) ($agentCounts['total'] ?? 0),
+            (int) ($agentCounts['enabled'] ?? 0),
+            (int) ($agentCounts['warning'] ?? 0),
+            (int) ($agentCounts['critical'] ?? 0),
+            (int) ($sessions['active'] ?? 0),
+            (int) ($sessions['stalled'] ?? 0),
+            (int) ($reviewQueue['pending'] ?? 0),
+        ));
+        $this->line(sprintf(
+            'Scheduled output: success_runs=%d  empty_success=%d  cjk_signals=%d  guarded=%d',
+            (int) ($scheduledOutput['success_runs'] ?? 0),
+            (int) ($scheduledOutput['empty_success'] ?? 0),
+            (int) ($scheduledOutput['cjk_signals'] ?? 0),
+            (int) ($scheduledOutput['guarded'] ?? 0),
+        ));
+        $this->line(sprintf(
+            'Memory evidence: episodes=%d  summaries=%d  undistilled=%d  memory_errors=%d  low_quality_procedures=%d',
+            (int) ($memory['episodes'] ?? 0),
+            (int) ($memory['summaries'] ?? 0),
+            (int) ($memory['undistilled'] ?? 0),
+            (int) ($memory['memory_errors'] ?? 0),
+            (int) ($memory['low_quality_procedures'] ?? 0),
+        ));
+        $this->line(sprintf(
+            'Recursion signal: %s  calls_7d=%d  move_on_7d=%s  master=%s',
+            strtoupper((string) ($recursion['status'] ?? 'unknown')),
+            (int) ($recursion['calls_7d'] ?? 0),
+            $moveOnRate === null ? 'n/a' : number_format((float) $moveOnRate * 100, 1).'%',
+            $masterEnabled,
+        ));
+        $this->line('Critical agents: '.$this->formatAgentIdList($topAgents['critical'] ?? []));
+        $this->line('Warning agents: '.$this->formatAgentIdList($topAgents['warning'] ?? []));
+    }
+
+    /**
+     * @param  list<string>  $agentIds
+     */
+    private function formatAgentIdList(array $agentIds): string
+    {
+        return $agentIds === [] ? 'none' : implode(', ', $agentIds);
     }
 }

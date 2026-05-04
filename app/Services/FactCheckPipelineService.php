@@ -2,11 +2,10 @@
 
 namespace App\Services;
 
+use App\Traits\RecursionAware;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
-use Exception;
-use App\Traits\RecursionAware;
 
 /**
  * Fact-Check Pipeline Service
@@ -33,6 +32,7 @@ class FactCheckPipelineService
     use RecursionAware;
 
     private ClaimDecompositionService $decompositionService;
+
     private ClaimVerificationService $verificationService;
 
     /** @var array Default pipeline configuration */
@@ -70,18 +70,24 @@ class FactCheckPipelineService
     /**
      * Run the complete fact-check pipeline on text content
      *
-     * @param string $text Source text to fact-check
-     * @param array $options Pipeline configuration overrides
+     * @param  string  $text  Source text to fact-check
+     * @param  array  $options  Pipeline configuration overrides
      * @return array Pipeline results with claims, verdicts, and statistics
      */
     public function run(string $text, array $options = []): array
     {
-        // RLM: Try recursive fact-check decomposition
-        $rlm = $this->tryRecursive('factcheck_pipeline', 'partition_map', ['text' => $text, 'options' => $options], function ($ctx) {
-            return $this->run($ctx['text'] ?? $ctx['data'], $ctx['options'] ?? []);
-        });
-        if ($rlm !== null) {
-            return is_array($rlm) && isset($rlm[0]) ? end($rlm) : $rlm;
+        // RLM: Try recursive fact-check decomposition. Recursive sub-calls
+        // must execute the normal path to avoid self-reentering this method.
+        if (! ($options['disable_recursion'] ?? false)) {
+            $rlm = $this->tryRecursive('factcheck_pipeline', 'partition_map', ['text' => $text, 'options' => $options], function ($ctx) {
+                $subOptions = $ctx['options'] ?? [];
+                $subOptions['disable_recursion'] = true;
+
+                return $this->run($ctx['text'] ?? $ctx['data'], $subOptions);
+            });
+            if ($rlm !== null) {
+                return is_array($rlm) && isset($rlm[0]) ? end($rlm) : $rlm;
+            }
         }
 
         $startTime = microtime(true);
@@ -122,13 +128,14 @@ class FactCheckPipelineService
                     'checkworthiness_threshold' => $config['stages']['checkworthiness']
                         ? $config['thresholds']['checkworthiness_min']
                         : 0.0, // If checkworthiness stage disabled, accept all
+                    'disable_recursion' => (bool) ($options['disable_recursion'] ?? false),
                 ]);
 
                 $result['statistics']['stage_timings']['decomposition'] = round((microtime(true) - $stageStart) * 1000);
                 $result['stages_completed'][] = 'decomposition';
 
-                if (!$decompositionResult['success']) {
-                    throw new Exception('Claim decomposition failed: ' . ($decompositionResult['error'] ?? 'Unknown error'));
+                if (! $decompositionResult['success']) {
+                    throw new Exception('Claim decomposition failed: '.($decompositionResult['error'] ?? 'Unknown error'));
                 }
 
                 $result['claims'] = $decompositionResult['claims'];
@@ -184,7 +191,7 @@ class FactCheckPipelineService
             }
 
             // Stages 3-5: Evidence Retrieval, NLI Ranking, and Verdict
-            if (!empty($result['claims']) && ($config['stages']['evidence_retrieval'] || $config['stages']['nli_ranking'] || $config['stages']['verdict'])) {
+            if (! empty($result['claims']) && ($config['stages']['evidence_retrieval'] || $config['stages']['nli_ranking'] || $config['stages']['verdict'])) {
                 $stageStart = microtime(true);
 
                 // Prepare claims for verification service
@@ -246,7 +253,7 @@ class FactCheckPipelineService
             }
 
             // Filter verdicts by confidence threshold
-            if (!empty($result['verdicts'])) {
+            if (! empty($result['verdicts'])) {
                 $result['verdicts'] = array_filter($result['verdicts'], function ($v) use ($config) {
                     return ($v['confidence'] ?? 0) >= $config['thresholds']['verdict_confidence_min'];
                 });
@@ -293,8 +300,8 @@ class FactCheckPipelineService
     /**
      * Run pipeline on a specific claim (bypass decomposition)
      *
-     * @param string $claim The claim to verify
-     * @param array $options Pipeline configuration
+     * @param  string  $claim  The claim to verify
+     * @param  array  $options  Pipeline configuration
      * @return array Verification result
      */
     public function verifyClaim(string $claim, array $options = []): array
@@ -346,8 +353,8 @@ class FactCheckPipelineService
     /**
      * Batch verify multiple claims
      *
-     * @param array $claims Array of claim strings
-     * @param array $options Pipeline configuration
+     * @param  array  $claims  Array of claim strings
+     * @param  array  $options  Pipeline configuration
      * @return array Batch verification results
      */
     public function verifyBatch(array $claims, array $options = []): array
@@ -357,7 +364,7 @@ class FactCheckPipelineService
         $results = [];
 
         foreach ($claims as $claim) {
-            if (is_string($claim) && !empty(trim($claim))) {
+            if (is_string($claim) && ! empty(trim($claim))) {
                 $results[] = $this->verifyClaim($claim, $config);
             }
         }
@@ -374,32 +381,33 @@ class FactCheckPipelineService
     /**
      * Get pipeline run history
      *
-     * @param int $limit Maximum records to return
-     * @param string|null $status Filter by status
+     * @param  int  $limit  Maximum records to return
+     * @param  string|null  $status  Filter by status
      * @return array Pipeline runs
      */
     public function getHistory(int $limit = 50, ?string $status = null): array
     {
         try {
-            $sql = "
+            $sql = '
                 SELECT pipeline_id, status, source_title,
                        claim_count, supported_count, refuted_count, inconclusive_count,
                        overall_factuality_score, duration_ms, created_at, completed_at
                 FROM fact_check_pipeline_runs
-            ";
+            ';
 
             $params = [];
             if ($status !== null) {
-                $sql .= " WHERE status = ?";
+                $sql .= ' WHERE status = ?';
                 $params[] = $status;
             }
 
-            $sql .= " ORDER BY created_at DESC LIMIT ?";
+            $sql .= ' ORDER BY created_at DESC LIMIT ?';
             $params[] = $limit;
 
             return DB::connection('pgsql_rag')->select($sql, $params);
         } catch (Exception $e) {
             Log::warning('FactCheckPipeline: fact_check_pipeline_runs table not available', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -407,15 +415,15 @@ class FactCheckPipelineService
     /**
      * Get detailed pipeline run by ID
      *
-     * @param string $pipelineId Pipeline run ID
+     * @param  string  $pipelineId  Pipeline run ID
      * @return array|null Pipeline details with claims and verdicts
      */
     public function getRunDetails(string $pipelineId): ?array
     {
         try {
-            $run = DB::connection('pgsql_rag')->select("
+            $run = DB::connection('pgsql_rag')->select('
                 SELECT * FROM fact_check_pipeline_runs WHERE pipeline_id = ?
-            ", [$pipelineId]);
+            ', [$pipelineId]);
 
             if (empty($run)) {
                 return null;
@@ -424,17 +432,18 @@ class FactCheckPipelineService
             $run = (array) $run[0];
 
             // Get associated claims — claims table uses source_document_id, not pipeline_id
-            $run['claims'] = DB::connection('pgsql_rag')->select("
+            $run['claims'] = DB::connection('pgsql_rag')->select('
                 SELECT c.*, v.verdict, v.confidence, v.factuality_score, v.evidence_summary
                 FROM claims c
                 LEFT JOIN verdicts v ON v.claim_id = c.id
                 WHERE c.source_document_id = ?
                 ORDER BY c.checkworthiness_score DESC
-            ", [$pipelineId]);
+            ', [$pipelineId]);
 
             return $run;
         } catch (Exception $e) {
             Log::warning('FactCheckPipeline: fact_check_pipeline_runs table not available', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -442,8 +451,8 @@ class FactCheckPipelineService
     /**
      * Aggregate results from claims and verdicts
      *
-     * @param array $claims Decomposed claims
-     * @param array $verdicts Verification verdicts
+     * @param  array  $claims  Decomposed claims
+     * @param  array  $verdicts  Verification verdicts
      * @return array Aggregated result
      */
     private function aggregateResults(array $claims, array $verdicts): array
@@ -566,7 +575,7 @@ class FactCheckPipelineService
     /**
      * Merge user options with default configuration
      *
-     * @param array $options User-provided options
+     * @param  array  $options  User-provided options
      * @return array Merged configuration
      */
     private function mergeConfig(array $options): array
@@ -575,8 +584,8 @@ class FactCheckPipelineService
 
         // N82: apply config/factcheck.php overrides to defaults
         $config['limits']['max_claims_per_document'] = config('factcheck.max_claims', $config['limits']['max_claims_per_document']);
-        $config['limits']['max_evidence_per_claim']  = config('factcheck.max_evidence', $config['limits']['max_evidence_per_claim']);
-        $config['limits']['query_count']             = config('factcheck.query_count', $config['limits']['query_count']);
+        $config['limits']['max_evidence_per_claim'] = config('factcheck.max_evidence', $config['limits']['max_evidence_per_claim']);
+        $config['limits']['query_count'] = config('factcheck.query_count', $config['limits']['query_count']);
 
         // Merge stages
         if (isset($options['stages']) && is_array($options['stages'])) {
@@ -614,15 +623,15 @@ class FactCheckPipelineService
      */
     private function generatePipelineId(): string
     {
-        return 'fcp_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4));
+        return 'fcp_'.date('Ymd_His').'_'.bin2hex(random_bytes(4));
     }
 
     /**
      * Persist pipeline run start
      *
-     * @param string $pipelineId Pipeline ID
-     * @param string $text Source text
-     * @param array $config Pipeline configuration
+     * @param  string  $pipelineId  Pipeline ID
+     * @param  string  $text  Source text
+     * @param  array  $config  Pipeline configuration
      */
     private function persistPipelineStart(string $pipelineId, string $text, array $config): void
     {
@@ -647,8 +656,8 @@ class FactCheckPipelineService
     /**
      * Persist pipeline completion
      *
-     * @param string $pipelineId Pipeline ID
-     * @param array $result Pipeline result
+     * @param  string  $pipelineId  Pipeline ID
+     * @param  array  $result  Pipeline result
      */
     private function persistPipelineComplete(string $pipelineId, array $result): void
     {
@@ -692,8 +701,8 @@ class FactCheckPipelineService
     /**
      * Persist pipeline error
      *
-     * @param string $pipelineId Pipeline ID
-     * @param string $error Error message
+     * @param  string  $pipelineId  Pipeline ID
+     * @param  string  $error  Error message
      */
     private function persistPipelineError(string $pipelineId, string $error): void
     {
@@ -716,7 +725,7 @@ class FactCheckPipelineService
     /**
      * Get pipeline statistics summary
      *
-     * @param int $days Number of days to look back
+     * @param  int  $days  Number of days to look back
      * @return array Statistics summary
      */
     public function getStatistics(int $days = 30): array
@@ -737,9 +746,10 @@ class FactCheckPipelineService
                 WHERE created_at >= NOW() - INTERVAL '1 day' * ?
             ", [$days]);
 
-            return !empty($result) ? (array) $result[0] : [];
+            return ! empty($result) ? (array) $result[0] : [];
         } catch (Exception $e) {
             Log::warning('FactCheckPipeline: fact_check_pipeline_runs table not available', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -757,7 +767,7 @@ class FactCheckPipelineService
     /**
      * Validate pipeline configuration
      *
-     * @param array $config Configuration to validate
+     * @param  array  $config  Configuration to validate
      * @return array Validation result with 'valid' boolean and 'errors' array
      */
     public function validateConfig(array $config): array
@@ -769,7 +779,7 @@ class FactCheckPipelineService
             foreach (['checkworthiness_min', 'evidence_confidence_min', 'verdict_confidence_min'] as $threshold) {
                 if (isset($config['thresholds'][$threshold])) {
                     $value = $config['thresholds'][$threshold];
-                    if (!is_numeric($value) || $value < 0 || $value > 1) {
+                    if (! is_numeric($value) || $value < 0 || $value > 1) {
                         $errors[] = "Threshold '{$threshold}' must be between 0 and 1";
                     }
                 }
@@ -781,7 +791,7 @@ class FactCheckPipelineService
             foreach (['max_claims_per_document', 'max_evidence_per_claim', 'query_count'] as $limit) {
                 if (isset($config['limits'][$limit])) {
                     $value = $config['limits'][$limit];
-                    if (!is_int($value) || $value < 1) {
+                    if (! is_int($value) || $value < 1) {
                         $errors[] = "Limit '{$limit}' must be a positive integer";
                     }
                 }

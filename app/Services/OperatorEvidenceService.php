@@ -6,8 +6,10 @@ use App\Services\AgentMetrics\AwoReplayService;
 use App\Services\AgentMetrics\GenealogyAgentTriageService;
 use App\Services\Genealogy\GenealogyEvidenceSprintReadinessService;
 use App\Services\Ops\AgentDoctorService;
+use App\Services\Ops\AgentRecursionCallsRetentionService;
 use App\Services\Ops\DbaTelemetryReportService;
 use App\Services\Ops\ReviewBacklogReportService;
+use App\Services\Ops\SchedulerOptimizeReportService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -22,6 +24,10 @@ class OperatorEvidenceService
     private const QUEUES = ['high', 'default', 'low', 'long-running', 'workflow', 'speculative'];
 
     private const DBA_TELEMETRY_CACHE_KEY = 'operator_evidence:dba_telemetry:v1';
+
+    private const ARC_RETENTION_CACHE_KEY = 'operator_evidence:arc_retention:v1';
+
+    private const SCHEDULER_OPTIMIZATION_CACHE_KEY = 'operator_evidence:scheduler_optimization:v1';
 
     private const AWO_REPLAY_CACHE_KEY = 'operator_evidence:awo_replay:v1';
 
@@ -57,6 +63,8 @@ class OperatorEvidenceService
         private readonly ?LLMPoolManagerService $llmPool = null,
         private readonly ?ReviewBacklogReportService $reviewBacklog = null,
         private readonly ?GenealogyEvidenceSprintReadinessService $genealogyEvidenceSprint = null,
+        private readonly ?AgentRecursionCallsRetentionService $arcRetention = null,
+        private readonly ?SchedulerOptimizeReportService $schedulerOptimize = null,
     ) {}
 
     public function collect(): array
@@ -69,6 +77,7 @@ class OperatorEvidenceService
 
         $sections = [
             'queue_health' => $this->collectQueueHealth($sampledAt),
+            'scheduler_optimization' => $this->collectSchedulerOptimization($sampledAt),
             'dba_telemetry' => $this->collectDbaTelemetry($sampledAt),
             'kg_backlog' => $this->collectKgBacklog($sampledAt, $ragMetrics, $ragNetBurn),
             'raptor_sentence_drained' => $this->collectRaptorSentenceDrained($sampledAt, $ragMetrics, $ragNetBurn),
@@ -106,6 +115,220 @@ class OperatorEvidenceService
             'captured_at' => $this->formatTimestamp($sampledAt),
             'status' => $section['status'] ?? 'degraded',
             'section' => $section,
+        ];
+    }
+
+    public function compactPayload(array $payload): array
+    {
+        $sections = is_array($payload['sections'] ?? null) ? $payload['sections'] : [];
+
+        $headlines = [
+            'queue' => $this->compactQueueHeadline($sections),
+            'kg_rag' => $this->compactKgRagHeadline($sections),
+            'review_backlog' => $this->compactReviewBacklogHeadline($sections),
+            'face' => $this->compactFaceHeadline($sections),
+            'offline_runtime' => $this->compactOfflineRuntimeHeadline($sections),
+            'scheduler' => $this->compactSchedulerHeadline($sections),
+            'dba_arc' => $this->compactDbaArcHeadline($sections),
+        ];
+
+        if (is_array($sections['agent_doctor'] ?? null)) {
+            $headlines['agent_doctor'] = $this->compactAgentDoctorHeadline($sections);
+        }
+
+        return [
+            'version' => (int) ($payload['version'] ?? 1),
+            'mode' => 'observe',
+            'compact' => true,
+            'status' => $this->normalizeStatus((string) ($payload['status'] ?? 'degraded')),
+            'sampled_at' => $this->nullableString($payload['captured_at'] ?? $payload['sampled_at'] ?? null),
+            'headlines' => $headlines,
+        ];
+    }
+
+    private function compactQueueHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'queue_health');
+        $counts = $this->compactCounts($section);
+        $freshness = $this->compactFreshness($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'queue_depth_total' => (int) ($counts['queue_depth_total'] ?? 0),
+            'queue_depths' => $this->integerCountMap($counts['queue_depths'] ?? []),
+            'enabled_scheduled_jobs' => (int) ($counts['enabled_scheduled_jobs'] ?? 0),
+            'stale_running_jobs' => (int) ($counts['stale_running_jobs'] ?? 0),
+            'recent_scheduler_failures' => (int) ($counts['recent_scheduler_failures'] ?? 0),
+            'recent_queue_failures' => $counts['recent_queue_failures'] ?? null,
+            'recent_failed_jobs_30m' => $counts['recent_failed_jobs_30m'] ?? null,
+            'due_jobs_overdue' => (int) ($counts['due_jobs_overdue'] ?? 0),
+            'scheduler_lag_minutes' => $freshness['scheduler_lag_minutes'] ?? null,
+            'completion_lag_minutes' => $freshness['completion_lag_minutes'] ?? null,
+            'queue_source' => $this->nullableString($freshness['queue_source'] ?? null),
+        ];
+    }
+
+    private function compactKgRagHeadline(array $sections): array
+    {
+        $kg = $this->compactSection($sections, 'kg_backlog');
+        $kgCounts = $this->compactCounts($kg);
+        $drain = $this->compactSection($sections, 'raptor_sentence_drained');
+        $drainCounts = $this->compactCounts($drain);
+        $scale = $this->compactSection($sections, 'rag_scale_baseline');
+        $scaleCounts = $this->compactCounts($scale);
+
+        return [
+            'kg_status' => $this->compactStatus($kg),
+            'rag_drain_status' => $this->compactStatus($drain),
+            'rag_scale_status' => $this->compactStatus($scale),
+            'documents' => (int) ($kgCounts['documents'] ?? $scaleCounts['documents'] ?? 0),
+            'kg_pending' => (int) ($kgCounts['kg_pending'] ?? 0),
+            'kg_fresh_pending' => (int) ($kgCounts['kg_fresh_pending'] ?? 0),
+            'kg_stale_pending' => (int) ($kgCounts['kg_stale_pending'] ?? 0),
+            'kg_entities' => (int) ($kgCounts['kg_entities'] ?? 0),
+            'kg_throughput_per_day' => (int) ($kgCounts['throughput_per_day'] ?? 0),
+            'kg_eta_days' => $kgCounts['eta_days'] ?? null,
+            'kg_net_burn_per_day' => $kgCounts['kg_net_burn_per_day'] ?? null,
+            'kg_net_burn_trend' => $this->nullableString($kgCounts['kg_net_burn_trend'] ?? null),
+            'raptor_pending' => (int) ($drainCounts['raptor_pending'] ?? 0),
+            'sentence_pending' => (int) ($drainCounts['sentence_pending'] ?? 0),
+            'drained' => (bool) ($drainCounts['drained'] ?? false),
+            'raptor_net_burn_trend' => $this->nullableString($drainCounts['raptor_net_burn_trend'] ?? null),
+            'sentence_net_burn_trend' => $this->nullableString($drainCounts['sentence_net_burn_trend'] ?? null),
+            'rag_documents_relation_mb' => $scaleCounts['rag_documents_relation_mb'] ?? null,
+            'rag_scale_recommendations' => (int) ($scaleCounts['recommendations'] ?? 0),
+        ];
+    }
+
+    private function compactReviewBacklogHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'review_backlog');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'pending_total' => (int) ($counts['pending_total'] ?? 0),
+            'stale_pending' => (int) ($counts['stale_pending'] ?? 0),
+            'high_priority_pending' => (int) ($counts['high_priority_pending'] ?? 0),
+            'pending_age_groups' => (int) ($counts['pending_age_groups'] ?? 0),
+            'pending_type_groups' => (int) ($counts['pending_type_groups'] ?? 0),
+            'triage_buckets' => (int) ($counts['triage_buckets'] ?? 0),
+            'typed_remediation_rows' => (int) ($counts['typed_remediation_rows'] ?? 0),
+            'preview_only_remediation_rows' => (int) ($counts['preview_only_remediation_rows'] ?? 0),
+            'supported_preview_operation_rows' => (int) ($counts['supported_preview_operation_rows'] ?? 0),
+            'recommendations' => (int) ($counts['recommendations'] ?? 0),
+        ];
+    }
+
+    private function compactFaceHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'face_match_link_backlog');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'pending_total' => (int) ($counts['pending_total'] ?? 0),
+            'stale_pending' => (int) ($counts['stale_pending'] ?? 0),
+            'no_match_pending' => (int) ($counts['no_match_pending'] ?? 0),
+            'fuzzy_pending' => (int) ($counts['fuzzy_pending'] ?? 0),
+            'named_only_unlinked' => (int) ($counts['named_only_unlinked'] ?? 0),
+            'named_only_verified' => (int) ($counts['named_only_verified'] ?? 0),
+            'approved_missing_person_media' => (int) ($counts['approved_missing_person_media'] ?? 0),
+            'candidate_decision_rows' => (int) ($counts['candidate_decision_rows'] ?? 0),
+            'candidate_recent_decisions' => (int) ($counts['candidate_recent_decisions'] ?? 0),
+        ];
+    }
+
+    private function compactOfflineRuntimeHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'offline_degraded_state');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'offline_mode_active' => (bool) ($counts['offline_mode_active'] ?? false),
+            'active_profile' => $this->nullableString($counts['active_profile'] ?? null),
+            'runtime_state' => $this->nullableString($counts['runtime_state'] ?? null),
+            'audit_result' => $this->nullableString($counts['audit_result'] ?? null),
+            'audit_total_24h' => (int) ($counts['audit_total_24h'] ?? 0),
+            'policy_denials_24h' => (int) ($counts['policy_denials_24h'] ?? 0),
+            'mode_changes_24h' => (int) ($counts['mode_changes_24h'] ?? 0),
+            'local_runtime_status' => $this->nullableString($counts['local_runtime_status'] ?? null),
+            'local_availability_state' => $this->nullableString($counts['local_availability_state'] ?? null),
+            'local_instances' => $counts['local_instances'] ?? null,
+            'healthy_local_instances' => $counts['healthy_local_instances'] ?? null,
+            'selected_local_id' => $this->nullableString($counts['selected_local_id'] ?? null),
+            'selected_local_model' => $this->nullableString($counts['selected_local_model'] ?? null),
+        ];
+    }
+
+    private function compactSchedulerHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'scheduler_optimization');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'window' => $this->nullableString($counts['window'] ?? null),
+            'job_count' => (int) ($counts['job_count'] ?? 0),
+            'recommendation_count' => (int) ($counts['recommendation_count'] ?? 0),
+            'warning_recommendations' => (int) ($counts['warning_recommendations'] ?? 0),
+            'notice_recommendations' => (int) ($counts['notice_recommendations'] ?? 0),
+            'info_recommendations' => (int) ($counts['info_recommendations'] ?? 0),
+            'reliability_recommendations' => (int) ($counts['reliability_recommendations'] ?? 0),
+            'timeout_recommendations' => (int) ($counts['timeout_recommendations'] ?? 0),
+            'spacing_recommendations' => (int) ($counts['spacing_recommendations'] ?? 0),
+        ];
+    }
+
+    private function compactDbaArcHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'dba_telemetry');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'threshold_breaches' => (int) ($counts['threshold_breaches'] ?? 0),
+            'recommendations' => (int) ($counts['recommendations'] ?? 0),
+            'arc_rows_total_estimate' => (int) ($counts['arc_rows_total_estimate'] ?? 0),
+            'arc_total_gb' => (float) ($counts['arc_total_gb'] ?? 0.0),
+            'arc_raw_recent_scan_skipped' => (bool) ($counts['arc_raw_recent_scan_skipped'] ?? false),
+            'arc_retention_dry_run_status' => $this->nullableString($counts['arc_retention_dry_run_status'] ?? null),
+            'arc_retention_execute' => (bool) ($counts['arc_retention_execute'] ?? false),
+            'arc_retention_has_eligible_rows' => (bool) ($counts['arc_retention_has_eligible_rows'] ?? false),
+            'arc_retention_retention_days' => (int) ($counts['arc_retention_retention_days'] ?? 0),
+            'postgres_database_total_gb' => (float) ($counts['postgres_database_total_gb'] ?? 0.0),
+            'redis_used_memory_mb' => (float) ($counts['redis_used_memory_mb'] ?? 0.0),
+            'redis_fragmentation_ratio' => $counts['redis_fragmentation_ratio'] ?? null,
+            'redis_key_count' => (int) ($counts['redis_key_count'] ?? 0),
+        ];
+    }
+
+    private function compactAgentDoctorHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'agent_doctor');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'overall_status' => $this->nullableString($counts['overall_status'] ?? null),
+            'agents_total' => (int) ($counts['agents_total'] ?? 0),
+            'agents_enabled' => (int) ($counts['agents_enabled'] ?? 0),
+            'agents_with_warnings' => (int) ($counts['agents_with_warnings'] ?? 0),
+            'agents_with_critical' => (int) ($counts['agents_with_critical'] ?? 0),
+            'sessions_active' => (int) ($counts['sessions_active'] ?? 0),
+            'sessions_stalled' => (int) ($counts['sessions_stalled'] ?? 0),
+            'review_queue_pending' => (int) ($counts['review_queue_pending'] ?? 0),
+            'review_queue_aged' => (int) ($counts['review_queue_aged'] ?? 0),
+            'memory_error_episodes_window' => (int) ($counts['memory_error_episodes_window'] ?? 0),
+            'memory_undistilled_episodes_window' => (int) ($counts['memory_undistilled_episodes_window'] ?? 0),
+            'procedures_low_quality_total' => (int) ($counts['procedures_low_quality_total'] ?? 0),
+            'scheduled_success_runs_window' => (int) ($counts['scheduled_success_runs_window'] ?? 0),
+            'scheduled_empty_success_outputs_window' => (int) ($counts['scheduled_empty_success_outputs_window'] ?? 0),
+            'scheduled_guarded_output_runs_window' => (int) ($counts['scheduled_guarded_output_runs_window'] ?? 0),
+            'recursion_status' => $this->nullableString($counts['recursion_status'] ?? null),
+            'trace_status' => $this->nullableString($counts['trace_status'] ?? null),
+            'trace_files_over_retention' => $counts['trace_files_over_retention'] ?? null,
         ];
     }
 
@@ -147,6 +370,10 @@ class OperatorEvidenceService
                 'memory_error_episodes_window' => (int) ($summary['memory_error_episodes_window'] ?? 0),
                 'memory_undistilled_episodes_window' => (int) ($summary['memory_undistilled_episodes_window'] ?? 0),
                 'procedures_low_quality_total' => (int) ($summary['procedures_low_quality_total'] ?? 0),
+                'scheduled_success_runs_window' => (int) ($summary['scheduled_success_runs_window'] ?? 0),
+                'scheduled_empty_success_outputs_window' => (int) ($summary['scheduled_empty_success_outputs_window'] ?? 0),
+                'scheduled_cjk_output_runs_window' => (int) ($summary['scheduled_cjk_output_runs_window'] ?? 0),
+                'scheduled_guarded_output_runs_window' => (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
                 'recursion_status' => $this->nullableString($recursion['status'] ?? null),
                 'recursion_calls_7d' => (int) ($recursion['calls_7d'] ?? 0),
                 'recursion_move_on_rate_7d' => $recursion['move_on_rate_7d'] ?? null,
@@ -250,7 +477,11 @@ class OperatorEvidenceService
             $pendingByAge = array_values(array_filter((array) ($payload['pending_by_age'] ?? []), 'is_array'));
             $pendingByType = array_values(array_filter((array) ($payload['pending_by_type'] ?? []), 'is_array'));
             $pendingByAgent = array_values(array_filter((array) ($payload['pending_by_agent'] ?? []), 'is_array'));
+            $triageBuckets = array_values(array_filter((array) ($payload['triage_buckets'] ?? []), 'is_array'));
             $statusCounts = array_values(array_filter((array) ($payload['status_counts'] ?? []), 'is_array'));
+            $remediationReadiness = is_array($payload['remediation_readiness'] ?? null)
+                ? $payload['remediation_readiness']
+                : [];
             $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
             $status = $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning'));
 
@@ -267,10 +498,25 @@ class OperatorEvidenceService
                 'pending_age_groups' => count($pendingByAge),
                 'pending_type_groups' => count($pendingByType),
                 'pending_agent_groups' => count($pendingByAgent),
+                'triage_buckets' => count($triageBuckets),
                 'top_pending_age_buckets' => $this->reviewBacklogAgeSummary($pendingByAge),
                 'top_pending_types' => $this->reviewBacklogTypeSummary($pendingByType),
                 'top_pending_agents' => $this->reviewBacklogAgentSummary($pendingByAgent),
+                'top_triage_buckets' => $this->reviewBacklogTriageSummary($triageBuckets),
                 'status_counts' => $this->reviewBacklogStatusSummary($statusCounts),
+                'typed_remediation_rows' => (int) ($remediationReadiness['pending_typed_remediation_rows'] ?? 0),
+                'preview_only_remediation_rows' => (int) ($remediationReadiness['preview_only_rows'] ?? 0),
+                'supported_preview_operation_rows' => (int) ($remediationReadiness['supported_preview_operation_rows'] ?? 0),
+                'remediation_without_materialized_ids' => (int) ($remediationReadiness['without_materialized_ids'] ?? 0),
+                'remediation_source_duplicate_candidates' => (int) ($remediationReadiness['source_duplicate_id_candidates'] ?? 0),
+                'remediation_family_duplicate_candidates' => (int) ($remediationReadiness['family_duplicate_id_candidates'] ?? 0),
+                'remediation_source_proposed_change_rows' => (int) ($remediationReadiness['source_proposed_change_id_rows'] ?? 0),
+                'remediation_family_context_rows' => (int) ($remediationReadiness['family_context_rows'] ?? 0),
+                'remediation_malformed_details' => (int) ($remediationReadiness['malformed_details'] ?? 0),
+                'remediation_possible_change_type_typos' => $this->possibleChangeTypeTypoCounts($remediationReadiness['possible_change_type_typos'] ?? []),
+                'remediation_possible_change_type_typo_suggestions' => $this->possibleChangeTypeTypoSuggestions($remediationReadiness['possible_change_type_typos'] ?? []),
+                'remediation_change_types' => $this->integerCountMap($remediationReadiness['change_types'] ?? []),
+                'remediation_supported_operations' => $this->integerCountMap($remediationReadiness['supported_operations'] ?? []),
                 'recommendations' => count($recommendations),
             ];
 
@@ -303,6 +549,9 @@ class OperatorEvidenceService
 
             $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
             $storage = is_array($payload['storage'] ?? null) ? $payload['storage'] : [];
+            $postgres = is_array($payload['postgres'] ?? null) ? $payload['postgres'] : [];
+            $tableHealth = is_array($postgres['table_health'] ?? null) ? $postgres['table_health'] : [];
+            $indexSummary = is_array($postgres['index_summary'] ?? null) ? $postgres['index_summary'] : [];
             $schema = is_array($payload['schema'] ?? null) ? $payload['schema'] : [];
             $embeddingTables = array_values(array_filter((array) ($payload['embedding_tables'] ?? []), 'is_array'));
             $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
@@ -340,6 +589,16 @@ class OperatorEvidenceService
                 'rag_documents_relation_mb' => $storage['total_relation_mb'] ?? null,
                 'rag_documents_heap_mb' => $storage['heap_mb'] ?? null,
                 'rag_documents_index_mb' => $storage['index_mb'] ?? null,
+                'rag_documents_dead_tuples' => (int) ($tableHealth['dead_tuples'] ?? 0),
+                'rag_documents_dead_tuple_ratio' => $tableHealth['dead_tuple_ratio'] ?? null,
+                'rag_documents_last_autovacuum_at' => $this->nullableString($tableHealth['last_autovacuum_at'] ?? null),
+                'rag_documents_last_autoanalyze_at' => $this->nullableString($tableHealth['last_autoanalyze_at'] ?? null),
+                'rag_documents_index_count' => (int) ($indexSummary['index_count'] ?? 0),
+                'rag_documents_zero_scan_indexes' => (int) ($indexSummary['zero_scan_indexes'] ?? 0),
+                'rag_documents_invalid_indexes' => (int) ($indexSummary['invalid_indexes'] ?? 0),
+                'rag_documents_unready_indexes' => (int) ($indexSummary['unready_indexes'] ?? 0),
+                'rag_documents_largest_index_name' => $this->nullableString($indexSummary['largest_index_name'] ?? null),
+                'rag_documents_largest_index_mb' => $indexSummary['largest_index_mb'] ?? null,
                 'scale_tables_available' => count(array_filter($embeddingTables, fn (array $row): bool => ($row['exists'] ?? true) !== false)),
                 'scale_tables_missing' => max($missingTables, count((array) ($schema['missing_tables'] ?? []))),
                 'missing_optional_columns' => count((array) ($schema['missing_optional_columns'] ?? [])),
@@ -356,11 +615,18 @@ class OperatorEvidenceService
             if ($counts['max_content_chars'] > 100000 || $counts['missing_optional_columns'] > 0 || $counts['scale_tables_missing'] > 0) {
                 $status = $this->maxStatus($status, 'watch');
             }
+            if (
+                $counts['rag_documents_invalid_indexes'] > 0
+                || $counts['rag_documents_unready_indexes'] > 0
+                || ((float) ($counts['rag_documents_dead_tuple_ratio'] ?? 0.0) >= 0.2 && ((int) ($tableHealth['live_tuples'] ?? 0) + $counts['rag_documents_dead_tuples']) > 10000)
+            ) {
+                $status = $this->maxStatus($status, 'watch');
+            }
 
             return $this->section(
                 $status,
                 $sampledAt,
-                ['RagBacklogService', 'pgsql_rag.rag_documents', 'pgsql_rag.information_schema'],
+                ['RagBacklogService', 'pgsql_rag.rag_documents', 'pgsql_rag.information_schema', 'pgsql_rag.pg_stat_user_tables', 'pgsql_rag.pg_stat_user_indexes', 'pgsql_rag.pg_index', 'pgsql_rag.pg_class'],
                 $counts,
                 $status === 'healthy' ? null : 'Review rag:scale-baseline --json before RAG chunking, compression, vector, or indexing changes.',
                 [
@@ -506,6 +772,9 @@ class OperatorEvidenceService
             $redis = is_array($sections['redis_health'] ?? null) ? $sections['redis_health'] : [];
             $breaches = array_values(array_filter((array) ($payload['threshold_breaches'] ?? []), 'is_array'));
             $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
+            $arcRetention = $this->collectArcRetentionDryRun();
+            $arcOldestEligible = is_array($arcRetention['oldest_eligible'] ?? null) ? $arcRetention['oldest_eligible'] : null;
+            $arcSafety = is_array($arcRetention['safety'] ?? null) ? $arcRetention['safety'] : [];
 
             $counts = [
                 'deep' => (bool) ($payload['deep'] ?? false),
@@ -521,6 +790,17 @@ class OperatorEvidenceService
                 'arc_raw_recent_scan_skipped' => (bool) ($arc['raw_recent_scan_skipped'] ?? false),
                 'arc_rows_7d' => $arc['rows_7d'] ?? null,
                 'arc_move_on_rate_7d' => $arc['move_on_rate_7d'] ?? null,
+                'arc_retention_dry_run_status' => (string) ($arcRetention['status'] ?? 'unknown'),
+                'arc_retention_execute' => (bool) ($arcRetention['execute'] ?? true),
+                'arc_retention_has_eligible_rows' => $arcOldestEligible !== null,
+                'arc_retention_oldest_eligible_id' => $arcOldestEligible === null ? null : (int) ($arcOldestEligible['id'] ?? 0),
+                'arc_retention_oldest_eligible_at' => $this->nullableString($arcOldestEligible['created_at'] ?? null),
+                'arc_retention_retention_days' => (int) ($arcRetention['retention_days'] ?? 0),
+                'arc_retention_cutoff' => $this->nullableString($arcRetention['cutoff'] ?? null),
+                'arc_retention_batch_size' => (int) ($arcRetention['batch_size'] ?? 0),
+                'arc_retention_max_rows' => (int) ($arcRetention['max_rows'] ?? 0),
+                'arc_retention_bounded_batch_delete' => (bool) ($arcSafety['bounded_batch_delete'] ?? false),
+                'arc_retention_count_first' => (bool) ($arcSafety['count_first'] ?? true),
                 'postgres_database_total_gb' => (float) ($postgres['database_total_gb'] ?? 0.0),
                 'postgres_dead_tuple_top' => $this->maxDeadTupleCount((array) ($postgres['dead_tuple_top'] ?? [])),
                 'redis_used_memory_mb' => (float) ($redis['used_memory_mb'] ?? 0.0),
@@ -529,24 +809,116 @@ class OperatorEvidenceService
                 'redis_key_count' => (int) ($redis['key_count'] ?? 0),
             ];
 
-            $status = $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning'));
+            $status = $this->worstStatus([
+                $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning')),
+                $this->mapArcRetentionStatus((string) ($arcRetention['status'] ?? 'unknown')),
+            ]);
+            $nextAction = $status === 'healthy' ? null : 'Review ops:dba-telemetry-report --json before DBA cleanup, partition, or retention changes.';
+
+            if ($counts['arc_retention_has_eligible_rows']) {
+                $nextAction = 'Run ops:arc-retention --json; execute one bounded cleanup chunk only when heavy jobs are idle and health is clean.';
+            }
 
             return $this->section(
                 $status,
                 $sampledAt,
-                ['DbaTelemetryReportService', 'information_schema.tables', 'agent_recursion_calls', 'pgsql_rag.pg_catalog', 'redis_info'],
+                ['DbaTelemetryReportService', 'AgentRecursionCallsRetentionService', 'information_schema.tables', 'agent_recursion_calls', 'pgsql_rag.pg_catalog', 'redis_info'],
                 $counts,
-                $status === 'healthy' ? null : 'Review ops:dba-telemetry-report --json before DBA cleanup, partition, or retention changes.',
+                $nextAction,
                 [
                     'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
                     'window' => $this->nullableString($payload['window'] ?? null),
                     'mode' => $this->nullableString($payload['mode'] ?? null),
                     'cache_ttl_minutes' => 15,
+                    'arc_retention_captured_at' => $this->nullableString($arcRetention['completed_at'] ?? $arcRetention['started_at'] ?? null),
                 ]
             );
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['DbaTelemetryReportService'], $e, 'DBA telemetry query failed.');
         }
+    }
+
+    private function collectSchedulerOptimization(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::SCHEDULER_OPTIMIZATION_CACHE_KEY,
+                now()->addMinutes(15),
+                function (): array {
+                    $service = $this->schedulerOptimize ?? app(SchedulerOptimizeReportService::class);
+                    $window = $service->parseWindow('24h') ?? ['minutes' => 1440, 'canonical' => '24h'];
+
+                    return $service->buildPayload($window);
+                }
+            );
+            $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_array'));
+            $severityCounts = $this->countByKey($recommendations, 'severity');
+            $categoryCounts = $this->countByKey($recommendations, 'category');
+            $status = $recommendations === [] ? 'healthy' : 'watch';
+
+            $counts = [
+                'window' => (string) ($payload['window'] ?? '24h'),
+                'job_count' => (int) ($payload['job_count'] ?? 0),
+                'recommendation_count' => count($recommendations),
+                'warning_recommendations' => (int) ($severityCounts['warning'] ?? 0),
+                'notice_recommendations' => (int) ($severityCounts['notice'] ?? 0),
+                'info_recommendations' => (int) ($severityCounts['info'] ?? 0),
+                'metadata_recommendations' => (int) ($categoryCounts['metadata'] ?? 0),
+                'reliability_recommendations' => (int) ($categoryCounts['reliability'] ?? 0),
+                'timeout_recommendations' => (int) ($categoryCounts['timeout'] ?? 0),
+                'spacing_recommendations' => (int) ($categoryCounts['spacing'] ?? 0),
+                'top_recommendation_ids' => array_values(array_filter(array_map(
+                    fn (array $recommendation): ?string => $this->nullableString($recommendation['id'] ?? null),
+                    array_slice($recommendations, 0, 5)
+                ))),
+            ];
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['SchedulerOptimizeReportService', 'scheduled_jobs', 'scheduled_job_runs'],
+                $counts,
+                $status === 'healthy' ? null : 'Review scheduler:optimize-report --json before schedule, timeout, queue, or batch-size changes.',
+                [
+                    'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['SchedulerOptimizeReportService'], $e, 'Scheduler optimization evidence query failed.');
+        }
+    }
+
+    private function collectArcRetentionDryRun(): array
+    {
+        try {
+            return Cache::remember(
+                self::ARC_RETENTION_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->arcRetention ?? app(AgentRecursionCallsRetentionService::class))->collect(
+                    execute: false,
+                    retentionDays: null,
+                    batchSize: 10_000,
+                    maxRows: 50_000,
+                    sleepMs: 100,
+                )
+            );
+        } catch (\Throwable $e) {
+            return [
+                'status' => 'unknown',
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    private function mapArcRetentionStatus(string $status): string
+    {
+        return match ($status) {
+            'observe_ok', 'cleanup_complete' => 'healthy',
+            'review_required' => 'watch',
+            'cleanup_incomplete' => 'degraded',
+            default => 'degraded',
+        };
     }
 
     private function mapObserveStatus(string $status): string
@@ -569,6 +941,27 @@ class OperatorEvidenceService
         }
 
         return $max;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $rows
+     * @return array<string, int>
+     */
+    private function countByKey(array $rows, string $key): array
+    {
+        $counts = [];
+        foreach ($rows as $row) {
+            $value = $this->nullableString($row[$key] ?? null);
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $counts[$value] = ($counts[$value] ?? 0) + 1;
+        }
+
+        ksort($counts);
+
+        return $counts;
     }
 
     /**
@@ -633,6 +1026,101 @@ class OperatorEvidenceService
             $status = $this->nullableString($row['status'] ?? null) ?? 'unknown';
             $summary[$status] = (int) ($row['rows'] ?? 0);
         }
+
+        return $summary;
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $rows
+     * @return array<string,int>
+     */
+    private function reviewBacklogTriageSummary(array $rows): array
+    {
+        $summary = [];
+
+        foreach (array_slice($rows, 0, 5) as $row) {
+            $category = $this->nullableString($row['category'] ?? null) ?? 'unknown';
+            $summary[$category] = (int) ($row['pending'] ?? 0);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @return array<string,int>
+     */
+    private function integerCountMap(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $summary = [];
+        foreach ($value as $key => $count) {
+            $name = $this->nullableString($key);
+            if ($name === null) {
+                continue;
+            }
+
+            $summary[$name] = (int) $count;
+        }
+
+        ksort($summary);
+
+        return $summary;
+    }
+
+    /**
+     * @return array<string,int>
+     */
+    private function possibleChangeTypeTypoCounts(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $summary = [];
+        foreach ($value as $changeType => $typo) {
+            $name = $this->nullableString($changeType);
+            if ($name === null) {
+                continue;
+            }
+
+            $summary[$name] = is_array($typo)
+                ? (int) ($typo['rows'] ?? 0)
+                : (int) $typo;
+        }
+
+        ksort($summary);
+
+        return $summary;
+    }
+
+    /**
+     * @return array<string,string>
+     */
+    private function possibleChangeTypeTypoSuggestions(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $summary = [];
+        foreach ($value as $changeType => $typo) {
+            if (! is_array($typo)) {
+                continue;
+            }
+
+            $name = $this->nullableString($changeType);
+            $suggestion = $this->nullableString($typo['suggested_change_type'] ?? null);
+            if ($name === null || $suggestion === null) {
+                continue;
+            }
+
+            $summary[$name] = $suggestion;
+        }
+
+        ksort($summary);
 
         return $summary;
     }
@@ -973,9 +1461,13 @@ class OperatorEvidenceService
                 'packets_with_claims' => (int) ($summary['packets_with_claims'] ?? 0),
                 'packets_with_decision_log' => (int) ($summary['packets_with_decision_log'] ?? 0),
                 'operator_boundary_packets' => (int) ($summary['operator_boundary_packets'] ?? 0),
+                'packets_missing_boundary' => (int) ($summary['packets_missing_boundary'] ?? 0),
+                'boundary_label_count' => (int) ($summary['boundary_label_count'] ?? 0),
+                'boundary_mismatch_packets' => (int) ($summary['boundary_mismatch_packets'] ?? 0),
                 'malformed_details' => (int) ($summary['malformed_details'] ?? 0),
                 'remaining_to_target' => (int) ($readiness['remaining_to_target'] ?? 5),
                 'needs_operator_boundary' => (bool) ($readiness['needs_operator_boundary'] ?? true),
+                'boundary_consistent' => (bool) ($readiness['boundary_consistent'] ?? false),
                 'mutation_guard_ok' => (bool) ($readiness['mutation_guard_ok'] ?? false),
                 'ready_for_five_packet_review' => (bool) ($readiness['ready_for_five_packet_review'] ?? false),
                 'top_reason_codes' => array_slice((array) ($payload['top_reason_codes'] ?? []), 0, 5, true),
@@ -1806,6 +2298,28 @@ class OperatorEvidenceService
         }
 
         return $missing;
+    }
+
+    private function compactSection(array $sections, string $name): array
+    {
+        return is_array($sections[$name] ?? null) ? $sections[$name] : [];
+    }
+
+    private function compactCounts(array $section): array
+    {
+        return is_array($section['counts'] ?? null) ? $section['counts'] : [];
+    }
+
+    private function compactFreshness(array $section): array
+    {
+        return is_array($section['freshness'] ?? null) ? $section['freshness'] : [];
+    }
+
+    private function compactStatus(array $section): string
+    {
+        $status = $this->nullableString($section['status'] ?? null);
+
+        return $status === null ? 'unavailable' : $this->normalizeStatus($status);
     }
 
     private function section(

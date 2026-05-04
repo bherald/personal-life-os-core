@@ -100,6 +100,104 @@ class DbaTelemetryReportService
         return implode("\n", $lines)."\n";
     }
 
+    public function compactPayload(array $payload): array
+    {
+        $sections = $payload['sections'] ?? [];
+        $thresholdBreaches = array_values($payload['threshold_breaches'] ?? []);
+        $recommendations = array_values($payload['recommendations'] ?? []);
+        $arcSummary = $sections['arc_growth']['summary'] ?? [];
+        $arcTable = $sections['mysql_storage']['agent_recursion_calls'] ?? [];
+        $redis = $sections['redis_health'] ?? [];
+        $postgres = $sections['postgres_storage'] ?? [];
+
+        return [
+            'version' => $payload['version'] ?? 1,
+            'captured_at' => $payload['captured_at'] ?? now()->utc()->format('Y-m-d\TH:i:s\Z'),
+            'mode' => $payload['mode'] ?? 'observe',
+            'window' => $payload['window'] ?? 'current',
+            'compact' => true,
+            'dry_run' => (bool) ($payload['dry_run'] ?? false),
+            'deep' => (bool) ($payload['deep'] ?? false),
+            'status' => $payload['status'] ?? 'unknown',
+            'section_statuses' => $this->sectionStatuses($sections),
+            'threshold_breach_count' => count($thresholdBreaches),
+            'threshold_breach_ids' => $this->thresholdBreachIds($thresholdBreaches),
+            'threshold_breach_status_counts' => $this->countValues($thresholdBreaches, 'status'),
+            'recommendation_count' => count($recommendations),
+            'arc' => [
+                'status' => $sections['arc_growth']['status'] ?? $sections['mysql_storage']['status'] ?? 'unknown',
+                'rows_total_estimate' => (int) ($arcSummary['rows_total_estimate'] ?? $arcTable['table_rows'] ?? 0),
+                'total_gb' => (float) ($arcSummary['total_gb'] ?? $arcTable['total_gb'] ?? 0.0),
+                'oldest_created_at' => $arcSummary['oldest_created_at'] ?? null,
+                'newest_created_at' => $arcSummary['newest_created_at'] ?? null,
+                'raw_recent_scan_skipped' => (bool) ($arcSummary['raw_recent_scan_skipped'] ?? false),
+                'raw_recent_scan_limit' => isset($arcSummary['raw_recent_scan_limit'])
+                    ? (int) $arcSummary['raw_recent_scan_limit']
+                    : null,
+            ],
+            'redis' => [
+                'status' => $redis['status'] ?? 'unknown',
+                'used_memory_mb' => isset($redis['used_memory_mb']) ? (float) $redis['used_memory_mb'] : null,
+                'memory_ratio' => $redis['memory_ratio'] ?? null,
+                'fragmentation_ratio' => $redis['fragmentation_ratio'] ?? null,
+                'key_count' => isset($redis['key_count']) ? (int) $redis['key_count'] : null,
+                'evicted_keys' => isset($redis['evicted_keys']) ? (int) $redis['evicted_keys'] : null,
+                'rejected_connections' => isset($redis['rejected_connections']) ? (int) $redis['rejected_connections'] : null,
+                'blocked_clients' => isset($redis['blocked_clients']) ? (int) $redis['blocked_clients'] : null,
+            ],
+            'postgres' => [
+                'status' => $postgres['status'] ?? 'unknown',
+                'database_total_gb' => isset($postgres['database_total_gb'])
+                    ? (float) $postgres['database_total_gb']
+                    : null,
+                'top_table_count' => count($postgres['top_tables'] ?? []),
+                'dead_tuple_top_count' => count($postgres['dead_tuple_top'] ?? []),
+            ],
+        ];
+    }
+
+    public function compactToMarkdown(array $payload): string
+    {
+        $arc = $payload['arc'] ?? [];
+        $redis = $payload['redis'] ?? [];
+        $postgres = $payload['postgres'] ?? [];
+
+        $lines = [
+            '# DBA Telemetry Compact Report',
+            '',
+            '- Mode: `'.($payload['mode'] ?? 'observe').'`',
+            '- Status: `'.($payload['status'] ?? 'unknown').'`',
+            '- Captured: `'.($payload['captured_at'] ?? 'unknown').'`',
+            '- Window: `'.($payload['window'] ?? 'current').'`',
+            '- Threshold breaches: `'.(int) ($payload['threshold_breach_count'] ?? 0).'`',
+            '- Threshold breach ids: `'.$this->markdownList($payload['threshold_breach_ids'] ?? []).'`',
+            '- Recommendations: `'.(int) ($payload['recommendation_count'] ?? 0).'`',
+            '',
+            '## ARC',
+            '',
+            '- Rows estimate: `'.($arc['rows_total_estimate'] ?? 'n/a').'`',
+            '- Total GB: `'.($arc['total_gb'] ?? 'n/a').'`',
+            '- Oldest row: `'.($arc['oldest_created_at'] ?? 'n/a').'`',
+            '- Raw scan skipped: `'.(($arc['raw_recent_scan_skipped'] ?? false) ? 'true' : 'false').'`',
+            '',
+            '## Redis',
+            '',
+            '- Status: `'.($redis['status'] ?? 'unknown').'`',
+            '- Used MB: `'.($redis['used_memory_mb'] ?? 'n/a').'`',
+            '- Memory ratio: `'.($redis['memory_ratio'] ?? 'n/a').'`',
+            '- Fragmentation: `'.($redis['fragmentation_ratio'] ?? 'n/a').'`',
+            '- Keys: `'.($redis['key_count'] ?? 'n/a').'`',
+            '',
+            '## PostgreSQL',
+            '',
+            '- Status: `'.($postgres['status'] ?? 'unknown').'`',
+            '- Total GB: `'.($postgres['database_total_gb'] ?? 'n/a').'`',
+            '- Dead tuple top count: `'.($postgres['dead_tuple_top_count'] ?? 'n/a').'`',
+        ];
+
+        return implode("\n", $lines)."\n";
+    }
+
     private function collectMysqlStorage(?array $agentRecursionTable): array
     {
         try {
@@ -414,6 +512,47 @@ class DbaTelemetryReportService
         }
 
         return $info;
+    }
+
+    private function sectionStatuses(array $sections): array
+    {
+        $statuses = [];
+        foreach ($sections as $name => $section) {
+            $statuses[(string) $name] = (string) ($section['status'] ?? 'unknown');
+        }
+
+        return $statuses;
+    }
+
+    private function thresholdBreachIds(array $thresholdBreaches): array
+    {
+        return array_values(array_filter(array_map(
+            static fn (array $breach): ?string => isset($breach['id']) ? (string) $breach['id'] : null,
+            $thresholdBreaches
+        )));
+    }
+
+    private function countValues(array $rows, string $key): array
+    {
+        $counts = [];
+        foreach ($rows as $row) {
+            $value = (string) ($row[$key] ?? 'unknown');
+            $counts[$value] = ($counts[$value] ?? 0) + 1;
+        }
+
+        ksort($counts);
+
+        return $counts;
+    }
+
+    private function markdownList(array $values): string
+    {
+        $values = array_values(array_filter(array_map(
+            static fn (mixed $value): string => (string) $value,
+            $values
+        )));
+
+        return $values === [] ? 'none' : implode(', ', $values);
     }
 
     private function failedSection(string $source, \Throwable $e): array
