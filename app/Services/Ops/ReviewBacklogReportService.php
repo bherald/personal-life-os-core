@@ -42,6 +42,8 @@ class ReviewBacklogReportService
             'version' => 1,
             'mode' => 'observe',
             'dry_run' => $dryRun,
+            'queries_executed' => false,
+            'query_state' => $dryRun ? 'dry_run_no_queries' : 'not_started',
             'stale_days' => $staleDays,
             'high_priority_threshold' => $highPriorityThreshold,
             'captured_at' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
@@ -74,6 +76,7 @@ class ReviewBacklogReportService
 
         if (! Schema::hasTable('agent_review_queue')) {
             $payload['status'] = 'blocked';
+            $payload['query_state'] = 'blocked_missing_table';
             $payload['summary'] = [
                 'pending_total' => 0,
                 'stale_pending' => 0,
@@ -86,6 +89,8 @@ class ReviewBacklogReportService
             return $payload;
         }
 
+        $payload['queries_executed'] = true;
+        $payload['query_state'] = 'executed';
         $payload['summary'] = $this->summary($staleDays, $highPriorityThreshold);
         $payload['pending_by_age'] = $this->pendingByAge($highPriorityThreshold);
         $payload['pending_by_type'] = $this->pendingByType($highPriorityThreshold);
@@ -111,6 +116,8 @@ class ReviewBacklogReportService
             '- Status: `'.($payload['status'] ?? 'unknown').'`',
             '- Captured: `'.($payload['captured_at'] ?? 'unknown').'`',
             '- Dry run: `'.(($payload['dry_run'] ?? false) ? 'true' : 'false').'`',
+            '- Queries executed: `'.(($payload['queries_executed'] ?? false) ? 'true' : 'false').'`',
+            '- Query state: `'.($payload['query_state'] ?? 'unknown').'`',
             '- Pending total: `'.($summary['pending_total'] ?? 0).'`',
             '- Stale pending: `'.($summary['stale_pending'] ?? 0).'`',
             '- High-priority pending: `'.($summary['high_priority_pending'] ?? 0).'`',
@@ -270,6 +277,8 @@ class ReviewBacklogReportService
             'status' => $payload['status'] ?? 'unknown',
             'captured_at' => $payload['captured_at'] ?? null,
             'dry_run' => (bool) ($payload['dry_run'] ?? false),
+            'queries_executed' => (bool) ($payload['queries_executed'] ?? false),
+            'query_state' => $payload['query_state'] ?? 'unknown',
             'stale_days' => $payload['stale_days'] ?? null,
             'high_priority_threshold' => $payload['high_priority_threshold'] ?? null,
             'summary' => [
@@ -328,12 +337,15 @@ class ReviewBacklogReportService
         $readiness = $compact['remediation_readiness'];
         $lines = [
             sprintf(
-                'Review backlog compact: %s captured=%s pending=%s stale=%s high_priority=%s',
+                'Review backlog compact: %s captured=%s pending=%s stale=%s high_priority=%s dry_run=%s queries_executed=%s query_state=%s',
                 $compact['status'],
                 $compact['captured_at'] ?? '-',
                 $summary['pending_total'],
                 $summary['stale_pending'],
-                $summary['high_priority_pending']
+                $summary['high_priority_pending'],
+                $compact['dry_run'] ? 'true' : 'false',
+                $compact['queries_executed'] ? 'true' : 'false',
+                $compact['query_state']
             ),
             sprintf(
                 'remediation: typed=%s apply_preview=%s preview_only=%s supported_preview=%s context_without_preview=%s without_ids=%s source_context=%s family_context=%s family_signals=%s/%s/%s',
@@ -398,6 +410,9 @@ class ReviewBacklogReportService
             '',
             '- Status: `'.$compact['status'].'`',
             '- Captured: `'.($compact['captured_at'] ?? 'unknown').'`',
+            '- Dry run: `'.($compact['dry_run'] ? 'true' : 'false').'`',
+            '- Queries executed: `'.($compact['queries_executed'] ? 'true' : 'false').'`',
+            '- Query state: `'.$compact['query_state'].'`',
             '- Pending total: `'.$summary['pending_total'].'`',
             '- Stale pending: `'.$summary['stale_pending'].'`',
             '- High-priority pending: `'.$summary['high_priority_pending'].'`',

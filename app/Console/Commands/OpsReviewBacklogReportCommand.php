@@ -61,10 +61,12 @@ class OpsReviewBacklogReportCommand extends Command
 
         $summary = $payload['summary'] ?? [];
         $this->line(sprintf(
-            'Review backlog report: %s mode=%s dry_run=%s pending=%s stale=%s high_priority=%s captured=%s',
+            'Review backlog report: %s mode=%s dry_run=%s queries_executed=%s query_state=%s pending=%s stale=%s high_priority=%s captured=%s',
             $payload['status'] ?? 'unknown',
             $payload['mode'] ?? 'observe',
             ($payload['dry_run'] ?? false) ? 'true' : 'false',
+            ($payload['queries_executed'] ?? false) ? 'true' : 'false',
+            $payload['query_state'] ?? 'unknown',
             $summary['pending_total'] ?? 0,
             $summary['stale_pending'] ?? 0,
             $summary['high_priority_pending'] ?? 0,
