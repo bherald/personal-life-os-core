@@ -25,6 +25,12 @@ The public extraction ships code and docs, not private data. Genealogy,
 connector, agent, and media workflows are local/operator-configured surfaces;
 destructive or sensitive changes should stay behind explicit human approval.
 
+## Support This Work
+
+PLOS is free and MIT licensed. If it helps you, optional support through the
+repository's GitHub Sponsors button helps cover hosting, hardware, service
+fees, and development time.
+
 ## Quick Start: Docker
 
 Docker is the preferred public proof path for the core stack.

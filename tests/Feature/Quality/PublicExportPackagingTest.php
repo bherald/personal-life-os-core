@@ -607,6 +607,8 @@ class PublicExportPackagingTest extends TestCase
         $this->assertStringContainsString('public-release/privacy-secret-scan-baseline-2026-04-29.md', file_get_contents(base_path('docs/README.md')));
         $this->assertStringContainsString('public-release/privacy-secret-scan-baseline-2026-04-29.md', file_get_contents(base_path('docs/public-release-readiness.md')));
         $this->assertStringContainsString('public-release/privacy-secret-scan-baseline-2026-04-29.md', file_get_contents(base_path('docs/public-github-first-push-checklist.md')));
+        $this->assertFileExists(base_path('.github/FUNDING.yml'));
+        $this->assertStringContainsString('github: [b'.'herald]', file_get_contents(base_path('.github/FUNDING.yml')));
 
         $privacyBaseline = file_get_contents(base_path('docs/public-release/privacy-secret-scan-baseline-2026-04-29.md'));
         foreach ([
@@ -1164,7 +1166,8 @@ class PublicExportPackagingTest extends TestCase
             $section = substr($script, $start, $next === false ? null : $next - $start);
 
             if ($title === 'Files containing private paths, LAN hosts, usernames, or machine-specific values') {
-                $this->assertStringContainsString('public_privacy_scan_excludes', $section, "{$title} must use the shared private-doc exclusions.");
+                $this->assertStringContainsString('public_username_scan_excludes', $section, "{$title} must use the shared username exclusions.");
+                $this->assertStringContainsString(':!.github/FUNDING.yml', $script, 'GitHub Sponsors username is allowed only in FUNDING.yml.');
 
                 continue;
             }

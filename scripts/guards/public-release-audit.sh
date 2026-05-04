@@ -50,6 +50,10 @@ public_privacy_scan_excludes=(
     ':!tests/Feature/Quality/FixturesProvenanceTest.php'
     ':!tests/Feature/Quality/PublicExportPackagingTest.php'
 )
+public_username_scan_excludes=(
+    "${public_privacy_scan_excludes[@]}"
+    ':!.github/FUNDING.yml'
+)
 public_candidate_scan_paths=(.)
 
 load_public_candidate_scan_paths() {
@@ -155,7 +159,7 @@ flag_lines "Credentialed URLs" \
 
 flag_lines "Private paths, hosts, users, and compute labels" \
     git grep -n -I -E '(/home/bill|/Users/bill|C:\\Users\\bill|D:\\master|/MASTER(/|$)|192\.168\.8\.|ai-wphc-production|prod_252|gpu_252|cpu_252|prod_87|gpu_87|cpu_87|\.252_only|\.87_only|bill@|bherald|id_rsa|id_ed25519)' -- "${public_candidate_scan_paths[@]}" \
-        "${public_privacy_scan_excludes[@]}"
+        "${public_username_scan_excludes[@]}"
 
 flag_lines "Public-candidate files referencing non-exported planning paths" \
     git grep -n -I -F 'docs/planning/' -- "${public_candidate_scan_paths[@]}" \
@@ -163,7 +167,7 @@ flag_lines "Public-candidate files referencing non-exported planning paths" \
 
 flag_lines "Files containing private paths, LAN hosts, usernames, or machine-specific values" \
     git grep -l -I -E '(/home/bill|192\.168\.8\.|ai-wphc-production|bill@|bherald)' -- . \
-        "${public_privacy_scan_excludes[@]}"
+        "${public_username_scan_excludes[@]}"
 
 flag_lines "Operator-specific Nextcloud library root literal (/MASTER)" \
     git grep -n -I -E '/MASTER' -- \
@@ -252,6 +256,7 @@ flag_lines "Public-bound source containing private genealogy/person literals" \
         .env.example \
         docker-compose.yml \
         docker-compose.personal.example.yml \
+        ':!.github/FUNDING.yml' \
         ':!scripts/guards/public-release-audit.sh' \
         ':!scripts/bench' \
         ':!tests/Feature/Quality/FixturesProvenanceTest.php' \
