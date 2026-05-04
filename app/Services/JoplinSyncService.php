@@ -1530,9 +1530,25 @@ PROMPT;
      */
     public function getStats(): array
     {
-        $ragStats = $this->ragService->getStats();
+        try {
+            $ragStats = $this->ragService->getStats();
+        } catch (\Throwable $e) {
+            Log::warning('Joplin stats unavailable from RAG service', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'stats_available' => false,
+                'stats_error' => $e->getMessage(),
+                'total_joplin_notes' => 0,
+                'total_joplin_attachments' => 0,
+                'nextcloud_url' => $this->nextcloudUrl,
+                'joplin_path' => $this->joplinPath,
+            ];
+        }
 
         return [
+            'stats_available' => true,
             'total_joplin_notes' => $ragStats['by_type']['joplin_note'] ?? 0,
             'total_joplin_attachments' => $ragStats['by_type']['joplin_attachment'] ?? 0,
             'nextcloud_url' => $this->nextcloudUrl,

@@ -71,7 +71,10 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'rag:backlog-report --json --compact',
     'rag:scale-baseline --json',
     'rag:scale-baseline --markdown',
+    'rag:scale-review --json',
+    'rag:scale-review --markdown',
     'graph:audit-provenance --json',
+    'graph:quality-metrics --stats --json',
   ]) {
     assert.ok(ALLOWED_COMMANDS[command], `${command} should be allowlisted`);
   }
@@ -97,6 +100,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:dba-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --markdown --dry-run/);
   assert.match(listing, /php artisan rag:scale-baseline --json/);
+  assert.match(listing, /php artisan rag:scale-review --json/);
+  assert.match(listing, /php artisan rag:scale-review --markdown/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json/);
@@ -116,6 +121,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --markdown/);
   assert.match(listing, /php artisan awo:replay --compare-scheduled --window=7d --limit=500 --json/);
   assert.match(listing, /php artisan graph:audit-provenance --json/);
+  assert.match(listing, /php artisan graph:quality-metrics --stats --json/);
 });
 
 test('near-miss write commands remain blocked by exact allowlist matching', async () => {
@@ -182,4 +188,20 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(arbitraryRunProofResult, /Blocked:/);
   assert.match(arbitraryRunProofResult, /Use command "list"/);
+
+  const ragScaleReviewFileResult = await plosArtisan({
+    command: 'rag:scale-review --json --retrieval-file=/tmp/evidence.json',
+    on_prod: false,
+  });
+
+  assert.match(ragScaleReviewFileResult, /Blocked:/);
+  assert.match(ragScaleReviewFileResult, /Use command "list"/);
+
+  const graphQualityRunResult = await plosArtisan({
+    command: 'graph:quality-metrics --run --json',
+    on_prod: false,
+  });
+
+  assert.match(graphQualityRunResult, /Blocked:/);
+  assert.match(graphQualityRunResult, /Use command "list"/);
 });
