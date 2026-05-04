@@ -58,6 +58,7 @@ class NewsPushoverProofCommand extends Command
             $report['pushover'],
             $report['current_pushover_config']
         );
+        $report['part_number_proof'] = $this->summarizePartNumberProof($report['pushover']);
 
         if ((string) $run->workflow_name !== $workflow) {
             $report['status_reasons']['fail'][] = "workflow_runs.id {$run->id} belongs to workflow '{$run->workflow_name}', not '{$workflow}'.";
@@ -359,6 +360,90 @@ class NewsPushoverProofCommand extends Command
         ];
     }
 
+    private function summarizePartNumberProof(array $pushover): array
+    {
+        if (($pushover['present'] ?? false) !== true) {
+            return [
+                'state' => 'pushover_absent',
+                'reason' => 'Pushover node was not found in the inspected run.',
+                'expected_part_numbers_sent' => [],
+                'actual_part_numbers_sent' => [],
+                'complete' => false,
+                'exact_part_numbers_available' => false,
+            ];
+        }
+
+        $totalParts = $this->intOrNull($pushover['total_parts'] ?? null);
+        $partsSent = $this->intOrNull($pushover['parts_sent'] ?? null);
+        $sentParts = $this->intList($pushover['part_numbers_sent'] ?? null);
+        $failedParts = $this->intList($pushover['part_numbers_failed'] ?? null);
+
+        if ($totalParts === null || $partsSent === null) {
+            return [
+                'state' => 'metadata_missing',
+                'reason' => 'Pushover delivery counters were not recorded for this run.',
+                'expected_part_numbers_sent' => [],
+                'actual_part_numbers_sent' => $sentParts,
+                'complete' => false,
+                'exact_part_numbers_available' => $sentParts !== [],
+            ];
+        }
+
+        $expectedParts = $totalParts > 0 ? range($totalParts, 1) : [];
+        if ($totalParts <= 1 && $sentParts === []) {
+            return [
+                'state' => 'single_part',
+                'reason' => 'Single-part notification; multipart part-number proof is not required.',
+                'expected_part_numbers_sent' => $expectedParts,
+                'actual_part_numbers_sent' => [],
+                'complete' => $partsSent === $totalParts && $failedParts === [],
+                'exact_part_numbers_available' => false,
+            ];
+        }
+
+        if ($partsSent !== $totalParts || $failedParts !== []) {
+            return [
+                'state' => 'incomplete_delivery',
+                'reason' => 'Pushover counters or failed-part metadata show incomplete multipart delivery.',
+                'expected_part_numbers_sent' => $expectedParts,
+                'actual_part_numbers_sent' => $sentParts,
+                'complete' => false,
+                'exact_part_numbers_available' => $sentParts !== [],
+            ];
+        }
+
+        if ($sentParts === []) {
+            return [
+                'state' => 'part_numbers_missing',
+                'reason' => 'Delivery counters confirm all parts, but exact part-number metadata was not recorded for this run.',
+                'expected_part_numbers_sent' => $expectedParts,
+                'actual_part_numbers_sent' => [],
+                'complete' => true,
+                'exact_part_numbers_available' => false,
+            ];
+        }
+
+        if ($sentParts === $expectedParts) {
+            return [
+                'state' => 'exact_reverse_sequence',
+                'reason' => 'Pushover output recorded every part in reverse send order so Part 1 appears newest in the client.',
+                'expected_part_numbers_sent' => $expectedParts,
+                'actual_part_numbers_sent' => $sentParts,
+                'complete' => true,
+                'exact_part_numbers_available' => true,
+            ];
+        }
+
+        return [
+            'state' => 'part_numbers_inconsistent',
+            'reason' => 'Delivery counters confirm all parts, but recorded part numbers do not match the expected reverse send order.',
+            'expected_part_numbers_sent' => $expectedParts,
+            'actual_part_numbers_sent' => $sentParts,
+            'complete' => true,
+            'exact_part_numbers_available' => true,
+        ];
+    }
+
     private function determineStatus(array $report): array
     {
         $fail = $report['status_reasons']['fail'] ?? [];
@@ -530,6 +615,7 @@ class NewsPushoverProofCommand extends Command
                 'timeout_seconds' => $report['pushover']['timeout_seconds'] ?? null,
             ],
             'pacing_config' => $report['pacing_config'] ?? null,
+            'part_number_proof' => $report['part_number_proof'] ?? null,
             'status_reasons' => $report['status_reasons'] ?? [
                 'fail' => [],
                 'inconclusive' => [],
@@ -565,6 +651,15 @@ class NewsPushoverProofCommand extends Command
                 .' current_delay_s='.($pacing['current_effective_inter_chunk_delay_seconds'] ?? 'n/a')
                 .' matches='.var_export($pacing['matches_current_config'] ?? null, true)
                 .' reason='.$pacing['reason']);
+        }
+
+        if (! empty($report['part_number_proof'])) {
+            $partProof = $report['part_number_proof'];
+            $this->line('Part numbers: state='.$partProof['state']
+                .' complete='.var_export($partProof['complete'] ?? null, true)
+                .' exact='.var_export($partProof['exact_part_numbers_available'] ?? null, true)
+                .' actual='.implode(',', $partProof['actual_part_numbers_sent'] ?? [])
+                .' reason='.$partProof['reason']);
         }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
@@ -603,6 +698,15 @@ class NewsPushoverProofCommand extends Command
                 .' current_delay_s='.($pacing['current_effective_inter_chunk_delay_seconds'] ?? 'n/a')
                 .' matches='.var_export($pacing['matches_current_config'] ?? null, true)
                 .' reason='.$pacing['reason']);
+        }
+
+        if (! empty($report['part_number_proof'])) {
+            $partProof = $report['part_number_proof'];
+            $this->line('Part numbers: state='.$partProof['state']
+                .' complete='.var_export($partProof['complete'] ?? null, true)
+                .' exact='.var_export($partProof['exact_part_numbers_available'] ?? null, true)
+                .' actual='.implode(',', $partProof['actual_part_numbers_sent'] ?? [])
+                .' reason='.$partProof['reason']);
         }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
