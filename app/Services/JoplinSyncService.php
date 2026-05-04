@@ -313,6 +313,19 @@ class JoplinSyncService
                         // Do not run the legacy inline attachment processor for unchanged
                         // notes; it re-enters RAG indexing and can stall routine syncs.
                     } catch (\Exception $e) {
+                        if ($this->isFastEmbeddingProviderFailure($e)) {
+                            Log::warning('Joplin syncAll deferred: fast embedding provider failed during note processing', [
+                                'note_id' => $noteData['id'] ?? 'unknown',
+                                'error' => $e->getMessage(),
+                            ]);
+
+                            $stats['deferred'] = true;
+                            $stats['defer_reason'] = 'fast_embedding_provider_failed_mid_sync';
+                            $this->appendErrorSample($stats, $noteData, $e);
+
+                            break 2;
+                        }
+
                         Log::error('Error processing note in syncAll', [
                             'note_id' => $noteData['id'] ?? 'unknown',
                             'error' => $e->getMessage(),
@@ -333,7 +346,7 @@ class JoplinSyncService
             }
 
             // Delete notes that no longer exist (only if processing all notes)
-            if ($limit === null) {
+            if ($limit === null && empty($stats['deferred'])) {
                 // Filter out any null keys from $existing to prevent issues
                 $existingKeys = array_filter(array_keys($existing), fn ($key) => ! empty($key));
                 $toDelete = array_diff($existingKeys, $processedNoteIds);
@@ -372,11 +385,18 @@ class JoplinSyncService
             $durationSeconds = $startTime->diffInSeconds($endTime);
 
             // Update health status
-            $this->updateHealthStatus('healthy', [
+            $healthDetails = [
                 'last_sync' => $endTime->toIso8601String(),
                 'notes_processed' => $stats['notes_indexed'] + $stats['notes_updated'],
                 'errors' => $stats['errors'],
-            ]);
+            ];
+
+            if (! empty($stats['deferred'])) {
+                $healthDetails['deferred'] = true;
+                $healthDetails['reason'] = $stats['defer_reason'] ?? 'unknown';
+            }
+
+            $this->updateHealthStatus('healthy', $healthDetails);
 
             // Cache last sync time
             Cache::put(self::LAST_SYNC_CACHE_KEY, $endTime->toIso8601String(), now()->addDays(7));
@@ -392,6 +412,8 @@ class JoplinSyncService
                 'notes_skipped' => $stats['notes_skipped'] + ($totalFiles - $notesToProcess),
                 'errors' => $stats['errors'],
                 'error_samples' => $stats['error_samples'],
+                'deferred' => (bool) ($stats['deferred'] ?? false),
+                'defer_reason' => $stats['defer_reason'] ?? null,
                 'duration_seconds' => $durationSeconds,
                 'start_time' => $startTime,
                 'end_time' => $endTime,
@@ -902,7 +924,7 @@ class JoplinSyncService
      * instead of being processed inline. This keeps syncs fast.
      * Use `php artisan joplin:attachments --action=reprocess` to process attachments.
      */
-    private function indexNote(array $noteData, string $contentHash): void
+    private function indexNote(array $noteData, string $contentHash): object
     {
         $content = trim($noteData['content'] ?? '');
 
@@ -913,13 +935,7 @@ class JoplinSyncService
                 'title' => $noteData['title'],
             ]);
 
-            return;
-        }
-
-        // Queue attachments for async processing (v2 pipeline via Horizon)
-        // Attachment content will be appended to note after processing
-        if (isset($noteData['attachments']) && count($noteData['attachments']) > 0) {
-            $this->queueAttachmentsForProcessing($noteData['attachments'], $noteData['id']);
+            throw new \InvalidArgumentException('Cannot index empty Joplin note');
         }
 
         $doc = $this->ragService->indexDocument(
@@ -943,6 +959,15 @@ class JoplinSyncService
         // Update additional fields using raw SQL (no Eloquent)
         $sql = 'UPDATE rag_documents SET designation = ?, content_hash = ?, last_synced_at = NOW() WHERE id = ?';
         DB::connection('pgsql_rag')->update($sql, ['joplin_note', $contentHash, $doc->id]);
+
+        // Queue attachments after the note is safely indexed. If embedding
+        // providers are unavailable, avoid queueing attachment work for a note
+        // that was not written.
+        if (isset($noteData['attachments']) && count($noteData['attachments']) > 0) {
+            $this->queueAttachmentsForProcessing($noteData['attachments'], $noteData['id']);
+        }
+
+        return $doc;
     }
 
     private function hasFastEmbeddingProvider(): bool
@@ -952,17 +977,26 @@ class JoplinSyncService
         return $aiService->hasNonCpuEmbeddingProvider();
     }
 
+    private function isFastEmbeddingProviderFailure(\Throwable $e): bool
+    {
+        $message = $e->getMessage();
+
+        return str_contains($message, 'All non-CPU embedding providers failed')
+            || str_contains($message, 'CPU fallback disabled for this request')
+            || str_contains($message, 'no_fast_embedding_provider');
+    }
+
     /**
      * Update an existing note in RAG
      */
     private function updateNote(object $existingNote, array $noteData, string $contentHash): void
     {
-        // Delete old version using raw SQL
+        // Re-index before deleting the old version so a transient embedding
+        // outage cannot remove the existing searchable note.
+        $this->indexNote($noteData, $contentHash);
+
         $sql = 'DELETE FROM rag_documents WHERE id = ?';
         DB::connection('pgsql_rag')->delete($sql, [$existingNote->id]);
-
-        // Re-index with new content
-        $this->indexNote($noteData, $contentHash);
     }
 
     /**

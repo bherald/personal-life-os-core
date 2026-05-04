@@ -198,6 +198,62 @@ class PublicGithubMonitorScriptTest extends TestCase
         );
     }
 
+    public function test_strict_latest_workflows_fails_when_workflow_run_listing_is_unavailable(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--strict-latest-workflows',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_RUN_LIST' => 'unavailable',
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString("== Latest Workflow Status ==\nunavailable", $process->getOutput());
+        $this->assertStringContainsString("== Recent Workflow Runs ==\nunavailable", $process->getOutput());
+        $this->assertStringContainsString('STRICT FAIL: workflow runs unavailable', $process->getOutput());
+    }
+
+    public function test_strict_latest_workflows_fails_when_workflow_run_listing_is_empty(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--strict-latest-workflows',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_RUN_LIST' => 'empty',
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString("== Latest Workflow Status ==\nnone", $process->getOutput());
+        $this->assertStringContainsString("== Recent Workflow Runs ==\nnone", $process->getOutput());
+        $this->assertStringContainsString('STRICT FAIL: no workflow runs available', $process->getOutput());
+    }
+
     public function test_missing_repo_fails_before_gh_is_required(): void
     {
         $process = new Process(
@@ -262,6 +318,15 @@ fi
 
 if [[ "${1:-}" == "run" && "${2:-}" == "list" ]]; then
     log_call "run list --repo ${4:-}"
+    case "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_LIST:-available}" in
+        unavailable)
+            printf 'run list unavailable\n' >&2
+            exit 1
+            ;;
+        empty)
+            exit 0
+            ;;
+    esac
     printf '2026-05-03T13:29:00Z workflow=Public Readiness status=%s conclusion=%s branch=main sha=5812537 title=docs: tighten issue template privacy prompts\n' "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_STATUS:-completed}" "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_CONCLUSION:-success}"
     exit 0
 fi
