@@ -3,14 +3,49 @@ set -euo pipefail
 
 allow_plaintext=false
 require_session_token=false
+require_workflow_scope=false
 host="${GH_AUTH_AUDIT_HOST:-github.com}"
 gh_available=false
 
 usage() {
-    printf 'Usage: %s [--allow-plaintext] [--require-session-token] [--host github.com]\n' "$0"
+    printf 'Usage: %s [--allow-plaintext] [--require-session-token] [--require-workflow-scope] [--host github.com]\n' "$0"
     printf '\n'
     printf 'Audits GitHub CLI auth storage without printing token values.\n'
     printf 'Target posture: use session-scoped GH_TOKEN/GITHUB_TOKEN for CLI/API work.\n'
+}
+
+print_redacted_status() {
+    local prefix="$1"
+    local file="$2"
+
+    sed -E 's/(Token: ).*/\1[redacted]/; s/^/'"$prefix"': /' "$file"
+}
+
+check_scope() {
+    local file="$1"
+    local scope="$2"
+    local label="$3"
+    local scopes_line
+    local scopes
+    local token_scope
+
+    scopes_line="$(grep -E 'Token scopes:' "$file" | tail -n 1 || true)"
+    if [[ -z "$scopes_line" ]]; then
+        printf 'FAIL: %s did not report token scopes; cannot confirm %s scope.\n' "$label" "$scope"
+        exit_code=1
+        return
+    fi
+
+    scopes="$(printf '%s\n' "$scopes_line" | sed -E "s/.*Token scopes:[[:space:]]*//; s/'//g; s/,/ /g")"
+    for token_scope in $scopes; do
+        if [[ "$token_scope" == "$scope" ]]; then
+            printf 'OK: %s token includes %s scope.\n' "$label" "$scope"
+            return
+        fi
+    done
+
+    printf 'FAIL: %s token is missing %s scope.\n' "$label" "$scope"
+    exit_code=1
 }
 
 while [[ $# -gt 0 ]]; do
@@ -25,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --require-session-token)
             require_session_token=true
+            shift
+            ;;
+        --require-workflow-scope)
+            require_workflow_scope=true
             shift
             ;;
         --host)
@@ -64,9 +103,12 @@ printf 'INFO: Target posture: use session-scoped GH_TOKEN/GITHUB_TOKEN for GitHu
 if command -v gh >/dev/null 2>&1; then
     gh_available=true
     if gh auth status -h "$host" >"$status_file" 2>&1; then
-        sed -E 's/(Token: ).*/\1[redacted]/; s/^/gh: /' "$status_file"
+        print_redacted_status "gh" "$status_file"
+        if [[ "$require_workflow_scope" == "true" ]]; then
+            check_scope "$status_file" "workflow" "gh"
+        fi
     else
-        sed -E 's/(Token: ).*/\1[redacted]/; s/^/gh: /' "$status_file"
+        print_redacted_status "gh" "$status_file"
         exit_code=1
     fi
 else
@@ -80,10 +122,13 @@ if [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]]; then
         session_config_dir="$(mktemp -d "${TMPDIR:-/tmp}/plos-gh-auth-session.XXXXXX")"
         printf 'INFO: Verifying session-scoped token with an isolated GitHub CLI config.\n'
         if GH_CONFIG_DIR="$session_config_dir" gh auth status -h "$host" >"$status_file" 2>&1; then
-            sed -E 's/(Token: ).*/\1[redacted]/; s/^/session-gh: /' "$status_file"
+            print_redacted_status "session-gh" "$status_file"
             printf 'OK: session-scoped GH_TOKEN/GITHUB_TOKEN can authenticate gh without persistent hosts.yml.\n'
+            if [[ "$require_workflow_scope" == "true" ]]; then
+                check_scope "$status_file" "workflow" "session-gh"
+            fi
         else
-            sed -E 's/(Token: ).*/\1[redacted]/; s/^/session-gh: /' "$status_file"
+            print_redacted_status "session-gh" "$status_file"
             printf 'FAIL: session-scoped GH_TOKEN/GITHUB_TOKEN did not authenticate gh with isolated config.\n'
             exit_code=1
         fi
