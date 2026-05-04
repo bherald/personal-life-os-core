@@ -21,6 +21,7 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('Usage:', $process->getOutput());
         $this->assertStringContainsString('Read-only public GitHub release monitor', $process->getOutput());
         $this->assertStringContainsString('--strict-latest-workflows', $process->getOutput());
+        $this->assertStringContainsString('--require-workflow', $process->getOutput());
     }
 
     public function test_monitor_uses_read_only_github_surfaces_without_printing_tokens(): void
@@ -144,6 +145,37 @@ class PublicGithubMonitorScriptTest extends TestCase
         );
     }
 
+    public function test_pr_endpoint_unavailable_stays_informational_for_strict_checks(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--strict-public-core',
+                '--strict-latest-workflows',
+                '--require-workflow',
+                'Public Readiness',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_PR_LIST' => 'unavailable',
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('open_prs=unavailable', $process->getOutput());
+        $this->assertStringContainsString('Strict public-core check: pass', $process->getOutput());
+        $this->assertStringContainsString('Strict latest-workflows check: pass', $process->getOutput());
+    }
+
     public function test_strict_latest_workflows_passes_when_latest_runs_are_green(): void
     {
         $fixture = $this->makeFixture();
@@ -254,6 +286,63 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('STRICT FAIL: no workflow runs available', $process->getOutput());
     }
 
+    public function test_strict_latest_workflows_passes_when_required_workflow_is_present(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--strict-latest-workflows',
+                '--require-workflow',
+                'Public Readiness',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('Strict latest-workflows check: pass', $process->getOutput());
+    }
+
+    public function test_strict_latest_workflows_fails_when_required_workflow_is_missing(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--strict-latest-workflows',
+                '--require-workflow',
+                'Repository Governance',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString(
+            'STRICT FAIL: Repository Governance required workflow missing from latest run window',
+            $process->getOutput()
+        );
+    }
+
     public function test_missing_repo_fails_before_gh_is_required(): void
     {
         $process = new Process(
@@ -312,6 +401,10 @@ fi
 
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
     log_call "pr list --repo ${4:-}"
+    if [[ "${PUBLIC_GITHUB_MONITOR_FAKE_PR_LIST:-available}" == "unavailable" ]]; then
+        printf 'pr list unavailable\n' >&2
+        exit 1
+    fi
     printf '0\n'
     exit 0
 fi
@@ -328,6 +421,9 @@ if [[ "${1:-}" == "run" && "${2:-}" == "list" ]]; then
             ;;
     esac
     printf '2026-05-03T13:29:00Z workflow=Public Readiness status=%s conclusion=%s branch=main sha=5812537 title=docs: tighten issue template privacy prompts\n' "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_STATUS:-completed}" "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_CONCLUSION:-success}"
+    if [[ "${PUBLIC_GITHUB_MONITOR_FAKE_INCLUDE_GOVERNANCE:-false}" == "true" ]]; then
+        printf '2026-05-03T13:28:00Z workflow=Repository Governance status=completed conclusion=success branch=main sha=5812537 title=docs: tighten issue template privacy prompts\n'
+    fi
     exit 0
 fi
 

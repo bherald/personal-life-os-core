@@ -23,6 +23,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'plos:agent-doctor --json --compact',
     'ops:agent-doctor-snapshot --dry-run --json',
     'ops:agent-doctor-history --json --days=7',
+    'ops:mcp-health --compact',
+    'ops:mcp-health --json --compact',
     'ops:capacity-report --json',
     'ops:runtime-diagnostics --window=60m --focus=all --json',
     'ops:face-telemetry-report --json',
@@ -95,6 +97,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan plos:agent-doctor --compact/);
   assert.match(listing, /php artisan ops:agent-doctor-snapshot --dry-run --json/);
   assert.match(listing, /php artisan ops:agent-doctor-history --json --days=7/);
+  assert.match(listing, /php artisan ops:mcp-health --compact/);
+  assert.match(listing, /php artisan ops:mcp-health --json --compact/);
   assert.match(listing, /php artisan ops:arc-retention --json/);
   assert.match(listing, /php artisan ops:face-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --compact/);

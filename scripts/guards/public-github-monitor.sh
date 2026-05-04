@@ -5,14 +5,16 @@ repo="${PLOS_PUBLIC_GITHUB_REPO:-}"
 run_limit=6
 strict_public_core=false
 strict_latest_workflows=false
+required_workflows=()
 
 usage() {
-    printf 'Usage: %s --repo owner/name [--run-limit N] [--strict-public-core] [--strict-latest-workflows]\n' "$0"
+    printf 'Usage: %s --repo owner/name [--run-limit N] [--strict-public-core] [--strict-latest-workflows] [--require-workflow NAME]\n' "$0"
     printf '\n'
     printf 'Read-only public GitHub release monitor using gh. Prints aggregate repo,\n'
     printf 'workflow, issue/PR, and traffic posture without printing credential values.\n'
     printf 'Use --strict-public-core to fail on public-core settings drift.\n'
     printf 'Use --strict-latest-workflows to fail when latest workflow runs are not green.\n'
+    printf 'Use --require-workflow with strict latest checks to fail when a named workflow is absent from the latest-run window.\n'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -45,6 +47,15 @@ while [[ $# -gt 0 ]]; do
             strict_latest_workflows=true
             shift
             ;;
+        --require-workflow)
+            if [[ -z "${2:-}" ]]; then
+                usage >&2
+                exit 2
+            fi
+            strict_latest_workflows=true
+            required_workflows+=("$2")
+            shift 2
+            ;;
         *)
             usage >&2
             exit 2
@@ -76,6 +87,7 @@ print_header() {
 
 strict_failures=()
 strict_workflow_failures=()
+declare -A latest_workflows_seen=()
 
 strict_expect_line() {
     local haystack="$1"
@@ -147,7 +159,6 @@ fi
 if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,status,conclusion,headBranch,headSha,displayTitle,createdAt --jq '.[] | "\(.createdAt) workflow=\(.workflowName) status=\(.status) conclusion=\(.conclusion // "none") branch=\(.headBranch) sha=\(.headSha[0:7]) title=\(.displayTitle)"' 2>/dev/null)"; then
     print_header "Latest Workflow Status"
     if [[ -n "$runs" ]]; then
-        declare -A seen_workflows=()
         while IFS= read -r run_line; do
             workflow="${run_line#*workflow=}"
             workflow="${workflow%% status=*}"
@@ -156,11 +167,11 @@ if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,s
             branch="$(run_field "$run_line" branch)"
             sha="$(run_field "$run_line" sha)"
 
-            if [[ -n "${seen_workflows[$workflow]+x}" ]]; then
+            if [[ -n "${latest_workflows_seen[$workflow]+x}" ]]; then
                 continue
             fi
 
-            seen_workflows[$workflow]=1
+            latest_workflows_seen[$workflow]=1
             printf 'workflow=%s latest_status=%s latest_conclusion=%s branch=%s sha=%s\n' \
                 "$workflow" \
                 "$status" \
@@ -229,6 +240,12 @@ fi
 
 if [[ "$strict_latest_workflows" == "true" ]]; then
     print_header "Strict Latest Workflows Check"
+
+    for required_workflow in "${required_workflows[@]}"; do
+        if [[ -z "${latest_workflows_seen[$required_workflow]+x}" ]]; then
+            strict_workflow_failures+=("$required_workflow required workflow missing from latest run window")
+        fi
+    done
 
     if [[ "${#strict_workflow_failures[@]}" -gt 0 ]]; then
         for failure in "${strict_workflow_failures[@]}"; do

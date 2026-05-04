@@ -31,6 +31,8 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'plos:agent-doctor --json --compact': { description: 'Compact PLOS operator-facing agent diagnostics JSON', timeout: 30_000 },
   'ops:agent-doctor-snapshot --dry-run --json': { description: 'Dry-run aggregate Agent Doctor readiness snapshot', timeout: 30_000 },
   'ops:agent-doctor-history --json --days=7': { description: 'Read-only Agent Doctor readiness snapshot history', timeout: 30_000 },
+  'ops:mcp-health --compact': { description: 'Compact observe-only MCP configuration and process health scorecard', timeout: 30_000 },
+  'ops:mcp-health --json --compact': { description: 'Compact observe-only MCP configuration and process health JSON', timeout: 30_000 },
   'ops:capacity-report --json':   { description: 'Observe-only capacity evidence report', timeout: 30_000 },
   'ops:runtime-diagnostics --window=60m --focus=all --json': { description: 'Read-only runtime recovery diagnostics', timeout: 30_000 },
   'ops:face-telemetry-report --json': { description: 'Face/genealogy telemetry report', timeout: 30_000 },

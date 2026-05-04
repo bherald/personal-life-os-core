@@ -86,7 +86,12 @@ gh_config_dir="${GH_CONFIG_DIR:-$config_home/gh}"
 hosts_file="$gh_config_dir/hosts.yml"
 status_file="$(mktemp "${TMPDIR:-/tmp}/plos-gh-auth-status.XXXXXX")"
 session_config_dir=""
+session_token_present=false
 exit_code=0
+
+if [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]]; then
+    session_token_present=true
+fi
 
 cleanup() {
     rm -f "$status_file"
@@ -104,8 +109,10 @@ if command -v gh >/dev/null 2>&1; then
     gh_available=true
     if gh auth status -h "$host" >"$status_file" 2>&1; then
         print_redacted_status "gh" "$status_file"
-        if [[ "$require_workflow_scope" == "true" ]]; then
+        if [[ "$require_workflow_scope" == "true" && ! ( "$require_session_token" == "true" && "$session_token_present" == "true" ) ]]; then
             check_scope "$status_file" "workflow" "gh"
+        elif [[ "$require_workflow_scope" == "true" ]]; then
+            printf 'INFO: workflow scope will be checked against the isolated session token, not the persistent gh bridge.\n'
         fi
     else
         print_redacted_status "gh" "$status_file"
@@ -116,7 +123,7 @@ else
     exit_code=1
 fi
 
-if [[ -n "${GH_TOKEN:-}" || -n "${GITHUB_TOKEN:-}" ]]; then
+if [[ "$session_token_present" == "true" ]]; then
     printf 'OK: session-scoped GH_TOKEN/GITHUB_TOKEN is present and should be preferred for CLI/API work.\n'
     if [[ "$require_session_token" == "true" && "$gh_available" == "true" ]]; then
         session_config_dir="$(mktemp -d "${TMPDIR:-/tmp}/plos-gh-auth-session.XXXXXX")"
