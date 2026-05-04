@@ -54,6 +54,8 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('has_discussions=false', $output);
         $this->assertStringContainsString('license=MIT', $output);
         $this->assertStringContainsString('open_issues=0', $output);
+        $this->assertStringContainsString('== Latest Workflow Status ==', $output);
+        $this->assertStringContainsString('workflow=Public Readiness latest_status=completed latest_conclusion=success branch=main sha=5812537', $output);
         $this->assertStringContainsString('workflow=Public Readiness status=completed conclusion=success', $output);
         $this->assertStringContainsString('views: views=49 uniques=1', $output);
         $this->assertStringContainsString('clones: clones=77 uniques=27', $output);

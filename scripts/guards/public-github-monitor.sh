@@ -93,6 +93,19 @@ traffic_line() {
     fi
 }
 
+run_field() {
+    local line="$1"
+    local key="$2"
+    local remainder="${line#* ${key}=}"
+
+    if [[ "$remainder" == "$line" ]]; then
+        printf 'unknown'
+        return
+    fi
+
+    printf '%s' "${remainder%% *}"
+}
+
 print_header "Public GitHub Monitor"
 printf 'Repository: %s\n' "$repo"
 printf 'Mode: read-only aggregate check\n'
@@ -124,14 +137,41 @@ else
     printf 'open_prs=unavailable\n'
 fi
 
-print_header "Recent Workflow Runs"
 if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,status,conclusion,headBranch,headSha,displayTitle,createdAt --jq '.[] | "\(.createdAt) workflow=\(.workflowName) status=\(.status) conclusion=\(.conclusion // "none") branch=\(.headBranch) sha=\(.headSha[0:7]) title=\(.displayTitle)"' 2>/dev/null)"; then
+    print_header "Latest Workflow Status"
+    if [[ -n "$runs" ]]; then
+        declare -A seen_workflows=()
+        while IFS= read -r run_line; do
+            workflow="${run_line#*workflow=}"
+            workflow="${workflow%% status=*}"
+
+            if [[ -n "${seen_workflows[$workflow]+x}" ]]; then
+                continue
+            fi
+
+            seen_workflows[$workflow]=1
+            printf 'workflow=%s latest_status=%s latest_conclusion=%s branch=%s sha=%s\n' \
+                "$workflow" \
+                "$(run_field "$run_line" status)" \
+                "$(run_field "$run_line" conclusion)" \
+                "$(run_field "$run_line" branch)" \
+                "$(run_field "$run_line" sha)"
+        done <<< "$runs"
+    else
+        printf 'none\n'
+    fi
+
+    print_header "Recent Workflow Runs"
     if [[ -n "$runs" ]]; then
         printf '%s\n' "$runs"
     else
         printf 'none\n'
     fi
 else
+    print_header "Latest Workflow Status"
+    printf 'unavailable\n'
+
+    print_header "Recent Workflow Runs"
     printf 'unavailable\n'
 fi
 
