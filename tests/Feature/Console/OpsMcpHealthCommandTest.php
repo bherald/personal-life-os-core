@@ -50,6 +50,10 @@ class OpsMcpHealthCommandTest extends TestCase
                 'transport' => 'internal_service',
                 'tools' => 2,
                 'env' => ['TOKEN' => 'secret-token'],
+                'trust_boundary' => 'internal',
+                'network_required' => 'no',
+                'write_scope' => 'none',
+                'secret_surface_risk' => 'low',
             ],
             'external-ok' => [
                 'enabled' => true,
@@ -59,13 +63,21 @@ class OpsMcpHealthCommandTest extends TestCase
                 'args' => [$this->fixtureEntry],
                 'tools' => 7,
                 'env' => ['TOKEN' => 'another-secret'],
+                'trust_boundary' => 'local_user',
+                'network_required' => 'optional',
+                'write_scope' => 'read',
+                'secret_surface_risk' => 'medium',
             ],
             'external-missing-entry' => [
                 'enabled' => true,
                 'type' => 'external',
                 'transport' => 'external_process',
                 'command' => 'node',
-                'args' => [base_path('missing-mcp-entry.js')],
+                'args' => [sys_get_temp_dir().'/missing-mcp-entry.js'],
+                'trust_boundary' => 'external_process',
+                'network_required' => 'yes',
+                'write_scope' => 'workspace',
+                'secret_surface_risk' => 'high',
             ],
             'external-directory-arg' => [
                 'enabled' => true,
@@ -73,6 +85,10 @@ class OpsMcpHealthCommandTest extends TestCase
                 'transport' => 'external_process',
                 'command' => 'serena',
                 'args' => [dirname($this->fixtureEntry)],
+                'trust_boundary' => 'local_user',
+                'network_required' => 'no',
+                'write_scope' => 'read',
+                'secret_surface_risk' => 'low',
             ],
             'external-unmatchable' => [
                 'enabled' => true,
@@ -80,6 +96,10 @@ class OpsMcpHealthCommandTest extends TestCase
                 'transport' => 'external_process',
                 'command' => 'node',
                 'args' => [dirname($this->fixtureEntry), '--token=secret-token'],
+                'trust_boundary' => 'local_user',
+                'network_required' => 'optional',
+                'write_scope' => 'read',
+                'secret_surface_risk' => 'medium',
             ],
             'disabled-running' => [
                 'enabled' => false,
@@ -87,6 +107,10 @@ class OpsMcpHealthCommandTest extends TestCase
                 'transport' => 'external_process',
                 'command' => 'node',
                 'args' => [$this->disabledFixtureEntry],
+                'trust_boundary' => 'local_user',
+                'network_required' => 'no',
+                'write_scope' => 'read',
+                'secret_surface_risk' => 'medium',
             ],
             'disabled-missing-entry' => [
                 'enabled' => false,
@@ -94,6 +118,10 @@ class OpsMcpHealthCommandTest extends TestCase
                 'transport' => 'external_process',
                 'command' => 'node',
                 'args' => [base_path('missing-disabled-mcp-entry.js')],
+                'trust_boundary' => 'local_user',
+                'network_required' => 'no',
+                'write_scope' => 'none',
+                'secret_surface_risk' => 'low',
             ],
         ]);
 
@@ -136,6 +164,13 @@ class OpsMcpHealthCommandTest extends TestCase
         $attention = collect($service->compactPayload($payload)['attention'])->keyBy('name');
         $this->assertFalse($attention['external-unmatchable']['process_matchable']);
         $this->assertSame(0, $attention['external-unmatchable']['process_marker_count']);
+        $posture = $service->compactPayload($payload)['config_posture'];
+        $this->assertSame(['external_process' => 1, 'internal' => 1, 'local_user' => 5], $posture['trust_boundary_counts']);
+        $this->assertSame(['none' => 2, 'read' => 4, 'workspace' => 1], $posture['write_scope_counts']);
+        $this->assertSame(['no' => 4, 'optional' => 2, 'yes' => 1], $posture['network_required_counts']);
+        $this->assertSame(['high' => 1, 'low' => 3, 'medium' => 3], $posture['secret_surface_risk_counts']);
+        $this->assertSame(1, $posture['external_absolute_entries']);
+        $this->assertSame(1, $posture['enabled_external_absolute_entries']);
 
         $this->assertStringNotContainsString('secret-token', $encoded);
         $this->assertStringNotContainsString('another-secret', $encoded);
@@ -204,6 +239,14 @@ class OpsMcpHealthCommandTest extends TestCase
             'compact' => true,
             'status' => 'warning',
             'summary' => ['total' => 2, 'enabled' => 1, 'external' => 1],
+            'config_posture' => [
+                'external_absolute_entries' => 0,
+                'enabled_external_absolute_entries' => 0,
+                'trust_boundary_counts' => ['local_user' => 1],
+                'write_scope_counts' => ['read' => 1],
+                'network_required_counts' => ['no' => 1],
+                'secret_surface_risk_counts' => ['low' => 1],
+            ],
             'attention' => [['name' => 'prompt-compressor', 'status' => 'watch']],
         ];
 
@@ -235,6 +278,14 @@ class OpsMcpHealthCommandTest extends TestCase
                 'external_not_running' => 1,
                 'disabled_external_running' => 1,
             ],
+            'config_posture' => [
+                'external_absolute_entries' => 1,
+                'enabled_external_absolute_entries' => 1,
+                'trust_boundary_counts' => ['external_process' => 1, 'local_user' => 1],
+                'write_scope_counts' => ['read' => 1, 'workspace' => 1],
+                'network_required_counts' => ['optional' => 1, 'yes' => 1],
+                'secret_surface_risk_counts' => ['high' => 1, 'medium' => 1],
+            ],
             'attention' => [
                 [
                     'name' => 'prompt-compressor',
@@ -260,9 +311,15 @@ class OpsMcpHealthCommandTest extends TestCase
         $this->assertStringContainsString('MCP health compact: WARNING', $output);
         $this->assertStringContainsString('missing_entries=1  enabled_missing_entries=0  disabled_missing_entries=1', $output);
         $this->assertStringContainsString('external_not_running=1  disabled_external_running=1', $output);
+        $this->assertStringContainsString('config-posture: external_absolute_entries=1 enabled_external_absolute_entries=1', $output);
+        $this->assertStringContainsString('trust_boundary=external_process:1,local_user:1', $output);
+        $this->assertStringContainsString('write_scope=read:1,workspace:1', $output);
+        $this->assertStringContainsString('network_required=optional:1,yes:1', $output);
+        $this->assertStringContainsString('secret_surface_risk=high:1,medium:1', $output);
         $this->assertStringContainsString('attention=prompt-compressor status=watch', $output);
         $this->assertStringContainsString('process_matchable=true process_running=false process_marker_count=1', $output);
-        $this->assertStringNotContainsString('secret', $output);
+        $this->assertStringNotContainsString('secret-token', $output);
+        $this->assertStringNotContainsString('another-secret', $output);
     }
 
     /**
@@ -292,7 +349,12 @@ class OpsMcpHealthCommandTest extends TestCase
                     'name' => 'plos',
                     'enabled' => true,
                     'transport' => 'internal_service',
+                    'trust_boundary' => 'internal',
+                    'network_required' => 'no',
+                    'write_scope' => 'none',
+                    'secret_surface_risk' => 'low',
                     'status' => 'ok',
+                    'local_entries' => [],
                     'process' => ['expected' => false, 'running' => false],
                     'missing_entries' => 0,
                 ],

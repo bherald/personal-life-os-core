@@ -91,6 +91,19 @@ class OpsMcpHealthCommand extends Command
             (int) ($summary['disabled_external_running'] ?? 0),
         ));
 
+        $posture = $compact['config_posture'] ?? [];
+        if (is_array($posture)) {
+            $this->line(sprintf(
+                'config-posture: external_absolute_entries=%d enabled_external_absolute_entries=%d trust_boundary=%s write_scope=%s network_required=%s secret_surface_risk=%s',
+                (int) ($posture['external_absolute_entries'] ?? 0),
+                (int) ($posture['enabled_external_absolute_entries'] ?? 0),
+                $this->formatCounts((array) ($posture['trust_boundary_counts'] ?? [])),
+                $this->formatCounts((array) ($posture['write_scope_counts'] ?? [])),
+                $this->formatCounts((array) ($posture['network_required_counts'] ?? [])),
+                $this->formatCounts((array) ($posture['secret_surface_risk_counts'] ?? [])),
+            ));
+        }
+
         foreach ((array) ($compact['attention'] ?? []) as $server) {
             if (! is_array($server)) {
                 continue;
@@ -107,5 +120,23 @@ class OpsMcpHealthCommand extends Command
                 (int) ($server['missing_entries'] ?? 0),
             ));
         }
+    }
+
+    /**
+     * @param  array<string, int|string>  $counts
+     */
+    private function formatCounts(array $counts): string
+    {
+        if ($counts === []) {
+            return 'none';
+        }
+
+        ksort($counts);
+
+        return implode(',', array_map(
+            fn (string $key, int|string $value): string => $key.':'.(int) $value,
+            array_keys($counts),
+            array_values($counts)
+        ));
     }
 }

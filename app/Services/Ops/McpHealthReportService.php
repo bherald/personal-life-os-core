@@ -49,6 +49,7 @@ class McpHealthReportService
             'status' => (string) ($payload['status'] ?? 'unknown'),
             'process_check' => $payload['process_check'] ?? ['available' => false, 'source' => 'unknown'],
             'summary' => $payload['summary'] ?? [],
+            'config_posture' => $this->configPostureSummary($servers->filter(fn (mixed $server): bool => is_array($server))->values()->all()),
             'attention' => $servers
                 ->filter(fn (mixed $server): bool => is_array($server)
                     && ! in_array(($server['status'] ?? null), ['ok', 'disabled'], true))
@@ -352,6 +353,65 @@ class McpHealthReportService
                 && (bool) data_get($server, 'process.expected', false)
                 && (bool) data_get($server, 'process.running', false))->count(),
         ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $servers
+     * @return array<string, mixed>
+     */
+    private function configPostureSummary(array $servers): array
+    {
+        return [
+            'trust_boundary_counts' => $this->labelCounts($servers, 'trust_boundary'),
+            'write_scope_counts' => $this->labelCounts($servers, 'write_scope'),
+            'network_required_counts' => $this->labelCounts($servers, 'network_required'),
+            'secret_surface_risk_counts' => $this->labelCounts($servers, 'secret_surface_risk'),
+            'external_absolute_entries' => $this->entryPathClassCount($servers, 'external_absolute'),
+            'enabled_external_absolute_entries' => $this->entryPathClassCount(
+                array_values(array_filter($servers, fn (array $server): bool => (bool) ($server['enabled'] ?? false))),
+                'external_absolute'
+            ),
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $servers
+     * @return array<string, int>
+     */
+    private function labelCounts(array $servers, string $key): array
+    {
+        $counts = [];
+
+        foreach ($servers as $server) {
+            $label = trim((string) ($server[$key] ?? 'unknown'));
+            if ($label === '') {
+                $label = 'unknown';
+            }
+
+            $counts[$label] = ($counts[$label] ?? 0) + 1;
+        }
+
+        ksort($counts);
+
+        return $counts;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $servers
+     */
+    private function entryPathClassCount(array $servers, string $pathClass): int
+    {
+        $count = 0;
+
+        foreach ($servers as $server) {
+            foreach ((array) ($server['local_entries'] ?? []) as $entry) {
+                if (is_array($entry) && ($entry['path_class'] ?? null) === $pathClass) {
+                    $count++;
+                }
+            }
+        }
+
+        return $count;
     }
 
     /**
