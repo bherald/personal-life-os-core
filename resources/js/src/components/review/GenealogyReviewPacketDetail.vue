@@ -441,6 +441,18 @@
               </div>
             </div>
 
+            <div v-if="isDataQualityTodoOperation(operation)" class="remediation-grid">
+              <div class="remediation-block">
+                <div class="subheading">Research task preview</div>
+                <div class="kv-grid compact">
+                  <div v-for="row in dataQualityTodoRows(operation)" :key="`todo-${row.key}`" class="kv-row">
+                    <span class="kv-key">{{ row.label }}</span>
+                    <span class="kv-value">{{ row.value }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="remediation-block">
               <div class="subheading">Proposed effect</div>
               <div class="kv-grid compact">
@@ -1259,7 +1271,9 @@ function previewFlagEnabled(value) {
 }
 
 function isStructuredRemediationOperation(operation) {
-  return isFamilyRemediationOperation(operation) || isSourceRemediationOperation(operation)
+  return isFamilyRemediationOperation(operation)
+    || isSourceRemediationOperation(operation)
+    || isDataQualityTodoOperation(operation)
 }
 
 function isFamilyRemediationOperation(operation) {
@@ -1274,6 +1288,11 @@ function isSourceRemediationOperation(operation) {
     || operation?.operation_type === 'source_duplicate_cleanup'
     || operation?.operation === 'source_duplicate_mark_preview'
     || operation?.operation === 'source_add_duplicate_cluster_preview'
+}
+
+function isDataQualityTodoOperation(operation) {
+  return operation?.operation_type === 'genealogy_todo_create'
+    || operation?.operation === 'genealogy_todo_create_preview'
 }
 
 function guardKey(guard, idx) {
@@ -1333,6 +1352,26 @@ function sourceRows(source) {
 function sourceUsageRows(counts) {
   const value = objectValue(counts)
   return Object.keys(value).map((key) => toKvRow(key, value[key]))
+}
+
+function dataQualityTodoRows(operation) {
+  const state = objectValue(operation?.current_state)
+  const context = objectValue(state.target_context)
+  const rows = []
+
+  for (const key of ['tree_id', 'person_id', 'family_id', 'source_id']) {
+    if (context[key] !== null && context[key] !== undefined && context[key] !== '') {
+      rows.push(toKvRow(key, context[key]))
+    }
+  }
+
+  for (const key of ['task_type', 'priority', 'question_present']) {
+    if (state[key] !== null && state[key] !== undefined && state[key] !== '') {
+      rows.push(toKvRow(key, state[key]))
+    }
+  }
+
+  return rows
 }
 
 function sourceLocatorGroups(operation) {
