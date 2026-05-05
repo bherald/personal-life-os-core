@@ -342,7 +342,7 @@
         <div v-for="(operation, idx) in previewOperations" :key="operationKey(operation, idx)" class="operation-row">
           <div class="operation-head">
             <span class="operation-name">{{ operation.operation || `operation ${idx + 1}` }}</span>
-            <span v-if="operation.target_table" class="operation-target">{{ operation.target_table }}</span>
+            <span v-if="operationTargetLabel(operation)" class="operation-target">{{ operationTargetLabel(operation) }}</span>
           </div>
           <div class="kv-grid compact">
             <div v-for="row in operationRows(operation)" :key="row.key" class="kv-row">
@@ -443,7 +443,7 @@
 
             <div v-if="isDataQualityTodoOperation(operation)" class="remediation-grid">
               <div class="remediation-block">
-                <div class="subheading">Research task preview</div>
+                <div class="subheading">Data-quality research-task recommendation</div>
                 <div class="kv-grid compact">
                   <div v-for="row in dataQualityTodoRows(operation)" :key="`todo-${row.key}`" class="kv-row">
                     <span class="kv-key">{{ row.label }}</span>
@@ -1246,6 +1246,14 @@ function operationKey(operation, idx) {
   return `${operation.index ?? operation.operation ?? 'operation'}-${idx}`
 }
 
+function operationTargetLabel(operation) {
+  if (isDataQualityTodoOperation(operation)) {
+    return 'preview only'
+  }
+
+  return operation.target_table || null
+}
+
 function operationRows(operation) {
   const hidden = ['index', 'operation', 'target_table']
   if (isStructuredRemediationOperation(operation)) {
@@ -1370,6 +1378,9 @@ function dataQualityTodoRows(operation) {
       rows.push(toKvRow(key, state[key]))
     }
   }
+
+  rows.push({ key: 'creation_status', label: 'creation status', value: 'no task created' })
+  rows.push({ key: 'canonical_genealogy', label: 'canonical genealogy', value: 'no mutation' })
 
   return rows
 }
