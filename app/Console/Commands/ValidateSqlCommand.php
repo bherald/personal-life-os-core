@@ -29,7 +29,8 @@ class ValidateSqlCommand extends Command
                             {--explain : Run EXPLAIN on extracted SQL against live DB}
                             {--file= : Filter to files matching this pattern}
                             {--json : Output results as JSON}
-                            {--fix-report : Write detailed report to storage/logs/sql-validation.log}';
+                            {--fix-report : Write detailed report to storage/logs/sql-validation.log}
+                            {--schema-lock-timeout=30 : Seconds to wait for schema-preservation tests before reading MySQL schema}';
 
     protected $description = 'Validate SQL statements in codebase against database schema';
 
@@ -47,6 +48,10 @@ class ValidateSqlCommand extends Command
 
     private int $statementsSkipped = 0;
 
+    private const MYSQL_SCHEMA_MUTATION_LOCK = 'plos_preserves_schema_tables';
+
+    private ?string $schemaReadLockName = null;
+
     // Tables that may not exist in dev but are referenced with try/catch or conditional logic
     private array $optionalTables = [
         'pg_tables',
@@ -57,11 +62,77 @@ class ValidateSqlCommand extends Command
     {
         $startTime = microtime(true);
 
-        if ($this->option('explain')) {
-            return $this->runExplainMode($startTime);
+        return $this->withSchemaReadLock($startTime, function () use ($startTime): int {
+            if ($this->option('explain')) {
+                return $this->runExplainMode($startTime);
+            }
+
+            return $this->runStaticMode($startTime);
+        });
+    }
+
+    private function withSchemaReadLock(float $startTime, callable $callback): int
+    {
+        if (! $this->usesMysqlConnection()) {
+            return $callback();
         }
 
-        return $this->runStaticMode($startTime);
+        if (! $this->acquireSchemaReadLock()) {
+            $this->errors[] = [
+                'file' => 'N/A',
+                'line' => 0,
+                'sql' => 'GET_LOCK',
+                'error' => sprintf(
+                    'Cannot acquire schema read lock `%s`; schema-preservation tests may still be restoring tables',
+                    self::MYSQL_SCHEMA_MUTATION_LOCK
+                ),
+                'severity' => 'fatal',
+            ];
+
+            return $this->outputResults($startTime);
+        }
+
+        try {
+            return $callback();
+        } finally {
+            $this->releaseSchemaReadLock();
+        }
+    }
+
+    private function acquireSchemaReadLock(): bool
+    {
+        $timeout = max(0, (int) $this->option('schema-lock-timeout'));
+        $row = DB::selectOne('SELECT GET_LOCK(?, ?) AS acquired', [self::MYSQL_SCHEMA_MUTATION_LOCK, $timeout]);
+
+        if ((int) ($row->acquired ?? 0) !== 1) {
+            return false;
+        }
+
+        $this->schemaReadLockName = self::MYSQL_SCHEMA_MUTATION_LOCK;
+
+        return true;
+    }
+
+    private function releaseSchemaReadLock(): void
+    {
+        if ($this->schemaReadLockName === null) {
+            return;
+        }
+
+        try {
+            DB::selectOne('SELECT RELEASE_LOCK(?) AS released', [$this->schemaReadLockName]);
+        } finally {
+            $this->schemaReadLockName = null;
+        }
+    }
+
+    private function usesMysqlConnection(): bool
+    {
+        try {
+            return DB::connection()->getDriverName() === 'mysql';
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     // ─── STATIC MODE ────────────────────────────────────────────────────
