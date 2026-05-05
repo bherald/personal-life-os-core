@@ -189,6 +189,9 @@ class GenealogyEvidenceSprintReadinessService
                 'source_backed_pending_missing_claims' => (int) ($summary['source_backed_pending_missing_claims'] ?? 0),
                 'source_backed_pending_missing_validation' => (int) ($summary['source_backed_pending_missing_validation'] ?? 0),
                 'source_backed_pending_missing_boundary' => (int) ($summary['source_backed_pending_missing_boundary'] ?? 0),
+                'source_locator_required_packets' => (int) ($summary['source_locator_required_packets'] ?? 0),
+                'manual_only_source_packets' => (int) ($summary['manual_only_source_packets'] ?? 0),
+                'source_realism_blocked_packets' => (int) ($summary['source_realism_blocked_packets'] ?? 0),
                 'preview_only_packets' => (int) ($summary['preview_only_packets'] ?? 0),
                 'operator_boundary_packets' => (int) ($summary['operator_boundary_packets'] ?? 0),
                 'packets_missing_boundary' => (int) ($summary['packets_missing_boundary'] ?? 0),
@@ -249,6 +252,12 @@ class GenealogyEvidenceSprintReadinessService
                 $this->boolValue($readiness['needs_reviewable_packet_details'])
             ),
             sprintf(
+                'source_realism: missing_locator=%s manual_only=%s blocked=%s',
+                $summary['source_locator_required_packets'],
+                $summary['manual_only_source_packets'],
+                $summary['source_realism_blocked_packets']
+            ),
+            sprintf(
                 'boundary: has=%s consistent=%s missing=%s label_count=%s mismatch=%s needs_operator_boundary=%s',
                 $this->boolValue($readiness['has_operator_boundary']),
                 $this->boolValue($readiness['boundary_consistent']),
@@ -292,6 +301,11 @@ class GenealogyEvidenceSprintReadinessService
                 'missing_claims='.$summary['source_backed_pending_missing_claims'],
                 'missing_validation='.$summary['source_backed_pending_missing_validation'],
                 'missing_boundary='.$summary['source_backed_pending_missing_boundary'],
+            ]).'`',
+            '- Source realism blocks: `'.implode(', ', [
+                'missing_locator='.$summary['source_locator_required_packets'],
+                'manual_only='.$summary['manual_only_source_packets'],
+                'blocked='.$summary['source_realism_blocked_packets'],
             ]).'`',
             '- Needs reviewable packet details: `'.$this->boolValue($readiness['needs_reviewable_packet_details']).'`',
             '- Boundary consistent: `'.$this->boolValue($readiness['boundary_consistent']).'`',
@@ -365,6 +379,22 @@ class GenealogyEvidenceSprintReadinessService
             [$details, $malformed] = $this->decodeDetails($row->details ?? null);
             if ($malformed) {
                 $summary['malformed_details']++;
+            } else {
+                $validation = $this->packetValidator()->validate($details);
+                $sourceLocatorMissing = $this->validationHasError($validation, 'source_locator_required');
+                $manualOnlySource = $this->validationHasError($validation, 'manual_source_as_evidence_blocked');
+
+                if ($sourceLocatorMissing) {
+                    $summary['source_locator_required_packets']++;
+                }
+
+                if ($manualOnlySource) {
+                    $summary['manual_only_source_packets']++;
+                }
+
+                if ($sourceLocatorMissing || $manualOnlySource) {
+                    $summary['source_realism_blocked_packets']++;
+                }
             }
 
             $packetStatus = $this->cleanKey($details['packet_status'] ?? $rowStatus);
@@ -520,6 +550,9 @@ class GenealogyEvidenceSprintReadinessService
             'source_backed_pending_missing_claims' => 0,
             'source_backed_pending_missing_validation' => 0,
             'source_backed_pending_missing_boundary' => 0,
+            'source_locator_required_packets' => 0,
+            'manual_only_source_packets' => 0,
+            'source_realism_blocked_packets' => 0,
             'operator_boundary_packets' => 0,
             'packets_missing_boundary' => 0,
             'boundary_label_count' => 0,
