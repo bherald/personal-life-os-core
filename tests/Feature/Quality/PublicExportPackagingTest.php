@@ -40,19 +40,15 @@ class PublicExportPackagingTest extends TestCase
         $this->assertStringContainsString('scripts/audit-licenses.sh', $smokeScript);
         $this->assertStringContainsString('scripts/audit-licenses.sh', $workflow);
 
-        $smokeOnlyPaths = [
-            // Keep this in local/export smoke until public GitHub auth has
-            // workflow scope for updating the public Actions file.
+        $publicQualityPaths = [
             'tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php',
             'tests/Feature/Quality/PublicGithubMonitorScriptTest.php',
             'tests/Feature/Console/OpsMcpHealthCommandTest.php',
+            'tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php',
+            'tests/Feature/Console/OpsReviewBacklogReportCommandTest.php',
             'tests/Unit/Commands/RagRetrievalEvidenceCommandTest.php',
             'tests/Unit/Commands/RagScaleReviewCommandTest.php',
             'tests/Unit/Nodes/PushoverNotifyTest.php',
-            'tests/Feature/Console/OpsReviewBacklogReportCommandTest.php',
-        ];
-
-        $workflowPaths = [
             'tests/Unit/Setup',
             'tests/Unit/Services/MetadataWritebackSafetyTest.php',
             'tests/Feature/Console/SetupDoctorCommandTest.php',
@@ -62,11 +58,8 @@ class PublicExportPackagingTest extends TestCase
             'tests/Feature/Quality/RepositoryGovernanceTest.php',
         ];
 
-        foreach (array_merge($workflowPaths, $smokeOnlyPaths) as $path) {
+        foreach ($publicQualityPaths as $path) {
             $this->assertStringContainsString($path, $smokeScript, "{$path} must stay in public smoke.");
-        }
-
-        foreach ($workflowPaths as $path) {
             $this->assertStringContainsString($path, $workflow, "{$path} must stay in public readiness CI.");
         }
     }

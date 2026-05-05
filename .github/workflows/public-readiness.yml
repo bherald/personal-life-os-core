@@ -149,4 +149,20 @@ jobs:
         run: php artisan setup:doctor --profile=media --skip-services --only=assets,browser,docker --json
 
       - name: Run focused public setup tests
-        run: php artisan test tests/Unit/Setup tests/Unit/Commands/RagScaleReviewCommandTest.php tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Console/OpsReviewBacklogReportCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
+        run: |
+          php artisan test \
+            tests/Unit/Setup \
+            tests/Unit/Commands/RagRetrievalEvidenceCommandTest.php \
+            tests/Unit/Commands/RagScaleReviewCommandTest.php \
+            tests/Unit/Nodes/PushoverNotifyTest.php \
+            tests/Unit/Services/MetadataWritebackSafetyTest.php \
+            tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php \
+            tests/Feature/Console/OpsMcpHealthCommandTest.php \
+            tests/Feature/Console/OpsReviewBacklogReportCommandTest.php \
+            tests/Feature/Console/SetupDoctorCommandTest.php \
+            tests/Feature/Quality/FixturesProvenanceTest.php \
+            tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php \
+            tests/Feature/Quality/PublicExportPackagingTest.php \
+            tests/Feature/Quality/PublicGithubMonitorScriptTest.php \
+            tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php \
+            tests/Feature/Quality/RepositoryGovernanceTest.php
