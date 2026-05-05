@@ -279,24 +279,12 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
 
     public function test_public_fixture_materializes_five_packets_for_sprint_readiness(): void
     {
-        foreach (range(1, 5) as $index) {
-            $packet = $this->fixturePacket([
-                'packet_key' => "source-backed-review-packet-fixture-{$index}",
-                'packet_label' => "Source-backed review packet fixture {$index}",
-                'sources' => [[
-                    'locator' => "https://catalog.archives.gov/id/99999900{$index}",
-                    'access_class' => 'public_archive_fixture',
-                    'label' => "Synthetic public archive locator {$index}",
-                ]],
-                'claims' => [[
-                    'claim_text' => "Evelyn Hart lived in Example Township in 191{$index}.",
-                    'field_name' => 'residence',
-                    'change_type' => 'field_update',
-                    'person_id' => 4321,
-                    'source_ref' => "synthetic-public-archive-page-{$index}",
-                    'proposed_value' => 'Example Township',
-                ]],
-            ]);
+        $keys = [];
+        $boundaries = [];
+
+        foreach ($this->fixturePackets() as $packet) {
+            $keys[] = $packet['packet_key'] ?? null;
+            $boundaries[] = $packet['sprint_boundary'] ?? null;
 
             $payload = $this->callJson([
                 '--file' => $this->packetFile($packet),
@@ -314,6 +302,9 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
             $this->assertTrue($payload['safety']['no_canonical_write']);
             $this->assertTrue($payload['safety']['apply_held']);
         }
+
+        $this->assertCount(5, array_unique($keys));
+        $this->assertSame(['synthetic public archive family line'], array_values(array_unique($boundaries)));
 
         $readiness = app(GenealogyEvidenceSprintReadinessService::class)->collect(days: 30);
 
@@ -431,6 +422,18 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
         $this->assertIsArray($fixture['packet'] ?? null);
 
         return array_replace_recursive($fixture['packet'], $overrides);
+    }
+
+    private function fixturePackets(): array
+    {
+        $path = base_path('tests/Fixtures/genealogy/source-backed-review-packet.json');
+        $this->assertFileExists($path);
+
+        $fixture = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertIsArray($fixture['packets'] ?? null);
+        $this->assertCount(5, $fixture['packets']);
+
+        return array_values($fixture['packets']);
     }
 
     private function packetFile(array $packet): string

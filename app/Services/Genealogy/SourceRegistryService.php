@@ -255,6 +255,12 @@ class SourceRegistryService
             $url = $this->nullableString($row->archive_url ?? null);
             $domain = $this->locatorHost($url ?? '');
 
+            if ($this->isNonPublicArchiveHost($domain)) {
+                $errors[] = $this->postureError($row, $domain, $toolName, 'non_public_archive_url');
+
+                continue;
+            }
+
             if ($toolName !== null && $this->isManualOnlyHost($domain)) {
                 $errors[] = $this->postureError($row, $domain, $toolName, 'manual_only_domain_has_tool');
 
@@ -337,7 +343,41 @@ class SourceRegistryService
         return false;
     }
 
-    private function postureError(object $row, ?string $domain, string $toolName, string $code): array
+    private function isNonPublicArchiveHost(?string $host): bool
+    {
+        if ($host === null || $host === '') {
+            return false;
+        }
+
+        $host = strtolower(trim($host, "[] \t\n\r\0\x0B."));
+        if ($host === '') {
+            return false;
+        }
+
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return filter_var(
+                $host,
+                FILTER_VALIDATE_IP,
+                FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+            ) === false;
+        }
+
+        foreach (['localhost', 'test', 'example', 'invalid'] as $reservedTld) {
+            if ($host === $reservedTld || str_ends_with($host, '.'.$reservedTld)) {
+                return true;
+            }
+        }
+
+        foreach (['example.com', 'example.net', 'example.org'] as $reservedDomain) {
+            if ($host === $reservedDomain || str_ends_with($host, '.'.$reservedDomain)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function postureError(object $row, ?string $domain, ?string $toolName, string $code): array
     {
         return [
             'id' => (int) $row->id,

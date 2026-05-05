@@ -4,6 +4,9 @@
   "description": "MCP server for the PLOS workflow framework",
   "type": "module",
   "main": "dist/index.js",
+  "overrides": {
+    "ip-address": "10.2.0"
+  },
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",

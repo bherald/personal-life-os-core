@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-04-29T19:05:17Z",
+  "generated_at": "2026-05-05T22:27:50Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
@@ -7100,7 +7100,7 @@
         },
         {
           "name": "ip-address",
-          "version": "10.1.0",
+          "version": "10.2.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -11555,7 +11555,7 @@
         },
         {
           "name": "ip-address",
-          "version": "10.1.0",
+          "version": "10.2.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -12732,7 +12732,7 @@
         },
         {
           "name": "ip-address",
-          "version": "10.1.0",
+          "version": "10.2.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",

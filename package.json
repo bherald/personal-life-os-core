@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "overrides": {
-    "@modelcontextprotocol/sdk": "1.26.0"
+    "@modelcontextprotocol/sdk": "1.26.0",
+    "ip-address": "10.2.0"
   },
   "scripts": {
     "dev": "vite",

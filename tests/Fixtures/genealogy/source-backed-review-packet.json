@@ -3,7 +3,7 @@
   "provenance": {
     "source": "Hand-written synthetic genealogy review packet fixture",
     "status": "MIT with PLOS fixtures",
-    "notes": "Fictional person, claim, and archive-style locators only; no private genealogy data."
+    "notes": "Five fictional source-backed packets, claims, and archive-style locators only; no private genealogy data."
   },
   "packet": {
     "packet_key": "source-backed-review-packet-fixture",
@@ -37,5 +37,172 @@
         "proposed_value": "Example Township"
       }
     ]
-  }
+  },
+  "packets": [
+    {
+      "packet_key": "source-backed-review-packet-fixture-1",
+      "packet_label": "Source-backed review packet fixture 1",
+      "summary": "Synthetic source-backed residence packet awaiting preview-only operator review.",
+      "confidence": 0.91,
+      "sprint_boundary": "synthetic public archive family line",
+      "identity": {
+        "person_id": 4321,
+        "status": "resolved"
+      },
+      "privacy": {
+        "cleared": true,
+        "living_person_risk": false,
+        "status": "cleared"
+      },
+      "sources": [
+        {
+          "locator": "https://catalog.archives.gov/id/999999001",
+          "access_class": "public_archive_fixture",
+          "label": "Synthetic public archive locator 1"
+        }
+      ],
+      "claims": [
+        {
+          "claim_text": "Evelyn Hart lived in Example Township in 1911.",
+          "field_name": "residence",
+          "change_type": "field_update",
+          "person_id": 4321,
+          "source_ref": "synthetic-public-archive-page-1",
+          "proposed_value": "Example Township"
+        }
+      ]
+    },
+    {
+      "packet_key": "source-backed-review-packet-fixture-2",
+      "packet_label": "Source-backed review packet fixture 2",
+      "summary": "Synthetic source-backed household packet awaiting preview-only operator review.",
+      "confidence": 0.89,
+      "sprint_boundary": "synthetic public archive family line",
+      "identity": {
+        "person_id": 4322,
+        "status": "resolved"
+      },
+      "privacy": {
+        "cleared": true,
+        "living_person_risk": false,
+        "status": "cleared"
+      },
+      "sources": [
+        {
+          "locator": "https://catalog.archives.gov/id/999999002",
+          "access_class": "public_archive_fixture",
+          "label": "Synthetic public archive locator 2"
+        }
+      ],
+      "claims": [
+        {
+          "claim_text": "Samuel Reed was recorded in the Hart household in 1912.",
+          "field_name": "household_member",
+          "change_type": "field_update",
+          "person_id": 4322,
+          "source_ref": "synthetic-public-archive-page-2",
+          "proposed_value": "Hart household"
+        }
+      ]
+    },
+    {
+      "packet_key": "source-backed-review-packet-fixture-3",
+      "packet_label": "Source-backed review packet fixture 3",
+      "summary": "Synthetic source-backed place packet awaiting preview-only operator review.",
+      "confidence": 0.87,
+      "sprint_boundary": "synthetic public archive family line",
+      "identity": {
+        "person_id": 4323,
+        "status": "resolved"
+      },
+      "privacy": {
+        "cleared": true,
+        "living_person_risk": false,
+        "status": "cleared"
+      },
+      "sources": [
+        {
+          "locator": "https://catalog.archives.gov/id/999999003",
+          "access_class": "public_archive_fixture",
+          "label": "Synthetic public archive locator 3"
+        }
+      ],
+      "claims": [
+        {
+          "claim_text": "Clara Vale was associated with Mill Creek in 1913.",
+          "field_name": "place_note",
+          "change_type": "field_update",
+          "person_id": 4323,
+          "source_ref": "synthetic-public-archive-page-3",
+          "proposed_value": "Mill Creek"
+        }
+      ]
+    },
+    {
+      "packet_key": "source-backed-review-packet-fixture-4",
+      "packet_label": "Source-backed review packet fixture 4",
+      "summary": "Synthetic source-backed event packet awaiting preview-only operator review.",
+      "confidence": 0.9,
+      "sprint_boundary": "synthetic public archive family line",
+      "identity": {
+        "person_id": 4324,
+        "status": "resolved"
+      },
+      "privacy": {
+        "cleared": true,
+        "living_person_risk": false,
+        "status": "cleared"
+      },
+      "sources": [
+        {
+          "locator": "https://catalog.archives.gov/id/999999004",
+          "access_class": "public_archive_fixture",
+          "label": "Synthetic public archive locator 4"
+        }
+      ],
+      "claims": [
+        {
+          "claim_text": "Thomas Hale appeared in the same township register in 1914.",
+          "field_name": "event_note",
+          "change_type": "field_update",
+          "person_id": 4324,
+          "source_ref": "synthetic-public-archive-page-4",
+          "proposed_value": "Township register"
+        }
+      ]
+    },
+    {
+      "packet_key": "source-backed-review-packet-fixture-5",
+      "packet_label": "Source-backed review packet fixture 5",
+      "summary": "Synthetic source-backed relationship packet awaiting preview-only operator review.",
+      "confidence": 0.88,
+      "sprint_boundary": "synthetic public archive family line",
+      "identity": {
+        "person_id": 4325,
+        "status": "resolved"
+      },
+      "privacy": {
+        "cleared": true,
+        "living_person_risk": false,
+        "status": "cleared"
+      },
+      "sources": [
+        {
+          "locator": "https://catalog.archives.gov/id/999999005",
+          "access_class": "public_archive_fixture",
+          "label": "Synthetic public archive locator 5"
+        }
+      ],
+      "claims": [
+        {
+          "claim_text": "Nora Finch was listed near the Hart family line in 1915.",
+          "field_name": "relationship_note",
+          "change_type": "field_update",
+          "person_id": 4325,
+          "source_ref": "synthetic-public-archive-page-5",
+          "proposed_value": "Nearby family line"
+        }
+      ]
+    }
+  ]
 }

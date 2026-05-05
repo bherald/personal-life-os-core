@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "type": "module",
   "main": "dist/index.js",
+  "overrides": {
+    "ip-address": "10.2.0"
+  },
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test dist/**/*.test.js",
