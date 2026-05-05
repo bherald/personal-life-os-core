@@ -1,0 +1,41 @@
+{
+  "fixture_id": "source-backed-review-packet",
+  "provenance": {
+    "source": "Hand-written synthetic genealogy review packet fixture",
+    "status": "MIT with PLOS fixtures",
+    "notes": "Fictional person, claim, and archive-style locators only; no private genealogy data."
+  },
+  "packet": {
+    "packet_key": "source-backed-review-packet-fixture",
+    "packet_label": "Source-backed review packet fixture",
+    "summary": "Synthetic source-backed packet awaiting preview-only operator review.",
+    "confidence": 0.91,
+    "sprint_boundary": "synthetic public archive family line",
+    "identity": {
+      "person_id": 4321,
+      "status": "resolved"
+    },
+    "privacy": {
+      "cleared": true,
+      "living_person_risk": false,
+      "status": "cleared"
+    },
+    "sources": [
+      {
+        "locator": "https://catalog.archives.gov/id/999999001",
+        "access_class": "public_archive_fixture",
+        "label": "Synthetic public archive locator"
+      }
+    ],
+    "claims": [
+      {
+        "claim_text": "Evelyn Hart lived in Example Township in 1910.",
+        "field_name": "residence",
+        "change_type": "field_update",
+        "person_id": 4321,
+        "source_ref": "synthetic-public-archive-page-1",
+        "proposed_value": "Example Township"
+      }
+    ]
+  }
+}

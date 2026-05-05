@@ -10,6 +10,7 @@ cloud paths, or machine-specific values.
 | Path | Source | License/Status | Notes |
 | --- | --- | --- | --- |
 | `genealogy/synthetic-family.ged` | Hand-written synthetic GEDCOM | MIT with PLOS fixtures | Fictional people and places; no private genealogy data. |
+| `genealogy/source-backed-review-packet.json` | Hand-written synthetic genealogy review packet | MIT with PLOS fixtures | Fictional person, claim, and archive-style locators only; no private genealogy data. |
 | `mail/rfc2606-newsletter.eml` | Hand-written synthetic message | MIT with PLOS fixtures | Uses RFC 2606 `.example` domain and RFC 5737 documentation IPs only. |
 | `search/rss-sample.xml` | Hand-written synthetic RSS | MIT with PLOS fixtures | Neutral local search/news seed. |
 | `media/README.md` | Hand-written fixture note | MIT with PLOS fixtures | Explains why binary media is intentionally absent from the first public slice. |

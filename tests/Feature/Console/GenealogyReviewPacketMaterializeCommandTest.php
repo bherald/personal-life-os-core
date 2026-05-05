@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Services\Genealogy\GenealogyEvidenceSprintReadinessService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -165,6 +166,55 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
         $this->assertFalse($details['apply_preview']['mutates_accepted_facts']);
     }
 
+    public function test_public_fixture_materializes_five_packets_for_sprint_readiness(): void
+    {
+        foreach (range(1, 5) as $index) {
+            $packet = $this->fixturePacket([
+                'packet_key' => "source-backed-review-packet-fixture-{$index}",
+                'packet_label' => "Source-backed review packet fixture {$index}",
+                'sources' => [[
+                    'locator' => "https://catalog.archives.gov/id/99999900{$index}",
+                    'access_class' => 'public_archive_fixture',
+                    'label' => "Synthetic public archive locator {$index}",
+                ]],
+                'claims' => [[
+                    'claim_text' => "Evelyn Hart lived in Example Township in 191{$index}.",
+                    'field_name' => 'residence',
+                    'change_type' => 'field_update',
+                    'person_id' => 4321,
+                    'source_ref' => "synthetic-public-archive-page-{$index}",
+                    'proposed_value' => 'Example Township',
+                ]],
+            ]);
+
+            $payload = $this->callJson([
+                '--file' => $this->packetFile($packet),
+                '--execute' => true,
+                '--json' => true,
+                '--compact' => true,
+            ]);
+
+            $this->assertTrue($payload['success']);
+            $this->assertSame('created_packet', $payload['action']);
+            $this->assertSame([
+                'present' => true,
+                'materialized_existing' => false,
+            ], $payload['packet']);
+            $this->assertTrue($payload['safety']['no_canonical_write']);
+            $this->assertTrue($payload['safety']['apply_held']);
+        }
+
+        $readiness = app(GenealogyEvidenceSprintReadinessService::class)->collect(days: 30);
+
+        $this->assertSame('ready_for_review', $readiness['status']);
+        $this->assertSame(5, $readiness['summary']['source_backed_pending']);
+        $this->assertSame(5, $readiness['summary']['reviewable_pending_packets']);
+        $this->assertSame(1, $readiness['summary']['boundary_label_count']);
+        $this->assertSame(0, $readiness['summary']['boundary_mismatch_packets']);
+        $this->assertTrue($readiness['readiness']['ready_for_five_packet_review']);
+        $this->assertSame(5, $this->packetCount());
+    }
+
     public function test_dry_run_reuse_existing_packet_reports_without_new_insert(): void
     {
         $path = $this->packetFile($this->validPacket());
@@ -259,6 +309,17 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
                 ],
             ],
         ];
+    }
+
+    private function fixturePacket(array $overrides = []): array
+    {
+        $path = base_path('tests/Fixtures/genealogy/source-backed-review-packet.json');
+        $this->assertFileExists($path);
+
+        $fixture = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertIsArray($fixture['packet'] ?? null);
+
+        return array_replace_recursive($fixture['packet'], $overrides);
     }
 
     private function packetFile(array $packet): string
