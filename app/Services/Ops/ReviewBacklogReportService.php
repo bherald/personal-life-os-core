@@ -212,14 +212,18 @@ class ReviewBacklogReportService
         $materialization = $this->nextTargetMaterializationText($target);
 
         return sprintf(
-            'Review backlog next target: %s focus=%s target_ref=%s type=%s finding=%s classification=%s priority=%s created=%s action=%s',
+            'Review backlog next target: %s focus=%s target_ref=%s type=%s finding=%s classification=%s selection_reason=%s priority=%s age_days=%s age_bucket=%s stale_over=%s created=%s action=%s',
             $payload['status'] ?? 'unknown',
             $payload['focus'] ?? 'global',
             $target['target_ref'] ?? 'unknown',
             $target['review_type'] ?? 'unknown',
             $target['finding_type'] ?? 'none',
             $target['classification'] ?? 'unknown',
+            $target['selection_reason'] ?? 'unspecified',
             $target['priority'] ?? 0,
+            $target['age_days'] ?? 'unknown',
+            $target['age_bucket'] ?? 'unknown',
+            $target['stale_days_over_threshold'] ?? 'unknown',
             $target['created_at'] ?? 'unknown',
             $target['next_action'] ?? 'Review one at a time.',
         ).$underlying.$materialization."\n";
@@ -252,7 +256,11 @@ class ReviewBacklogReportService
             '- Review type: `'.($target['review_type'] ?? 'unknown').'`',
             '- Finding type: `'.($target['finding_type'] ?? 'none').'`',
             '- Classification: `'.($target['classification'] ?? 'unknown').'`',
+            '- Selection reason: `'.($target['selection_reason'] ?? 'unspecified').'`',
             '- Priority: `'.($target['priority'] ?? 0).'`',
+            '- Age: `'.($target['age_days'] ?? 'unknown').'` days',
+            '- Age bucket: `'.($target['age_bucket'] ?? 'unknown').'`',
+            '- Stale days over threshold: `'.($target['stale_days_over_threshold'] ?? 'unknown').'`',
             '- Created: `'.($target['created_at'] ?? 'unknown').'`',
             '- Next action: '.($target['next_action'] ?? 'Review one at a time.'),
         ];
@@ -1375,6 +1383,7 @@ class ReviewBacklogReportService
         $findingType = $this->nullableString($row->finding_type ?? null);
         $priority = (int) ($row->priority ?? 0);
         $createdAt = $this->nullableString($row->created_at ?? null);
+        $ageDays = $this->ageDays($createdAt);
         $isHighPriority = $priority >= $highPriorityThreshold;
         $isStale = $this->isStaleCreatedAt($createdAt, $staleDays);
         [$classification, $nextAction] = $this->classificationNeeded($reviewType, $findingType);
@@ -1424,13 +1433,19 @@ class ReviewBacklogReportService
             'finding_type' => $findingType,
             'classification' => $classification,
             'underlying_classification' => $underlyingClassification,
+            'selection_reason' => $this->selectionReason($classification, $underlyingClassification, $isHighPriority, $isStale),
             'created_at' => $createdAt,
+            'age_days' => $ageDays,
+            'age_bucket' => $this->ageBucket($ageDays),
+            'stale_days_over_threshold' => $ageDays === null ? null : max(0, $ageDays - $staleDays),
             'priority' => $priority,
             'next_action' => $nextAction,
             'underlying_next_action' => $underlyingNextAction,
             'evidence_flags' => [
                 'stale' => $isStale,
                 'high_priority' => $isHighPriority,
+                'age_bucket' => $this->ageBucket($ageDays),
+                'stale_days_over_threshold' => $ageDays === null ? null : max(0, $ageDays - $staleDays),
                 'typed_remediation' => $isTypedRemediation,
                 'source_backed_context' => $reviewType === 'genealogy_finding'
                     || $reviewType === 'source_add'
@@ -1714,6 +1729,59 @@ class ReviewBacklogReportService
             'actionable_or_obsolete_triage' => 4,
             'routine_stale_review' => 5,
             default => 10,
+        };
+    }
+
+    private function selectionReason(
+        string $classification,
+        string $underlyingClassification,
+        bool $isHighPriority,
+        bool $isStale
+    ): string {
+        if ($isHighPriority) {
+            return 'high_priority_first';
+        }
+
+        if ($isStale && $classification === 'stale_infrastructure_relevance_check') {
+            return 'oldest_stale_infrastructure';
+        }
+
+        if ($classification === 'typed_preview_needed' || $underlyingClassification === 'typed_preview_needed') {
+            return 'typed_preview_needed';
+        }
+
+        if ($isStale) {
+            return 'oldest_stale_review';
+        }
+
+        return 'routine_pending_review';
+    }
+
+    private function ageDays(?string $createdAt): ?int
+    {
+        if ($createdAt === null) {
+            return null;
+        }
+
+        $createdTs = strtotime($createdAt);
+        if ($createdTs === false) {
+            return null;
+        }
+
+        return max(0, (int) floor((now()->getTimestamp() - $createdTs) / 86400));
+    }
+
+    private function ageBucket(?int $ageDays): string
+    {
+        if ($ageDays === null) {
+            return 'unknown_created_at';
+        }
+
+        return match (true) {
+            $ageDays < 1 => '0_24h',
+            $ageDays <= 7 => '1_7d',
+            $ageDays <= 30 => '8_30d',
+            default => '31d_plus',
         };
     }
 
