@@ -335,8 +335,432 @@ class ReviewContextEnrichmentService
             'apply_preview' => $applyPreview,
             'apply_preview_meta' => $applyPreviewMeta,
             'decision_log' => $this->detailArray($details, 'decision_log'),
+            'claim_contexts' => $this->reviewPacketClaimContexts($details, $person, $mediaRefs),
             'review_focus' => $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person, $mediaRefs),
         ];
+    }
+
+    /**
+     * Build display-only claim rows for the packet detail pane. The rows are
+     * projections of the persisted packet payload plus already-resolved media
+     * refs; they are never written back to agent_review_queue.details.
+     *
+     * @param  array<string, mixed>  $details
+     * @param  array<string, mixed>|null  $person
+     * @param  array<int, array<string, mixed>>  $mediaRefs
+     * @return list<array<string, mixed>>
+     */
+    private function reviewPacketClaimContexts(array $details, ?array $person, array $mediaRefs): array
+    {
+        $claims = $this->detailArray($details, 'claims');
+        if ($claims === []) {
+            return [];
+        }
+
+        $sources = $this->detailArray($details, 'sources');
+        $sourceLocators = $this->detailArray($details, 'source_locators');
+        $mediaById = $this->mediaRefsById($mediaRefs);
+        $contexts = [];
+
+        foreach ($claims as $idx => $claim) {
+            if (! is_array($claim)) {
+                continue;
+            }
+
+            $contexts[] = $this->reviewPacketClaimContext(
+                $claim,
+                $idx,
+                $details,
+                $person,
+                $sources,
+                $sourceLocators,
+                $mediaById
+            );
+        }
+
+        return $contexts;
+    }
+
+    /**
+     * @param  array<string, mixed>  $claim
+     * @param  array<string, mixed>  $details
+     * @param  array<string, mixed>|null  $person
+     * @param  array<int, mixed>  $sources
+     * @param  array<int, mixed>  $sourceLocators
+     * @param  array<int, array<string, mixed>>  $mediaById
+     * @return array<string, mixed>
+     */
+    private function reviewPacketClaimContext(
+        array $claim,
+        int $idx,
+        array $details,
+        ?array $person,
+        array $sources,
+        array $sourceLocators,
+        array $mediaById
+    ): array {
+        $raw = is_array($claim['raw'] ?? null) ? $claim['raw'] : [];
+        $claimIndex = $this->nonNegativeInt($claim['index'] ?? null);
+        $sourceRef = $this->claimSourceRef($claim, $raw);
+        $source = $this->matchClaimContextSource($sourceRef, $sources, $sourceLocators, $idx);
+        $claimMediaRefs = $this->claimMediaReferences($claim, $mediaById);
+        $personId = $this->claimPersonId($claim, $raw, $details, $person);
+
+        return [
+            'claim_index' => $claimIndex,
+            'display_index' => $claimIndex !== null ? $claimIndex + 1 : $idx + 1,
+            'claim_text' => $this->claimText($claim, $raw),
+            'field_name' => $this->firstScalarText($claim, ['field_name'])
+                ?: $this->firstScalarText($raw, ['field_name']),
+            'change_type' => $this->firstScalarText($claim, ['change_type'])
+                ?: $this->firstScalarText($raw, ['change_type']),
+            'relationship_type' => $this->firstScalarText($claim, ['relationship_type'])
+                ?: $this->firstScalarText($raw, ['relationship_type']),
+            'person_id' => $personId,
+            'person_label' => $this->personContextLabel($person, $personId),
+            'source_ref' => $sourceRef,
+            'source_label' => $source['label'] ?? $sourceRef,
+            'source_locator' => $source['locator'] ?? $this->sourceLocatorFromRef($sourceRef),
+            'source_access_class' => $source['access_class'] ?? null,
+            'media_refs' => $claimMediaRefs,
+            'media_ref_count' => count($claimMediaRefs),
+            'resolved_media_count' => count(array_filter(
+                $claimMediaRefs,
+                fn (array $media): bool => $this->positiveInt($media['id'] ?? null) !== null
+            )),
+            'missing_media_count' => count(array_filter(
+                $claimMediaRefs,
+                fn (array $media): bool => ($media['file_exists'] ?? null) === false
+            )),
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $mediaRefs
+     * @return array<int, array<string, mixed>>
+     */
+    private function mediaRefsById(array $mediaRefs): array
+    {
+        $byId = [];
+        foreach ($mediaRefs as $media) {
+            $id = $this->positiveInt($media['id'] ?? null);
+            if ($id !== null) {
+                $byId[$id] = $media;
+            }
+        }
+
+        return $byId;
+    }
+
+    /**
+     * @param  array<string, mixed>  $claim
+     * @param  array<string, mixed>  $raw
+     */
+    private function claimText(array $claim, array $raw): ?string
+    {
+        return $this->firstScalarText($claim, [
+            'claim',
+            'claim_text',
+            'statement',
+            'extracted_claim',
+            'extracted_text',
+            'text',
+            'proposed_value',
+        ]) ?: $this->firstScalarText($raw, [
+            'claim',
+            'claim_text',
+            'statement',
+            'extracted_claim',
+            'extracted_text',
+            'text',
+            'proposed_value',
+            'value',
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $claim
+     * @param  array<string, mixed>  $raw
+     * @param  array<string, mixed>  $details
+     * @param  array<string, mixed>|null  $person
+     */
+    private function claimPersonId(array $claim, array $raw, array $details, ?array $person): ?int
+    {
+        foreach ([
+            $claim['person_id'] ?? null,
+            $claim['target_person_id'] ?? null,
+            $raw['person_id'] ?? null,
+            $raw['target_person_id'] ?? null,
+            $details['identity']['person_id'] ?? null,
+            $details['identity']['target_person_id'] ?? null,
+            $person['id'] ?? null,
+        ] as $value) {
+            $personId = $this->positiveInt($value);
+            if ($personId !== null) {
+                return $personId;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $person
+     */
+    private function personContextLabel(?array $person, ?int $personId): ?string
+    {
+        if ($person !== null) {
+            $loadedId = $this->positiveInt($person['id'] ?? null);
+            if ($personId === null || $loadedId === null || $personId === $loadedId) {
+                $name = trim(implode(' ', array_filter([
+                    is_scalar($person['given_name'] ?? null) ? (string) $person['given_name'] : null,
+                    is_scalar($person['surname'] ?? null) ? (string) $person['surname'] : null,
+                ])));
+
+                if ($name === '') {
+                    foreach (['name', 'full_name', 'label'] as $key) {
+                        if (is_scalar($person[$key] ?? null) && trim((string) $person[$key]) !== '') {
+                            $name = trim((string) $person[$key]);
+                            break;
+                        }
+                    }
+                }
+
+                if ($name !== '') {
+                    return $personId !== null ? "{$name} (#{$personId})" : $name;
+                }
+            }
+        }
+
+        return $personId !== null ? "Person #{$personId}" : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $claim
+     * @param  array<string, mixed>  $raw
+     */
+    private function claimSourceRef(array $claim, array $raw): ?string
+    {
+        return $this->firstScalarText($claim, [
+            'source_ref',
+            'source_locator',
+            'evidence_source',
+            'citation',
+            'source_id',
+            'media_id',
+        ]) ?: $this->firstScalarText($raw, [
+            'source_ref',
+            'source_locator',
+            'evidence_source',
+            'citation',
+            'source_id',
+            'media_id',
+        ]);
+    }
+
+    /**
+     * @param  array<int, mixed>  $sources
+     * @param  array<int, mixed>  $sourceLocators
+     * @return array{label: ?string, locator: ?string, access_class: ?string}|null
+     */
+    private function matchClaimContextSource(?string $sourceRef, array $sources, array $sourceLocators, int $idx): ?array
+    {
+        $ref = $this->normalizeSourceContextValue($sourceRef);
+        if ($ref !== null) {
+            foreach ($sources as $sourceIdx => $source) {
+                if (! is_array($source)) {
+                    continue;
+                }
+
+                foreach ($this->sourceContextCandidates($source) as $candidate) {
+                    if ($this->sourceContextMatches($ref, $candidate)) {
+                        return $this->sourceContextRow($source, $sourceIdx);
+                    }
+                }
+            }
+
+            foreach ($sourceLocators as $locator) {
+                if (is_scalar($locator) && $this->sourceContextMatches($ref, (string) $locator)) {
+                    $trimmed = trim((string) $locator);
+
+                    return [
+                        'label' => $trimmed,
+                        'locator' => $trimmed,
+                        'access_class' => null,
+                    ];
+                }
+            }
+        }
+
+        if (count(array_filter($sources, 'is_array')) === 1) {
+            foreach ($sources as $sourceIdx => $source) {
+                if (is_array($source)) {
+                    return $this->sourceContextRow($source, $sourceIdx);
+                }
+            }
+        }
+
+        if (isset($sources[$idx]) && is_array($sources[$idx])) {
+            return $this->sourceContextRow($sources[$idx], $idx);
+        }
+
+        if (isset($sourceLocators[$idx]) && is_scalar($sourceLocators[$idx]) && trim((string) $sourceLocators[$idx]) !== '') {
+            $locator = trim((string) $sourceLocators[$idx]);
+
+            return [
+                'label' => $locator,
+                'locator' => $locator,
+                'access_class' => null,
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $source
+     * @return array{label: ?string, locator: ?string, access_class: ?string}
+     */
+    private function sourceContextRow(array $source, int $sourceIdx): array
+    {
+        return [
+            'label' => $this->sourceContextLabel($source, $sourceIdx),
+            'locator' => $this->sourceContextLocator($source),
+            'access_class' => $this->firstScalarText($source, [
+                'source_access_class',
+                'access_class',
+                'provider_boundary_status',
+            ]),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $source
+     * @return list<string>
+     */
+    private function sourceContextCandidates(array $source): array
+    {
+        $candidates = [];
+        foreach ([
+            'id',
+            'source_id',
+            'locator',
+            'source_locator',
+            'url',
+            'uri',
+            'path',
+            'citation',
+            'title',
+            'name',
+            'label',
+        ] as $key) {
+            if (is_scalar($source[$key] ?? null) && trim((string) $source[$key]) !== '') {
+                $candidates[] = trim((string) $source[$key]);
+            }
+        }
+
+        return array_values(array_unique($candidates));
+    }
+
+    /**
+     * @param  array<string, mixed>  $source
+     */
+    private function sourceContextLocator(array $source): ?string
+    {
+        return $this->firstScalarText($source, [
+            'locator',
+            'source_locator',
+            'url',
+            'uri',
+            'path',
+            'citation',
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $source
+     */
+    private function sourceContextLabel(array $source, int $idx): string
+    {
+        return $this->firstScalarText($source, ['title', 'name', 'label'])
+            ?: $this->sourceContextLocator($source)
+            ?: ($this->firstScalarText($source, ['id', 'source_id']) !== null
+                ? 'Source #'.$this->firstScalarText($source, ['id', 'source_id'])
+                : 'Source '.($idx + 1));
+    }
+
+    private function sourceLocatorFromRef(?string $sourceRef): ?string
+    {
+        return $sourceRef !== null && preg_match('/^https?:\/\//i', $sourceRef) === 1
+            ? $sourceRef
+            : null;
+    }
+
+    private function normalizeSourceContextValue(?string $value): ?string
+    {
+        if ($value === null || trim($value) === '') {
+            return null;
+        }
+
+        return strtolower(trim($value));
+    }
+
+    private function sourceContextMatches(string $ref, string $candidate): bool
+    {
+        $value = $this->normalizeSourceContextValue($candidate);
+        if ($value === null) {
+            return false;
+        }
+        if ($value === $ref) {
+            return true;
+        }
+        if (strlen($value) < 3 || strlen($ref) < 3) {
+            return false;
+        }
+
+        return str_contains($value, $ref) || str_contains($ref, $value);
+    }
+
+    /**
+     * @param  array<string, mixed>  $claim
+     * @param  array<int, array<string, mixed>>  $mediaById
+     * @return list<array<string, mixed>>
+     */
+    private function claimMediaReferences(array $claim, array $mediaById): array
+    {
+        $refs = [];
+        foreach ($this->mediaReferenceIdsFromPayload($claim) as $id) {
+            if (isset($mediaById[$id])) {
+                $refs[] = $mediaById[$id];
+            }
+        }
+
+        return $refs;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function mediaReferenceIdsFromPayload(mixed $value): array
+    {
+        $ids = [];
+        $this->collectStructuredMediaReferenceIds($value, $ids);
+
+        $haystack = [];
+        $this->appendMediaTextLeaves($haystack, $value);
+        $haystackText = implode(' ', $haystack);
+        if ($haystackText !== ''
+            && preg_match_all('/\b(?:media\s*#?|media_id|genealogy_media_id)\s*[:=#]?\s*(\d{1,9})\b/i', $haystackText, $m)
+        ) {
+            $this->appendMediaReferenceIds($ids, $m[1]);
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    private function nonNegativeInt(mixed $value): ?int
+    {
+        return is_numeric($value) && (int) $value >= 0 ? (int) $value : null;
     }
 
     /**

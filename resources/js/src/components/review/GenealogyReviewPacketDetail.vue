@@ -206,6 +206,7 @@
               <span class="claim-index">#{{ row.displayIndex }}</span>
               <span v-if="row.changeType" class="claim-pill">{{ row.changeType }}</span>
               <span v-if="row.fieldName" class="claim-pill muted">{{ row.fieldName }}</span>
+              <span v-if="row.personLabel" class="claim-pill person">{{ row.personLabel }}</span>
             </div>
             <div class="claim-source-text">{{ row.claimText || 'No claim text supplied.' }}</div>
           </div>
@@ -228,6 +229,34 @@
               </a>
               <span v-else class="claim-source-value" :title="row.sourceLocator || row.sourceLabel">
                 {{ row.sourceLabel }}
+              </span>
+            </div>
+            <div v-if="row.sourceAccessClass" class="claim-source-ref-line">
+              <span class="claim-source-label">access</span>
+              <span class="claim-source-value">{{ row.sourceAccessClass }}</span>
+            </div>
+            <div v-if="row.mediaRefs.length" class="claim-source-ref-line media-line">
+              <span class="claim-source-label">media</span>
+              <span class="claim-media-list">
+                <template v-for="media in row.mediaRefs" :key="`claim-media-${row.key}-${media.id || media.title}`">
+                  <a
+                    v-if="mediaRefHref(media)"
+                    :href="mediaRefHref(media)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="claim-media-pill"
+                    :title="media.nextcloud_path || media.title || ''"
+                  >
+                    {{ media.title || `Media #${media.id}` }}
+                  </a>
+                  <span
+                    v-else
+                    class="claim-media-pill disabled"
+                    :title="media.nextcloud_path || media.title || ''"
+                  >
+                    {{ media.title || `Media #${media.id}` }}
+                  </span>
+                </template>
               </span>
             </div>
           </div>
@@ -641,6 +670,7 @@ const validation = computed(() => objectValue(props.context?.validation, details
 const applyPreview = computed(() => objectValue(props.context?.apply_preview, details.value.apply_preview))
 const decisionLog = computed(() => arrayValue(props.context?.decision_log, details.value.decision_log).filter(isPlainObject))
 const mediaRefs = computed(() => arrayValue(props.context?.media_refs).filter(isPlainObject))
+const claimContexts = computed(() => arrayValue(props.context?.claim_contexts).filter(isPlainObject))
 const reviewFocus = computed(() => objectValue(props.context?.review_focus))
 const remediationOrigin = computed(() => objectValue(reviewFocus.value.remediation_origin))
 const personSnapshot = computed(() => {
@@ -880,10 +910,18 @@ const validationErrors = computed(() => arrayValue(validation.value.errors))
 const validationWarnings = computed(() => arrayValue(validation.value.warnings))
 const validationMissing = computed(() => !validation.value || Object.keys(validation.value).length === 0)
 
-const claimEvidenceRows = computed(() => claims.value
-  .filter(isPlainObject)
-  .map((claim, idx) => claimEvidenceRow(claim, idx))
-  .filter(Boolean))
+const claimEvidenceRows = computed(() => {
+  if (claimContexts.value.length) {
+    return claimContexts.value
+      .map((context, idx) => claimEvidenceRowFromContext(context, idx))
+      .filter(Boolean)
+  }
+
+  return claims.value
+    .filter(isPlainObject)
+    .map((claim, idx) => claimEvidenceRow(claim, idx))
+    .filter(Boolean)
+})
 
 const validationStatus = computed(() => {
   if (validation.value.valid === true) return 'valid'
@@ -1089,11 +1127,37 @@ function claimEvidenceRow(claim, idx) {
     displayIndex: claim.index ?? idx + 1,
     changeType: stringOrNull(claim.change_type ?? raw.change_type),
     fieldName: stringOrNull(claim.field_name ?? raw.field_name),
+    personLabel: formatPersonId(claim.person_id ?? raw.person_id),
     claimText: claimText(claim),
     sourceRef,
     sourceLocator,
     sourceLabel,
     sourceHref: sourceLocator ? locatorHref(sourceLocator) : null,
+    sourceAccessClass: null,
+    mediaRefs: [],
+  }
+}
+
+function claimEvidenceRowFromContext(context, idx) {
+  const sourceLocator = stringOrNull(context.source_locator)
+  const sourceLabel = stringOrNull(context.source_label)
+    || stringOrNull(context.source_ref)
+    || sourceLocator
+    || 'No source supplied'
+
+  return {
+    key: `claim-context-${context.claim_index ?? context.display_index ?? idx}`,
+    displayIndex: context.display_index ?? context.claim_index ?? idx + 1,
+    changeType: stringOrNull(context.change_type),
+    fieldName: stringOrNull(context.field_name),
+    personLabel: stringOrNull(context.person_label) || formatPersonId(context.person_id),
+    claimText: stringOrNull(context.claim_text),
+    sourceRef: stringOrNull(context.source_ref),
+    sourceLocator,
+    sourceLabel,
+    sourceHref: sourceLocator ? locatorHref(sourceLocator) : null,
+    sourceAccessClass: formatPacketStatus(context.source_access_class),
+    mediaRefs: arrayValue(context.media_refs).filter(isPlainObject),
   }
 }
 
@@ -1796,6 +1860,10 @@ function objectKeys(value) {
 	  min-width: 0;
 	}
 
+	.claim-source-ref-line.media-line {
+	  align-items: start;
+	}
+
 	.claim-source-label {
 	  color: #b39ddb;
 	  font-size: 0.66rem;
@@ -1815,6 +1883,43 @@ function objectKeys(value) {
 
 	.claim-source-link:hover {
 	  color: #ffffff;
+	}
+
+	.claim-pill.person {
+	  border: 1px solid rgba(99, 179, 237, 0.24);
+	  background: rgba(99, 179, 237, 0.10);
+	  color: #d8efff;
+	}
+
+	.claim-media-list {
+	  display: flex;
+	  flex-wrap: wrap;
+	  gap: 0.3rem;
+	  min-width: 0;
+	}
+
+	.claim-media-pill {
+	  max-width: 100%;
+	  border: 1px solid rgba(99, 179, 237, 0.24);
+	  border-radius: 0.25rem;
+	  background: rgba(99, 179, 237, 0.10);
+	  color: #d8efff;
+	  font-size: 0.72rem;
+	  line-height: 1.25;
+	  padding: 0.15rem 0.35rem;
+	  text-decoration: none;
+	  overflow-wrap: anywhere;
+	}
+
+	.claim-media-pill:hover {
+	  color: #ffffff;
+	  border-color: rgba(99, 179, 237, 0.55);
+	}
+
+	.claim-media-pill.disabled {
+	  color: #9b8bb5;
+	  border-color: rgba(102, 102, 102, 0.25);
+	  background: rgba(0, 0, 0, 0.12);
 	}
 
 	.source-payloads {
