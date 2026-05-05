@@ -913,6 +913,8 @@ const onDetailApplied = ({ unifiedId, result }) => {
 }
 
 const toggleItemSelection = (item) => {
+  if (!isBatchSelectable(item)) return
+
   const idx = selectedItems.value.indexOf(item.unified_id)
   if (idx >= 0) {
     selectedItems.value.splice(idx, 1)
@@ -980,6 +982,10 @@ const handleApprove = async (item) => {
 
 function isReviewPacket(item) {
   return item?.review_type === 'genealogy_review_packet' || item?.source === 'genealogy_review_packet'
+}
+
+function isBatchSelectable(item) {
+  return item?.batch_enabled === true && !isReviewPacket(item)
 }
 
 function approvalLabel(item) {
@@ -1186,10 +1192,12 @@ const handleSoftDecision = async (item, actionName) => {
 }
 
 const batchApprove = async () => {
-  if (!selectedItems.value.length) return
+  const ids = selectableSelectedIds()
+  if (!ids.length) return
+
   try {
-    await api.post('/research-hub/batch/approve', { ids: selectedItems.value })
-    items.value = items.value.filter(i => !selectedItems.value.includes(i.unified_id))
+    await api.post('/research-hub/batch/approve', { ids })
+    items.value = items.value.filter(i => !ids.includes(i.unified_id))
     selectedItems.value = []
     selectedItem.value = null
     updateStats()
@@ -1199,16 +1207,25 @@ const batchApprove = async () => {
 }
 
 const batchReject = async () => {
-  if (!selectedItems.value.length) return
+  const ids = selectableSelectedIds()
+  if (!ids.length) return
+
   try {
-    await api.post('/research-hub/batch/reject', { ids: selectedItems.value })
-    items.value = items.value.filter(i => !selectedItems.value.includes(i.unified_id))
+    await api.post('/research-hub/batch/reject', { ids })
+    items.value = items.value.filter(i => !ids.includes(i.unified_id))
     selectedItems.value = []
     selectedItem.value = null
     updateStats()
   } catch (e) {
     console.error('Batch reject failed:', e)
   }
+}
+
+function selectableSelectedIds() {
+  const selected = new Set(selectedItems.value)
+  return items.value
+    .filter(item => selected.has(item.unified_id) && isBatchSelectable(item))
+    .map(item => item.unified_id)
 }
 
 const updateStats = async () => {

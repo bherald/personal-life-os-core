@@ -53,6 +53,9 @@ class GenealogyDataQualityRemediationPreviewService
             'priority' => $priority,
             'question_present' => $question !== null,
         ];
+        if ($question !== null) {
+            $state['research_question'] = $question;
+        }
 
         return [
             'index' => $index,
@@ -75,6 +78,7 @@ class GenealogyDataQualityRemediationPreviewService
                 'task_type' => $taskType,
                 'priority' => $priority,
                 'research_question_present' => $question !== null,
+                'research_question' => $question,
                 'rows_that_would_be_touched' => [],
             ],
         ];

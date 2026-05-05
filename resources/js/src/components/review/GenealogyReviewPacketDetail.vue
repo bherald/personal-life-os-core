@@ -1379,6 +1379,10 @@ function dataQualityTodoRows(operation) {
     }
   }
 
+  if (state.research_question !== null && state.research_question !== undefined && state.research_question !== '') {
+    rows.push(toKvRow('research_question', state.research_question))
+  }
+
   rows.push({ key: 'creation_status', label: 'creation status', value: 'no task created' })
   rows.push({ key: 'canonical_genealogy', label: 'canonical genealogy', value: 'no mutation' })
 

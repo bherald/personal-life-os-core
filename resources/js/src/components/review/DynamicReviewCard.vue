@@ -8,7 +8,7 @@
     @click="$emit('select', item)"
   >
     <!-- Checkbox for batch selection -->
-    <div v-if="item.batch_enabled" class="card-checkbox" @click.stop>
+    <div v-if="canBatchSelect" class="card-checkbox" @click.stop>
       <input
         type="checkbox"
         :checked="selected"
@@ -159,6 +159,10 @@ const cardStyle = computed(() => resolveSurfaceThemeStyle(props.item.color, 'ops
 const isReviewPacket = computed(() => {
   return props.item?.review_type === 'genealogy_review_packet'
     || props.item?.source === 'genealogy_review_packet'
+})
+
+const canBatchSelect = computed(() => {
+  return props.item?.batch_enabled === true && !isReviewPacket.value
 })
 
 const packetContextItems = computed(() => {
