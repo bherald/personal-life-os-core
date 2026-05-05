@@ -171,6 +171,19 @@ class AgentDoctorCommand extends Command
                 'memory_errors' => (int) ($summary['memory_error_episodes_window'] ?? 0),
                 'low_quality_procedures' => (int) ($summary['procedures_low_quality_total'] ?? 0),
             ],
+            'issue_code_counts' => array_slice(
+                array_filter(
+                    (array) ($summary['issue_code_counts'] ?? []),
+                    fn (mixed $count): bool => is_numeric($count)
+                ),
+                0,
+                10,
+                true
+            ),
+            'top_issue_codes' => array_values(array_filter(
+                (array) ($summary['top_issue_codes'] ?? []),
+                fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
+            )),
             'recursion' => [
                 'status' => (string) ($recursion['status'] ?? 'unknown'),
                 'calls_7d' => (int) ($recursion['calls_7d'] ?? 0),
@@ -191,6 +204,10 @@ class AgentDoctorCommand extends Command
             'top_agents' => [
                 'critical' => $this->topAgentIds($agents, 'critical'),
                 'warning' => $this->topAgentIds($agents, 'warning'),
+            ],
+            'top_agent_reasons' => [
+                'critical' => AgentDoctorService::compactAgentReasonSummaries($payload, 'critical'),
+                'warning' => AgentDoctorService::compactAgentReasonSummaries($payload, 'warning'),
             ],
         ];
     }
@@ -223,6 +240,7 @@ class AgentDoctorCommand extends Command
         $recursion = $compact['recursion'];
         $trace = $compact['trace_readiness'];
         $topAgents = $compact['top_agents'];
+        $topAgentReasons = is_array($compact['top_agent_reasons'] ?? null) ? $compact['top_agent_reasons'] : [];
         $moveOnRate = $recursion['move_on_rate_7d'] ?? null;
         $masterEnabled = match ($recursion['master_enabled'] ?? null) {
             true => 'on',
@@ -276,8 +294,8 @@ class AgentDoctorCommand extends Command
             $this->boolWord($trace['events_24h_exact'] ?? false),
             $trace['malformed_lines_24h'] === null ? 'n/a' : (string) $trace['malformed_lines_24h'],
         ));
-        $this->line('Critical agents: '.$this->formatAgentIdList($topAgents['critical'] ?? []));
-        $this->line('Warning agents: '.$this->formatAgentIdList($topAgents['warning'] ?? []));
+        $this->line('Critical agents: '.$this->formatAgentReasonList($topAgentReasons['critical'] ?? [], $topAgents['critical'] ?? []));
+        $this->line('Warning agents: '.$this->formatAgentReasonList($topAgentReasons['warning'] ?? [], $topAgents['warning'] ?? []));
     }
 
     /**
@@ -286,6 +304,33 @@ class AgentDoctorCommand extends Command
     private function formatAgentIdList(array $agentIds): string
     {
         return $agentIds === [] ? 'none' : implode(', ', $agentIds);
+    }
+
+    /**
+     * @param  array<int, mixed>  $summaries
+     * @param  list<string>  $fallbackAgentIds
+     */
+    private function formatAgentReasonList(array $summaries, array $fallbackAgentIds): string
+    {
+        $items = [];
+        foreach ($summaries as $summary) {
+            if (! is_array($summary)) {
+                continue;
+            }
+
+            $agentId = trim((string) ($summary['agent_id'] ?? ''));
+            if ($agentId === '') {
+                continue;
+            }
+
+            $codes = array_values(array_filter(
+                (array) ($summary['reason_codes'] ?? []),
+                fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
+            ));
+            $items[] = $codes === [] ? $agentId : $agentId.'('.implode(',', $codes).')';
+        }
+
+        return $items === [] ? $this->formatAgentIdList($fallbackAgentIds) : implode(', ', $items);
     }
 
     private function boolWord(mixed $value): string

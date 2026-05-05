@@ -372,6 +372,12 @@ class OperatorEvidenceService
             'scheduled_empty_success_outputs_window' => (int) ($counts['scheduled_empty_success_outputs_window'] ?? 0),
             'scheduled_non_ascii_output_runs_window' => (int) ($counts['scheduled_non_ascii_output_runs_window'] ?? 0),
             'scheduled_guarded_output_runs_window' => (int) ($counts['scheduled_guarded_output_runs_window'] ?? 0),
+            'top_issue_codes' => array_values(array_filter(
+                (array) ($counts['top_issue_codes'] ?? []),
+                fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
+            )),
+            'top_agent_reasons_critical' => $this->compactAgentReasonList($counts['top_agent_reasons_critical'] ?? []),
+            'top_agent_reasons_warning' => $this->compactAgentReasonList($counts['top_agent_reasons_warning'] ?? []),
             'recursion_status' => $this->nullableString($counts['recursion_status'] ?? null),
             'trace_status' => $this->nullableString($counts['trace_status'] ?? null),
             'trace_files_over_retention' => $counts['trace_files_over_retention'] ?? null,
@@ -421,6 +427,13 @@ class OperatorEvidenceService
                 'scheduled_cjk_output_runs_window' => (int) ($summary['scheduled_cjk_output_runs_window'] ?? 0),
                 'scheduled_non_ascii_output_runs_window' => (int) ($summary['scheduled_non_ascii_output_runs_window'] ?? 0),
                 'scheduled_guarded_output_runs_window' => (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
+                'issue_code_counts' => $this->integerCountMap($summary['issue_code_counts'] ?? []),
+                'top_issue_codes' => array_values(array_filter(
+                    (array) ($summary['top_issue_codes'] ?? []),
+                    fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
+                )),
+                'top_agent_reasons_critical' => AgentDoctorService::compactAgentReasonSummaries($payload, 'critical'),
+                'top_agent_reasons_warning' => AgentDoctorService::compactAgentReasonSummaries($payload, 'warning'),
                 'recursion_status' => $this->nullableString($recursion['status'] ?? null),
                 'recursion_calls_7d' => (int) ($recursion['calls_7d'] ?? 0),
                 'recursion_move_on_rate_7d' => $recursion['move_on_rate_7d'] ?? null,
@@ -2490,6 +2503,44 @@ class OperatorEvidenceService
     private function compactCounts(array $section): array
     {
         return is_array($section['counts'] ?? null) ? $section['counts'] : [];
+    }
+
+    /**
+     * @return list<array{agent_id:string,reason_codes:list<string>}>
+     */
+    private function compactAgentReasonList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($value as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $agentId = trim((string) ($row['agent_id'] ?? ''));
+            if ($agentId === '' || preg_match('/^[A-Za-z0-9._:-]{1,96}$/', $agentId) !== 1) {
+                continue;
+            }
+
+            $reasonCodes = array_values(array_filter(
+                (array) ($row['reason_codes'] ?? []),
+                fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
+            ));
+
+            $rows[] = [
+                'agent_id' => $agentId,
+                'reason_codes' => array_slice($reasonCodes, 0, 8),
+            ];
+
+            if (count($rows) >= 5) {
+                break;
+            }
+        }
+
+        return $rows;
     }
 
     private function compactFreshness(array $section): array

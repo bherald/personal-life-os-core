@@ -745,7 +745,7 @@ class AgentDoctorService
 
         $status = $critical !== [] ? 'critical' : ($warnings !== [] ? 'warning' : 'healthy');
 
-        return [
+        $report = [
             'agent_id' => $agentId,
             'scheduled_job' => $scheduledJob,
             'sessions' => $sessions,
@@ -756,6 +756,195 @@ class AgentDoctorService
             'warnings' => $warnings,
             'critical' => $critical,
         ];
+
+        $report['issue_codes'] = self::agentReasonCodes($report);
+
+        return $report;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return list<array{agent_id:string,reason_codes:list<string>}>
+     */
+    public static function compactAgentReasonSummaries(array $payload, string $status, int $limit = 5): array
+    {
+        $agents = is_array($payload['agents'] ?? null) ? $payload['agents'] : [];
+        $summaries = [];
+
+        foreach ($agents as $agent) {
+            if (! is_array($agent) || ($agent['status'] ?? null) !== $status) {
+                continue;
+            }
+
+            $agentId = self::safeCompactAgentId($agent['agent_id'] ?? null);
+            if ($agentId === null) {
+                continue;
+            }
+
+            $reasonCodes = is_array($agent['issue_codes'] ?? null)
+                ? self::sanitizeReasonCodes($agent['issue_codes'])
+                : self::agentReasonCodes($agent);
+
+            $summaries[] = [
+                'agent_id' => $agentId,
+                'reason_codes' => $reasonCodes,
+            ];
+
+            if (count($summaries) >= max(1, $limit)) {
+                break;
+            }
+        }
+
+        return $summaries;
+    }
+
+    /**
+     * @param  array<string, mixed>  $agent
+     * @return list<string>
+     */
+    private static function agentReasonCodes(array $agent): array
+    {
+        $codes = [];
+        $sessions = is_array($agent['sessions'] ?? null) ? $agent['sessions'] : [];
+        $scheduledJob = is_array($agent['scheduled_job'] ?? null) ? $agent['scheduled_job'] : [];
+        $reviewQueue = is_array($agent['review_queue'] ?? null) ? $agent['review_queue'] : [];
+        $registry = is_array($agent['registry'] ?? null) ? $agent['registry'] : [];
+        $memory = is_array($agent['memory'] ?? null) ? $agent['memory'] : [];
+
+        if ((int) ($sessions['critical_stalled'] ?? 0) > 0) {
+            self::addReasonCode($codes, 'session_critical_stalled');
+        } elseif ((int) ($sessions['stalled'] ?? 0) > 0) {
+            self::addReasonCode($codes, 'session_stalled');
+        }
+
+        if ((int) ($sessions['expired_unreaped'] ?? 0) > 0) {
+            self::addReasonCode($codes, 'session_expired_unreaped');
+        }
+
+        $failureWarn = (int) config('health_thresholds.agents.consecutive_failures_warning', 2);
+        $failureCrit = (int) config('health_thresholds.agents.consecutive_failures_critical', 3);
+        $consecutiveFailures = (int) ($scheduledJob['consecutive_failures'] ?? 0);
+        if ($consecutiveFailures >= $failureCrit) {
+            self::addReasonCode($codes, 'scheduled_job_failures_critical');
+        } elseif ($consecutiveFailures >= $failureWarn) {
+            self::addReasonCode($codes, 'scheduled_job_failures_warning');
+        }
+
+        $timeoutSeconds = max(0, (int) ($scheduledJob['timeout_minutes'] ?? 0)) * 60;
+        $p95Runtime = $scheduledJob['p95_runtime_s_24h'] ?? null;
+        if ($timeoutSeconds > 0 && $p95Runtime !== null) {
+            $runtimeWarn = (float) config('health_thresholds.agents.runtime_timeout_warning_ratio', 0.7);
+            $runtimeCrit = (float) config('health_thresholds.agents.runtime_timeout_critical_ratio', 1.0);
+            if ((float) $p95Runtime >= $timeoutSeconds * $runtimeCrit) {
+                self::addReasonCode($codes, 'scheduled_runtime_timeout');
+            } elseif ((float) $p95Runtime >= $timeoutSeconds * $runtimeWarn) {
+                self::addReasonCode($codes, 'scheduled_runtime_near_timeout');
+            }
+        }
+
+        $reviewExpiryHours = max(1, (int) config('agents.review_expiry_days', 7) * 24);
+        $reviewWarnHours = $reviewExpiryHours * (float) config('health_thresholds.agents.review_queue_warning_fraction', 0.5);
+        $oldestAge = $reviewQueue['oldest_age_hours'] ?? null;
+        if ($oldestAge !== null && (float) $oldestAge >= $reviewWarnHours) {
+            self::addReasonCode($codes, 'review_queue_aged');
+        }
+
+        $highPriorityAge = (float) ($reviewQueue['oldest_high_priority_age_hours'] ?? 0.0);
+        $highWarn = (float) config('health_thresholds.agents.high_priority_warning_hours', 6.0);
+        if ((int) ($reviewQueue['high_priority'] ?? 0) > 0 && $highPriorityAge >= $highWarn) {
+            self::addReasonCode($codes, 'review_queue_high_priority_aged');
+        }
+
+        if (($scheduledJob['enabled'] ?? false) && ($registry['skill_present'] ?? null) === false) {
+            self::addReasonCode($codes, 'skill_missing');
+        }
+
+        if (count((array) ($registry['tools_blocked'] ?? [])) >= max(1, (int) config('health_thresholds.agents.tools_blocked_critical', 1))) {
+            self::addReasonCode($codes, 'registry_tools_blocked');
+        }
+
+        if (count((array) ($registry['tools_missing'] ?? [])) >= max(1, (int) config('health_thresholds.agents.tools_missing_warning', 1))) {
+            self::addReasonCode($codes, 'registry_tools_missing');
+        }
+
+        if (count((array) ($registry['tools_disabled'] ?? [])) > 0) {
+            self::addReasonCode($codes, 'registry_tools_disabled');
+        }
+
+        if ((int) ($scheduledJob['cjk_output_runs_24h'] ?? 0) > 0) {
+            self::addReasonCode($codes, 'scheduled_output_cjk');
+        }
+
+        if ((int) ($scheduledJob['guarded_output_runs_24h'] ?? 0) > 0) {
+            self::addReasonCode($codes, 'scheduled_output_guarded');
+        }
+
+        if ((int) ($memory['error_episodes_window'] ?? 0) > 0) {
+            self::addReasonCode($codes, 'memory_error_episode');
+        }
+
+        $memoryTokenWarn = (int) config('health_thresholds.agents.memory_tokens_warning', 100_000);
+        if ($memoryTokenWarn > 0 && (int) ($memory['tokens_window'] ?? 0) >= $memoryTokenWarn) {
+            self::addReasonCode($codes, 'memory_token_pressure');
+        }
+
+        $episodesWithoutDistillationWarn = (int) config('health_thresholds.agents.episodes_without_distillation_warning', 25);
+        $episodes = (int) ($memory['episodes_window'] ?? 0);
+        $summaries = (int) ($memory['summaries_window'] ?? 0);
+        if ($episodesWithoutDistillationWarn > 0 && $episodes >= $episodesWithoutDistillationWarn && $summaries === 0) {
+            self::addReasonCode($codes, 'memory_distillation_missing');
+        }
+
+        $distillationStaleHours = (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0);
+        $hoursSinceLastSummary = $memory['hours_since_last_summary'] ?? null;
+        if ($distillationStaleHours > 0 && $hoursSinceLastSummary !== null && (float) $hoursSinceLastSummary >= $distillationStaleHours) {
+            self::addReasonCode($codes, 'memory_distillation_stale');
+        }
+
+        if ((int) ($memory['procedures_low_quality'] ?? 0) > 0) {
+            self::addReasonCode($codes, 'procedure_low_quality');
+        }
+
+        return array_slice($codes, 0, 8);
+    }
+
+    /**
+     * @param  list<string>  $codes
+     */
+    private static function addReasonCode(array &$codes, string $code): void
+    {
+        if (! in_array($code, $codes, true)) {
+            $codes[] = $code;
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function sanitizeReasonCodes(mixed $codes): array
+    {
+        if (! is_array($codes)) {
+            return [];
+        }
+
+        return array_values(array_slice(array_filter(
+            $codes,
+            fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
+        ), 0, 8));
+    }
+
+    private static function safeCompactAgentId(mixed $value): ?string
+    {
+        $agentId = trim((string) $value);
+        if ($agentId === '') {
+            return null;
+        }
+
+        if (preg_match('/^[A-Za-z0-9._:-]{1,96}$/', $agentId) === 1) {
+            return $agentId;
+        }
+
+        return 'agent-'.substr(hash('sha256', $agentId), 0, 12);
     }
 
     /**
@@ -1047,6 +1236,7 @@ class AgentDoctorService
         $scheduledCjkOutputRuns = 0;
         $scheduledNonAsciiOutputRuns = 0;
         $scheduledGuardedOutputRuns = 0;
+        $issueCodeCounts = [];
 
         foreach ($agents as $agent) {
             $sessionsActive += (int) ($agent['sessions']['active'] ?? 0);
@@ -1070,7 +1260,13 @@ class AgentDoctorService
             if (($agent['review_queue']['oldest_age_hours'] ?? null) !== null && $agent['warnings'] !== []) {
                 $reviewAged++;
             }
+
+            foreach (self::sanitizeReasonCodes($agent['issue_codes'] ?? []) as $code) {
+                $issueCodeCounts[$code] = ($issueCodeCounts[$code] ?? 0) + 1;
+            }
         }
+
+        arsort($issueCodeCounts);
 
         return [
             'agents_total' => count($agents),
@@ -1094,6 +1290,8 @@ class AgentDoctorService
             'scheduled_cjk_output_runs_window' => $scheduledCjkOutputRuns,
             'scheduled_non_ascii_output_runs_window' => $scheduledNonAsciiOutputRuns,
             'scheduled_guarded_output_runs_window' => $scheduledGuardedOutputRuns,
+            'issue_code_counts' => $issueCodeCounts,
+            'top_issue_codes' => array_slice(array_keys($issueCodeCounts), 0, 8),
         ];
     }
 
