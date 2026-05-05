@@ -170,6 +170,12 @@ const packetContextItems = computed(() => {
     packetContextEntry('person', 'Person', formatPersonId(packetFieldValue('person_id'))),
     packetContextEntry('status', 'Status', formatPacketStatus(packetFieldValue('packet_status'))),
     packetContextEntry(
+      'origin',
+      'Origin',
+      formatRemediationOriginValue(),
+      formatRemediationOriginTitle()
+    ),
+    packetContextEntry(
       'boundary',
       'Boundary',
       compactText(packetFocusFieldValue('boundary_label')),
@@ -267,6 +273,11 @@ const packetFocusFieldValue = (field) => {
   return packetFieldValue(field)
 }
 
+const remediationOrigin = computed(() => {
+  const origin = props.item?.review_focus?.remediation_origin
+  return origin && typeof origin === 'object' && !Array.isArray(origin) ? origin : null
+})
+
 const stringOrNull = (value) => {
   if (value === null || value === undefined) {
     return null
@@ -308,6 +319,37 @@ const formatMediaHealth = () => {
   return missing && missing > 0
     ? `${count} refs, ${missing} missing`
     : `${count} refs`
+}
+
+const formatRemediationOriginValue = () => {
+  const origin = remediationOrigin.value
+  if (!origin) {
+    return null
+  }
+
+  return formatPacketStatus(origin.finding_type)
+    || formatPacketStatus(origin.source_review_type)
+    || (Array.isArray(origin.operation_types) ? formatPacketStatus(origin.operation_types[0]) : null)
+    || null
+}
+
+const formatRemediationOriginTitle = () => {
+  const origin = remediationOrigin.value
+  if (!origin) {
+    return null
+  }
+
+  const parts = [
+    origin.source_review_type ? `Source: ${formatPacketStatus(origin.source_review_type)}` : null,
+    origin.finding_type ? `Finding: ${formatPacketStatus(origin.finding_type)}` : null,
+    Array.isArray(origin.operation_types) && origin.operation_types.length
+      ? `Operations: ${origin.operation_types.map(formatPacketStatus).filter(Boolean).join(', ')}`
+      : null,
+    origin.apply_enabled === false ? 'Apply held' : null,
+    origin.writeback === false ? 'Writeback off' : null,
+  ].filter(Boolean)
+
+  return parts.length ? parts.join(' · ') : null
 }
 
 const numberOrNull = (value) => {
@@ -497,7 +539,8 @@ const getImageUrl = (source) => {
 }
 
 .packet-context-chip.is-access,
-.packet-context-chip.is-media {
+.packet-context-chip.is-media,
+.packet-context-chip.is-origin {
   border-color: rgba(99, 179, 237, 0.32);
   background: rgba(99, 179, 237, 0.08);
 }
