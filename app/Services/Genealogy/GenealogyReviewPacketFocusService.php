@@ -70,6 +70,12 @@ class GenealogyReviewPacketFocusService
         $approvalReady = $persistedPreview
             && $previewOnly === true
             && $this->validationAllowsApproval($validation);
+        $approvalBlockers = $approvalReady ? [] : $this->approvalBlockers(
+            $persistedPreview,
+            $previewOnly,
+            $applyPreview,
+            $validation
+        );
 
         return [
             'review_mode' => 'single_packet',
@@ -94,12 +100,8 @@ class GenealogyReviewPacketFocusService
             'preview_only' => $previewOnly,
             'canonical_mutation' => $persistedPreview ? $this->previewHasCanonicalMutation($applyPreview) : null,
             'approval_ready' => $approvalReady,
-            'approval_blockers' => $approvalReady ? [] : $this->approvalBlockers(
-                $persistedPreview,
-                $previewOnly,
-                $applyPreview,
-                $validation
-            ),
+            'approval_blockers' => $approvalBlockers,
+            'review_readiness' => $this->reviewReadiness($approvalReady, $approvalBlockers),
         ];
     }
 
@@ -609,5 +611,32 @@ class GenealogyReviewPacketFocusService
         }
 
         return $blockers;
+    }
+
+    /**
+     * @param  list<array{code: string, label: string}>  $approvalBlockers
+     * @return array{state: string, label: string, reason_code: string|null, blocker_count: int}
+     */
+    private function reviewReadiness(bool $approvalReady, array $approvalBlockers): array
+    {
+        if ($approvalReady) {
+            return [
+                'state' => 'ready',
+                'label' => 'Ready for review',
+                'reason_code' => null,
+                'blocker_count' => 0,
+            ];
+        }
+
+        $firstBlocker = $approvalBlockers[0] ?? null;
+        $reasonCode = $firstBlocker['code'] ?? 'approval_ready_unknown';
+        $reasonLabel = $firstBlocker['label'] ?? 'Approval readiness unknown';
+
+        return [
+            'state' => 'blocked',
+            'label' => "Blocked: {$reasonLabel}",
+            'reason_code' => $reasonCode,
+            'blocker_count' => count($approvalBlockers),
+        ];
     }
 }

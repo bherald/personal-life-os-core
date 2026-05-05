@@ -62,6 +62,14 @@
           <span class="packet-context-value">{{ entry.value }}</span>
         </span>
       </div>
+      <div
+        v-if="packetReadinessLine"
+        class="packet-readiness-line"
+        :class="`is-${packetReadinessLine.state}`"
+        :title="packetReadinessLine.title"
+      >
+        {{ packetReadinessLine.label }}
+      </div>
 
       <!-- Header Row -->
       <div v-if="schema?.card?.header" class="card-header">
@@ -203,6 +211,52 @@ const packetContextItems = computed(() => {
     ),
     packetContextEntry('preview', 'Preview', formatPacketStatus(packetFocusFieldValue('preview_status'))),
   ].filter(Boolean)
+})
+
+const packetReadinessLine = computed(() => {
+  if (!isReviewPacket.value) {
+    return null
+  }
+
+  const readiness = props.item?.review_focus?.review_readiness
+  if (readiness && typeof readiness === 'object' && !Array.isArray(readiness)) {
+    const label = stringOrNull(readiness.label)
+    if (label) {
+      const state = stringOrNull(readiness.state) || 'unknown'
+      const blockerCount = numberOrNull(readiness.blocker_count)
+      const reason = stringOrNull(readiness.reason_code)
+
+      return {
+        state: normalizeReadinessState(state),
+        label,
+        title: [
+          reason ? `Reason: ${formatPacketStatus(reason)}` : null,
+          blockerCount && blockerCount > 0 ? `${blockerCount} blocker${blockerCount === 1 ? '' : 's'}` : null,
+        ].filter(Boolean).join(' · ') || label,
+      }
+    }
+  }
+
+  const approvalReady = props.item?.review_focus?.approval_ready
+  if (approvalReady === true) {
+    return { state: 'ready', label: 'Ready for review', title: 'Ready for review' }
+  }
+
+  if (approvalReady === false) {
+    const blockers = Array.isArray(props.item?.review_focus?.approval_blockers)
+      ? props.item.review_focus.approval_blockers
+      : []
+    const firstBlocker = blockers.find((blocker) => blocker && typeof blocker === 'object' && !Array.isArray(blocker))
+    const label = stringOrNull(firstBlocker?.label) || formatPacketStatus(firstBlocker?.code) || 'Approval readiness blocked'
+
+    return {
+      state: 'blocked',
+      label: `Blocked: ${label}`,
+      title: blockers.length ? `${blockers.length} blocker${blockers.length === 1 ? '' : 's'}` : label,
+    }
+  }
+
+  return null
 })
 
 const intakeGeneratedBadge = computed(() => {
@@ -363,6 +417,15 @@ const numberOrNull = (value) => {
 
   const numeric = Number(value)
   return Number.isFinite(numeric) ? numeric : null
+}
+
+const normalizeReadinessState = (value) => {
+  const state = stringOrNull(value)
+  if (state === 'ready' || state === 'blocked') {
+    return state
+  }
+
+  return 'unknown'
 }
 
 const compactLocator = (value) => {
@@ -556,6 +619,30 @@ const getImageUrl = (source) => {
 .packet-context-chip.is-preview {
   border-color: rgba(99, 179, 237, 0.32);
   background: rgba(99, 179, 237, 0.08);
+}
+
+.packet-readiness-line {
+  display: flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid rgba(99, 179, 237, 0.7);
+  border-radius: 4px;
+  background: rgba(99, 179, 237, 0.08);
+  color: var(--ops-peach);
+  font-size: 0.74rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.packet-readiness-line.is-ready {
+  border-left-color: var(--ops-green);
+  background: rgba(113, 231, 158, 0.08);
+}
+
+.packet-readiness-line.is-blocked {
+  border-left-color: var(--ops-gold);
+  background: rgba(255, 204, 102, 0.08);
 }
 
 .packet-context-label {
