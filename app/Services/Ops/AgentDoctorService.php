@@ -691,11 +691,6 @@ class AgentDoctorService
             $warnings[] = "{$cjkOutputs} scheduled output(s) contain CJK/non-English script markers";
         }
 
-        $nonAsciiOutputs = (int) ($scheduledJob['non_ascii_output_runs_24h'] ?? 0);
-        if ($nonAsciiOutputs > 0) {
-            $warnings[] = "{$nonAsciiOutputs} scheduled output(s) contain non-ASCII markers";
-        }
-
         $guardedOutputs = (int) ($scheduledJob['guarded_output_runs_24h'] ?? 0);
         if ($guardedOutputs > 0) {
             $warnings[] = "{$guardedOutputs} scheduled output(s) were suppressed by Agent Output Guard";
@@ -1165,7 +1160,7 @@ class AgentDoctorService
             ),
             $this->check(
                 'agent_output_quality',
-                $cjkOutputRuns > 0 || $nonAsciiOutputRuns > 0 || $guardedOutputRuns > 0 ? 'warning' : 'ok',
+                $cjkOutputRuns > 0 || $guardedOutputRuns > 0 ? 'warning' : 'ok',
                 "{$cjkOutputRuns} scheduled output(s) contain CJK/non-English script markers; {$nonAsciiOutputRuns} non-ASCII output(s); {$guardedOutputRuns} guarded output(s)"
             ),
         ];

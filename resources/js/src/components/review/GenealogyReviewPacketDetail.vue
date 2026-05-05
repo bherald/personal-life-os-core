@@ -14,6 +14,31 @@
       </div>
     </div>
 
+    <section class="packet-section review-focus-section">
+      <div class="section-heading">
+        <span>Review focus</span>
+        <span class="section-status preview">one packet</span>
+      </div>
+      <div class="focus-grid">
+        <div v-for="row in reviewFocusRows" :key="row.key" class="focus-tile" :class="row.className">
+          <span class="focus-label">{{ row.label }}</span>
+          <span class="focus-value" :title="row.title || row.value">{{ row.value }}</span>
+        </div>
+      </div>
+      <div v-if="reviewFocusClaim" class="focus-line">
+        <span class="focus-label">Claim</span>
+        <span class="focus-line-value">{{ reviewFocusClaim }}</span>
+      </div>
+      <div v-if="reviewFocusSource" class="focus-line">
+        <span class="focus-label">Source</span>
+        <span class="focus-line-value mono" :title="reviewFocusSource">{{ reviewFocusSource }}</span>
+      </div>
+      <div class="focus-boundary" :class="{ danger: reviewFocusCanonicalMutation === true }">
+        <span class="focus-label">Canonical mutation</span>
+        <span>{{ canonicalMutationLabel }}</span>
+      </div>
+    </section>
+
     <section class="packet-section status-section">
       <div class="section-heading">
         <span>Packet status</span>
@@ -446,7 +471,8 @@
         <button
           type="button"
           class="packet-action primary"
-          :disabled="actioning || !canAct"
+          :disabled="actioning || !canMarkReviewed"
+          :title="markReviewedDisabledTitle"
           @click="submitDecision('approve')"
         >
           Mark reviewed
@@ -533,6 +559,7 @@ const validation = computed(() => objectValue(props.context?.validation, details
 const applyPreview = computed(() => objectValue(props.context?.apply_preview, details.value.apply_preview))
 const decisionLog = computed(() => arrayValue(props.context?.decision_log, details.value.decision_log).filter(isPlainObject))
 const mediaRefs = computed(() => arrayValue(props.context?.media_refs).filter(isPlainObject))
+const reviewFocus = computed(() => objectValue(props.context?.review_focus))
 const personSnapshot = computed(() => {
   const person = props.context?.person
   return isPlainObject(person) && Object.keys(person).length ? person : null
@@ -549,6 +576,90 @@ const packetStatus = computed(() => {
 const packetStatusLabel = computed(() => packetStatus.value || item.value.status || 'pending')
 
 const canAct = computed(() => String(item.value.status || '').toLowerCase() === 'pending')
+const canMarkReviewed = computed(() => canAct.value && reviewFocusApprovalReady.value)
+
+const markReviewedDisabledTitle = computed(() => {
+  if (!canAct.value) return 'Packet is not pending.'
+  if (validationMissing.value) return 'Review packet validation is missing.'
+  if (validationErrors.value.length) return 'Resolve validation errors before marking reviewed.'
+  if (reviewFocusApprovalReady.value === false) return 'Preview metadata is not approval-ready.'
+  return ''
+})
+
+const reviewFocusApprovalReady = computed(() => {
+  if (typeof reviewFocus.value.approval_ready === 'boolean') {
+    return reviewFocus.value.approval_ready
+  }
+
+  return validation.value.valid === true && validationErrors.value.length === 0 && applyPreviewIsPreviewOnly.value
+})
+
+const reviewFocusRows = computed(() => [
+  focusRow('person', 'Person', reviewFocusPersonLabel.value),
+  focusRow('status', 'Packet status', packetStatusLabel.value),
+  focusRow('boundary', 'Boundary', reviewFocusBoundaryLabel.value, null, reviewFocusBoundaryLabel.value),
+  focusRow('sources', 'Sources', formatCount(reviewFocus.value.source_count ?? sourceLocators.value.length)),
+  focusRow('claims', 'Claims', formatCount(reviewFocus.value.claim_count ?? claims.value.length)),
+  focusRow('preview', 'Preview', previewStatusLabel.value, previewStatusClass.value),
+].filter(Boolean))
+
+const reviewFocusPersonLabel = computed(() => {
+  const label = stringOrNull(reviewFocus.value.person_label)
+  if (label) return label
+
+  if (personSnapshot.value) {
+    const name = [personSnapshot.value.given_name, personSnapshot.value.surname].filter(Boolean).join(' ').trim()
+    if (name) return `${name} (#${personSnapshot.value.id})`
+  }
+
+  const personId = reviewFocus.value.person_id ?? identity.value.person_id ?? claims.value.find((claim) => claim?.person_id)?.person_id
+  return formatPersonId(personId)
+})
+
+const reviewFocusClaim = computed(() => {
+  const summary = stringOrNull(reviewFocus.value.claim_summary)
+  if (summary) return summary
+  const first = claims.value.find(isPlainObject)
+  return first ? claimText(first) : null
+})
+
+const reviewFocusBoundaryLabel = computed(() => {
+  return stringOrNull(reviewFocus.value.boundary_label)
+    || stringOrNull(details.value?.sprint?.boundary_label)
+    || stringOrNull(packet.value?.sprint_boundary)
+    || stringOrNull(packet.value?.operator_boundary)
+    || stringOrNull(packet.value?.boundary_label)
+    || stringOrNull(packet.value?.boundary)
+    || null
+})
+
+const reviewFocusSource = computed(() => stringOrNull(reviewFocus.value.source_locator) || sourceLocators.value[0] || null)
+
+const reviewFocusCanonicalMutation = computed(() => {
+  if (typeof reviewFocus.value.canonical_mutation === 'boolean') {
+    return reviewFocus.value.canonical_mutation
+  }
+  if (applyPreview.value.mutates_accepted_facts === true) {
+    return true
+  }
+  if (applyPreview.value.mutates_accepted_facts === false) {
+    return false
+  }
+  return null
+})
+
+const canonicalMutationLabel = computed(() => {
+  if (reviewFocusCanonicalMutation.value === true) return 'possible'
+  if (reviewFocusCanonicalMutation.value === false) return 'none'
+  return 'unknown'
+})
+
+const previewStatusLabel = computed(() => formatPacketStatus(reviewFocus.value.preview_status) || (applyPreviewIsPreviewOnly.value ? 'preview only' : 'unknown'))
+
+const previewStatusClass = computed(() => {
+  if (reviewFocusCanonicalMutation.value === true || !applyPreviewIsPreviewOnly.value) return 'danger'
+  return 'ok'
+})
 
 const latestDecision = computed(() => {
   for (let idx = decisionLog.value.length - 1; idx >= 0; idx--) {
@@ -606,11 +717,13 @@ const identityRows = computed(() => kvRows(identity.value))
 const privacyRows = computed(() => kvRows(privacy.value))
 const validationErrors = computed(() => arrayValue(validation.value.errors))
 const validationWarnings = computed(() => arrayValue(validation.value.warnings))
+const validationMissing = computed(() => !validation.value || Object.keys(validation.value).length === 0)
 
 const validationStatus = computed(() => {
   if (validation.value.valid === true) return 'valid'
   if (validationErrors.value.length) return 'errors'
   if (validationWarnings.value.length) return 'warnings'
+  if (validationMissing.value) return 'missing'
   return 'unknown'
 })
 
@@ -623,6 +736,20 @@ const validationStatusClass = computed(() => {
 
 const applyPreviewMutates = computed(() => applyPreview.value.mutates_accepted_facts === true)
 const previewOperations = computed(() => arrayValue(applyPreview.value.operations).filter(isPlainObject))
+const applyPreviewIsPreviewOnly = computed(() => {
+  if (applyPreview.value.mutates_accepted_facts !== false) {
+    return false
+  }
+
+  if (hasAcceptedFactMutations(applyPreview.value.accepted_fact_mutations)) {
+    return false
+  }
+
+  return previewOperations.value.every((operation) => {
+    return !previewFlagEnabled(operation.mutates_accepted_facts)
+      && !previewFlagEnabled(operation.apply_enabled)
+  })
+})
 
 watch(() => props.context?.item?.unified_id, () => resetDecisionInputs())
 watch(() => props.decisionResetToken, () => resetDecisionInputs())
@@ -649,6 +776,11 @@ function addLocator(values, value) {
   if (typeof value !== 'string') return
   const trimmed = value.trim()
   if (trimmed !== '') values.push(trimmed)
+}
+
+function focusRow(key, label, value, className = null, title = null) {
+  if (value === null || value === undefined || value === '') return null
+  return { key, label, value, className, title }
 }
 
 function objectValue(...candidates) {
@@ -795,6 +927,21 @@ function operationRows(operation) {
   }
 
   return kvRows(operation).filter((row) => !hidden.includes(row.key))
+}
+
+function hasAcceptedFactMutations(value) {
+  if (Array.isArray(value)) return value.length > 0
+  return value !== null && value !== undefined && value !== false && value !== ''
+}
+
+function previewFlagEnabled(value) {
+  if (value === null || value === undefined || value === false || value === 0 || value === '') {
+    return false
+  }
+  if (typeof value === 'string') {
+    return !['0', 'false', 'no', 'off'].includes(value.trim().toLowerCase())
+  }
+  return true
 }
 
 function isStructuredRemediationOperation(operation) {
@@ -1097,6 +1244,76 @@ function objectKeys(value) {
 
 .status-section {
   border-color: rgba(99, 179, 237, 0.24);
+}
+
+.review-focus-section {
+  border-color: rgba(255, 204, 102, 0.26);
+}
+
+.focus-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.focus-tile,
+.focus-line,
+.focus-boundary {
+  min-width: 0;
+  border: 1px solid rgba(255, 204, 102, 0.18);
+  border-radius: 0.35rem;
+  background: rgba(255, 204, 102, 0.06);
+  padding: 0.45rem 0.5rem;
+}
+
+.focus-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.focus-tile.ok {
+  border-color: rgba(47, 158, 68, 0.35);
+  background: rgba(47, 158, 68, 0.10);
+}
+
+.focus-tile.danger,
+.focus-boundary.danger {
+  border-color: rgba(204, 68, 68, 0.45);
+  background: rgba(204, 68, 68, 0.12);
+}
+
+.focus-label {
+  color: #b39ddb;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.focus-value,
+.focus-line-value,
+.focus-boundary {
+  color: #f0e6ff;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.focus-value {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.focus-line,
+.focus-boundary {
+  display: grid;
+  grid-template-columns: minmax(4.75rem, 0.2fr) minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: baseline;
+  margin-top: 0.45rem;
 }
 
 .section-heading {

@@ -283,6 +283,10 @@ class GenealogyReviewPacketValidatorService
 
     private function isManualSource(array $source): bool
     {
+        if ($this->hasManualOnlyLocator($source)) {
+            return true;
+        }
+
         foreach (['manual', 'manual_source', 'is_manual', 'manual_only', 'manual_required', 'requires_manual', 'needs_manual'] as $key) {
             if ($this->truthy($source[$key] ?? null)) {
                 return true;
@@ -292,6 +296,56 @@ class GenealogyReviewPacketValidatorService
         foreach (['type', 'source_type', 'kind', 'method', 'provenance', 'origin'] as $key) {
             $value = strtolower(trim((string) ($source[$key] ?? '')));
             if (in_array($value, self::MANUAL_SOURCE_VALUES, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function hasManualOnlyLocator(array $source): bool
+    {
+        foreach (self::LOCATOR_KEYS as $key) {
+            $value = $source[$key] ?? null;
+            if (is_scalar($value) && $this->isManualOnlyDomainLocator(trim((string) $value))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isManualOnlyDomainLocator(string $locator): bool
+    {
+        if ($locator === '') {
+            return false;
+        }
+
+        $host = parse_url($locator, PHP_URL_HOST);
+        if (! is_string($host) || trim($host) === '') {
+            if (preg_match('/^[a-z0-9.-]+\.[a-z]{2,}(?:[\/?#]|$)/i', $locator) !== 1) {
+                return false;
+            }
+
+            $host = parse_url('https://'.$locator, PHP_URL_HOST);
+        }
+
+        if (! is_string($host) || trim($host) === '') {
+            return false;
+        }
+
+        $host = strtolower(trim($host));
+        foreach ((array) config('scraping.manual_only_domains', []) as $domain) {
+            if (! is_scalar($domain)) {
+                continue;
+            }
+
+            $domain = strtolower(trim((string) $domain));
+            if ($domain === '') {
+                continue;
+            }
+
+            if ($host === $domain || str_ends_with($host, '.'.$domain)) {
                 return true;
             }
         }

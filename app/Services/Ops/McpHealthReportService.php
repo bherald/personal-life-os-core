@@ -348,6 +348,9 @@ class McpHealthReportService
             'external_not_running' => collect($reports)->filter(fn (array $server): bool => (bool) ($server['enabled'] ?? false)
                 && (bool) data_get($server, 'process.expected', false)
                 && ! (bool) data_get($server, 'process.running', false))->count(),
+            'disabled_external_running' => collect($reports)->filter(fn (array $server): bool => ! (bool) ($server['enabled'] ?? false)
+                && (bool) data_get($server, 'process.expected', false)
+                && (bool) data_get($server, 'process.running', false))->count(),
         ];
     }
 

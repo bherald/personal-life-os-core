@@ -78,6 +78,23 @@ class FaceTelemetryReportService
             $lines[] = '- `'.$name.'`: `'.($section['status'] ?? 'unknown').'`';
         }
 
+        $registrySummary = $payload['sections']['mysql_face_registry']['summary'] ?? null;
+        if (is_array($registrySummary)) {
+            $lines[] = '';
+            $lines[] = '## Face Registry';
+            $lines[] = '';
+            $lines[] = '- Total faces: `'.($registrySummary['total_faces'] ?? 0).'`';
+            $lines[] = '- Visible faces: `'.($registrySummary['visible_faces'] ?? 0).'`';
+            $lines[] = '- Genealogy-linked faces: `'.($registrySummary['genealogy_linked_faces'] ?? 0).'`';
+            $lines[] = '- Named-only faces: `'.($registrySummary['named_only_faces'] ?? 0).'`';
+            $lines[] = '- Stale named-only faces: `'.($registrySummary['stale_named_only_faces'] ?? 0).'`';
+            $lines[] = '- Open named-only faces: `'.($registrySummary['open_named_only_faces'] ?? 0).'`';
+            $lines[] = '- Stale open named-only faces: `'.($registrySummary['stale_open_named_only_faces'] ?? 0).'`';
+            $lines[] = '- Terminal-decided named-only faces: `'.($registrySummary['terminal_decided_named_only_faces'] ?? 0).'`';
+            $lines[] = '- Oldest named-only updated at: `'.($registrySummary['oldest_named_only_updated_at'] ?? 'none').'`';
+            $lines[] = '- Newest named-only updated at: `'.($registrySummary['newest_named_only_updated_at'] ?? 'none').'`';
+        }
+
         $candidateSummary = $payload['sections']['candidate_decisions']['summary'] ?? null;
         if (is_array($candidateSummary)) {
             $lines[] = '';
@@ -186,6 +203,12 @@ class FaceTelemetryReportService
                     'visible_faces' => $this->intValue($registry['visible_faces'] ?? 0),
                     'genealogy_linked_faces' => $this->intValue($registry['genealogy_linked_faces'] ?? 0),
                     'named_only_faces' => $this->intValue($registry['named_only_faces'] ?? 0),
+                    'stale_named_only_faces' => $this->intValue($registry['stale_named_only_faces'] ?? 0),
+                    'open_named_only_faces' => $this->intValue($registry['open_named_only_faces'] ?? 0),
+                    'stale_open_named_only_faces' => $this->intValue($registry['stale_open_named_only_faces'] ?? 0),
+                    'terminal_decided_named_only_faces' => $this->intValue($registry['terminal_decided_named_only_faces'] ?? 0),
+                    'oldest_named_only_updated_at' => $this->nullableString($registry['oldest_named_only_updated_at'] ?? null),
+                    'newest_named_only_updated_at' => $this->nullableString($registry['newest_named_only_updated_at'] ?? null),
                     'unclustered_visible_faces' => $this->intValue($registry['unclustered_visible_faces'] ?? 0),
                 ],
                 'review_queue' => [
@@ -193,6 +216,7 @@ class FaceTelemetryReportService
                     'total_queue_items' => $this->intValue($queue['total_queue_items'] ?? 0),
                     'pending_items' => $this->intValue($queue['pending_items'] ?? 0),
                     'stale_pending_items' => $this->intValue($queue['stale_pending_items'] ?? 0),
+                    'stale_no_match_pending' => $this->intValue($queue['stale_no_match_pending'] ?? 0),
                     'recent_updates' => $this->intValue($queue['recent_updates'] ?? 0),
                     'oldest_pending_at' => $this->nullableString($queue['oldest_pending_at'] ?? null),
                 ],
@@ -264,19 +288,26 @@ class FaceTelemetryReportService
             '## Headlines',
             '',
             sprintf(
-                '- Face registry: `%s`, total=`%s`, visible=`%s`, linked=`%s`, named_only=`%s`, unclustered_visible=`%s`',
+                '- Face registry: `%s`, total=`%s`, visible=`%s`, linked=`%s`, named_only=`%s`, open_named_only=`%s`, stale_open_named_only=`%s`, terminal_named_only=`%s`, stale_named_only_faces=`%s`, oldest_named_only_updated_at=`%s`, newest_named_only_updated_at=`%s`, unclustered_visible=`%s`',
                 $sections['mysql_face_registry']['status'],
                 $sections['mysql_face_registry']['total_faces'],
                 $sections['mysql_face_registry']['visible_faces'],
                 $sections['mysql_face_registry']['genealogy_linked_faces'],
                 $sections['mysql_face_registry']['named_only_faces'],
+                $sections['mysql_face_registry']['open_named_only_faces'],
+                $sections['mysql_face_registry']['stale_open_named_only_faces'],
+                $sections['mysql_face_registry']['terminal_decided_named_only_faces'],
+                $sections['mysql_face_registry']['stale_named_only_faces'],
+                $sections['mysql_face_registry']['oldest_named_only_updated_at'] ?? 'none',
+                $sections['mysql_face_registry']['newest_named_only_updated_at'] ?? 'none',
                 $sections['mysql_face_registry']['unclustered_visible_faces']
             ),
             sprintf(
-                '- Review queue: `%s`, pending=`%s`, stale=`%s`, recent_updates=`%s`, oldest_pending=`%s`',
+                '- Review queue: `%s`, pending=`%s`, stale=`%s`, stale_no_match=`%s`, recent_updates=`%s`, oldest_pending=`%s`',
                 $sections['review_queue']['status'],
                 $sections['review_queue']['pending_items'],
                 $sections['review_queue']['stale_pending_items'],
+                $sections['review_queue']['stale_no_match_pending'],
                 $sections['review_queue']['recent_updates'],
                 $sections['review_queue']['oldest_pending_at'] ?? 'none'
             ),
@@ -339,20 +370,27 @@ class FaceTelemetryReportService
                 $compact['recommendation_count']
             ),
             sprintf(
-                'face-registry: %s total=%s visible=%s linked=%s named_only=%s unclustered_visible=%s',
+                'face-registry: %s total=%s visible=%s linked=%s named_only=%s open_named_only=%s stale_open_named_only=%s terminal_named_only=%s stale_named_only_faces=%s oldest_named_only_updated_at=%s newest_named_only_updated_at=%s unclustered_visible=%s',
                 $sections['mysql_face_registry']['status'],
                 $sections['mysql_face_registry']['total_faces'],
                 $sections['mysql_face_registry']['visible_faces'],
                 $sections['mysql_face_registry']['genealogy_linked_faces'],
                 $sections['mysql_face_registry']['named_only_faces'],
+                $sections['mysql_face_registry']['open_named_only_faces'],
+                $sections['mysql_face_registry']['stale_open_named_only_faces'],
+                $sections['mysql_face_registry']['terminal_decided_named_only_faces'],
+                $sections['mysql_face_registry']['stale_named_only_faces'],
+                $sections['mysql_face_registry']['oldest_named_only_updated_at'] ?? 'none',
+                $sections['mysql_face_registry']['newest_named_only_updated_at'] ?? 'none',
                 $sections['mysql_face_registry']['unclustered_visible_faces']
             ),
             sprintf(
-                'review-queue: %s total=%s pending=%s stale=%s recent_updates=%s oldest_pending=%s',
+                'review-queue: %s total=%s pending=%s stale=%s stale_no_match=%s recent_updates=%s oldest_pending=%s',
                 $sections['review_queue']['status'],
                 $sections['review_queue']['total_queue_items'],
                 $sections['review_queue']['pending_items'],
                 $sections['review_queue']['stale_pending_items'],
+                $sections['review_queue']['stale_no_match_pending'],
                 $sections['review_queue']['recent_updates'],
                 $sections['review_queue']['oldest_pending_at'] ?? 'none'
             ),
@@ -412,15 +450,29 @@ class FaceTelemetryReportService
             $row = DB::selectOne(
                 "SELECT
                     COUNT(*) AS total_faces,
-                    SUM(CASE WHEN hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
-                    SUM(CASE WHEN hidden = 1 THEN 1 ELSE 0 END) AS hidden_faces,
-                    SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) AS verified_faces,
-                    SUM(CASE WHEN genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS genealogy_linked_faces,
-                    SUM(CASE WHEN hidden = 0 AND person_name IS NOT NULL AND person_name != '' AND genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS named_only_faces,
-                    SUM(CASE WHEN hidden = 0 AND (cluster_id IS NULL OR cluster_id = 0) THEN 1 ELSE 0 END) AS unclustered_visible_faces,
-                    SUM(CASE WHEN created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS created_recent_faces
-                 FROM file_registry_faces",
-                [$hours]
+                    SUM(CASE WHEN frf.hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
+                    SUM(CASE WHEN frf.hidden = 1 THEN 1 ELSE 0 END) AS hidden_faces,
+                    SUM(CASE WHEN frf.verified = 1 THEN 1 ELSE 0 END) AS verified_faces,
+                    SUM(CASE WHEN frf.genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS genealogy_linked_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_open_named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_faces,
+                    MIN(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN frf.updated_at ELSE NULL END) AS oldest_named_only_updated_at,
+                    MAX(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN frf.updated_at ELSE NULL END) AS newest_named_only_updated_at,
+                    SUM(CASE WHEN frf.hidden = 0 AND (frf.cluster_id IS NULL OR frf.cluster_id = 0) THEN 1 ELSE 0 END) AS unclustered_visible_faces,
+                    SUM(CASE WHEN frf.created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS created_recent_faces
+                 FROM file_registry_faces frf
+                 LEFT JOIN (
+                    SELECT
+                        file_registry_face_id,
+                        MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.terminal')) = 'true' THEN 1 ELSE 0 END) AS has_terminal_candidate_decision
+                    FROM genealogy_face_match_queue
+                    WHERE file_registry_face_id IS NOT NULL
+                    GROUP BY file_registry_face_id
+                 ) candidate_decisions ON candidate_decisions.file_registry_face_id = frf.id",
+                [$hours, $hours, $hours]
             );
 
             $totalFaces = $this->intValue($row->total_faces ?? 0);
@@ -435,6 +487,12 @@ class FaceTelemetryReportService
                     'verified_faces' => $this->intValue($row->verified_faces ?? 0),
                     'genealogy_linked_faces' => $this->intValue($row->genealogy_linked_faces ?? 0),
                     'named_only_faces' => $this->intValue($row->named_only_faces ?? 0),
+                    'stale_named_only_faces' => $this->intValue($row->stale_named_only_faces ?? 0),
+                    'open_named_only_faces' => $this->intValue($row->open_named_only_faces ?? 0),
+                    'stale_open_named_only_faces' => $this->intValue($row->stale_open_named_only_faces ?? 0),
+                    'terminal_decided_named_only_faces' => $this->intValue($row->terminal_decided_named_only_faces ?? 0),
+                    'oldest_named_only_updated_at' => $this->nullableString($row->oldest_named_only_updated_at ?? null),
+                    'newest_named_only_updated_at' => $this->nullableString($row->newest_named_only_updated_at ?? null),
                     'unclustered_visible_faces' => $this->intValue($row->unclustered_visible_faces ?? 0),
                     'created_recent_faces' => $this->intValue($row->created_recent_faces ?? 0),
                 ],
@@ -456,10 +514,11 @@ class FaceTelemetryReportService
                     SUM(CASE WHEN status = 'auto_linked' THEN 1 ELSE 0 END) AS auto_linked_items,
                     SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored_items,
                     SUM(CASE WHEN status = 'pending' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_pending_items,
+                    SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_no_match_pending,
                     SUM(CASE WHEN updated_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS recent_updates,
                     MIN(CASE WHEN status = 'pending' THEN created_at ELSE NULL END) AS oldest_pending_at
                  FROM genealogy_face_match_queue",
-                [$hours, $hours]
+                [$hours, $hours, $hours]
             );
 
             $pending = $this->intValue($row->pending_items ?? 0);
@@ -476,6 +535,7 @@ class FaceTelemetryReportService
                     'auto_linked_items' => $this->intValue($row->auto_linked_items ?? 0),
                     'ignored_items' => $this->intValue($row->ignored_items ?? 0),
                     'stale_pending_items' => $stalePending,
+                    'stale_no_match_pending' => $this->intValue($row->stale_no_match_pending ?? 0),
                     'recent_updates' => $this->intValue($row->recent_updates ?? 0),
                     'oldest_pending_at' => $this->nullableString($row->oldest_pending_at ?? null),
                 ],

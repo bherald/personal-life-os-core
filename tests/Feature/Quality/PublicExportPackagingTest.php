@@ -347,6 +347,60 @@ class PublicExportPackagingTest extends TestCase
     }
 
     #[Test]
+    public function public_genealogy_source_docs_do_not_advertise_stale_integration_claims(): void
+    {
+        $paths = [
+            'README.md',
+            'docs/public-install-prerequisites.md',
+            'docs/genealogy-research-methodology.md',
+            'docs/papers-and-newsletters/white-paper-plos.md',
+            'docs/papers-and-newsletters/linkedin-article-plos.md',
+        ];
+
+        $checked = 0;
+
+        foreach ($paths as $path) {
+            if (! is_file(base_path($path))) {
+                continue;
+            }
+
+            $checked++;
+            $body = file_get_contents(base_path($path));
+
+            foreach ([
+                '/\b\d+\s+integrated\s+(?:genealogy\s+)?sources\b/i',
+                '/\b14\s+(?:source|provider)\s+integrations\b/i',
+                '/\b(?:integrates|searches|queries)\s+14\s+(?:genealogy\s+)?sources\b/i',
+                '/\bintegrated\s+(?:free\/open\s+|public\s+|genealogy\s+)*sources\b/i',
+            ] as $pattern) {
+                $this->assertDoesNotMatchRegularExpression(
+                    $pattern,
+                    $body,
+                    "{$path} must split automated sources, manual targets, and private opt-ins instead of advertising stale integrated-source claims."
+                );
+            }
+
+            foreach (preg_split('/\R/', $body) as $index => $line) {
+                if (! preg_match('/\bFamilySearch\b.*\b(?:OAuth|API)\b|\b(?:OAuth|API)\b.*\bFamilySearch\b/i', $line)) {
+                    continue;
+                }
+
+                $this->assertMatchesRegularExpression(
+                    '/manual(?:\/|-| )only|absent|no automated API|no .*OAuth|not part|disabled|private opt-in|rather than autonomous APIs/i',
+                    $line,
+                    sprintf(
+                        '%s:%d may mention FamilySearch OAuth/API only to say it is absent, manual-only, disabled, or not an autonomous API.',
+                        $path,
+                        $index + 1
+                    )
+                );
+            }
+        }
+
+        $this->assertGreaterThanOrEqual(2, $checked, 'Expected at least the exported public README and install docs to be scanned.');
+    }
+
+    #[Test]
     public function public_joplin_adapter_is_optional_interoperability_only(): void
     {
         foreach ([

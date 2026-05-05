@@ -3,6 +3,7 @@
 namespace App\Services\Review;
 
 use App\Services\Genealogy\GenealogyReviewPacketApplyPreviewService;
+use App\Services\Genealogy\GenealogyReviewPacketFocusService;
 use App\Services\Genealogy\PersonService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -63,6 +64,17 @@ class ReviewContextEnrichmentService
         'family_child_unlink',
     ];
 
+    private const STRUCTURED_MEDIA_ID_KEYS = [
+        'genealogy_media_id' => true,
+        'media_id' => true,
+        'source_media_id' => true,
+    ];
+
+    private const STRUCTURED_MEDIA_IDS_KEYS = [
+        'media_ids' => true,
+        'source_media_ids' => true,
+    ];
+
     /**
      * Phase 2: heuristic source-classification table (Mills trio).
      *
@@ -98,11 +110,15 @@ class ReviewContextEnrichmentService
 
     private readonly GenealogyReviewPacketApplyPreviewService $reviewPacketApplyPreview;
 
+    private readonly GenealogyReviewPacketFocusService $reviewPacketFocus;
+
     public function __construct(
         private readonly PersonService $personService,
         ?GenealogyReviewPacketApplyPreviewService $reviewPacketApplyPreview = null,
+        ?GenealogyReviewPacketFocusService $reviewPacketFocus = null,
     ) {
         $this->reviewPacketApplyPreview = $reviewPacketApplyPreview ?? new GenealogyReviewPacketApplyPreviewService;
+        $this->reviewPacketFocus = $reviewPacketFocus ?? new GenealogyReviewPacketFocusService;
     }
 
     /**
@@ -176,7 +192,7 @@ class ReviewContextEnrichmentService
         ];
 
         if ($type === 'genealogy_review_packet') {
-            $context = array_merge($context, $this->buildGenealogyReviewPacketContext($details));
+            $context = array_merge($context, $this->buildGenealogyReviewPacketContext($details, $person));
         }
 
         if ($type === 'genealogy_finding') {
@@ -295,9 +311,10 @@ class ReviewContextEnrichmentService
      * @param  array<string, mixed>  $details
      * @return array<string, mixed>
      */
-    private function buildGenealogyReviewPacketContext(array $details): array
+    private function buildGenealogyReviewPacketContext(array $details, ?array $person = null): array
     {
         [$applyPreview, $applyPreviewMeta] = $this->packetApplyPreviewContext($details);
+        $validation = $this->detailArray($details, 'validation');
 
         return [
             'packet' => $this->detailArray($details, 'packet'),
@@ -312,10 +329,11 @@ class ReviewContextEnrichmentService
             'sources' => $this->detailArray($details, 'sources'),
             'identity' => $this->detailArray($details, 'identity'),
             'privacy' => $this->detailArray($details, 'privacy'),
-            'validation' => $this->detailArray($details, 'validation'),
+            'validation' => $validation,
             'apply_preview' => $applyPreview,
             'apply_preview_meta' => $applyPreviewMeta,
             'decision_log' => $this->detailArray($details, 'decision_log'),
+            'review_focus' => $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person),
         ];
     }
 
@@ -395,14 +413,14 @@ class ReviewContextEnrichmentService
     {
         $haystack = $this->mediaReferenceTextCandidates($details);
         $haystackText = implode(' ', $haystack);
-        if ($haystackText === '') {
-            return [];
+        $ids = $this->structuredMediaReferenceIds($details);
+
+        if ($haystackText !== ''
+            && preg_match_all('/\b(?:media\s*#?|media_id|genealogy_media_id)\s*[:=#]?\s*(\d{1,9})\b/i', $haystackText, $m)
+        ) {
+            $this->appendMediaReferenceIds($ids, $m[1]);
         }
 
-        if (! preg_match_all('/\bmedia\s*#?\s*(\d{1,9})\b/i', $haystackText, $m)) {
-            return [];
-        }
-        $ids = array_values(array_unique(array_map('intval', $m[1])));
         if ($ids === []) {
             return [];
         }
@@ -446,6 +464,83 @@ class ReviewContextEnrichmentService
         }
 
         return $out;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @return array<int, int>
+     */
+    private function structuredMediaReferenceIds(array $details): array
+    {
+        $ids = [];
+        $this->collectStructuredMediaReferenceIds($details, $ids);
+
+        return $ids;
+    }
+
+    /**
+     * @param  array<int, int>  $ids
+     */
+    private function collectStructuredMediaReferenceIds(mixed $value, array &$ids, int $depth = 0): void
+    {
+        if ($depth > 6 || ! is_array($value)) {
+            return;
+        }
+
+        foreach ($value as $key => $child) {
+            $normalizedKey = strtolower((string) $key);
+            if (isset(self::STRUCTURED_MEDIA_ID_KEYS[$normalizedKey])) {
+                $this->appendMediaReferenceId($ids, $child);
+
+                continue;
+            }
+
+            if (isset(self::STRUCTURED_MEDIA_IDS_KEYS[$normalizedKey])) {
+                $this->appendMediaReferenceIds($ids, $child);
+
+                continue;
+            }
+
+            if (is_array($child)) {
+                $this->collectStructuredMediaReferenceIds($child, $ids, $depth + 1);
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, int>  $ids
+     */
+    private function appendMediaReferenceIds(array &$ids, mixed $values): void
+    {
+        if (is_array($values)) {
+            foreach ($values as $value) {
+                $this->appendMediaReferenceIds($ids, $value);
+            }
+
+            return;
+        }
+
+        $this->appendMediaReferenceId($ids, $values);
+    }
+
+    /**
+     * @param  array<int, int>  $ids
+     */
+    private function appendMediaReferenceId(array &$ids, mixed $value): void
+    {
+        if (is_int($value)) {
+            $id = $value;
+        } elseif (is_string($value) && ctype_digit(trim($value))) {
+            $id = (int) trim($value);
+        } else {
+            return;
+        }
+
+        if ($id <= 0 || $id > 999_999_999 || in_array($id, $ids, true)) {
+            return;
+        }
+
+        $ids[] = $id;
     }
 
     /**

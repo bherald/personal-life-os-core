@@ -31,6 +31,7 @@ use Illuminate\Support\Facades\Log;
 class GenealogyProviderManager
 {
     protected array $providers = [];
+
     protected ?int $treeId = null;
 
     /**
@@ -43,15 +44,20 @@ class GenealogyProviderManager
      * Hardcoded fallback when DB table doesn't exist or is empty
      */
     protected const PROVIDER_CLASSES_FALLBACK = [
-        'wikitree'     => WikiTreeProvider::class,
-        'findagrave'   => FindAGraveProvider::class,
+        'wikitree' => WikiTreeProvider::class,
+        'findagrave' => FindAGraveProvider::class,
         'billiongraves' => BillionGravesProvider::class,
         'ellis_island' => EllisIslandProvider::class,
-        'blm_glo'      => BLMGLOProvider::class,
+        'blm_glo' => BLMGLOProvider::class,
     ];
 
     private const UNSUPPORTED_PROVIDER_IDS = [
+        'americanancestors',
+        'ancestry',
         'familysearch',
+        'findmypast',
+        'fold3',
+        'nehgs',
         'ancestry_dna',
     ];
 
@@ -72,6 +78,7 @@ class GenealogyProviderManager
 
         if ($cached !== null) {
             $this->providerClasses = $cached;
+
             return;
         }
 
@@ -86,6 +93,7 @@ class GenealogyProviderManager
 
             if (empty($rows)) {
                 $this->providerClasses = $this->fallbackProviderClasses();
+
                 return;
             }
 
@@ -106,7 +114,7 @@ class GenealogyProviderManager
                 }
             }
 
-            $this->providerClasses = !empty($classes) ? $classes : $this->fallbackProviderClasses();
+            $this->providerClasses = ! empty($classes) ? $classes : $this->fallbackProviderClasses();
             \Illuminate\Support\Facades\Cache::put($cacheKey, $this->providerClasses, 300);
 
         } catch (\Exception $e) {
@@ -139,13 +147,13 @@ class GenealogyProviderManager
     public function getAllResearchProviders(): array
     {
         try {
-            return DB::select("
+            return DB::select('
                 SELECT provider_id, provider_name, provider_type, base_url, auth_type,
                        capabilities, is_active, is_authenticated, priority, signup_url, notes,
                        last_used_at, last_error
                 FROM genealogy_research_providers
                 ORDER BY priority ASC
-            ");
+            ');
         } catch (\Exception $e) {
             return [];
         }
@@ -173,14 +181,15 @@ class GenealogyProviderManager
      */
     public function getProvider(string $providerId): ?GenealogyProviderInterface
     {
-        if (!isset($this->providerClasses[$providerId])) {
+        if (! isset($this->providerClasses[$providerId])) {
             Log::warning("GenealogyProviderManager: Unknown provider '{$providerId}'");
+
             return null;
         }
 
-        if (!isset($this->providers[$providerId])) {
+        if (! isset($this->providers[$providerId])) {
             $class = $this->providerClasses[$providerId];
-            $provider = new $class();
+            $provider = new $class;
 
             if ($this->treeId && method_exists($provider, 'setTreeContext')) {
                 $provider->setTreeContext($this->treeId);
@@ -253,12 +262,13 @@ class GenealogyProviderManager
     {
         $provider = $this->getProvider($providerId);
 
-        if (!$provider) {
+        if (! $provider) {
             return null;
         }
 
         if ($provider->getAuthType() !== 'oauth2') {
             Log::warning("Provider '{$providerId}' does not use OAuth2");
+
             return null;
         }
 
@@ -272,7 +282,7 @@ class GenealogyProviderManager
     {
         $provider = $this->getProvider($providerId);
 
-        if (!$provider) {
+        if (! $provider) {
             return false;
         }
 
@@ -296,13 +306,13 @@ class GenealogyProviderManager
 
         foreach ($this->getActiveProviders() as $id => $provider) {
             // Skip if specific providers requested and this isn't one
-            if ($providers && !in_array($id, $providers)) {
+            if ($providers && ! in_array($id, $providers)) {
                 continue;
             }
 
             // Check if provider supports the search type
             $capabilities = $provider->getCapabilities();
-            if (!($capabilities['search_persons'] ?? false) && !($capabilities['search_records'] ?? false)) {
+            if (! ($capabilities['search_persons'] ?? false) && ! ($capabilities['search_records'] ?? false)) {
                 continue;
             }
 
@@ -344,7 +354,7 @@ class GenealogyProviderManager
 
         foreach ($this->getActiveProviders() as $id => $provider) {
             $capabilities = $provider->getCapabilities();
-            if (!($capabilities['search_records'] ?? false)) {
+            if (! ($capabilities['search_records'] ?? false)) {
                 continue;
             }
 
@@ -385,7 +395,7 @@ class GenealogyProviderManager
         ];
 
         // Remove empty values
-        $criteria = array_filter($criteria, fn($v) => $v !== null && $v !== '');
+        $criteria = array_filter($criteria, fn ($v) => $v !== null && $v !== '');
 
         return $this->searchAllProviders($criteria, $options);
     }
@@ -395,16 +405,16 @@ class GenealogyProviderManager
      */
     public function getStoredTokens(): array
     {
-        if (!$this->treeId) {
+        if (! $this->treeId) {
             return [];
         }
 
-        return DB::select("
+        return DB::select('
             SELECT provider_id, external_user_id, external_username,
                    is_active, last_used_at, token_expires_at
             FROM genealogy_provider_tokens
             WHERE tree_id = ?
-        ", [$this->treeId]);
+        ', [$this->treeId]);
     }
 
     /**
@@ -412,39 +422,39 @@ class GenealogyProviderManager
      */
     public function disconnectProvider(string $providerId): bool
     {
-        if (!$this->treeId) {
+        if (! $this->treeId) {
             return false;
         }
 
-        return DB::delete("
+        return DB::delete('
             DELETE FROM genealogy_provider_tokens
             WHERE tree_id = ? AND provider_id = ?
-        ", [$this->treeId, $providerId]) > 0;
+        ', [$this->treeId, $providerId]) > 0;
     }
 
     /**
      * Get provider activity logs (RAW SQL)
      */
-    public function getProviderLogs(string $providerId = null, int $limit = 100): array
+    public function getProviderLogs(?string $providerId = null, int $limit = 100): array
     {
-        $sql = "
+        $sql = '
             SELECT provider_id, action, success, error_message,
                    response_time_ms, rate_limit_remaining, created_at
             FROM genealogy_provider_logs
-        ";
+        ';
         $params = [];
 
         if ($providerId) {
-            $sql .= " WHERE provider_id = ?";
+            $sql .= ' WHERE provider_id = ?';
             $params[] = $providerId;
         }
 
         if ($this->treeId) {
-            $sql .= ($providerId ? " AND" : " WHERE") . " (tree_id = ? OR tree_id IS NULL)";
+            $sql .= ($providerId ? ' AND' : ' WHERE').' (tree_id = ? OR tree_id IS NULL)';
             $params[] = $this->treeId;
         }
 
-        $sql .= " ORDER BY created_at DESC LIMIT ?";
+        $sql .= ' ORDER BY created_at DESC LIMIT ?';
         $params[] = $limit;
 
         return DB::select($sql, $params);
@@ -457,23 +467,23 @@ class GenealogyProviderManager
     /**
      * Search WikiTree profiles by name/dates — callable by agent tools.
      *
-     * @param array $params Keys: given_name, surname, birth_year, birth_place, limit
+     * @param  array  $params  Keys: given_name, surname, birth_year, birth_place, limit
      */
     public function searchWikiTree(array $params): array
     {
         /** @var WikiTreeProvider $provider */
         $provider = $this->getProvider('wikitree');
-        if (!$provider) {
+        if (! $provider) {
             return ['success' => false, 'error' => 'WikiTree provider not available', 'results' => []];
         }
 
         $criteria = array_filter([
-            'given_name'  => $params['given_name']  ?? null,
-            'surname'     => $params['surname']      ?? null,
-            'birth_year'  => $params['birth_year']   ?? null,
-            'birth_place' => $params['birth_place']  ?? null,
-            'death_year'  => $params['death_year']   ?? null,
-        ], fn($v) => $v !== null && $v !== '');
+            'given_name' => $params['given_name'] ?? null,
+            'surname' => $params['surname'] ?? null,
+            'birth_year' => $params['birth_year'] ?? null,
+            'birth_place' => $params['birth_place'] ?? null,
+            'death_year' => $params['death_year'] ?? null,
+        ], fn ($v) => $v !== null && $v !== '');
 
         return $provider->searchPersons($criteria, ['limit' => $params['limit'] ?? 20]);
     }
@@ -481,54 +491,54 @@ class GenealogyProviderManager
     /**
      * Get WikiTree ancestor tree up to N generations — callable by agent tools.
      *
-     * @param array $params Keys: wikitree_id (e.g. "Smith-1"), depth (1-5, default 3)
+     * @param  array  $params  Keys: wikitree_id (e.g. "Smith-1"), depth (1-5, default 3)
      */
     public function getWikiTreeAncestors(array $params): array
     {
         /** @var WikiTreeProvider $provider */
         $provider = $this->getProvider('wikitree');
-        if (!$provider) {
+        if (! $provider) {
             return ['success' => false, 'error' => 'WikiTree provider not available', 'ancestors' => []];
         }
 
         $personId = $params['wikitree_id'] ?? $params['person_id'] ?? null;
-        if (!$personId) {
+        if (! $personId) {
             return ['success' => false, 'error' => 'wikitree_id is required', 'ancestors' => []];
         }
 
-        return $provider->getAncestors((string)$personId, (int)($params['depth'] ?? 3));
+        return $provider->getAncestors((string) $personId, (int) ($params['depth'] ?? 3));
     }
 
     /**
      * Get WikiTree profile and immediate family — callable by agent tools.
      *
-     * @param array $params Keys: wikitree_id
+     * @param  array  $params  Keys: wikitree_id
      */
     public function getWikiTreePerson(array $params): array
     {
         /** @var WikiTreeProvider $provider */
         $provider = $this->getProvider('wikitree');
-        if (!$provider) {
+        if (! $provider) {
             return ['success' => false, 'error' => 'WikiTree provider not available'];
         }
 
         $personId = $params['wikitree_id'] ?? $params['person_id'] ?? null;
-        if (!$personId) {
+        if (! $personId) {
             return ['success' => false, 'error' => 'wikitree_id is required'];
         }
 
-        $person = $provider->getPerson((string)$personId);
-        if (!$person) {
-            return ['success' => false, 'error' => 'Person not found on WikiTree: ' . $personId];
+        $person = $provider->getPerson((string) $personId);
+        if (! $person) {
+            return ['success' => false, 'error' => 'Person not found on WikiTree: '.$personId];
         }
 
-        $family = $provider->getPersonFamily((string)$personId);
+        $family = $provider->getPersonFamily((string) $personId);
 
         return [
             'success' => true,
-            'source'  => 'WikiTree',
-            'person'  => $person,
-            'family'  => $family,
+            'source' => 'WikiTree',
+            'person' => $person,
+            'family' => $family,
         ];
     }
 
@@ -537,12 +547,12 @@ class GenealogyProviderManager
      */
     public function registerProvider(string $id, string $className): self
     {
-        if (!class_exists($className)) {
+        if (! class_exists($className)) {
             throw new \InvalidArgumentException("Provider class {$className} not found");
         }
 
-        if (!in_array(GenealogyProviderInterface::class, class_implements($className))) {
-            throw new \InvalidArgumentException("Provider class must implement GenealogyProviderInterface");
+        if (! in_array(GenealogyProviderInterface::class, class_implements($className))) {
+            throw new \InvalidArgumentException('Provider class must implement GenealogyProviderInterface');
         }
 
         $this->providerClasses[$id] = $className;

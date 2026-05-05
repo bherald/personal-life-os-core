@@ -67,6 +67,7 @@ when planning cleanup work:
 
 ```bash
 php artisan ops:review-backlog-report --compact
+php artisan ops:review-backlog-report --next-target
 php artisan ops:review-backlog-report --json --compact
 php artisan ops:review-backlog-report --json
 php artisan ops:review-backlog-report --markdown
@@ -77,6 +78,43 @@ The report groups pending review rows by age, review type, finding type, agent,
 and high-priority status. It is read-only and does not approve, reject, expire,
 archive, notify, or mutate review rows. Use `--compact` for routine operator
 or MCP checks that only need aggregate counts and cleanup guidance.
+
+Typed remediation materialization has a separate, dry-run-first operator
+handoff. Use it only when the next backlog target is a pending
+`genealogy_finding` typed-remediation candidate:
+
+```bash
+php artisan ops:review-backlog-report --next-target
+php artisan ops:review-backlog-report --json --next-target
+php artisan genealogy:materialize-typed-remediation --id=SOURCE_REVIEW_QUEUE_ID --json --compact
+php artisan genealogy:materialize-typed-remediation --token=SOURCE_REVIEW_QUEUE_TOKEN --json --compact
+```
+
+The first command selects one sanitized review target only. If its
+classification is high-priority, check `underlying_classification` and
+`underlying_next_action`; typed remediation work should proceed only when that
+underlying path is `typed_preview_needed` or the target is otherwise confirmed
+as a typed-remediation `genealogy_finding`. Run the materializer in its default
+dry-run mode with exactly one source selector, either `--id` or `--token`. The
+compact dry run must show the planned action, supported operation types,
+operation/guard counts, failed guard names, row-touch count,
+`no_canonical_write=true`, and `apply_held=true` without raw source URLs,
+tokens, ids, current-state rows, stale hashes, or evidence text. Use non-compact
+JSON only for direct operator inspection when the compact proof is insufficient.
+
+Only after an operator reviews that dry-run output should the same selector be
+run with `--execute`:
+
+```bash
+php artisan genealogy:materialize-typed-remediation --id=SOURCE_REVIEW_QUEUE_ID --execute --json
+php artisan genealogy:materialize-typed-remediation --token=SOURCE_REVIEW_QUEUE_TOKEN --execute --json
+```
+
+`--execute` may create or reuse a pending `genealogy_review_packet` row for
+review. It still must not write canonical genealogy tables, apply repairs,
+unlock apply/writeback, bulk approve, reject, or clear the source advisory row.
+Treat the materialized packet as review context only until a separate operator
+decision path explicitly supports apply.
 
 Use genealogy agent triage before any genealogy research-agent re-enablement
 discussion:
@@ -90,6 +128,9 @@ php artisan genealogy:agent-triage --json
 The compact report is read-only. It keeps target counts, per-target enabled
 state, sessions/reviews/AWO headline counts, next action, and recommendation
 count without dumping full scheduler, episode, nested review, or AWO details.
+Its validation proof also exposes gate counts and compact blocking gate ids so
+operators can see why future enablement remains blocked without opening the full
+payload.
 
 Use compact reviewer-feedback summaries when checking Review Packet UX feedback
 signals:
@@ -173,6 +214,82 @@ Key fields to check:
 Treat these surfaces as observation tools. They do not switch profiles, enable
 providers, run remediation, or change scheduler behavior.
 
+### Offline/Dev-Agent Compact Flow
+
+Use this sequence for the current local/offline dev-agent scorecard pass:
+
+```bash
+php artisan ops:agent-doctor --json --compact --since=24
+php artisan ops:mcp-health --compact
+php artisan plos:agent-trace-tail --limit=20 --since=24 --json
+php artisan plos:agent-trace-read trc_example --since=168 --json
+php artisan plos:agent-trace-read --event=evt_example --since=168 --json
+php artisan offline:dev-assist /doctor --json
+```
+
+`ops:agent-doctor --json --compact --since=24` is the first stop. It keeps only
+aggregate status and counts: agent totals, active/stalled sessions, pending
+reviews, scheduled-output signals, memory evidence, recursion status, compact
+trace-readiness, and capped critical/warning agent ids. It does not dump raw
+scheduled output, prompts, completions, trace content, full per-agent payloads,
+or review-row details.
+
+`ops:mcp-health --compact` checks configured MCP scorecards, local entry/path
+readiness, process presence, process matchability, marker counts, enabled versus
+disabled missing entries, and disabled external processes that are still
+running. It does not start, stop, restart, or dynamically exercise MCP servers,
+and it does not print env values, tokens, or raw process lines.
+
+Use `plos:agent-trace-tail` and `plos:agent-trace-read` only after Agent Doctor,
+MCP Health, or `offline:dev-assist` reports a trace id or trace-readiness issue.
+The trace commands read sanitized append-only NDJSON envelopes under local
+storage. They do not grant tool access, execute remediation, delete trace files,
+or promote dev-agent autonomy.
+
+`offline:dev-assist` is local opt-in, not part of routine observation. For
+status work, prefer `/doctor --json` with the default `read-only` approval mode.
+One-shot model requests return `trace_id` and `trace_written`; their trace
+envelopes store request `prompt_hash`, response `output_hash`, status, policy,
+model role, and classification metadata rather than raw prompts, completions,
+stdout/stderr, stack traces, tool parameters, secrets, or diffs. `repo-write`
+approval is a separate explicit operator choice and should not be used to clear
+scorecard warnings.
+
+Prompt Compressor MCP remains disabled by default and should be enabled only in
+trusted local/operator environments:
+
+```bash
+cd mcp-servers/prompt-compressor
+npm install
+npm run build
+```
+
+Then set `PROMPT_COMPRESSOR_MCP_ENABLED=true` in the local environment and
+confirm visibility with `php artisan ops:mcp-health --compact`. Treat it as
+context reduction only: token counting, prompt/diff/file compression, and local
+context store/retrieve/list. File reads stay inside configured allowed roots,
+`context_store` is a bounded local write, protected reads stay refused unless an
+operator deliberately overrides them, and stored context must not contain
+secrets, credentials, private release material, or living-person source text.
+
+A warning or critical scorecard is evidence to inspect configuration, backlog,
+or local process posture. It is not permission to widen offline profiles, enable
+cloud providers, run broader MCP tools, approve review rows, change scheduler
+behavior, or promote agent autonomy.
+
+For trend evidence, preview aggregate readiness snapshots before writing rows:
+
+```bash
+php artisan ops:agent-doctor-snapshot --dry-run --json
+php artisan ops:agent-doctor-history --json --days=7
+```
+
+Without `--dry-run`, `ops:agent-doctor-snapshot` appends one aggregate row to
+`dev_agent_readiness_snapshots`. The stored row contains only status/count
+fields, trace-readiness aggregates, recursion status/count, check ids, and
+scheduled output-quality counts. `ops:agent-doctor-history` reads that table
+only and does not re-run live diagnostics.
+
 ## Agent Output Quality Replay
 
 Use the AWO replay surface when checking whether agent output has enough
@@ -195,6 +312,13 @@ The summary keeps completed-review metrics separate from scanned row signals.
 scanned item with a replay hard-fail signal, including pending rows, and
 `pending_hard_fail_signal_count` isolates signals that do not yet have a final
 operator decision.
+
+For one-at-a-time review backlog cleanup, use
+`php artisan ops:review-backlog-report --next-target`. The payload is
+observe-only and sanitized. `classification` reflects the ordering reason, so a
+high-priority row may show `high_priority_pending_review`; when that happens,
+`underlying_classification` and `underlying_next_action` preserve the normal
+cleanup path such as typed-preview or source-backed packet work.
 
 Use `--compare-scheduled` after the weekly `awo_replay_weekly_report` has at
 least one successful retained run. It compares the latest scheduled Markdown
@@ -241,37 +365,6 @@ The command defaults to dry-run, requires `--execute` to delete rows, uses the
 and preserves `recursion_effectiveness`. See
 `docs/todo-012-arc-retention-cleanup-plan-2026-05-01.md` before running larger
 off-peak chunks.
-
-For local/offline development assistance, the first trace-envelope surface is
-also read-mostly and private to local storage. One-shot `offline:dev-assist`
-model requests write sanitized append-only NDJSON envelopes under
-`storage/app/dev-agent/traces/`; the envelopes contain trace ids, request/output
-hashes, status, and classification metadata rather than raw prompts,
-completions, stdout/stderr, stack traces, tool parameters, secrets, or diffs.
-`DEV_AGENT_TRACE_RETENTION_DAYS` sets the operator retention target reported by
-Agent Doctor and Operator Evidence; it does not delete files by itself.
-`config/dev_agent.php` also defines the offline dev-assist tool-readiness
-fixture used by `/doctor` to report missing read/write/patch/verify tools.
-The same `/doctor` payload includes a compact runtime scorecard for local model
-capacity and the selected local/routed model ids.
-
-```bash
-php artisan plos:agent-trace-tail --limit=20 --since=24
-php artisan plos:agent-trace-tail --json
-php artisan plos:agent-trace-read trc_example --json
-php artisan plos:agent-trace-read --event=evt_example --json
-php artisan ops:agent-doctor-snapshot --dry-run --json
-php artisan ops:agent-doctor-history --json --days=7
-```
-
-The trace commands are readers only. They do not grant tool access, run
-remediation, delete trace files, or promote dev-agent autonomy.
-`ops:agent-doctor-snapshot --dry-run --json` previews the same aggregate
-projection. Without `--dry-run`, the command appends one row to
-`dev_agent_readiness_snapshots` with only status/count fields, check ids, and
-scheduled output-quality counts for trend evidence. `ops:agent-doctor-history`
-reads that table only and reports aggregate history/deltas without re-running
-live diagnostics.
 
 Relevant docs:
 

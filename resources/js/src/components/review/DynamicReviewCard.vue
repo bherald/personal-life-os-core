@@ -2,7 +2,7 @@
   <div
     class="review-card"
     :class="[
-      { 'selected': selected, 'horizontal': schema?.card?.layout === 'horizontal' }
+      { 'selected': selected, 'horizontal': schema?.card?.layout === 'horizontal', 'review-packet': isReviewPacket }
     ]"
     :style="cardStyle"
     @click="$emit('select', item)"
@@ -50,6 +50,19 @@
         </div>
       </div>
 
+      <div v-if="packetContextItems.length" class="packet-context" aria-label="Review packet context">
+        <span
+          v-for="entry in packetContextItems"
+          :key="entry.key"
+          class="packet-context-chip"
+          :class="`is-${entry.key}`"
+          :title="entry.title || entry.value"
+        >
+          <span class="packet-context-label">{{ entry.label }}</span>
+          <span class="packet-context-value">{{ entry.value }}</span>
+        </span>
+      </div>
+
       <!-- Header Row -->
       <div v-if="schema?.card?.header" class="card-header">
         <template v-for="(field, idx) in schema.card.header" :key="idx">
@@ -79,7 +92,7 @@
           :disabled="inFlight || approvalDisabled"
           :title="approvalDisabledTitle"
         >
-          Approve
+          {{ approvalLabel }}
         </button>
         <button @click.stop="$emit('reject', item)" class="btn-reject" :disabled="inFlight">
           Reject
@@ -132,6 +145,7 @@ const props = defineProps({
   inFlight: { type: Boolean, default: false },
   approvalDisabled: { type: Boolean, default: false },
   approvalDisabledTitle: { type: String, default: '' },
+  approvalLabel: { type: String, default: 'Approve' },
 })
 
 defineEmits(['select', 'toggle-select', 'approve', 'reject', 'action', 'execute-remediation'])
@@ -141,6 +155,43 @@ const imageError = ref(false)
 const schema = computed(() => props.item.ui_schema || {})
 
 const cardStyle = computed(() => resolveSurfaceThemeStyle(props.item.color, 'ops-plum'))
+
+const isReviewPacket = computed(() => {
+  return props.item?.review_type === 'genealogy_review_packet'
+    || props.item?.source === 'genealogy_review_packet'
+})
+
+const packetContextItems = computed(() => {
+  if (!isReviewPacket.value) {
+    return []
+  }
+
+  return [
+    packetContextEntry('person', 'Person', formatPersonId(packetFieldValue('person_id'))),
+    packetContextEntry('status', 'Status', formatPacketStatus(packetFieldValue('packet_status'))),
+    packetContextEntry(
+      'boundary',
+      'Boundary',
+      compactText(packetFocusFieldValue('boundary_label')),
+      stringOrNull(packetFocusFieldValue('boundary_label'))
+    ),
+    packetContextEntry(
+      'source',
+      'Source',
+      compactLocator(packetFieldValue('source_locator')),
+      stringOrNull(packetFieldValue('source_locator'))
+    ),
+    packetContextEntry('claims', 'Claims', formatCount(packetFieldValue('claim_count'))),
+    packetContextEntry('sources', 'Sources', formatCount(packetFieldValue('source_count'))),
+    packetContextEntry(
+      'claim',
+      'Claim',
+      compactText(packetFocusFieldValue('claim_summary')),
+      stringOrNull(packetFocusFieldValue('claim_summary'))
+    ),
+    packetContextEntry('preview', 'Preview', formatPacketStatus(packetFocusFieldValue('preview_status'))),
+  ].filter(Boolean)
+})
 
 const intakeGeneratedBadge = computed(() => {
   return props.item.category === 'genealogy'
@@ -185,6 +236,85 @@ const getValue = (source) => {
   return props.item[source]
 }
 
+const packetContextEntry = (key, label, value, title = null) => {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  return { key, label, value, title }
+}
+
+const packetFieldValue = (field) => {
+  const value = props.item?.[field]
+  if (value !== null && value !== undefined && value !== '') {
+    return value
+  }
+
+  const detailValue = props.item?.details?.[field]
+  return detailValue !== null && detailValue !== undefined && detailValue !== ''
+    ? detailValue
+    : null
+}
+
+const packetFocusFieldValue = (field) => {
+  const focusValue = props.item?.review_focus?.[field]
+  if (focusValue !== null && focusValue !== undefined && focusValue !== '') {
+    return focusValue
+  }
+
+  return packetFieldValue(field)
+}
+
+const stringOrNull = (value) => {
+  if (value === null || value === undefined) {
+    return null
+  }
+
+  const str = String(value).trim()
+  return str === '' ? null : str
+}
+
+const formatPersonId = (value) => {
+  const str = stringOrNull(value)
+  return str ? `#${str}` : null
+}
+
+const formatPacketStatus = (value) => {
+  const str = stringOrNull(value)
+  return str ? str.replace(/[_-]+/g, ' ') : null
+}
+
+const formatCount = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? String(numeric) : String(value)
+}
+
+const compactLocator = (value) => {
+  const str = stringOrNull(value)
+  if (!str) {
+    return null
+  }
+
+  if (str.length <= 64) {
+    return str
+  }
+
+  return `${str.slice(0, 34)}...${str.slice(-24)}`
+}
+
+const compactText = (value) => {
+  const str = stringOrNull(value)
+  if (!str) {
+    return null
+  }
+
+  return str.length <= 88 ? str : `${str.slice(0, 85)}...`
+}
+
 const getImageUrl = (source) => {
   const url = getValue(source)
   if (!url) return null
@@ -215,6 +345,10 @@ const getImageUrl = (source) => {
   border-left-width: 12px;
   border-left-color: var(--ops-orange);
   box-shadow: 0 0 0 2px var(--ops-orange);
+}
+
+.review-card.review-packet {
+  gap: 0.875rem;
 }
 
 /* Body text on black — sky gives ~10.5:1 vs the muted-gray ~2.7:1 on plum */
@@ -308,6 +442,56 @@ const getImageUrl = (source) => {
   line-height: 1.35;
   color: var(--ops-text-muted);
   white-space: pre-wrap;
+}
+
+.packet-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.packet-context-chip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 100%;
+  padding: 0.18rem 0.45rem;
+  border: 1px solid rgba(255, 204, 102, 0.32);
+  border-radius: 4px;
+  background: rgba(255, 204, 102, 0.08);
+  color: var(--ops-peach);
+  font-size: 0.68rem;
+  line-height: 1.25;
+}
+
+.packet-context-chip.is-source {
+  max-width: min(100%, 34rem);
+}
+
+.packet-context-chip.is-claim {
+  max-width: min(100%, 38rem);
+}
+
+.packet-context-chip.is-preview {
+  border-color: rgba(99, 179, 237, 0.32);
+  background: rgba(99, 179, 237, 0.08);
+}
+
+.packet-context-label {
+  flex: 0 0 auto;
+  color: var(--ops-gold);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.packet-context-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-header {

@@ -16,6 +16,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:review-backlog-report --markdown --compact',
     'ops:review-backlog-report --next-target',
     'ops:review-backlog-report --json --next-target',
+    'ops:review-backlog-report --json --next-target --focus=typed-remediation',
+    'ops:review-backlog-report --json --next-target --focus=materializable-remediation',
     'ops:offline-status --json',
     'ops:offline-smoke --json',
     'ops:agent-doctor --json --since=24',
@@ -52,7 +54,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:evidence-sprint-report --json --compact',
     'genealogy:evidence-sprint-report --markdown',
     'genealogy:agent-triage --json',
+    'genealogy:agent-triage --compact',
     'genealogy:agent-triage --json --compact',
+    'genealogy:source-registry --validate',
     'awo:replay --window=7d --json',
     'awo:replay --window=7d --limit=500 --json',
     'awo:replay --window=7d --limit=500 --markdown',
@@ -96,6 +100,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:review-backlog-report --markdown --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target/);
   assert.match(listing, /php artisan ops:review-backlog-report --json --next-target/);
+  assert.match(listing, /php artisan ops:review-backlog-report --json --next-target --focus=typed-remediation/);
+  assert.match(listing, /php artisan ops:review-backlog-report --json --next-target --focus=materializable-remediation/);
   assert.match(listing, /php artisan ops:offline-smoke --json/);
   assert.match(listing, /php artisan ops:agent-doctor --json --since=24/);
   assert.match(listing, /php artisan ops:agent-doctor --compact/);
@@ -118,7 +124,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json/);
+  assert.match(listing, /php artisan genealogy:agent-triage --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json --compact/);
+  assert.match(listing, /php artisan genealogy:source-registry --validate/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --days=30 --json/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --json --compact/);
   assert.match(listing, /php artisan genealogy:review-feedback --json --compact/);
@@ -202,6 +210,30 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(arbitraryNextTargetVariantResult, /Blocked:/);
   assert.match(arbitraryNextTargetVariantResult, /Use command "list"/);
 
+  const arbitraryNextTargetFocusResult = await plosArtisan({
+    command: 'ops:review-backlog-report --json --next-target --focus=all',
+    on_prod: false,
+  });
+
+  assert.match(arbitraryNextTargetFocusResult, /Blocked:/);
+  assert.match(arbitraryNextTargetFocusResult, /Use command "list"/);
+
+  const reorderedNextTargetFocusResult = await plosArtisan({
+    command: 'ops:review-backlog-report --next-target --json --focus=typed-remediation',
+    on_prod: false,
+  });
+
+  assert.match(reorderedNextTargetFocusResult, /Blocked:/);
+  assert.match(reorderedNextTargetFocusResult, /Use command "list"/);
+
+  const reorderedMaterializableFocusResult = await plosArtisan({
+    command: 'ops:review-backlog-report --next-target --json --focus=materializable-remediation',
+    on_prod: false,
+  });
+
+  assert.match(reorderedMaterializableFocusResult, /Blocked:/);
+  assert.match(reorderedMaterializableFocusResult, /Use command "list"/);
+
   const arbitraryRunProofResult = await plosArtisan({
     command: 'news:pushover-proof --workflow=news_brief --run-id=1185 --json --compact',
     on_prod: false,
@@ -209,6 +241,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(arbitraryRunProofResult, /Blocked:/);
   assert.match(arbitraryRunProofResult, /Use command "list"/);
+
+  const materializeDryRunResult = await plosArtisan({
+    command: 'genealogy:materialize-typed-remediation --id=123 --json',
+    on_prod: false,
+  });
+
+  assert.match(materializeDryRunResult, /Blocked:/);
+  assert.match(materializeDryRunResult, /Use command "list"/);
 
   const ragScaleReviewFileResult = await plosArtisan({
     command: 'rag:scale-review --json --retrieval-file=/tmp/evidence.json',

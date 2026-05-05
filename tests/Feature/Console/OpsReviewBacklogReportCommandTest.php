@@ -160,7 +160,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $service = Mockery::mock(ReviewBacklogReportService::class);
         $service->shouldReceive('nextTarget')
             ->once()
-            ->with(7, 8, false)
+            ->with(7, 8, false, null)
             ->andReturn($payload);
         $service->shouldReceive('collect')->never();
         $this->app->instance(ReviewBacklogReportService::class, $service);
@@ -173,6 +173,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $decoded = json_decode((string) Artisan::output(), true);
         $this->assertSame(0, $exit);
         $this->assertSame($payload, $decoded);
+        $this->assertSame('typed_preview_needed', $decoded['next_target']['underlying_classification']);
         $this->assertArrayNotHasKey('title', $decoded['next_target']);
         $this->assertArrayNotHasKey('summary', $decoded['next_target']);
         $this->assertArrayNotHasKey('details', $decoded['next_target']);
@@ -185,7 +186,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $service = Mockery::mock(ReviewBacklogReportService::class);
         $service->shouldReceive('nextTarget')
             ->once()
-            ->with(10, 9, true)
+            ->with(10, 9, true, null)
             ->andReturn($payload);
         $service->shouldReceive('toNextTargetText')
             ->once()
@@ -203,6 +204,81 @@ class OpsReviewBacklogReportCommandTest extends TestCase
 
         $this->assertSame(0, $exit);
         $this->assertStringContainsString('Review backlog next target:', (string) Artisan::output());
+    }
+
+    public function test_next_target_focus_option_is_forwarded(): void
+    {
+        $payload = $this->nextTargetPayload(['focus' => 'typed-remediation']);
+
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, 'typed-remediation')
+            ->andReturn($payload);
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--json' => true,
+            '--next-target' => true,
+            '--focus' => 'typed-remediation',
+        ]);
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('typed-remediation', json_decode((string) Artisan::output(), true)['focus']);
+    }
+
+    public function test_next_target_materializable_focus_option_is_forwarded(): void
+    {
+        $payload = $this->nextTargetPayload(['focus' => 'materializable-remediation']);
+
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, 'materializable-remediation')
+            ->andReturn($payload);
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--json' => true,
+            '--next-target' => true,
+            '--focus' => 'materializable-remediation',
+        ]);
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('materializable-remediation', json_decode((string) Artisan::output(), true)['focus']);
+    }
+
+    public function test_focus_option_requires_next_target(): void
+    {
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('collect')->never();
+        $service->shouldReceive('nextTarget')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--focus' => 'typed-remediation',
+        ]);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('The --focus option is only supported with --next-target.', (string) Artisan::output());
+    }
+
+    public function test_focus_option_rejects_unknown_values(): void
+    {
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('collect')->never();
+        $service->shouldReceive('nextTarget')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'all-the-things',
+        ]);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('Unsupported --focus value. Supported values: typed-remediation, materializable-remediation.', (string) Artisan::output());
     }
 
     public function test_json_and_markdown_options_are_mutually_exclusive(): void
@@ -387,10 +463,12 @@ class OpsReviewBacklogReportCommandTest extends TestCase
                 'unified_id' => 'system_alert:abc',
                 'review_type' => 'system_alert',
                 'finding_type' => null,
-                'classification' => 'stale_infrastructure_relevance_check',
+                'classification' => 'high_priority_pending_review',
+                'underlying_classification' => 'typed_preview_needed',
                 'created_at' => '2026-04-03 02:19:32',
                 'priority' => 8,
                 'next_action' => 'Review one high-priority pending row first; classify only, and do not bulk approve or reject.',
+                'underlying_next_action' => 'Classify as typed-preview-needed unless a materialized read-only preview already exists.',
                 'evidence_flags' => [
                     'stale' => true,
                     'high_priority' => true,

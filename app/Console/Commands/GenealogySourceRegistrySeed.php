@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Genealogy\SourceRegistryService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -12,14 +13,20 @@ use Illuminate\Support\Facades\DB;
  *   php artisan genealogy:source-registry --seed     # Populate from routing matrix
  *   php artisan genealogy:source-registry --stats     # Show registry statistics
  *   php artisan genealogy:source-registry --list      # List all entries
+ *   php artisan genealogy:source-registry --validate  # Validate manual/public automation posture
  */
 class GenealogySourceRegistrySeed extends Command
 {
-    protected $signature = 'genealogy:source-registry {--seed : Seed from routing matrix} {--stats : Show statistics} {--list : List all entries}';
+    protected $signature = 'genealogy:source-registry {--seed : Seed from routing matrix} {--stats : Show statistics} {--list : List all entries} {--validate : Validate manual/public automation posture}';
+
     protected $description = 'GEN-1: Manage genealogy source registry';
 
     public function handle(): int
     {
+        if ($this->option('validate')) {
+            return $this->validatePosture();
+        }
+
         if ($this->option('stats')) {
             return $this->showStats();
         }
@@ -32,8 +39,39 @@ class GenealogySourceRegistrySeed extends Command
             return $this->seed();
         }
 
-        $this->info('Usage: --seed, --stats, or --list');
+        $this->info('Usage: --seed, --stats, --list, or --validate');
+
         return 0;
+    }
+
+    private function validatePosture(): int
+    {
+        $result = app(SourceRegistryService::class)->validatePublicSourcePosture();
+        $summary = $result['summary'] ?? ['checked' => 0, 'errors' => 0];
+        $this->line(sprintf(
+            'Genealogy source registry posture: checked=%d errors=%d valid=%s',
+            (int) ($summary['checked'] ?? 0),
+            (int) ($summary['errors'] ?? 0),
+            ! empty($result['valid']) ? 'yes' : 'no',
+        ));
+
+        $errors = is_array($result['errors'] ?? null) ? $result['errors'] : [];
+        if ($errors !== []) {
+            $this->table(
+                ['Archive', 'Domain', 'Tool', 'Code'],
+                array_map(
+                    fn (array $error): array => [
+                        $error['archive_name'] ?? '',
+                        $error['domain'] ?? '',
+                        $error['tool_name'] ?? '',
+                        $error['code'] ?? '',
+                    ],
+                    $errors
+                )
+            );
+        }
+
+        return ! empty($result['valid']) ? 0 : 1;
     }
 
     private function seed(): int
@@ -46,20 +84,21 @@ class GenealogySourceRegistrySeed extends Command
 
         foreach ($entries as $entry) {
             $exists = DB::selectOne(
-                "SELECT id FROM genealogy_source_registry WHERE archive_name = ? AND JSON_CONTAINS(eras, ?) AND JSON_CONTAINS(regions, ?)",
+                'SELECT id FROM genealogy_source_registry WHERE archive_name = ? AND JSON_CONTAINS(eras, ?) AND JSON_CONTAINS(regions, ?)',
                 [$entry['archive_name'], json_encode($entry['eras'][0] ?? 'all'), json_encode($entry['regions'][0] ?? 'all')]
             );
 
             if ($exists) {
                 $skipped++;
+
                 continue;
             }
 
-            DB::insert("
+            DB::insert('
                 INSERT INTO genealogy_source_registry
                 (archive_name, archive_url, record_types, eras, regions, ethnicities, tool_name, priority, coverage_start_year, coverage_end_year, access_type, notes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ", [
+            ', [
                 $entry['archive_name'],
                 $entry['archive_url'],
                 json_encode($entry['record_types']),
@@ -77,21 +116,24 @@ class GenealogySourceRegistrySeed extends Command
         }
 
         $this->info("Done: {$inserted} inserted, {$skipped} skipped (already exist)");
+
         return 0;
     }
 
     private function showStats(): int
     {
         $stats = app(\App\Services\Genealogy\SourceRegistryService::class)->getStatistics();
-        $this->table(['Metric', 'Value'], collect($stats)->map(fn($v, $k) => [$k, $v])->values()->toArray());
+        $this->table(['Metric', 'Value'], collect($stats)->map(fn ($v, $k) => [$k, $v])->values()->toArray());
+
         return 0;
     }
 
     private function listEntries(): int
     {
-        $entries = DB::select("SELECT archive_name, tool_name, priority, access_type, search_count, hit_count FROM genealogy_source_registry WHERE is_active = 1 ORDER BY priority");
+        $entries = DB::select('SELECT archive_name, tool_name, priority, access_type, search_count, hit_count FROM genealogy_source_registry WHERE is_active = 1 ORDER BY priority');
         $this->table(['Archive', 'Tool', 'Pri', 'Access', 'Searches', 'Hits'],
-            array_map(fn($e) => [$e->archive_name, $e->tool_name ?? '-', $e->priority, $e->access_type, $e->search_count, $e->hit_count], $entries));
+            array_map(fn ($e) => [$e->archive_name, $e->tool_name ?? '-', $e->priority, $e->access_type, $e->search_count, $e->hit_count], $entries));
+
         return 0;
     }
 

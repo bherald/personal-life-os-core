@@ -105,11 +105,16 @@ class OperatorEvidenceCommand extends Command
 
         $face = is_array($headlines['face'] ?? null) ? $headlines['face'] : [];
         $this->line(sprintf(
-            'face: %s pending=%s stale=%s named_only=%s candidate_decisions=%s',
+            'face: %s pending=%s stale=%s no_match=%s stale_no_match=%s named_only=%s open_named_only=%s stale_open_named_only=%s terminal_named_only=%s candidate_decisions=%s',
             $face['status'] ?? 'unavailable',
             $face['pending_total'] ?? '-',
             $face['stale_pending'] ?? '-',
+            $face['no_match_pending'] ?? '-',
+            $face['stale_no_match_pending'] ?? '-',
             $face['named_only_unlinked'] ?? '-',
+            $face['open_named_only_unlinked'] ?? '-',
+            $face['stale_open_named_only_unlinked'] ?? '-',
+            $face['terminal_decided_named_only_unlinked'] ?? '-',
             $face['candidate_decision_rows'] ?? '-'
         ));
 

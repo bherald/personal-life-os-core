@@ -371,6 +371,7 @@ const SECTION_DEFINITIONS = [
       { label: 'Identity Gaps', path: 'counts.source_backed_pending_missing_identity' },
       { label: 'Privacy Gaps', path: 'counts.source_backed_pending_missing_privacy_clearance' },
       { label: 'Claim Gaps', path: 'counts.source_backed_pending_missing_claims' },
+      { label: 'Validation Gaps', path: 'counts.source_backed_pending_missing_validation' },
       { label: 'Boundary Gaps', path: 'counts.source_backed_pending_missing_boundary' },
       { label: 'Details Needed', path: 'counts.needs_reviewable_packet_details', format: formatBoolean },
       { label: 'Boundary Needed', path: 'counts.needs_operator_boundary', format: formatBoolean },

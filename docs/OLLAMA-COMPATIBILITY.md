@@ -26,6 +26,11 @@ recommended install path.
 - Prefer public setup checks over hidden assumptions. `setup:doctor` should
   warn when configured Ollama models are missing from `/api/tags`.
 
+Operator-local routing note for the current PLOS deployment: prefer the
+secondary Ollama host first for local LLM work. Treat the primary GPU-backed
+Ollama path as the second-choice fallback route unless a specific diagnostic or
+maintenance step intentionally pins otherwise.
+
 ## Model Adoption Rules
 
 A model is not approved just because it appears in an Ollama library or runs

@@ -14,6 +14,7 @@ class OpsReviewBacklogReportCommand extends Command
         {--json : Emit machine-readable JSON}
         {--compact : Emit routine-check compact output}
         {--next-target : Emit one sanitized next review target only}
+        {--focus= : Optional --next-target focus. Supported: typed-remediation, materializable-remediation}
         {--dry-run : Validate command shape without running review backlog queries}';
 
     protected $description = 'Observe-only review backlog summary grouped by age, type, agent, and priority';
@@ -29,12 +30,17 @@ class OpsReviewBacklogReportCommand extends Command
         $staleDays = (int) $this->option('stale-days');
         $highPriority = (int) $this->option('high-priority');
         $dryRun = (bool) $this->option('dry-run');
+        $focus = $this->normalizeFocusOption();
+        if ($focus === false) {
+            return self::FAILURE;
+        }
 
         if ($this->option('next-target')) {
             $payload = $report->nextTarget(
                 staleDays: $staleDays,
                 highPriorityThreshold: $highPriority,
-                dryRun: $dryRun
+                dryRun: $dryRun,
+                focus: $focus
             );
 
             if ($this->option('json')) {
@@ -204,5 +210,28 @@ class OpsReviewBacklogReportCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    private function normalizeFocusOption(): string|false|null
+    {
+        $focus = $this->option('focus');
+        if ($focus === null || trim((string) $focus) === '') {
+            return null;
+        }
+
+        $focus = strtolower(trim((string) $focus));
+        if (! $this->option('next-target')) {
+            $this->error('The --focus option is only supported with --next-target.');
+
+            return false;
+        }
+
+        if (! in_array($focus, ReviewBacklogReportService::NEXT_TARGET_FOCI, true)) {
+            $this->error('Unsupported --focus value. Supported values: '.implode(', ', ReviewBacklogReportService::NEXT_TARGET_FOCI).'.');
+
+            return false;
+        }
+
+        return $focus;
     }
 }

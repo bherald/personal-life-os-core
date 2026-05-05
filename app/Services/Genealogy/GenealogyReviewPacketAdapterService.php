@@ -38,7 +38,7 @@ class GenealogyReviewPacketAdapterService
                 'claims' => $claims,
                 'identity' => $this->identityPayload($packet),
                 'privacy' => $this->privacyPayload($packet),
-                'sprint' => is_array($packet['sprint'] ?? null) ? $packet['sprint'] : [],
+                'sprint' => $this->sprintPayload($packet),
                 'validation' => $this->validator->validate($packet),
                 'apply_preview' => $this->applyPreview->preview($packet),
                 'decision_log' => [],
@@ -183,6 +183,30 @@ class GenealogyReviewPacketAdapterService
         $privacy = $packet['privacy'] ?? $packet['privacy_gate'] ?? $packet['privacy_review'] ?? [];
 
         return is_array($privacy) ? $privacy : [];
+    }
+
+    private function sprintPayload(array $packet): array
+    {
+        $sprint = $packet['sprint'] ?? [];
+        if (! is_array($sprint)) {
+            $sprint = [];
+        }
+
+        if ($this->nullableString($sprint['boundary_label'] ?? null) === null) {
+            $boundary = $this->nullableString(
+                $packet['sprint_boundary']
+                    ?? $packet['operator_boundary']
+                    ?? $packet['boundary_label']
+                    ?? $packet['boundary']
+                    ?? null
+            );
+
+            if ($boundary !== null) {
+                $sprint['boundary_label'] = $boundary;
+            }
+        }
+
+        return $sprint;
     }
 
     private function firstText(array $payload, array $keys): ?string

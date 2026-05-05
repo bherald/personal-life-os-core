@@ -283,7 +283,7 @@ class GenealogyReviewPacketDecisionService
     {
         $validation = $details['validation'] ?? null;
         if (! is_array($validation)) {
-            return null;
+            return 'Review packet validation is missing; approve remains blocked.';
         }
 
         $errors = $validation['errors'] ?? [];

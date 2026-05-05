@@ -193,6 +193,7 @@
                 :in-flight="isDecisionInFlight(item)"
                 :approval-disabled="isApproveBlocked(item)"
                 :approval-disabled-title="approveBlockedTitle(item)"
+                :approval-label="approvalLabel(item)"
                 @select="selectItem(item)"
                 @toggle-select="toggleItemSelection(item)"
                 @approve="handleApprove"
@@ -871,9 +872,7 @@ const onDetailSoftDecision = (payload, message) => {
   if (item && payload?.result?.status) {
     item.status = payload.result.status
   }
-  if (item?.details && payload?.result?.packet_status) {
-    item.details.packet_status = payload.result.packet_status
-  }
+  updatePacketStatus(item, payload?.result?.packet_status)
   showToast(message)
   updateStats()
 }
@@ -946,9 +945,9 @@ const finishDecision = (unifiedId) => {
 }
 
 const handleApprove = async (item) => {
-  const blockedCount = packetValidationErrorCount(item)
-  if (blockedCount > 0) {
-    showToast(`Resolve ${blockedCount} validation ${blockedCount === 1 ? 'error' : 'errors'} before approving preview`, 'error')
+  const blockedReason = packetApprovalBlockReason(item)
+  if (blockedReason) {
+    showToast(blockedReason, 'error')
     return
   }
 
@@ -983,6 +982,22 @@ function isReviewPacket(item) {
   return item?.review_type === 'genealogy_review_packet' || item?.source === 'genealogy_review_packet'
 }
 
+function approvalLabel(item) {
+  return isReviewPacket(item) ? 'Mark reviewed' : 'Approve'
+}
+
+function updatePacketStatus(item, packetStatus) {
+  if (!item || !isReviewPacket(item) || !packetStatus) return
+
+  item.packet_status = packetStatus
+  if (item.details && typeof item.details === 'object') {
+    item.details.packet_status = packetStatus
+  }
+  if (item.review_focus && typeof item.review_focus === 'object') {
+    item.review_focus.packet_status = packetStatus
+  }
+}
+
 function packetValidationErrorCount(item) {
   if (!isReviewPacket(item)) return 0
   const errors = item?.details?.validation?.errors
@@ -990,13 +1005,27 @@ function packetValidationErrorCount(item) {
 }
 
 function isApproveBlocked(item) {
-  return packetValidationErrorCount(item) > 0
+  return packetApprovalBlockReason(item) !== null
 }
 
 function approveBlockedTitle(item) {
+  return packetApprovalBlockReason(item) || ''
+}
+
+function packetApprovalBlockReason(item) {
+  if (!isReviewPacket(item)) return null
+
   const count = packetValidationErrorCount(item)
-  if (count <= 0) return ''
-  return `Resolve ${count} validation ${count === 1 ? 'error' : 'errors'} before approving preview`
+  if (count > 0) {
+    return `Resolve ${count} validation ${count === 1 ? 'error' : 'errors'} before approving preview`
+  }
+
+  const focus = item?.review_focus
+  if (focus && focus.approval_ready === false) {
+    return 'Open the packet detail and resolve preview-only readiness before marking reviewed'
+  }
+
+  return null
 }
 
 const handleReject = async (item) => {
@@ -1145,9 +1174,7 @@ const handleSoftDecision = async (item, actionName) => {
     if (resp.status) {
       item.status = resp.status
     }
-    if (item.details && resp.packet_status) {
-      item.details.packet_status = resp.packet_status
-    }
+    updatePacketStatus(item, resp.packet_status)
     showToast(actionName === 'clarify' ? 'Clarification requested' : 'Item deferred')
     updateStats()
   } catch (e) {

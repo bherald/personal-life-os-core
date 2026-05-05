@@ -10,6 +10,14 @@ class ReviewBacklogReportService
     /**
      * @var list<string>
      */
+    public const NEXT_TARGET_FOCI = [
+        'typed-remediation',
+        'materializable-remediation',
+    ];
+
+    /**
+     * @var list<string>
+     */
     private const REMEDIATION_FINDING_TYPES = [
         'data_quality_review',
         'genealogy_data_quality',
@@ -106,10 +114,11 @@ class ReviewBacklogReportService
         return $payload;
     }
 
-    public function nextTarget(int $staleDays = 7, int $highPriorityThreshold = 8, bool $dryRun = false): array
+    public function nextTarget(int $staleDays = 7, int $highPriorityThreshold = 8, bool $dryRun = false, ?string $focus = null): array
     {
         $staleDays = max(1, $staleDays);
         $highPriorityThreshold = max(1, $highPriorityThreshold);
+        $focus = $this->normalizeNextTargetFocus($focus);
 
         $payload = [
             'version' => 1,
@@ -120,6 +129,7 @@ class ReviewBacklogReportService
             'query_state' => $dryRun ? 'dry_run_no_queries' : 'not_started',
             'stale_days' => $staleDays,
             'high_priority_threshold' => $highPriorityThreshold,
+            'focus' => $focus ?? 'global',
             'captured_at' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
             'next_target' => null,
         ];
@@ -149,9 +159,12 @@ class ReviewBacklogReportService
             $candidates[] = $this->nextTargetCandidate($row, $staleDays, $highPriorityThreshold);
         }
         $candidates = array_values(array_filter($candidates));
+        $candidates = $this->filterNextTargetCandidates($candidates, $focus);
 
         if ($candidates === []) {
-            $payload['query_state'] = 'no_pending_review_rows';
+            $payload['query_state'] = $focus === null
+                ? 'no_pending_review_rows'
+                : 'no_focus_candidates';
 
             return $payload;
         }
@@ -176,16 +189,30 @@ class ReviewBacklogReportService
         $target = is_array($payload['next_target'] ?? null) ? $payload['next_target'] : null;
         if ($target === null) {
             return sprintf(
-                'Review backlog next target: %s query_state=%s target=none captured=%s',
+                'Review backlog next target: %s query_state=%s focus=%s target=none captured=%s',
                 $payload['status'] ?? 'unknown',
                 $payload['query_state'] ?? 'unknown',
+                $payload['focus'] ?? 'global',
                 $payload['captured_at'] ?? '-',
             )."\n";
         }
 
+        $underlying = '';
+        if (($target['underlying_classification'] ?? null) !== null
+            && ($target['underlying_classification'] ?? null) !== ($target['classification'] ?? null)) {
+            $underlying = sprintf(
+                ' underlying_classification=%s underlying_action=%s',
+                $target['underlying_classification'],
+                $target['underlying_next_action'] ?? 'Review one at a time.',
+            );
+        }
+
+        $materialization = $this->nextTargetMaterializationText($target);
+
         return sprintf(
-            'Review backlog next target: %s unified_id=%s type=%s finding=%s classification=%s priority=%s created=%s action=%s',
+            'Review backlog next target: %s focus=%s unified_id=%s type=%s finding=%s classification=%s priority=%s created=%s action=%s',
             $payload['status'] ?? 'unknown',
+            $payload['focus'] ?? 'global',
             $target['unified_id'] ?? 'unknown',
             $target['review_type'] ?? 'unknown',
             $target['finding_type'] ?? 'none',
@@ -193,7 +220,7 @@ class ReviewBacklogReportService
             $target['priority'] ?? 0,
             $target['created_at'] ?? 'unknown',
             $target['next_action'] ?? 'Review one at a time.',
-        )."\n";
+        ).$underlying.$materialization."\n";
     }
 
     /**
@@ -208,15 +235,17 @@ class ReviewBacklogReportService
                 '',
                 '- Status: `'.($payload['status'] ?? 'unknown').'`',
                 '- Query state: `'.($payload['query_state'] ?? 'unknown').'`',
+                '- Focus: `'.($payload['focus'] ?? 'global').'`',
                 '- Target: `none`',
                 '',
             ]);
         }
 
-        return implode("\n", [
+        $lines = [
             '# Review Backlog Next Target',
             '',
             '- Status: `'.($payload['status'] ?? 'unknown').'`',
+            '- Focus: `'.($payload['focus'] ?? 'global').'`',
             '- Unified ID: `'.($target['unified_id'] ?? 'unknown').'`',
             '- Review type: `'.($target['review_type'] ?? 'unknown').'`',
             '- Finding type: `'.($target['finding_type'] ?? 'none').'`',
@@ -224,8 +253,146 @@ class ReviewBacklogReportService
             '- Priority: `'.($target['priority'] ?? 0).'`',
             '- Created: `'.($target['created_at'] ?? 'unknown').'`',
             '- Next action: '.($target['next_action'] ?? 'Review one at a time.'),
-            '',
-        ]);
+        ];
+
+        if (($target['underlying_classification'] ?? null) !== null
+            && ($target['underlying_classification'] ?? null) !== ($target['classification'] ?? null)) {
+            $lines[] = '- Underlying classification: `'.$target['underlying_classification'].'`';
+            $lines[] = '- Underlying next action: '.($target['underlying_next_action'] ?? 'Review one at a time.');
+        }
+
+        $this->appendNextTargetMaterializationMarkdown($lines, $target);
+
+        $lines[] = '';
+
+        return implode("\n", $lines);
+    }
+
+    /**
+     * @param  array<string, mixed>  $target
+     */
+    private function nextTargetMaterializationText(array $target): string
+    {
+        $materialization = is_array($target['remediation_materialization'] ?? null)
+            ? $target['remediation_materialization']
+            : null;
+
+        if ($materialization === null) {
+            return '';
+        }
+
+        if (($materialization['available'] ?? false) !== true) {
+            $missing = $this->missingMaterializationInputsText($materialization);
+
+            return sprintf(
+                ' materialization=%s reason=%s%s',
+                (string) ($materialization['status'] ?? 'unavailable'),
+                (string) ($materialization['reason'] ?? 'not_materializable'),
+                $missing !== '' ? ' missing_inputs='.$missing : ''
+            );
+        }
+
+        $safety = is_array($materialization['safety'] ?? null) ? $materialization['safety'] : [];
+        $command = $this->materializationDryRunCommand($materialization);
+
+        return sprintf(
+            ' materialization_command="%s" no_canonical_write=%s apply_enabled=%s apply_held=%s',
+            $command ?? 'unavailable',
+            ($safety['no_canonical_write'] ?? false) ? 'true' : 'false',
+            ($safety['apply_enabled'] ?? true) ? 'true' : 'false',
+            ($safety['apply_held'] ?? false) ? 'true' : 'false',
+        );
+    }
+
+    /**
+     * @param  list<string>  $lines
+     * @param  array<string, mixed>  $target
+     */
+    private function appendNextTargetMaterializationMarkdown(array &$lines, array $target): void
+    {
+        $materialization = is_array($target['remediation_materialization'] ?? null)
+            ? $target['remediation_materialization']
+            : null;
+
+        if ($materialization === null) {
+            return;
+        }
+
+        $lines[] = '- Materialization available: `'.(($materialization['available'] ?? false) ? 'true' : 'false').'`';
+
+        if (($materialization['available'] ?? false) === true) {
+            $lines[] = '- Materialization dry run: `'.($this->materializationDryRunCommand($materialization) ?? 'unavailable').'`';
+        } else {
+            $lines[] = '- Materialization reason: `'.($materialization['reason'] ?? 'not_materializable').'`';
+            $missing = $this->missingMaterializationInputsText($materialization);
+            if ($missing !== '') {
+                $lines[] = '- Missing materialization inputs: `'.$missing.'`';
+            }
+        }
+
+        $safety = is_array($materialization['safety'] ?? null) ? $materialization['safety'] : [];
+        $lines[] = sprintf(
+            '- Materialization safety: `no_canonical_write=%s`, `canonical_write_allowed=%s`, `apply_enabled=%s`, `apply_held=%s`',
+            ($safety['no_canonical_write'] ?? false) ? 'true' : 'false',
+            ($safety['canonical_write_allowed'] ?? true) ? 'true' : 'false',
+            ($safety['apply_enabled'] ?? true) ? 'true' : 'false',
+            ($safety['apply_held'] ?? false) ? 'true' : 'false',
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $materialization
+     */
+    private function materializationDryRunCommand(array $materialization): ?string
+    {
+        $selector = is_array($materialization['selector'] ?? null) ? $materialization['selector'] : [];
+        $option = $this->nullableString($selector['option'] ?? null);
+        $value = $selector['value'] ?? null;
+        $command = $this->nullableString($materialization['command'] ?? null);
+
+        if ($option === null || ! is_scalar($value) || $command === null) {
+            return null;
+        }
+
+        $options = $this->materializationDryRunOptions($materialization);
+
+        return sprintf(
+            'php artisan %s %s %s %s',
+            $command,
+            $option,
+            escapeshellarg((string) $value),
+            implode(' ', $options)
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $materialization
+     * @return list<string>
+     */
+    private function materializationDryRunOptions(array $materialization): array
+    {
+        $options = is_array($materialization['dry_run_options'] ?? null)
+            ? $materialization['dry_run_options']
+            : ['--json', '--compact'];
+
+        $options = array_values(array_filter($options, function (mixed $option): bool {
+            return is_string($option) && preg_match('/^--[a-z0-9-]+(?:=[a-z0-9_.:-]+)?$/', $option) === 1;
+        }));
+
+        return $options !== [] ? $options : ['--json', '--compact'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $materialization
+     */
+    private function missingMaterializationInputsText(array $materialization): string
+    {
+        $missing = is_array($materialization['missing_materialization_inputs'] ?? null)
+            ? $materialization['missing_materialization_inputs']
+            : [];
+        $missing = array_values(array_filter($missing, 'is_string'));
+
+        return implode(',', $missing);
     }
 
     public function toMarkdown(array $payload): string
@@ -1246,6 +1413,8 @@ class ReviewBacklogReportService
         $isHighPriority = $priority >= $highPriorityThreshold;
         $isStale = $this->isStaleCreatedAt($createdAt, $staleDays);
         [$classification, $nextAction] = $this->classificationNeeded($reviewType, $findingType);
+        $underlyingClassification = $classification;
+        $underlyingNextAction = $nextAction;
 
         if ($isHighPriority) {
             $classification = 'high_priority_pending_review';
@@ -1261,6 +1430,11 @@ class ReviewBacklogReportService
         $hasSourceContext = $this->hasSourceProposedChangeIds($details);
         $hasSourceIds = $this->hasSourceDuplicateIds($details);
         $hasFamilyIds = $this->hasFamilyRemediationIds($details);
+        $isTypedRemediation = in_array($findingType, self::REMEDIATION_FINDING_TYPES, true);
+        $supportedPreviewOperations = $this->supportedPreviewOperations($details);
+        $materializableOperationTypes = $isTypedRemediation
+            ? $this->materializableOperationTypes($details)
+            : [];
         $hasChangeTypeTypo = false;
         foreach ($this->changeTypes($details) as $changeType) {
             if (isset(self::CHANGE_TYPE_TYPO_SUGGESTIONS[$changeType])) {
@@ -1269,32 +1443,187 @@ class ReviewBacklogReportService
             }
         }
 
-        return [
+        $candidate = [
             'unified_id' => $this->unifiedReviewId($row, $reviewType),
             'review_type' => $reviewType,
             'finding_type' => $findingType,
             'classification' => $classification,
+            'underlying_classification' => $underlyingClassification,
             'created_at' => $createdAt,
             'priority' => $priority,
             'next_action' => $nextAction,
+            'underlying_next_action' => $underlyingNextAction,
             'evidence_flags' => [
                 'stale' => $isStale,
                 'high_priority' => $isHighPriority,
-                'typed_remediation' => in_array($findingType, self::REMEDIATION_FINDING_TYPES, true),
+                'typed_remediation' => $isTypedRemediation,
                 'source_backed_context' => $reviewType === 'genealogy_finding'
                     || $reviewType === 'source_add'
                     || ($findingType !== null && str_contains($findingType, 'genealogy')),
                 'has_apply_preview' => $hasApplyPreview,
                 'preview_only' => $this->isPreviewOnly($details),
-                'supported_preview_operation' => $this->supportedPreviewOperations($details) !== [],
+                'supported_preview_operation' => $supportedPreviewOperations !== [],
+                'materializable_remediation' => $materializableOperationTypes !== [],
                 'context_ready_without_preview' => ($hasSourceContext || $hasFamilyContext) && ! $hasApplyPreview,
-                'without_materialized_ids' => ! $hasSourceIds && ! $hasFamilyIds,
+                'without_materialized_ids' => $isTypedRemediation && ! $hasSourceIds && ! $hasFamilyIds,
                 'malformed_details' => $malformedDetails,
                 'possible_change_type_typo' => $hasChangeTypeTypo,
             ],
             '_sort_rank' => $this->nextTargetRank($classification, $isHighPriority, $isStale),
             '_sort_created_ts' => $createdAt !== null ? strtotime($createdAt) ?: PHP_INT_MAX : PHP_INT_MAX,
             '_sort_priority' => $priority,
+        ];
+
+        if ($isTypedRemediation && $reviewType === 'genealogy_finding') {
+            $candidate['remediation_materialization'] = $this->remediationMaterializationHint(
+                $row,
+                $materializableOperationTypes,
+                $this->materializationReadinessPayload(
+                    malformedDetails: $malformedDetails,
+                    hasApplyPreview: $hasApplyPreview,
+                    previewOnly: $this->isPreviewOnly($details),
+                    supportedPreviewOperation: $supportedPreviewOperations !== [],
+                    materializableRemediation: $materializableOperationTypes !== [],
+                    hasSourceDuplicateIds: $hasSourceIds,
+                    hasFamilyRemediationIds: $hasFamilyIds,
+                    hasSourceProposedChangeIds: $hasSourceContext,
+                    hasFamilyContext: $hasFamilyContext,
+                    familyContextSignals: $familySignals,
+                    contextReadyWithoutPreview: ($hasSourceContext || $hasFamilyContext) && ! $hasApplyPreview,
+                    possibleChangeTypeTypo: $hasChangeTypeTypo,
+                )
+            );
+        }
+
+        return $candidate;
+    }
+
+    /**
+     * @param  list<string>  $operationTypes
+     * @return array<string, mixed>
+     */
+    private function remediationMaterializationHint(object $row, array $operationTypes, array $readiness): array
+    {
+        $available = $operationTypes !== [];
+        $hint = [
+            'available' => $available,
+            'status' => $available ? 'dry_run_ready' : 'unavailable',
+            'reason' => $available ? null : 'no_supported_remediation_operation',
+            'missing_materialization_inputs' => $this->missingMaterializationInputs($readiness),
+            'readiness_flags' => $readiness,
+            'source' => 'agent_review_queue',
+            'source_review_type' => 'genealogy_finding',
+            'target_review_type' => 'genealogy_review_packet',
+            'command' => 'genealogy:materialize-typed-remediation',
+            'default_mode' => 'dry_run',
+            'dry_run_first' => true,
+            'execute_effect' => 'create_or_reuse_pending_genealogy_review_packet_only',
+            'operation_types' => $operationTypes,
+            'safety' => $this->materializationSafetyPayload(),
+        ];
+
+        if ($available) {
+            $hint['selector'] = $this->reviewQueueSelector($row);
+            $hint['dry_run_options'] = ['--json', '--compact'];
+            $hint['execute_options'] = ['--execute', '--json'];
+        }
+
+        return $hint;
+    }
+
+    /**
+     * @param  array{family_id_key: bool, family_ids: bool, family_comparison: bool}  $familyContextSignals
+     * @return array<string, mixed>
+     */
+    private function materializationReadinessPayload(
+        bool $malformedDetails,
+        bool $hasApplyPreview,
+        bool $previewOnly,
+        bool $supportedPreviewOperation,
+        bool $materializableRemediation,
+        bool $hasSourceDuplicateIds,
+        bool $hasFamilyRemediationIds,
+        bool $hasSourceProposedChangeIds,
+        bool $hasFamilyContext,
+        array $familyContextSignals,
+        bool $contextReadyWithoutPreview,
+        bool $possibleChangeTypeTypo,
+    ): array {
+        return [
+            'malformed_details' => $malformedDetails,
+            'has_apply_preview' => $hasApplyPreview,
+            'preview_only' => $previewOnly,
+            'supported_preview_operation' => $supportedPreviewOperation,
+            'materializable_remediation' => $materializableRemediation,
+            'has_source_duplicate_ids' => $hasSourceDuplicateIds,
+            'has_family_remediation_ids' => $hasFamilyRemediationIds,
+            'has_source_proposed_change_ids' => $hasSourceProposedChangeIds,
+            'has_family_context' => $hasFamilyContext,
+            'family_context_signals' => [
+                'family_id_key' => (bool) ($familyContextSignals['family_id_key'] ?? false),
+                'family_ids' => (bool) ($familyContextSignals['family_ids'] ?? false),
+                'family_comparison' => (bool) ($familyContextSignals['family_comparison'] ?? false),
+            ],
+            'context_ready_without_preview' => $contextReadyWithoutPreview,
+            'possible_change_type_typo' => $possibleChangeTypeTypo,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $readiness
+     * @return list<string>
+     */
+    private function missingMaterializationInputs(array $readiness): array
+    {
+        $missing = [];
+
+        if (($readiness['malformed_details'] ?? false) === true) {
+            $missing[] = 'parseable_details';
+        }
+
+        if (($readiness['materializable_remediation'] ?? false) !== true) {
+            $missing[] = 'supported_operation_type';
+        }
+
+        return $missing;
+    }
+
+    /**
+     * @return array{type:string,option:string,value:int|string}
+     */
+    private function reviewQueueSelector(object $row): array
+    {
+        $token = $this->nullableString($row->token ?? null);
+        if ($token !== null) {
+            return [
+                'type' => 'token',
+                'option' => '--token',
+                'value' => $token,
+            ];
+        }
+
+        return [
+            'type' => 'id',
+            'option' => '--id',
+            'value' => (int) ($row->id ?? 0),
+        ];
+    }
+
+    /**
+     * @return array<string, bool|string>
+     */
+    private function materializationSafetyPayload(): array
+    {
+        return [
+            'scope' => 'review_packet_materialization_only',
+            'preview_only' => true,
+            'creates_review_packet_only' => true,
+            'no_canonical_write' => true,
+            'canonical_write_allowed' => false,
+            'canonical_writes_performed' => false,
+            'apply_held' => true,
+            'apply_enabled' => false,
+            'apply_performed' => false,
         ];
     }
 
@@ -1308,6 +1637,45 @@ class ReviewBacklogReportService
         }
 
         return ((int) ($right['_sort_priority'] ?? 0)) <=> ((int) ($left['_sort_priority'] ?? 0));
+    }
+
+    private function normalizeNextTargetFocus(?string $focus): ?string
+    {
+        $focus = $this->nullableString($focus);
+
+        return $focus === 'global' ? null : $focus;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $candidates
+     * @return list<array<string, mixed>>
+     */
+    private function filterNextTargetCandidates(array $candidates, ?string $focus): array
+    {
+        if ($focus === null) {
+            return $candidates;
+        }
+
+        if ($focus === 'typed-remediation') {
+            return array_values(array_filter($candidates, function (array $candidate): bool {
+                $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
+
+                return ($candidate['review_type'] ?? null) === 'genealogy_finding'
+                    && ($flags['typed_remediation'] ?? false) === true;
+            }));
+        }
+
+        if ($focus === 'materializable-remediation') {
+            return array_values(array_filter($candidates, function (array $candidate): bool {
+                $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
+
+                return ($candidate['review_type'] ?? null) === 'genealogy_finding'
+                    && ($flags['typed_remediation'] ?? false) === true
+                    && ($flags['materializable_remediation'] ?? false) === true;
+            }));
+        }
+
+        return [];
     }
 
     private function nextTargetRank(string $classification, bool $isHighPriority, bool $isStale): int
@@ -1400,6 +1768,26 @@ class ReviewBacklogReportService
                 }
             }
         }
+
+        return array_values(array_unique($operations));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function materializableOperationTypes(array $details): array
+    {
+        $operations = $this->supportedPreviewOperations($details);
+
+        $this->walkArrays($details, function (array $payload) use (&$operations): void {
+            foreach (['operation_type', 'operation', 'type', 'change_type'] as $key) {
+                $operationType = $this->normalizeOperationType($payload[$key] ?? null);
+                if ($operationType !== null) {
+                    $operations[] = $operationType;
+                    break;
+                }
+            }
+        });
 
         return array_values(array_unique($operations));
     }

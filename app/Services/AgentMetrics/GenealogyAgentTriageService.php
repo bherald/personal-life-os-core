@@ -13,21 +13,41 @@ class GenealogyAgentTriageService
             'job_name' => 'genealogy_analyst',
             'agent_id' => 'genealogy-analyst',
             'role' => 'Evidence analysis and conflict resolution',
+            'scenario_tests' => [
+                'source-backed packet synthesis',
+                'conflicting evidence analysis',
+                'written conclusion remains review-only',
+            ],
         ],
         [
             'job_name' => 'genealogy_auto_research',
             'agent_id' => null,
             'role' => 'Missing-data topic discovery command',
+            'scenario_tests' => [
+                'missing-data topic suggestion',
+                'manual-only source boundary',
+                'no direct fact writeback',
+            ],
         ],
         [
             'job_name' => 'genealogy_newspaper_research',
             'agent_id' => 'genealogy-newspapers',
             'role' => 'Newspaper and obituary research',
+            'scenario_tests' => [
+                'public newspaper source locator',
+                'obituary claim extraction',
+                'manual/private newspaper boundary',
+            ],
         ],
         [
             'job_name' => 'genealogy_research_colonial_fan',
             'agent_id' => 'genealogy-web',
             'role' => 'Colonial FAN cluster and web research',
+            'scenario_tests' => [
+                'FAN-cluster hypothesis preview',
+                'weak-source handling',
+                'operator review packet handoff',
+            ],
         ],
     ];
 
@@ -320,7 +340,25 @@ class GenealogyAgentTriageService
             'episodes' => $episodeSummary,
             'reviews' => $reviewSummary,
             'awo' => $awoSummary,
+            'pre_enable_gates' => $this->preEnableGates($target),
             'next_action' => $nextAction,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $target
+     * @return array<string, mixed>
+     */
+    private function preEnableGates(array $target): array
+    {
+        return [
+            'scenario_tests_required' => array_values(array_map('strval', (array) ($target['scenario_tests'] ?? []))),
+            'source_backed_review_packets_required' => true,
+            'minimum_awo_scored_reviews' => 10,
+            'operator_approval_required' => true,
+            'scheduler_enablement_allowed' => false,
+            'production_writeback_allowed' => false,
+            'canonical_genealogy_writeback_allowed' => false,
         ];
     }
 

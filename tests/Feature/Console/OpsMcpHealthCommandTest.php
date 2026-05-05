@@ -14,6 +14,8 @@ class OpsMcpHealthCommandTest extends TestCase
 
     private string $disabledFixtureEntry;
 
+    private ?string $originalPath = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -28,6 +30,12 @@ class OpsMcpHealthCommandTest extends TestCase
     protected function tearDown(): void
     {
         Mockery::close();
+        if ($this->originalPath !== null) {
+            putenv('PATH='.$this->originalPath);
+            $_ENV['PATH'] = $this->originalPath;
+            $_SERVER['PATH'] = $this->originalPath;
+        }
+
         File::deleteDirectory(storage_path('app/testing-mcp-health'));
 
         parent::tearDown();
@@ -104,6 +112,8 @@ class OpsMcpHealthCommandTest extends TestCase
         $this->assertSame(2, $payload['summary']['missing_entries']);
         $this->assertSame(1, $payload['summary']['enabled_missing_entries']);
         $this->assertSame(1, $payload['summary']['disabled_missing_entries']);
+        $this->assertSame(3, $payload['summary']['external_not_running']);
+        $this->assertSame(1, $payload['summary']['disabled_external_running']);
 
         $servers = collect($payload['servers'])->keyBy('name');
         $this->assertSame('ok', $servers['internal']['status']);
@@ -131,6 +141,45 @@ class OpsMcpHealthCommandTest extends TestCase
         $this->assertStringNotContainsString('another-secret', $encoded);
         $this->assertStringNotContainsString('123 1 Sl', $encoded);
         $this->assertStringNotContainsString('124 1 Sl', $encoded);
+    }
+
+    public function test_text_summaries_include_disabled_external_running_from_fixture_processes(): void
+    {
+        config()->set('mcp.servers', [
+            'external-ok' => [
+                'enabled' => true,
+                'type' => 'external',
+                'transport' => 'external_process',
+                'command' => 'node',
+                'args' => [$this->fixtureEntry],
+            ],
+            'disabled-running' => [
+                'enabled' => false,
+                'type' => 'external',
+                'transport' => 'external_process',
+                'command' => 'node',
+                'args' => [$this->disabledFixtureEntry],
+            ],
+        ]);
+        $this->useFixturePs([
+            '123 1 Sl node '.$this->fixtureEntry,
+            '124 1 Sl node '.$this->disabledFixtureEntry,
+        ]);
+
+        $exit = Artisan::call('ops:mcp-health');
+
+        $this->assertSame(0, $exit);
+        $output = (string) Artisan::output();
+        $this->assertStringContainsString('MCP health: WARNING', $output);
+        $this->assertStringContainsString('external_not_running=0  disabled_external_running=1', $output);
+        $this->assertStringContainsString('server=disabled-running status=watch enabled=false transport=external_process process_expected=true process_running=true missing_entries=0', $output);
+
+        $exit = Artisan::call('ops:mcp-health', ['--compact' => true]);
+
+        $this->assertSame(0, $exit);
+        $output = (string) Artisan::output();
+        $this->assertStringContainsString('MCP health compact: WARNING', $output);
+        $this->assertStringContainsString('external_not_running=0  disabled_external_running=1', $output);
     }
 
     public function test_json_option_emits_service_payload(): void
@@ -184,6 +233,7 @@ class OpsMcpHealthCommandTest extends TestCase
                 'enabled_missing_entries' => 0,
                 'disabled_missing_entries' => 1,
                 'external_not_running' => 1,
+                'disabled_external_running' => 1,
             ],
             'attention' => [
                 [
@@ -209,6 +259,7 @@ class OpsMcpHealthCommandTest extends TestCase
         $output = (string) Artisan::output();
         $this->assertStringContainsString('MCP health compact: WARNING', $output);
         $this->assertStringContainsString('missing_entries=1  enabled_missing_entries=0  disabled_missing_entries=1', $output);
+        $this->assertStringContainsString('external_not_running=1  disabled_external_running=1', $output);
         $this->assertStringContainsString('attention=prompt-compressor status=watch', $output);
         $this->assertStringContainsString('process_matchable=true process_running=false process_marker_count=1', $output);
         $this->assertStringNotContainsString('secret', $output);
@@ -234,6 +285,7 @@ class OpsMcpHealthCommandTest extends TestCase
                 'enabled_missing_entries' => 0,
                 'disabled_missing_entries' => 0,
                 'external_not_running' => 0,
+                'disabled_external_running' => 0,
             ],
             'servers' => [
                 [
@@ -246,5 +298,26 @@ class OpsMcpHealthCommandTest extends TestCase
                 ],
             ],
         ];
+    }
+
+    /**
+     * @param  list<string>  $processLines
+     */
+    private function useFixturePs(array $processLines): void
+    {
+        if ($this->originalPath === null) {
+            $path = getenv('PATH');
+            $this->originalPath = $path === false ? '' : $path;
+        }
+
+        $bin = storage_path('app/testing-mcp-health/bin');
+        File::ensureDirectoryExists($bin);
+        File::put($bin.'/ps', "#!/usr/bin/env sh\ncat <<'MCP_HEALTH_PS'\n".implode("\n", $processLines)."\nMCP_HEALTH_PS\n");
+        chmod($bin.'/ps', 0755);
+
+        $path = $bin.PATH_SEPARATOR.$this->originalPath;
+        putenv('PATH='.$path);
+        $_ENV['PATH'] = $path;
+        $_SERVER['PATH'] = $path;
     }
 }

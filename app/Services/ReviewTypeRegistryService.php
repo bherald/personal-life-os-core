@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Genealogy\GenealogyReviewPacketFocusService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -20,6 +21,8 @@ class ReviewTypeRegistryService
     private ?array $typeCache = null;
 
     private ?\App\Services\Genealogy\GenealogyLocalReviewSummaryService $genealogyReviewSummary = null;
+
+    private ?GenealogyReviewPacketFocusService $genealogyReviewPacketFocus = null;
 
     private const CACHE_KEY = 'review_type_registry';
 
@@ -710,6 +713,10 @@ class ReviewTypeRegistryService
                 $item = $this->decorateGenealogyFindingItem($item);
             }
 
+            if ($type['name'] === 'genealogy_review_packet') {
+                $item = $this->decorateGenealogyReviewPacketItem($item);
+            }
+
             // Add image URL if applicable
             if ($type['requires_image'] && $type['image_field']) {
                 $item['image_url'] = $this->buildImageUrl($rowArray, $type);
@@ -724,6 +731,74 @@ class ReviewTypeRegistryService
         }
 
         return $items;
+    }
+
+    private function decorateGenealogyReviewPacketItem(array $item): array
+    {
+        $details = $item['details'] ?? null;
+        if (! is_array($details)) {
+            return $item;
+        }
+
+        $personId = $this->extractGenealogyReviewPacketPersonId($details);
+        if ($personId !== null) {
+            $item['person_id'] = $personId;
+        }
+
+        if (isset($details['packet_status']) && is_scalar($details['packet_status'])) {
+            $item['packet_status'] = (string) $details['packet_status'];
+        }
+
+        if (isset($details['source_locator']) && is_scalar($details['source_locator'])) {
+            $item['source_locator'] = (string) $details['source_locator'];
+        }
+
+        $claims = is_array($details['claims'] ?? null) ? $details['claims'] : [];
+        $item['claim_count'] = count($claims);
+
+        $sourceLocators = is_array($details['source_locators'] ?? null) ? $details['source_locators'] : [];
+        $sources = is_array($details['sources'] ?? null) ? $details['sources'] : [];
+        $item['source_count'] = count($sourceLocators !== [] ? $sourceLocators : $sources);
+        $item['review_focus'] = $this->genealogyReviewPacketFocus()->fromPersistedDetails($details);
+
+        return $item;
+    }
+
+    private function extractGenealogyReviewPacketPersonId(array $details): ?int
+    {
+        $identity = $details['identity'] ?? null;
+        if (is_array($identity)) {
+            foreach (['person_id', 'target_person_id'] as $key) {
+                $personId = $this->positiveIntOrNull($identity[$key] ?? null);
+                if ($personId !== null) {
+                    return $personId;
+                }
+            }
+        }
+
+        $claims = is_array($details['claims'] ?? null) ? $details['claims'] : [];
+        foreach ($claims as $claim) {
+            if (! is_array($claim)) {
+                continue;
+            }
+
+            $personId = $this->positiveIntOrNull($claim['person_id'] ?? null);
+            if ($personId !== null) {
+                return $personId;
+            }
+        }
+
+        return null;
+    }
+
+    private function positiveIntOrNull(mixed $value): ?int
+    {
+        return is_numeric($value) && (int) $value > 0 ? (int) $value : null;
+    }
+
+    private function genealogyReviewPacketFocus(): GenealogyReviewPacketFocusService
+    {
+        return $this->genealogyReviewPacketFocus ??= new GenealogyReviewPacketFocusService;
     }
 
     private function decorateGenealogyFindingItem(array $item): array

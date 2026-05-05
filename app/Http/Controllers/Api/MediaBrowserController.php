@@ -3622,6 +3622,7 @@ class MediaBrowserController extends Controller
     {
         $limit = min((int) $request->get('limit', 50), 200);
         $offset = (int) $request->get('offset', 0);
+        $staleNamedOnlyHours = 24;
         $decisionState = (string) $request->get('decision_state', 'open');
         if (! in_array($decisionState, ['open', 'decided', 'all'], true)) {
             return response()->json([
@@ -3640,6 +3641,9 @@ class MediaBrowserController extends Controller
             ) q_latest ON q_latest.file_registry_face_id = frf.id
             LEFT JOIN genealogy_face_match_queue q ON q.id = q_latest.latest_queue_id
         ";
+        $namedOnlyFilter = "frf.hidden = 0
+              AND frf.genealogy_person_id IS NULL
+              AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL";
 
         $decisionFilter = '';
         if ($decisionState === 'open') {
@@ -3658,6 +3662,8 @@ class MediaBrowserController extends Controller
                    frf.region_w, frf.region_h, frf.confidence, frf.source,
                    frf.verified, frf.favorite, fr.asset_uuid, fr.filename,
                    fr.current_path,
+                   IFNULL(GREATEST(TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()), 0), 0) AS backlog_age_hours,
+                   CASE WHEN frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END AS is_stale_named_only,
                    q.status AS candidate_decision_status,
                    JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.action')) AS candidate_decision_action,
                    JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.terminal')) AS candidate_decision_terminal,
@@ -3665,21 +3671,24 @@ class MediaBrowserController extends Controller
             FROM file_registry_faces frf
             JOIN file_registry fr ON fr.id = frf.file_registry_id
             {$decisionJoin}
-            WHERE frf.hidden = 0
-              AND frf.genealogy_person_id IS NULL
-              AND frf.person_name != ''
+            WHERE {$namedOnlyFilter}
               {$decisionFilter}
             ORDER BY frf.updated_at DESC, frf.id DESC
             LIMIT ? OFFSET ?
-        ", [$limit, $offset]);
+        ", [$staleNamedOnlyHours, $limit, $offset]);
+
+        $faces = array_map(function (object $face): object {
+            $face->backlog_age_hours = (int) ($face->backlog_age_hours ?? 0);
+            $face->is_stale_named_only = (bool) ($face->is_stale_named_only ?? false);
+
+            return $face;
+        }, $faces);
 
         $total = DB::selectOne("
             SELECT COUNT(*) as cnt
             FROM file_registry_faces frf
             {$decisionJoin}
-            WHERE frf.hidden = 0
-              AND frf.genealogy_person_id IS NULL
-              AND frf.person_name != ''
+            WHERE {$namedOnlyFilter}
               {$decisionFilter}
         ");
 

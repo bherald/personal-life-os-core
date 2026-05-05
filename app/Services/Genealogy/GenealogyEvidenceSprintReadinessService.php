@@ -187,6 +187,7 @@ class GenealogyEvidenceSprintReadinessService
                 'source_backed_pending_missing_identity' => (int) ($summary['source_backed_pending_missing_identity'] ?? 0),
                 'source_backed_pending_missing_privacy_clearance' => (int) ($summary['source_backed_pending_missing_privacy_clearance'] ?? 0),
                 'source_backed_pending_missing_claims' => (int) ($summary['source_backed_pending_missing_claims'] ?? 0),
+                'source_backed_pending_missing_validation' => (int) ($summary['source_backed_pending_missing_validation'] ?? 0),
                 'source_backed_pending_missing_boundary' => (int) ($summary['source_backed_pending_missing_boundary'] ?? 0),
                 'preview_only_packets' => (int) ($summary['preview_only_packets'] ?? 0),
                 'operator_boundary_packets' => (int) ($summary['operator_boundary_packets'] ?? 0),
@@ -237,12 +238,13 @@ class GenealogyEvidenceSprintReadinessService
                 $readiness['remaining_reviewable_to_target']
             ),
             sprintf(
-                'reviewability_gaps: not_packet_pending=%s missing_preview_only=%s missing_identity=%s missing_privacy=%s missing_claims=%s missing_boundary=%s needs_details=%s',
+                'reviewability_gaps: not_packet_pending=%s missing_preview_only=%s missing_identity=%s missing_privacy=%s missing_claims=%s missing_validation=%s missing_boundary=%s needs_details=%s',
                 $summary['source_backed_pending_not_packet_pending'],
                 $summary['source_backed_pending_missing_preview_only'],
                 $summary['source_backed_pending_missing_identity'],
                 $summary['source_backed_pending_missing_privacy_clearance'],
                 $summary['source_backed_pending_missing_claims'],
+                $summary['source_backed_pending_missing_validation'],
                 $summary['source_backed_pending_missing_boundary'],
                 $this->boolValue($readiness['needs_reviewable_packet_details'])
             ),
@@ -288,6 +290,7 @@ class GenealogyEvidenceSprintReadinessService
                 'missing_identity='.$summary['source_backed_pending_missing_identity'],
                 'missing_privacy='.$summary['source_backed_pending_missing_privacy_clearance'],
                 'missing_claims='.$summary['source_backed_pending_missing_claims'],
+                'missing_validation='.$summary['source_backed_pending_missing_validation'],
                 'missing_boundary='.$summary['source_backed_pending_missing_boundary'],
             ]).'`',
             '- Needs reviewable packet details: `'.$this->boolValue($readiness['needs_reviewable_packet_details']).'`',
@@ -372,6 +375,7 @@ class GenealogyEvidenceSprintReadinessService
             $hasIdentity = $this->hasIdentity($details);
             $hasPrivacyClearance = ($details['privacy']['cleared'] ?? null) === true;
             $hasClaims = $this->hasClaims($details);
+            $validationAllowsReview = $this->validationAllowsReview($details);
             $boundaryLabel = $this->operatorBoundaryLabel($details);
             $hasBoundary = $boundaryLabel !== null;
 
@@ -388,6 +392,7 @@ class GenealogyEvidenceSprintReadinessService
                         && $hasIdentity
                         && $hasPrivacyClearance
                         && $hasClaims
+                        && $validationAllowsReview
                         && $hasBoundary
                     ) {
                         $summary['reviewable_pending_packets']++;
@@ -410,6 +415,10 @@ class GenealogyEvidenceSprintReadinessService
 
                         if (! $hasClaims) {
                             $summary['source_backed_pending_missing_claims']++;
+                        }
+
+                        if (! $validationAllowsReview) {
+                            $summary['source_backed_pending_missing_validation']++;
                         }
 
                         if (! $hasBoundary) {
@@ -509,6 +518,7 @@ class GenealogyEvidenceSprintReadinessService
             'source_backed_pending_missing_identity' => 0,
             'source_backed_pending_missing_privacy_clearance' => 0,
             'source_backed_pending_missing_claims' => 0,
+            'source_backed_pending_missing_validation' => 0,
             'source_backed_pending_missing_boundary' => 0,
             'operator_boundary_packets' => 0,
             'packets_missing_boundary' => 0,
@@ -580,7 +590,7 @@ class GenealogyEvidenceSprintReadinessService
         }
 
         if (($readiness['needs_reviewable_packet_details'] ?? false) === true) {
-            $recommendations[] = 'Complete pending packet status, identity, privacy, claims, preview-only, and boundary metadata before treating the sprint as review-ready.';
+            $recommendations[] = 'Complete pending packet status, identity, privacy, claims, validation, preview-only, and boundary metadata before treating the sprint as review-ready.';
         }
 
         if ($status === 'ready_for_review') {
@@ -610,12 +620,49 @@ class GenealogyEvidenceSprintReadinessService
 
     private function hasSourceEvidence(array $details): bool
     {
-        return $this->packetValidator()->collectSourceLocators($details) !== [];
+        if ($this->packetValidator()->collectSourceLocators($details) === []) {
+            return false;
+        }
+
+        return ! $this->validationHasError(
+            $this->packetValidator()->validate($details),
+            'manual_source_as_evidence_blocked'
+        );
     }
 
     private function packetValidator(): GenealogyReviewPacketValidatorService
     {
         return $this->packetValidator ??= new GenealogyReviewPacketValidatorService;
+    }
+
+    private function validationAllowsReview(array $details): bool
+    {
+        $validation = $details['validation'] ?? null;
+        if (! is_array($validation)) {
+            return false;
+        }
+
+        if (($validation['valid'] ?? null) !== true) {
+            return false;
+        }
+
+        $errors = $validation['errors'] ?? [];
+
+        return ! is_array($errors) || $errors === [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validation
+     */
+    private function validationHasError(array $validation, string $code): bool
+    {
+        foreach ((array) ($validation['errors'] ?? []) as $error) {
+            if (is_array($error) && ($error['code'] ?? null) === $code) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function isPreviewOnly(array $details): bool

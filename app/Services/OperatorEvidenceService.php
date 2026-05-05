@@ -231,8 +231,12 @@ class OperatorEvidenceService
             'pending_total' => (int) ($counts['pending_total'] ?? 0),
             'stale_pending' => (int) ($counts['stale_pending'] ?? 0),
             'no_match_pending' => (int) ($counts['no_match_pending'] ?? 0),
+            'stale_no_match_pending' => (int) ($counts['stale_no_match_pending'] ?? 0),
             'fuzzy_pending' => (int) ($counts['fuzzy_pending'] ?? 0),
             'named_only_unlinked' => (int) ($counts['named_only_unlinked'] ?? 0),
+            'open_named_only_unlinked' => (int) ($counts['open_named_only_unlinked'] ?? 0),
+            'stale_open_named_only_unlinked' => (int) ($counts['stale_open_named_only_unlinked'] ?? 0),
+            'terminal_decided_named_only_unlinked' => (int) ($counts['terminal_decided_named_only_unlinked'] ?? 0),
             'named_only_verified' => (int) ($counts['named_only_verified'] ?? 0),
             'approved_missing_person_media' => (int) ($counts['approved_missing_person_media'] ?? 0),
             'candidate_decision_rows' => (int) ($counts['candidate_decision_rows'] ?? 0),
@@ -324,6 +328,7 @@ class OperatorEvidenceService
             'source_backed_pending_missing_identity' => (int) ($counts['source_backed_pending_missing_identity'] ?? 0),
             'source_backed_pending_missing_privacy_clearance' => (int) ($counts['source_backed_pending_missing_privacy_clearance'] ?? 0),
             'source_backed_pending_missing_claims' => (int) ($counts['source_backed_pending_missing_claims'] ?? 0),
+            'source_backed_pending_missing_validation' => (int) ($counts['source_backed_pending_missing_validation'] ?? 0),
             'source_backed_pending_missing_boundary' => (int) ($counts['source_backed_pending_missing_boundary'] ?? 0),
             'needs_reviewable_packet_details' => (bool) ($counts['needs_reviewable_packet_details'] ?? false),
             'needs_operator_boundary' => (bool) ($counts['needs_operator_boundary'] ?? true),
@@ -1488,6 +1493,7 @@ class OperatorEvidenceService
                 'source_backed_pending_missing_identity' => (int) ($summary['source_backed_pending_missing_identity'] ?? 0),
                 'source_backed_pending_missing_privacy_clearance' => (int) ($summary['source_backed_pending_missing_privacy_clearance'] ?? 0),
                 'source_backed_pending_missing_claims' => (int) ($summary['source_backed_pending_missing_claims'] ?? 0),
+                'source_backed_pending_missing_validation' => (int) ($summary['source_backed_pending_missing_validation'] ?? 0),
                 'source_backed_pending_missing_boundary' => (int) ($summary['source_backed_pending_missing_boundary'] ?? 0),
                 'pending_packets' => (int) ($summary['pending_packets'] ?? 0),
                 'reviewed_preview_only' => (int) ($summary['reviewed_preview_only'] ?? 0),
@@ -1561,6 +1567,7 @@ class OperatorEvidenceService
                 "SELECT
                     COUNT(*) AS pending_total,
                     SUM(CASE WHEN match_type = 'no_match' THEN 1 ELSE 0 END) AS no_match_pending,
+                    SUM(CASE WHEN match_type = 'no_match' AND created_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_no_match_pending,
                     SUM(CASE WHEN match_type NOT IN ('exact', 'no_match') THEN 1 ELSE 0 END) AS fuzzy_pending,
                     SUM(CASE WHEN file_registry_face_id IS NOT NULL THEN 1 ELSE 0 END) AS bridge_eligible_pending,
                     SUM(CASE WHEN created_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_pending,
@@ -1571,13 +1578,24 @@ class OperatorEvidenceService
             $faces = DB::selectOne(
                 "SELECT
                     COUNT(*) AS total_faces,
-                    SUM(CASE WHEN hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
-                    SUM(CASE WHEN hidden = 0 AND genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS linked_faces,
-                    SUM(CASE WHEN hidden = 0 AND genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS unlinked_faces,
-                    SUM(CASE WHEN hidden = 0 AND genealogy_person_id IS NULL AND person_name != '' THEN 1 ELSE 0 END) AS named_only_unlinked,
-                    SUM(CASE WHEN hidden = 0 AND genealogy_person_id IS NULL AND person_name != '' AND verified = 1 THEN 1 ELSE 0 END) AS named_only_verified,
-                    MAX(CASE WHEN hidden = 0 AND genealogy_person_id IS NULL AND person_name != '' THEN TIMESTAMPDIFF(HOUR, updated_at, NOW()) END) AS named_only_oldest_age_hours
-                 FROM file_registry_faces"
+                    SUM(CASE WHEN f.hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS linked_faces,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS unlinked_faces,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' THEN 1 ELSE 0 END) AS named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND f.updated_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_open_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' AND f.verified = 1 THEN 1 ELSE 0 END) AS named_only_verified,
+                    MAX(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' THEN TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) END) AS named_only_oldest_age_hours
+                 FROM file_registry_faces f
+                 LEFT JOIN (
+                    SELECT
+                        file_registry_face_id,
+                        MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.terminal')) = 'true' THEN 1 ELSE 0 END) AS has_terminal_candidate_decision
+                    FROM genealogy_face_match_queue
+                    WHERE file_registry_face_id IS NOT NULL
+                    GROUP BY file_registry_face_id
+                 ) candidate_decisions ON candidate_decisions.file_registry_face_id = f.id"
             );
             $bridge = DB::selectOne(
                 "SELECT COUNT(*) AS approved_missing_person_media
@@ -1617,6 +1635,7 @@ class OperatorEvidenceService
             $counts = [
                 'pending_total' => (int) ($queue->pending_total ?? 0),
                 'no_match_pending' => (int) ($queue->no_match_pending ?? 0),
+                'stale_no_match_pending' => (int) ($queue->stale_no_match_pending ?? 0),
                 'fuzzy_pending' => (int) ($queue->fuzzy_pending ?? 0),
                 'bridge_eligible_pending' => (int) ($queue->bridge_eligible_pending ?? 0),
                 'stale_pending' => (int) ($queue->stale_pending ?? 0),
@@ -1625,6 +1644,9 @@ class OperatorEvidenceService
                 'linked_faces' => (int) ($faces->linked_faces ?? 0),
                 'unlinked_faces' => (int) ($faces->unlinked_faces ?? 0),
                 'named_only_unlinked' => (int) ($faces->named_only_unlinked ?? 0),
+                'open_named_only_unlinked' => (int) ($faces->open_named_only_unlinked ?? 0),
+                'stale_open_named_only_unlinked' => (int) ($faces->stale_open_named_only_unlinked ?? 0),
+                'terminal_decided_named_only_unlinked' => (int) ($faces->terminal_decided_named_only_unlinked ?? 0),
                 'named_only_verified' => (int) ($faces->named_only_verified ?? 0),
                 'named_only_oldest_age_hours' => isset($faces->named_only_oldest_age_hours) ? (int) $faces->named_only_oldest_age_hours : null,
                 'approved_missing_person_media' => (int) ($bridge->approved_missing_person_media ?? 0),

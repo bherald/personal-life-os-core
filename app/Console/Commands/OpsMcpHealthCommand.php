@@ -39,7 +39,7 @@ class OpsMcpHealthCommand extends Command
 
         $summary = $payload['summary'];
         $this->line(sprintf(
-            'MCP health: %s  total=%d  enabled=%d  external=%d  watch=%d  warning=%d  critical=%d  missing_entries=%d  enabled_missing_entries=%d  disabled_missing_entries=%d  external_not_running=%d',
+            'MCP health: %s  total=%d  enabled=%d  external=%d  watch=%d  warning=%d  critical=%d  missing_entries=%d  enabled_missing_entries=%d  disabled_missing_entries=%d  external_not_running=%d  disabled_external_running=%d',
             strtoupper((string) $payload['status']),
             (int) ($summary['total'] ?? 0),
             (int) ($summary['enabled'] ?? 0),
@@ -51,6 +51,7 @@ class OpsMcpHealthCommand extends Command
             (int) ($summary['enabled_missing_entries'] ?? 0),
             (int) ($summary['disabled_missing_entries'] ?? 0),
             (int) ($summary['external_not_running'] ?? 0),
+            (int) ($summary['disabled_external_running'] ?? 0),
         ));
 
         foreach ($payload['servers'] as $server) {
@@ -76,7 +77,7 @@ class OpsMcpHealthCommand extends Command
     {
         $summary = $compact['summary'] ?? [];
         $this->line(sprintf(
-            'MCP health compact: %s  total=%d  enabled=%d  external=%d  watch=%d  critical=%d  missing_entries=%d  enabled_missing_entries=%d  disabled_missing_entries=%d  external_not_running=%d',
+            'MCP health compact: %s  total=%d  enabled=%d  external=%d  watch=%d  critical=%d  missing_entries=%d  enabled_missing_entries=%d  disabled_missing_entries=%d  external_not_running=%d  disabled_external_running=%d',
             strtoupper((string) ($compact['status'] ?? 'unknown')),
             (int) ($summary['total'] ?? 0),
             (int) ($summary['enabled'] ?? 0),
@@ -87,6 +88,7 @@ class OpsMcpHealthCommand extends Command
             (int) ($summary['enabled_missing_entries'] ?? 0),
             (int) ($summary['disabled_missing_entries'] ?? 0),
             (int) ($summary['external_not_running'] ?? 0),
+            (int) ($summary['disabled_external_running'] ?? 0),
         ));
 
         foreach ((array) ($compact['attention'] ?? []) as $server) {
