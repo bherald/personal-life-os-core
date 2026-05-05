@@ -14,7 +14,13 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Install audit tools
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: |
+          if command -v rg >/dev/null 2>&1; then
+            rg --version
+          else
+            sudo timeout 180s apt-get update
+            sudo env DEBIAN_FRONTEND=noninteractive timeout 180s apt-get install -y --no-install-recommends ripgrep
+          fi
 
       - name: Run public extraction audit
         run: PUBLIC_AUDIT_LIMIT=120 scripts/guards/public-release-audit.sh
@@ -77,7 +83,13 @@ jobs:
             requirements-core.constraints.txt
 
       - name: Install system audit tools
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        run: |
+          if command -v rg >/dev/null 2>&1; then
+            rg --version
+          else
+            sudo timeout 180s apt-get update
+            sudo env DEBIAN_FRONTEND=noninteractive timeout 180s apt-get install -y --no-install-recommends ripgrep
+          fi
 
       - name: Install PHP dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
