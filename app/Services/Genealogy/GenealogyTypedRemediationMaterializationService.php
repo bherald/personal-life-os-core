@@ -52,6 +52,26 @@ class GenealogyTypedRemediationMaterializationService
 
     public function materializeFromQueueRow(object|array $row, array $context = []): array
     {
+        $inspection = $this->inspectQueueRow($row);
+        if (! ($inspection['success'] ?? false)) {
+            return $inspection;
+        }
+
+        if (($inspection['materialized_existing'] ?? false) === true) {
+            return $inspection;
+        }
+
+        $packet = is_array($inspection['packet_candidate'] ?? null) ? $inspection['packet_candidate'] : [];
+        $result = $this->packetMaterializer->materialize($packet, $context);
+        $result['source_review_queue_id'] = $inspection['source_review_queue_id'] ?? null;
+        $result['source_dedup_key'] = $inspection['source_dedup_key'] ?? '';
+        $result['typed_remediation_preview'] = $inspection['typed_remediation_preview'] ?? [];
+
+        return $result;
+    }
+
+    public function inspectQueueRow(object|array $row): array
+    {
         $row = (object) $row;
         $details = $this->decodeDetails($row->details ?? null);
 
@@ -72,6 +92,7 @@ class GenealogyTypedRemediationMaterializationService
                 'error' => 'unsupported_typed_remediation',
                 'source_review_queue_id' => (int) $row->id,
                 'typed_remediation_preview' => $preview,
+                'operation_types' => [],
             ];
         }
 
@@ -86,16 +107,34 @@ class GenealogyTypedRemediationMaterializationService
                 'source_review_queue_id' => (int) $row->id,
                 'source_dedup_key' => $sourceDedupKey,
                 'typed_remediation_preview' => $preview,
+                'operation_types' => $operationTypes,
             ];
         }
 
         $packet = $this->buildPacket($row, $details, $preview, $operationTypes, $sourceDedupKey);
-        $result = $this->packetMaterializer->materialize($packet, $context);
-        $result['source_review_queue_id'] = (int) $row->id;
-        $result['source_dedup_key'] = $sourceDedupKey;
-        $result['typed_remediation_preview'] = $preview;
+        $validation = $this->validator->validate($packet);
+        if (! ($validation['valid'] ?? false)) {
+            return [
+                'success' => false,
+                'error' => 'packet_validation_failed',
+                'validation' => $validation,
+                'source_review_queue_id' => (int) $row->id,
+                'source_dedup_key' => $sourceDedupKey,
+                'typed_remediation_preview' => $preview,
+                'operation_types' => $operationTypes,
+            ];
+        }
 
-        return $result;
+        return [
+            'success' => true,
+            'materialized_existing' => false,
+            'source_review_queue_id' => (int) $row->id,
+            'source_dedup_key' => $sourceDedupKey,
+            'typed_remediation_preview' => $preview,
+            'operation_types' => $operationTypes,
+            'validation' => $validation,
+            'packet_candidate' => $packet,
+        ];
     }
 
     private function buildPacket(object $row, array $details, array $preview, array $operationTypes, string $sourceDedupKey): array

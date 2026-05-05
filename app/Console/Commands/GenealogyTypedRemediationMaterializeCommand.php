@@ -4,7 +4,6 @@ namespace App\Console\Commands;
 
 use App\Services\Genealogy\GenealogyReviewPacketApplyPreviewService;
 use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
-use App\Support\JsonColumn;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -76,7 +75,27 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
         }
 
         if (! $execute) {
-            $existing = $this->existingPendingPacket((int) $row->id, $sourceDedupKey);
+            $inspection = $materializer->inspectQueueRow($row);
+            if (! ($inspection['success'] ?? false)) {
+                return $this->emitFailure($this->basePayload($selection, [
+                    'success' => false,
+                    'status' => ($inspection['error'] ?? null) === 'packet_validation_failed' ? 'blocked' : 'failed',
+                    'error' => $inspection['error'] ?? 'materialization_inspection_failed',
+                    'action' => 'none',
+                    'source' => $source,
+                    'operation_types' => $inspection['operation_types'] ?? $operationTypes,
+                    'packet' => null,
+                    'validation' => $inspection['validation'] ?? null,
+                    'typed_remediation_preview' => $inspection['typed_remediation_preview'] ?? $preview,
+                ]), self::FAILURE);
+            }
+
+            $existing = ($inspection['materialized_existing'] ?? false) === true
+                ? (object) [
+                    'id' => $inspection['review_queue_id'] ?? null,
+                    'token' => $inspection['token'] ?? null,
+                ]
+                : null;
 
             return $this->emitSuccess($this->basePayload($selection, [
                 'success' => true,
@@ -89,6 +108,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                     'token' => (string) $existing->token,
                     'materialized_existing' => true,
                 ],
+                'validation' => $inspection['validation'] ?? null,
                 'typed_remediation_preview' => $preview,
             ]));
         }
@@ -111,6 +131,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                 'materialized_existing' => (bool) ($result['materialized_existing'] ?? false),
             ] : null,
             'error' => $result['error'] ?? null,
+            'validation' => $result['validation'] ?? null,
             'typed_remediation_preview' => $result['typed_remediation_preview'] ?? $preview,
         ]);
 
@@ -185,25 +206,6 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
         return ((string) ($selection['type'] ?? '') === 'id')
             ? $query->where('id', (int) $selection['id'])->first()
             : $query->where('token', (string) $selection['token'])->first();
-    }
-
-    private function existingPendingPacket(int $sourceReviewQueueId, string $sourceDedupKey): ?object
-    {
-        return DB::table('agent_review_queue')
-            ->select(['id', 'token'])
-            ->where('review_type', 'genealogy_review_packet')
-            ->where('status', 'pending')
-            ->where(function ($query) use ($sourceReviewQueueId, $sourceDedupKey): void {
-                JsonColumn::whereScalarEquals($query, 'details', '$.packet.materialization.source_review_queue_id', (string) $sourceReviewQueueId);
-                JsonColumn::orWhereScalarEquals($query, 'details', '$.packet.source_review_queue.id', (string) $sourceReviewQueueId);
-
-                if ($sourceDedupKey !== '') {
-                    JsonColumn::orWhereScalarEquals($query, 'details', '$.packet.materialization.source_dedup_key', $sourceDedupKey);
-                    JsonColumn::orWhereScalarEquals($query, 'details', '$.packet.source_review_queue.dedup_key', $sourceDedupKey);
-                }
-            })
-            ->orderBy('id')
-            ->first();
     }
 
     /**
@@ -442,8 +444,38 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                 'present' => true,
                 'materialized_existing' => (bool) ($packet['materialized_existing'] ?? false),
             ],
+            'validation' => $this->compactValidation($payload['validation'] ?? null),
             'safety' => $payload['safety'] ?? $this->safetyPayload(),
             'typed_remediation_preview' => $this->compactPreview($payload['typed_remediation_preview'] ?? null),
+        ];
+    }
+
+    private function compactValidation(mixed $validation): ?array
+    {
+        if (! is_array($validation)) {
+            return null;
+        }
+
+        $errors = [];
+        foreach ((array) ($validation['errors'] ?? []) as $error) {
+            if (! is_array($error)) {
+                continue;
+            }
+
+            $gate = $this->safeValidationCode($error['gate'] ?? null);
+            $code = $this->safeValidationCode($error['code'] ?? null);
+            if ($gate !== null && $code !== null) {
+                $errors[] = [
+                    'gate' => $gate,
+                    'code' => $code,
+                ];
+            }
+        }
+
+        return [
+            'valid' => (bool) ($validation['valid'] ?? false),
+            'error_count' => count($errors),
+            'errors' => $errors,
         ];
     }
 
@@ -562,6 +594,16 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
         }
 
         return $name;
+    }
+
+    private function safeValidationCode(mixed $code): ?string
+    {
+        $code = $this->text($code);
+        if ($code === null || ! preg_match('/^[a-z0-9_:-]{1,80}$/', $code)) {
+            return null;
+        }
+
+        return $code;
     }
 
     private function safeEffectType(mixed $type): ?string

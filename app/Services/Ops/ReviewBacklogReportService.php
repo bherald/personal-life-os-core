@@ -2,6 +2,7 @@
 
 namespace App\Services\Ops;
 
+use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -148,7 +149,7 @@ class ReviewBacklogReportService
         $payload['queries_executed'] = true;
 
         $rows = DB::table('agent_review_queue')
-            ->select(['id', 'token', 'review_type', 'finding_type', 'priority', 'created_at', 'details'])
+            ->select(['id', 'token', 'review_type', 'finding_type', 'priority', 'status', 'created_at', 'details'])
             ->where('status', 'pending')
             ->orderBy('created_at')
             ->limit(500)
@@ -1435,6 +1436,14 @@ class ReviewBacklogReportService
         $materializableOperationTypes = $isTypedRemediation
             ? $this->materializableOperationTypes($details)
             : [];
+        $materializationInspection = ($isTypedRemediation && $reviewType === 'genealogy_finding' && $materializableOperationTypes !== [])
+            ? (new GenealogyTypedRemediationMaterializationService)->inspectQueueRow($row)
+            : null;
+        $materializationReady = is_array($materializationInspection)
+            && ($materializationInspection['success'] ?? false) === true;
+        $packetValidation = is_array($materializationInspection)
+            ? ($materializationInspection['validation'] ?? null)
+            : null;
         $hasChangeTypeTypo = false;
         foreach ($this->changeTypes($details) as $changeType) {
             if (isset(self::CHANGE_TYPE_TYPO_SUGGESTIONS[$changeType])) {
@@ -1463,7 +1472,7 @@ class ReviewBacklogReportService
                 'has_apply_preview' => $hasApplyPreview,
                 'preview_only' => $this->isPreviewOnly($details),
                 'supported_preview_operation' => $supportedPreviewOperations !== [],
-                'materializable_remediation' => $materializableOperationTypes !== [],
+                'materializable_remediation' => $materializationReady,
                 'context_ready_without_preview' => ($hasSourceContext || $hasFamilyContext) && ! $hasApplyPreview,
                 'without_materialized_ids' => $isTypedRemediation && ! $hasSourceIds && ! $hasFamilyIds,
                 'malformed_details' => $malformedDetails,
@@ -1483,7 +1492,7 @@ class ReviewBacklogReportService
                     hasApplyPreview: $hasApplyPreview,
                     previewOnly: $this->isPreviewOnly($details),
                     supportedPreviewOperation: $supportedPreviewOperations !== [],
-                    materializableRemediation: $materializableOperationTypes !== [],
+                    materializableRemediation: $materializationReady,
                     hasSourceDuplicateIds: $hasSourceIds,
                     hasFamilyRemediationIds: $hasFamilyIds,
                     hasSourceProposedChangeIds: $hasSourceContext,
@@ -1491,6 +1500,7 @@ class ReviewBacklogReportService
                     familyContextSignals: $familySignals,
                     contextReadyWithoutPreview: ($hasSourceContext || $hasFamilyContext) && ! $hasApplyPreview,
                     possibleChangeTypeTypo: $hasChangeTypeTypo,
+                    packetValidation: $packetValidation,
                 )
             );
         }
@@ -1504,11 +1514,19 @@ class ReviewBacklogReportService
      */
     private function remediationMaterializationHint(object $row, array $operationTypes, array $readiness): array
     {
-        $available = $operationTypes !== [];
+        $hasOperation = $operationTypes !== [];
+        $available = $hasOperation && ($readiness['materializable_remediation'] ?? false) === true;
+        $status = $available ? 'dry_run_ready' : 'unavailable';
+        $reason = $available ? null : 'no_supported_remediation_operation';
+        if ($hasOperation && ! $available) {
+            $status = 'validation_blocked';
+            $reason = 'packet_validation_failed';
+        }
+
         $hint = [
             'available' => $available,
-            'status' => $available ? 'dry_run_ready' : 'unavailable',
-            'reason' => $available ? null : 'no_supported_remediation_operation',
+            'status' => $status,
+            'reason' => $reason,
             'missing_materialization_inputs' => $this->missingMaterializationInputs($readiness),
             'readiness_flags' => $readiness,
             'source' => 'agent_review_queue',
@@ -1522,9 +1540,12 @@ class ReviewBacklogReportService
             'safety' => $this->materializationSafetyPayload(),
         ];
 
-        if ($available) {
+        if ($hasOperation) {
             $hint['selector'] = $this->reviewQueueSelector($row);
             $hint['dry_run_options'] = ['--json', '--compact'];
+        }
+
+        if ($available) {
             $hint['execute_options'] = ['--execute', '--json'];
         }
 
@@ -1548,7 +1569,10 @@ class ReviewBacklogReportService
         array $familyContextSignals,
         bool $contextReadyWithoutPreview,
         bool $possibleChangeTypeTypo,
+        mixed $packetValidation = null,
     ): array {
+        $validationErrors = $this->validationErrors($packetValidation);
+
         return [
             'malformed_details' => $malformedDetails,
             'has_apply_preview' => $hasApplyPreview,
@@ -1566,6 +1590,9 @@ class ReviewBacklogReportService
             ],
             'context_ready_without_preview' => $contextReadyWithoutPreview,
             'possible_change_type_typo' => $possibleChangeTypeTypo,
+            'packet_validation_ready' => is_array($packetValidation) ? (($packetValidation['valid'] ?? false) === true) : null,
+            'packet_validation_error_count' => count($validationErrors),
+            'packet_validation_errors' => $validationErrors,
         ];
     }
 
@@ -1581,11 +1608,61 @@ class ReviewBacklogReportService
             $missing[] = 'parseable_details';
         }
 
-        if (($readiness['materializable_remediation'] ?? false) !== true) {
+        if (($readiness['materializable_remediation'] ?? false) !== true
+            && ($readiness['packet_validation_ready'] ?? null) !== false) {
             $missing[] = 'supported_operation_type';
         }
 
-        return $missing;
+        foreach ((array) ($readiness['packet_validation_errors'] ?? []) as $error) {
+            if (! is_array($error)) {
+                continue;
+            }
+
+            $code = $this->nullableString($error['code'] ?? null);
+            if ($code !== null) {
+                $missing[] = $code;
+            }
+        }
+
+        return array_values(array_unique($missing));
+    }
+
+    /**
+     * @return list<array{gate:string,code:string}>
+     */
+    private function validationErrors(mixed $validation): array
+    {
+        if (! is_array($validation)) {
+            return [];
+        }
+
+        $errors = [];
+        foreach ((array) ($validation['errors'] ?? []) as $error) {
+            if (! is_array($error)) {
+                continue;
+            }
+
+            $gate = $this->safeValidationToken($error['gate'] ?? null);
+            $code = $this->safeValidationToken($error['code'] ?? null);
+            if ($gate !== null && $code !== null) {
+                $errors[] = [
+                    'gate' => $gate,
+                    'code' => $code,
+                ];
+            }
+        }
+
+        return $errors;
+    }
+
+    private function safeValidationToken(mixed $value): ?string
+    {
+        $value = $this->nullableString($value);
+        if ($value === null || preg_match('/^[a-z0-9_:-]{1,80}$/', $value) !== 1) {
+            return null;
+        }
+
+        return $value;
     }
 
     /**

@@ -172,6 +172,47 @@
       </div>
     </section>
 
+    <section v-if="claimEvidenceRows.length" class="packet-section">
+      <div class="section-heading">
+        <span>Claim to source</span>
+        <span class="section-count">{{ claimEvidenceRows.length }}</span>
+      </div>
+      <div class="claim-source-list">
+        <div v-for="row in claimEvidenceRows" :key="row.key" class="claim-source-row">
+          <div class="claim-source-main">
+            <div class="claim-topline">
+              <span class="claim-index">#{{ row.displayIndex }}</span>
+              <span v-if="row.changeType" class="claim-pill">{{ row.changeType }}</span>
+              <span v-if="row.fieldName" class="claim-pill muted">{{ row.fieldName }}</span>
+            </div>
+            <div class="claim-source-text">{{ row.claimText || 'No claim text supplied.' }}</div>
+          </div>
+          <div class="claim-source-ref">
+            <div v-if="row.sourceRef" class="claim-source-ref-line">
+              <span class="claim-source-label">ref</span>
+              <span class="claim-source-value mono" :title="row.sourceRef">{{ row.sourceRef }}</span>
+            </div>
+            <div class="claim-source-ref-line">
+              <span class="claim-source-label">source</span>
+              <a
+                v-if="row.sourceHref"
+                class="claim-source-value claim-source-link"
+                :href="row.sourceHref"
+                target="_blank"
+                rel="noopener noreferrer"
+                :title="row.sourceLocator || row.sourceLabel"
+              >
+                {{ row.sourceLabel }}
+              </a>
+              <span v-else class="claim-source-value" :title="row.sourceLocator || row.sourceLabel">
+                {{ row.sourceLabel }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="packet-section">
       <div class="section-heading">
         <span>Claims</span>
@@ -748,6 +789,11 @@ const validationErrors = computed(() => arrayValue(validation.value.errors))
 const validationWarnings = computed(() => arrayValue(validation.value.warnings))
 const validationMissing = computed(() => !validation.value || Object.keys(validation.value).length === 0)
 
+const claimEvidenceRows = computed(() => claims.value
+  .filter(isPlainObject)
+  .map((claim, idx) => claimEvidenceRow(claim, idx))
+  .filter(Boolean))
+
 const validationStatus = computed(() => {
   if (validation.value.valid === true) return 'valid'
   if (validationErrors.value.length) return 'errors'
@@ -850,6 +896,27 @@ function labelize(key) {
   return String(key).replace(/_/g, ' ')
 }
 
+function stringOrNull(value) {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text !== '' ? text : null
+}
+
+function formatCount(value) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? String(numeric) : displayValue(value)
+}
+
+function formatPersonId(value) {
+  const text = stringOrNull(value)
+  return text ? `person #${text}` : null
+}
+
+function formatPacketStatus(value) {
+  const text = stringOrNull(value)
+  return text ? labelize(text) : null
+}
+
 function displayValue(value) {
   if (value === null || value === undefined || value === '') return '-'
   if (value === true) return 'true'
@@ -899,6 +966,134 @@ function classificationForIndex(idx) {
 
 function claimKey(claim, idx) {
   return `${claim.index ?? claim.field_name ?? 'claim'}-${idx}`
+}
+
+function claimEvidenceRow(claim, idx) {
+  const raw = objectValue(claim.raw)
+  const sourceRef = firstStringValue(claim, raw, [
+    'source_ref',
+    'source_locator',
+    'evidence_source',
+    'citation',
+    'source_id',
+    'media_id',
+  ])
+  const matched = matchClaimSource(sourceRef, idx)
+  const sourceLocator = matched?.locator || locatorFromRef(sourceRef) || sourceLocators.value[idx] || sourceLocators.value[0] || null
+  const sourceLabel = matched?.label || sourceRef || sourceLocator || 'No source supplied'
+
+  return {
+    key: `claim-source-${claimKey(claim, idx)}`,
+    displayIndex: claim.index ?? idx + 1,
+    changeType: stringOrNull(claim.change_type ?? raw.change_type),
+    fieldName: stringOrNull(claim.field_name ?? raw.field_name),
+    claimText: claimText(claim),
+    sourceRef,
+    sourceLocator,
+    sourceLabel,
+    sourceHref: sourceLocator ? locatorHref(sourceLocator) : null,
+  }
+}
+
+function matchClaimSource(sourceRef, idx) {
+  const ref = normalizeSourceMatch(sourceRef)
+  if (ref) {
+    for (let sourceIdx = 0; sourceIdx < sources.value.length; sourceIdx++) {
+      const source = sources.value[sourceIdx]
+      const candidates = sourceMatchCandidates(source)
+      if (candidates.some((candidate) => sourceMatches(ref, candidate))) {
+        return {
+          source,
+          locator: sourceLocator(source),
+          label: sourceLabel(source, sourceIdx),
+        }
+      }
+    }
+
+    const locator = sourceLocators.value.find((candidate) => sourceMatches(ref, candidate))
+    if (locator) {
+      return { locator, label: locator }
+    }
+  }
+
+  if (sources.value.length === 1) {
+    return {
+      source: sources.value[0],
+      locator: sourceLocator(sources.value[0]),
+      label: sourceLabel(sources.value[0], 0),
+    }
+  }
+
+  if (sources.value[idx]) {
+    return {
+      source: sources.value[idx],
+      locator: sourceLocator(sources.value[idx]),
+      label: sourceLabel(sources.value[idx], idx),
+    }
+  }
+
+  return null
+}
+
+function sourceMatchCandidates(source) {
+  return [
+    source.id,
+    source.source_id,
+    source.locator,
+    source.source_locator,
+    source.url,
+    source.uri,
+    source.path,
+    source.citation,
+    source.title,
+    source.name,
+    source.label,
+  ].map((value) => stringOrNull(value)).filter(Boolean)
+}
+
+function sourceMatches(ref, candidate) {
+  const value = normalizeSourceMatch(candidate)
+  if (!value) return false
+  if (value === ref) return true
+  if (ref.length < 3 || value.length < 3) return false
+  return value.includes(ref) || ref.includes(value)
+}
+
+function normalizeSourceMatch(value) {
+  const text = stringOrNull(value)
+  return text ? text.toLowerCase() : null
+}
+
+function sourceLocator(source) {
+  return stringOrNull(source.locator)
+    || stringOrNull(source.source_locator)
+    || stringOrNull(source.url)
+    || stringOrNull(source.uri)
+    || stringOrNull(source.path)
+    || stringOrNull(source.citation)
+    || null
+}
+
+function sourceLabel(source, idx) {
+  return stringOrNull(source.title)
+    || stringOrNull(source.name)
+    || stringOrNull(source.label)
+    || sourceLocator(source)
+    || (source.id ? `Source #${source.id}` : `Source ${idx + 1}`)
+}
+
+function locatorFromRef(sourceRef) {
+  const ref = stringOrNull(sourceRef)
+  if (!ref) return null
+  return locatorHref(ref) ? ref : null
+}
+
+function firstStringValue(primary, raw, keys) {
+  for (const key of keys) {
+    const value = stringOrNull(primary[key] ?? raw[key])
+    if (value) return value
+  }
+  return null
 }
 
 function claimText(claim) {
@@ -1381,10 +1576,11 @@ function objectKeys(value) {
 .subheading.danger { color: #ffb5b5; }
 .subheading.warning { color: #ffd980; }
 
-.locator-list,
-.claim-list,
-.operation-list,
-.decision-list,
+	.locator-list,
+	.claim-source-list,
+	.claim-list,
+	.operation-list,
+	.decision-list,
 .issue-list {
   display: flex;
   flex-direction: column;
@@ -1406,13 +1602,79 @@ function objectKeys(value) {
   word-break: break-word;
 }
 
-a.locator-row:hover {
-  color: #ffffff;
-  border-color: rgba(99, 179, 237, 0.55);
-}
+	a.locator-row:hover {
+	  color: #ffffff;
+	  border-color: rgba(99, 179, 237, 0.55);
+	}
 
-.source-payloads {
-  margin-top: 0.65rem;
+	.claim-source-row {
+	  display: grid;
+	  grid-template-columns: minmax(0, 1fr);
+	  gap: 0.55rem;
+	  padding: 0.5rem;
+	  border: 1px solid rgba(99, 179, 237, 0.18);
+	  border-radius: 0.35rem;
+	  background: rgba(99, 179, 237, 0.06);
+	  min-width: 0;
+	}
+
+	@media (min-width: 820px) {
+	  .claim-source-row {
+	    grid-template-columns: minmax(0, 1.2fr) minmax(14rem, 0.8fr);
+	  }
+	}
+
+	.claim-source-main,
+	.claim-source-ref {
+	  min-width: 0;
+	}
+
+	.claim-source-text {
+	  margin-top: 0.3rem;
+	  color: #f0e6ff;
+	  font-size: 0.8rem;
+	  line-height: 1.35;
+	  overflow-wrap: anywhere;
+	  white-space: pre-wrap;
+	}
+
+	.claim-source-ref {
+	  display: flex;
+	  flex-direction: column;
+	  gap: 0.3rem;
+	}
+
+	.claim-source-ref-line {
+	  display: grid;
+	  grid-template-columns: minmax(3.25rem, auto) minmax(0, 1fr);
+	  gap: 0.45rem;
+	  align-items: baseline;
+	  min-width: 0;
+	}
+
+	.claim-source-label {
+	  color: #b39ddb;
+	  font-size: 0.66rem;
+	  font-weight: 700;
+	  letter-spacing: 0.04em;
+	  text-transform: uppercase;
+	}
+
+	.claim-source-value {
+	  color: #d8efff;
+	  font-size: 0.76rem;
+	  line-height: 1.3;
+	  overflow-wrap: anywhere;
+	  word-break: break-word;
+	  min-width: 0;
+	}
+
+	.claim-source-link:hover {
+	  color: #ffffff;
+	}
+
+	.source-payloads {
+	  margin-top: 0.65rem;
 }
 
 .media-refs {
