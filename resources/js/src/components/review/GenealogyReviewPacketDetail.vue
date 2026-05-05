@@ -39,6 +39,28 @@
       </div>
     </section>
 
+    <section v-if="hasRemediationOrigin" class="packet-section remediation-origin-section">
+      <div class="section-heading">
+        <span>Remediation origin</span>
+        <span class="section-status preview">display only</span>
+      </div>
+      <div class="kv-grid compact">
+        <div v-for="row in remediationOriginRows" :key="row.key" class="kv-row">
+          <span class="kv-key">{{ row.label }}</span>
+          <span class="kv-value">{{ row.value }}</span>
+        </div>
+      </div>
+      <div v-if="remediationOriginOperationTypes.length" class="origin-op-list">
+        <span
+          v-for="operationType in remediationOriginOperationTypes"
+          :key="operationType"
+          class="claim-pill"
+        >
+          {{ operationType }}
+        </span>
+      </div>
+    </section>
+
     <section class="packet-section status-section">
       <div class="section-heading">
         <span>Packet status</span>
@@ -608,6 +630,7 @@ const applyPreview = computed(() => objectValue(props.context?.apply_preview, de
 const decisionLog = computed(() => arrayValue(props.context?.decision_log, details.value.decision_log).filter(isPlainObject))
 const mediaRefs = computed(() => arrayValue(props.context?.media_refs).filter(isPlainObject))
 const reviewFocus = computed(() => objectValue(props.context?.review_focus))
+const remediationOrigin = computed(() => objectValue(reviewFocus.value.remediation_origin))
 const personSnapshot = computed(() => {
   const person = props.context?.person
   return isPlainObject(person) && Object.keys(person).length ? person : null
@@ -674,6 +697,23 @@ const reviewFocusRows = computed(() => [
   focusRow('claims', 'Claims', formatCount(reviewFocus.value.claim_count ?? claims.value.length)),
   focusRow('preview', 'Preview', previewStatusLabel.value, previewStatusClass.value),
 ].filter(Boolean))
+
+const remediationOriginOperationTypes = computed(() => arrayValue(remediationOrigin.value.operation_types)
+  .map((value) => stringOrNull(value))
+  .filter(Boolean))
+
+const remediationOriginRows = computed(() => [
+  originRow('source', 'Source', remediationOrigin.value.source),
+  originRow('source_review_type', 'Review type', remediationOrigin.value.source_review_type),
+  originRow('finding_type', 'Finding type', remediationOrigin.value.finding_type),
+  originRow('source_status', 'Source status', remediationOrigin.value.source_status),
+  originRow('target_review_type', 'Packet type', remediationOrigin.value.target_review_type),
+  originRow('apply_enabled', 'Apply enabled', remediationOrigin.value.apply_enabled),
+  originRow('writeback', 'Writeback', remediationOrigin.value.writeback),
+  originRow('execute_effect', 'Effect', remediationOrigin.value.execute_effect),
+].filter(Boolean))
+
+const hasRemediationOrigin = computed(() => remediationOriginRows.value.length > 0 || remediationOriginOperationTypes.value.length > 0)
 
 const reviewFocusPersonLabel = computed(() => {
   const label = stringOrNull(reviewFocus.value.person_label)
@@ -895,6 +935,11 @@ function addLocator(values, value) {
 function focusRow(key, label, value, className = null, title = null) {
   if (value === null || value === undefined || value === '') return null
   return { key, label, value, className, title }
+}
+
+function originRow(key, label, value) {
+  if (value === null || value === undefined || value === '') return null
+  return { key, label, raw: value, value: displayValue(value) }
 }
 
 function objectValue(...candidates) {
@@ -1806,12 +1851,17 @@ a.media-ref-card:hover {
 .claim-topline,
 .operation-head,
 .decision-head,
-.claim-meta {
+.claim-meta,
+.origin-op-list {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.35rem;
   min-width: 0;
+}
+
+.origin-op-list {
+  margin-top: 0.55rem;
 }
 
 .claim-index {

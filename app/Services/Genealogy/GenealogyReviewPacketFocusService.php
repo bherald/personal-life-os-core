@@ -89,6 +89,7 @@ class GenealogyReviewPacketFocusService
             'claim_field' => $firstClaim !== null ? $this->firstScalarText($firstClaim, ['field_name']) : null,
             'claim_change_type' => $firstClaim !== null ? $this->firstScalarText($firstClaim, ['change_type', 'relationship_type']) : null,
             'claim_source_ref' => $firstClaim !== null ? $this->firstScalarText($firstClaim, ['source_ref', 'source_locator']) : null,
+            'remediation_origin' => $this->remediationOrigin($details),
             'preview_status' => $this->previewStatus($applyPreview, $applyPreviewMeta),
             'preview_only' => $previewOnly,
             'canonical_mutation' => $persistedPreview ? $this->previewHasCanonicalMutation($applyPreview) : null,
@@ -215,6 +216,84 @@ class GenealogyReviewPacketFocusService
         }
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @return array<string, mixed>|null
+     */
+    private function remediationOrigin(array $details): ?array
+    {
+        $packet = is_array($details['packet'] ?? null) ? $details['packet'] : [];
+        $materialization = is_array($packet['materialization'] ?? null)
+            ? $packet['materialization']
+            : (is_array($details['materialization'] ?? null) ? $details['materialization'] : []);
+        $sourceReview = is_array($packet['source_review_queue'] ?? null)
+            ? $packet['source_review_queue']
+            : (is_array($details['source_review_queue'] ?? null) ? $details['source_review_queue'] : []);
+
+        $sourceReviewType = $this->firstScalarText($materialization, ['source_review_type'])
+            ?: $this->firstScalarText($sourceReview, ['review_type']);
+        $findingType = $this->firstScalarText($sourceReview, ['finding_type'])
+            ?: $this->firstScalarText($details, ['finding_type']);
+        $sourceStatus = $this->firstScalarText($sourceReview, ['status']);
+        $targetReviewType = $this->firstScalarText($materialization, ['target_review_type']);
+        $source = $this->firstScalarText($materialization, ['source']);
+        $operationTypes = $this->operationTypes($materialization['operation_types'] ?? null);
+        $applyEnabled = $this->strictBool($materialization['apply_enabled'] ?? null);
+        $writeback = $this->strictBool($materialization['writeback'] ?? null);
+
+        if ($sourceReviewType === null
+            && $findingType === null
+            && $sourceStatus === null
+            && $targetReviewType === null
+            && $source === null
+            && $operationTypes === []
+            && $applyEnabled === null
+            && $writeback === null) {
+            return null;
+        }
+
+        return [
+            'source' => $source,
+            'source_review_type' => $sourceReviewType,
+            'finding_type' => $findingType,
+            'source_status' => $sourceStatus,
+            'target_review_type' => $targetReviewType,
+            'operation_types' => $operationTypes,
+            'apply_enabled' => $applyEnabled,
+            'writeback' => $writeback,
+            'execute_effect' => 'create_or_reuse_review_packet_only',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function operationTypes(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $types = [];
+        foreach ($value as $item) {
+            if (! is_scalar($item)) {
+                continue;
+            }
+
+            $type = trim((string) $item);
+            if ($type !== '' && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $type) === 1) {
+                $types[] = $type;
+            }
+        }
+
+        return array_values(array_unique($types));
+    }
+
+    private function strictBool(mixed $value): ?bool
+    {
+        return is_bool($value) ? $value : null;
     }
 
     /**
