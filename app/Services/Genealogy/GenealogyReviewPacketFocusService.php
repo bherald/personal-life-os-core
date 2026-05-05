@@ -63,6 +63,9 @@ class GenealogyReviewPacketFocusService
         $sourceLocator = $this->firstSourceLocator($details, $sourceLocators, $sources);
         $previewOnly = $this->previewIsPreviewOnly($applyPreview);
         $persistedPreview = ($applyPreviewMeta['persisted'] ?? false) === true;
+        $approvalReady = $persistedPreview
+            && $previewOnly === true
+            && $this->validationAllowsApproval($validation);
 
         return [
             'review_mode' => 'single_packet',
@@ -81,9 +84,13 @@ class GenealogyReviewPacketFocusService
             'preview_status' => $this->previewStatus($applyPreview, $applyPreviewMeta),
             'preview_only' => $previewOnly,
             'canonical_mutation' => $persistedPreview ? $this->previewHasCanonicalMutation($applyPreview) : null,
-            'approval_ready' => $persistedPreview
-                && $previewOnly === true
-                && $this->validationAllowsApproval($validation),
+            'approval_ready' => $approvalReady,
+            'approval_blockers' => $approvalReady ? [] : $this->approvalBlockers(
+                $persistedPreview,
+                $previewOnly,
+                $applyPreview,
+                $validation
+            ),
         ];
     }
 
@@ -365,5 +372,64 @@ class GenealogyReviewPacketFocusService
         }
 
         return true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $preview
+     * @param  array<string, mixed>  $validation
+     * @return list<array{code: string, label: string}>
+     */
+    private function approvalBlockers(
+        bool $persistedPreview,
+        bool $previewOnly,
+        array $preview,
+        array $validation
+    ): array {
+        $blockers = [];
+
+        if (! $persistedPreview) {
+            $blockers[] = [
+                'code' => 'apply_preview_missing',
+                'label' => 'Apply preview missing',
+            ];
+        } elseif (! $previewOnly) {
+            $blockers[] = [
+                'code' => 'preview_not_preview_only',
+                'label' => 'Preview is not preview-only',
+            ];
+
+            if ($this->previewHasCanonicalMutation($preview)) {
+                $blockers[] = [
+                    'code' => 'canonical_mutation_possible',
+                    'label' => 'Canonical mutation possible',
+                ];
+            }
+        }
+
+        if ($validation === []) {
+            $blockers[] = [
+                'code' => 'validation_missing',
+                'label' => 'Validation missing',
+            ];
+
+            return $blockers;
+        }
+
+        if (($validation['valid'] ?? null) !== true) {
+            $blockers[] = [
+                'code' => 'validation_not_valid',
+                'label' => 'Validation is not valid',
+            ];
+        }
+
+        $errors = $validation['errors'] ?? [];
+        if (is_array($errors) && $errors !== []) {
+            $blockers[] = [
+                'code' => 'validation_errors',
+                'label' => 'Validation errors present',
+            ];
+        }
+
+        return $blockers;
     }
 }

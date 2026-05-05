@@ -505,6 +505,13 @@
           Close
         </button>
       </div>
+
+      <div v-if="approvalBlockers.length" class="approval-blockers">
+        <span class="approval-blockers-label">Approval blockers</span>
+        <span v-for="blocker in approvalBlockers" :key="blocker.code || blocker.label" class="approval-blocker">
+          {{ blocker.label || labelize(blocker.code || blocker) }}
+        </span>
+      </div>
     </section>
   </div>
 </template>
@@ -592,6 +599,28 @@ const reviewFocusApprovalReady = computed(() => {
   }
 
   return validation.value.valid === true && validationErrors.value.length === 0 && applyPreviewIsPreviewOnly.value
+})
+
+const approvalBlockers = computed(() => {
+  const blockers = arrayValue(reviewFocus.value.approval_blockers)
+    .map((blocker) => {
+      if (typeof blocker === 'string') {
+        return { code: blocker, label: labelize(blocker) }
+      }
+      if (!isPlainObject(blocker)) return null
+      return {
+        code: stringOrNull(blocker.code) || stringOrNull(blocker.label) || compactJson(blocker),
+        label: stringOrNull(blocker.label) || labelize(blocker.code || 'approval blocker'),
+      }
+    })
+    .filter(Boolean)
+
+  if (blockers.length) return blockers
+  if (reviewFocusApprovalReady.value) return []
+  if (validationMissing.value) return [{ code: 'validation_missing', label: 'Validation missing' }]
+  if (validationErrors.value.length) return [{ code: 'validation_errors', label: 'Validation errors present' }]
+  if (!applyPreviewIsPreviewOnly.value) return [{ code: 'preview_not_preview_only', label: 'Preview is not preview-only' }]
+  return [{ code: 'approval_ready_unknown', label: 'Approval readiness unknown' }]
 })
 
 const reviewFocusRows = computed(() => [
@@ -1876,6 +1905,35 @@ a.media-ref-card:hover {
   flex-wrap: wrap;
   gap: 0.45rem;
   margin-top: 0.65rem;
+}
+
+.approval-blockers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+  min-width: 0;
+}
+
+.approval-blockers-label {
+  color: #b39ddb;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.approval-blocker {
+  max-width: 100%;
+  padding: 0.22rem 0.45rem;
+  border: 1px solid rgba(204, 136, 0, 0.42);
+  border-radius: 0.35rem;
+  color: #ffe3b0;
+  background: rgba(204, 136, 0, 0.14);
+  font-size: 0.72rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .packet-action {
