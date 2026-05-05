@@ -284,13 +284,19 @@ class GenealogyAgentTriageService
 
             $completed = (int) ($row['completed_reviews'] ?? 0);
             $approvalWorthy = (int) ($row['approval_worthy_reviews'] ?? 0);
+            $sampleFloorMet = $completed >= 10;
             $byAgent[$agentId] = [
                 'completed_reviews' => $completed,
                 'approval_worthy_reviews' => $approvalWorthy,
                 'approval_worthy_rate' => $completed > 0 ? round($approvalWorthy / $completed, 4) : null,
                 'hard_fail_count' => (int) ($row['hard_fail_count'] ?? 0),
                 'rework_count' => (int) ($row['rework_count'] ?? 0),
-                'insufficient_data' => $completed < 10,
+                'sample_floor_met' => $sampleFloorMet,
+                'approval_worthy_present' => $approvalWorthy > 0,
+                'yield_state' => $sampleFloorMet
+                    ? ($approvalWorthy > 0 ? 'approval_worthy_present' : 'no_approval_worthy')
+                    : 'insufficient_sample',
+                'insufficient_data' => ! $sampleFloorMet,
             ];
         }
 
@@ -522,6 +528,9 @@ class GenealogyAgentTriageService
             'approval_worthy_rate' => null,
             'hard_fail_count' => 0,
             'rework_count' => 0,
+            'sample_floor_met' => false,
+            'approval_worthy_present' => false,
+            'yield_state' => 'insufficient_sample',
             'insufficient_data' => true,
         ];
     }

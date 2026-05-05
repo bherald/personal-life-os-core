@@ -176,6 +176,20 @@ class GenealogyAgentTriageCommand extends Command
             $scenarioTests = [];
         }
 
+        $minimumAwoReviews = (int) ($preEnableGates['minimum_awo_scored_reviews'] ?? 10);
+        $awoCompleted = (int) ($awo['completed_reviews'] ?? 0);
+        $awoApprovalWorthy = (int) ($awo['approval_worthy_reviews'] ?? 0);
+        $awoSampleFloorMet = array_key_exists('sample_floor_met', $awo)
+            ? ! empty($awo['sample_floor_met'])
+            : $awoCompleted >= $minimumAwoReviews;
+        $awoApprovalWorthyPresent = array_key_exists('approval_worthy_present', $awo)
+            ? ! empty($awo['approval_worthy_present'])
+            : $awoApprovalWorthy > 0;
+        $awoYieldState = $this->safeCompactCode($awo['yield_state'] ?? null)
+            ?? ($awoSampleFloorMet
+                ? ($awoApprovalWorthyPresent ? 'approval_worthy_present' : 'no_approval_worthy')
+                : 'insufficient_sample');
+
         return [
             'job_name' => $target['job_name'] ?? '',
             'agent_id' => $target['agent_id'] ?? null,
@@ -186,14 +200,17 @@ class GenealogyAgentTriageCommand extends Command
             'sessions_total' => (int) ($sessions['total'] ?? 0),
             'reviews_completed' => (int) ($reviews['completed'] ?? 0),
             'reviews_total' => (int) ($reviews['total'] ?? 0),
-            'awo_completed_reviews' => (int) ($awo['completed_reviews'] ?? 0),
-            'awo_approval_worthy_reviews' => (int) ($awo['approval_worthy_reviews'] ?? 0),
+            'awo_completed_reviews' => $awoCompleted,
+            'awo_approval_worthy_reviews' => $awoApprovalWorthy,
             'awo_approval_worthy_rate' => is_numeric($awo['approval_worthy_rate'] ?? null)
                 ? (float) $awo['approval_worthy_rate']
                 : null,
+            'awo_sample_floor_met' => $awoSampleFloorMet,
+            'awo_approval_worthy_present' => $awoApprovalWorthyPresent,
+            'awo_yield_state' => $awoYieldState,
             'scenario_test_count' => count($scenarioTests),
             'source_backed_review_packets_required' => (bool) ($preEnableGates['source_backed_review_packets_required'] ?? true),
-            'minimum_awo_scored_reviews' => (int) ($preEnableGates['minimum_awo_scored_reviews'] ?? 10),
+            'minimum_awo_scored_reviews' => $minimumAwoReviews,
             'operator_approval_required' => (bool) ($preEnableGates['operator_approval_required'] ?? true),
             'scheduler_enablement_allowed' => (bool) ($preEnableGates['scheduler_enablement_allowed'] ?? false),
             'production_writeback_allowed' => (bool) ($preEnableGates['production_writeback_allowed'] ?? false),
@@ -230,7 +247,14 @@ class GenealogyAgentTriageCommand extends Command
             && $this->allTargetsHave($targets, ['scenario_test_count']);
         $awoGateVisible = $targetsTotal > 0
             && count($targets) === $targetsTotal
-            && $this->allTargetsHave($targets, ['awo_completed_reviews', 'awo_approval_worthy_reviews', 'awo_approval_worthy_rate']);
+            && $this->allTargetsHave($targets, [
+                'awo_completed_reviews',
+                'awo_approval_worthy_reviews',
+                'awo_approval_worthy_rate',
+                'awo_sample_floor_met',
+                'awo_approval_worthy_present',
+                'awo_yield_state',
+            ]);
         $operatorApprovalGateVisible = $targetsTotal > 0
             && count($targets) === $targetsTotal
             && $this->allTargetsHave($targets, ['operator_approval_required']);
@@ -303,10 +327,14 @@ class GenealogyAgentTriageCommand extends Command
                 'visible' => $awoGateVisible,
                 'passed' => $awoGateVisible && (int) ($summary['awo_completed_reviews_window'] ?? 0) >= 10,
                 'evidence' => sprintf(
-                    'awo_completed=%d awo_approval_worthy=%d rate=%s',
+                    'awo_completed=%d awo_approval_worthy=%d rate=%s sample_floor_met_targets=%d/%d approval_worthy_present_targets=%d/%d',
                     (int) ($summary['awo_completed_reviews_window'] ?? 0),
                     (int) ($summary['awo_approval_worthy_reviews_window'] ?? 0),
                     $awoApprovalWorthyRate,
+                    count(array_filter($targets, fn (array $target): bool => ! empty($target['awo_sample_floor_met']))),
+                    $targetsTotal,
+                    count(array_filter($targets, fn (array $target): bool => ! empty($target['awo_approval_worthy_present']))),
+                    $targetsTotal,
                 ),
             ],
             [
@@ -421,7 +449,7 @@ class GenealogyAgentTriageCommand extends Command
             }
 
             $this->line(sprintf(
-                'target=%s agent=%s enabled=%s state=%s sessions=%d/%d reviews=%d/%d awo=%d/%d source_packet=%s scenarios=%d min_awo=%d operator_approval=%s scheduler_enable=%s writeback=%s canonical_writeback=%s action=%s',
+                'target=%s agent=%s enabled=%s state=%s sessions=%d/%d reviews=%d/%d awo=%d/%d awo_floor=%s awo_yield=%s source_packet=%s scenarios=%d min_awo=%d operator_approval=%s scheduler_enable=%s writeback=%s canonical_writeback=%s action=%s',
                 (string) ($target['job_name'] ?? ''),
                 (string) ($target['agent_id'] ?? '-'),
                 ! empty($target['enabled']) ? 'yes' : 'no',
@@ -432,6 +460,8 @@ class GenealogyAgentTriageCommand extends Command
                 (int) ($target['reviews_total'] ?? 0),
                 (int) ($target['awo_approval_worthy_reviews'] ?? 0),
                 (int) ($target['awo_completed_reviews'] ?? 0),
+                ! empty($target['awo_sample_floor_met']) ? 'met' : 'waiting',
+                (string) ($target['awo_yield_state'] ?? 'unknown'),
                 ! empty($target['source_backed_review_packets_required']) ? 'yes' : 'no',
                 (int) ($target['scenario_test_count'] ?? 0),
                 (int) ($target['minimum_awo_scored_reviews'] ?? 10),
@@ -504,5 +534,19 @@ class GenealogyAgentTriageCommand extends Command
         }
 
         return implode(',', $visible);
+    }
+
+    private function safeCompactCode(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $code = trim((string) $value);
+        if ($code === '' || preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) !== 1) {
+            return null;
+        }
+
+        return $code;
     }
 }
