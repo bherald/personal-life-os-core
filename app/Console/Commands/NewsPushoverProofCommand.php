@@ -59,6 +59,10 @@ class NewsPushoverProofCommand extends Command
             $report['current_pushover_config']
         );
         $report['part_number_proof'] = $this->summarizePartNumberProof($report['pushover']);
+        $report['part_timestamp_proof'] = $this->summarizePartTimestampProof(
+            $report['pushover'],
+            $report['current_pushover_config']
+        );
 
         if ((string) $run->workflow_name !== $workflow) {
             $report['status_reasons']['fail'][] = "workflow_runs.id {$run->id} belongs to workflow '{$run->workflow_name}', not '{$workflow}'.";
@@ -460,6 +464,87 @@ class NewsPushoverProofCommand extends Command
         ];
     }
 
+    private function summarizePartTimestampProof(array $pushover, ?array $currentConfig): array
+    {
+        if (($pushover['present'] ?? false) !== true) {
+            return [
+                'state' => 'pushover_absent',
+                'reason' => 'Pushover node was not found in the inspected run.',
+                'required' => false,
+                'complete' => false,
+            ];
+        }
+
+        $totalParts = $this->intOrNull($pushover['total_parts'] ?? null);
+        if ($totalParts === null || $totalParts <= 1) {
+            return [
+                'state' => 'not_required',
+                'reason' => 'Single-part or unknown-part notification; part timestamp proof is not required.',
+                'required' => false,
+                'complete' => true,
+            ];
+        }
+
+        $required = ($currentConfig['effective_part_timestamps_enabled'] ?? false) === true;
+        if (! $required) {
+            return [
+                'state' => 'not_required',
+                'reason' => 'Current workflow config does not require multipart part timestamps.',
+                'required' => false,
+                'complete' => true,
+            ];
+        }
+
+        if (($pushover['part_timestamps_enabled'] ?? null) !== true) {
+            return [
+                'state' => 'metadata_missing',
+                'reason' => 'Current workflow config requires part timestamps, but the inspected run did not record them.',
+                'required' => true,
+                'complete' => false,
+            ];
+        }
+
+        if (($pushover['part_timestamp_strategy'] ?? null) !== 'ascending_display_order') {
+            return [
+                'state' => 'strategy_inconsistent',
+                'reason' => 'Part timestamp strategy is missing or not the expected ascending_display_order strategy.',
+                'required' => true,
+                'complete' => false,
+            ];
+        }
+
+        $timestamps = $this->intMap($pushover['part_timestamps'] ?? null);
+        $expectedParts = $totalParts > 0 ? range($totalParts, 1) : [];
+        $actualParts = array_map(static fn ($key): int => (int) $key, array_keys($timestamps));
+        if ($expectedParts !== $actualParts) {
+            return [
+                'state' => 'part_timestamps_incomplete',
+                'reason' => 'Part timestamp metadata does not include every sent part in reverse send order.',
+                'required' => true,
+                'complete' => false,
+            ];
+        }
+
+        $values = array_values($timestamps);
+        $sortedValues = $values;
+        sort($sortedValues);
+        if ($values !== $sortedValues || count(array_unique($values)) !== count($values)) {
+            return [
+                'state' => 'part_timestamps_inconsistent',
+                'reason' => 'Part timestamps are not strictly ascending in display order.',
+                'required' => true,
+                'complete' => false,
+            ];
+        }
+
+        return [
+            'state' => 'recorded',
+            'reason' => 'Part timestamps were recorded for every multipart packet in ascending display order.',
+            'required' => true,
+            'complete' => true,
+        ];
+    }
+
     private function determineStatus(array $report): array
     {
         $fail = $report['status_reasons']['fail'] ?? [];
@@ -491,6 +576,11 @@ class NewsPushoverProofCommand extends Command
             $pacing = $report['pacing_config'] ?? [];
             if (! in_array(($pacing['state'] ?? null), ['matches_current_config'], true)) {
                 $inconclusive[] = (string) ($pacing['reason'] ?? 'Multipart Pushover pacing proof is inconclusive.');
+            }
+
+            $partTimestampProof = $report['part_timestamp_proof'] ?? [];
+            if (($partTimestampProof['required'] ?? false) === true && ($partTimestampProof['state'] ?? null) !== 'recorded') {
+                $inconclusive[] = (string) ($partTimestampProof['reason'] ?? 'Multipart part timestamp proof is inconclusive.');
             }
         }
 
@@ -649,6 +739,7 @@ class NewsPushoverProofCommand extends Command
             ],
             'pacing_config' => $report['pacing_config'] ?? null,
             'part_number_proof' => $report['part_number_proof'] ?? null,
+            'part_timestamp_proof' => $report['part_timestamp_proof'] ?? null,
             'status_reasons' => $report['status_reasons'] ?? [
                 'fail' => [],
                 'inconclusive' => [],
@@ -695,6 +786,14 @@ class NewsPushoverProofCommand extends Command
                 .' exact='.var_export($partProof['exact_part_numbers_available'] ?? null, true)
                 .' actual='.implode(',', $partProof['actual_part_numbers_sent'] ?? [])
                 .' reason='.$partProof['reason']);
+        }
+
+        if (! empty($report['part_timestamp_proof'])) {
+            $timestampProof = $report['part_timestamp_proof'];
+            $this->line('Part timestamps: state='.$timestampProof['state']
+                .' required='.var_export($timestampProof['required'] ?? null, true)
+                .' complete='.var_export($timestampProof['complete'] ?? null, true)
+                .' reason='.$timestampProof['reason']);
         }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
@@ -744,6 +843,14 @@ class NewsPushoverProofCommand extends Command
                 .' exact='.var_export($partProof['exact_part_numbers_available'] ?? null, true)
                 .' actual='.implode(',', $partProof['actual_part_numbers_sent'] ?? [])
                 .' reason='.$partProof['reason']);
+        }
+
+        if (! empty($report['part_timestamp_proof'])) {
+            $timestampProof = $report['part_timestamp_proof'];
+            $this->line('Part timestamps: state='.$timestampProof['state']
+                .' required='.var_export($timestampProof['required'] ?? null, true)
+                .' complete='.var_export($timestampProof['complete'] ?? null, true)
+                .' reason='.$timestampProof['reason']);
         }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
