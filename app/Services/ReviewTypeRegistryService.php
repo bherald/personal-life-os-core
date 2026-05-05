@@ -749,10 +749,6 @@ class ReviewTypeRegistryService
             $item['packet_status'] = (string) $details['packet_status'];
         }
 
-        if (isset($details['source_locator']) && is_scalar($details['source_locator'])) {
-            $item['source_locator'] = (string) $details['source_locator'];
-        }
-
         $claims = is_array($details['claims'] ?? null) ? $details['claims'] : [];
         $item['claim_count'] = count($claims);
 
@@ -760,6 +756,12 @@ class ReviewTypeRegistryService
         $sources = is_array($details['sources'] ?? null) ? $details['sources'] : [];
         $item['source_count'] = count($sourceLocators !== [] ? $sourceLocators : $sources);
         $item['review_focus'] = $this->genealogyReviewPacketFocus()->fromPersistedDetails($details);
+
+        if (isset($details['source_locator']) && is_scalar($details['source_locator'])) {
+            $item['source_locator'] = (string) $details['source_locator'];
+        } elseif (isset($item['review_focus']['source_locator']) && is_scalar($item['review_focus']['source_locator'])) {
+            $item['source_locator'] = (string) $item['review_focus']['source_locator'];
+        }
 
         return $item;
     }

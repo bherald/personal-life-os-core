@@ -18,6 +18,16 @@
               {{ state.label }}
             </button>
           </div>
+          <label class="inline-flex items-center gap-1.5 rounded border border-ops-plum/40 px-2 py-1 text-xs uppercase tracking-wide text-ops-text-muted">
+            <input
+              type="checkbox"
+              class="h-3.5 w-3.5 accent-ops-gold"
+              :checked="namedOnlyStaleOnly"
+              :disabled="namedOnlyLoading"
+              @change="changeStaleOnly($event.target.checked)"
+            />
+            Stale
+          </label>
         </div>
         <button
           class="rounded border border-ops-plum/40 px-3 py-1.5 text-xs uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-40"
@@ -259,10 +269,12 @@ const {
   namedOnlyTotal,
   namedOnlyLoading,
   namedOnlyDecisionState,
+  namedOnlyStaleOnly,
   hasMoreNamedOnly,
   loadNamedOnly,
   loadMoreNamedOnly,
   setNamedOnlyDecisionState,
+  setNamedOnlyStaleOnly,
   linkNamedOnlyFace,
   decideNamedOnlyFace,
 } = useFacesData()
@@ -316,6 +328,11 @@ async function changeDecisionState(decisionState) {
   if (namedOnlyDecisionState.value === decisionState) return
   clearCandidatePanel()
   await setNamedOnlyDecisionState(decisionState)
+}
+
+async function changeStaleOnly(staleOnly) {
+  clearCandidatePanel()
+  await setNamedOnlyStaleOnly(staleOnly)
 }
 
 async function loadCandidates(faceId = selectedFaceId.value) {

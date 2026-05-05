@@ -178,8 +178,8 @@ const packetContextItems = computed(() => {
     packetContextEntry(
       'source',
       'Source',
-      compactLocator(packetFieldValue('source_locator')),
-      stringOrNull(packetFieldValue('source_locator'))
+      compactLocator(packetFocusFieldValue('source_locator')),
+      stringOrNull(packetFocusFieldValue('source_locator'))
     ),
     packetContextEntry('access', 'Access', formatPacketStatus(packetFocusFieldValue('source_access_class'))),
     packetContextEntry('media', 'Media', formatMediaHealth()),

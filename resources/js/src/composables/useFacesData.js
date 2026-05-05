@@ -26,6 +26,7 @@ const namedOnlyFaces = ref([])
 const namedOnlyTotal = ref(0)
 const namedOnlyLoading = ref(false)
 const namedOnlyDecisionState = ref('open')
+const namedOnlyStaleOnly = ref(false)
 const PAGE_SIZE_RECOGNIZED = 60
 const PAGE_SIZE_NEW = 50
 const PAGE_SIZE_HIDDEN = 60
@@ -188,6 +189,7 @@ export function useFacesData() {
           limit: PAGE_SIZE_NAMED_ONLY,
           offset: namedOnlyPage.value * PAGE_SIZE_NAMED_ONLY,
           decision_state: namedOnlyDecisionState.value,
+          stale: namedOnlyStaleOnly.value ? 1 : undefined,
         }
       })
 
@@ -213,6 +215,13 @@ export function useFacesData() {
     if (namedOnlyDecisionState.value === nextState && namedOnlyFaces.value.length > 0) return
     namedOnlyDecisionState.value = nextState
     await loadNamedOnly(true, nextState)
+  }
+
+  async function setNamedOnlyStaleOnly(staleOnly) {
+    const nextValue = Boolean(staleOnly)
+    if (namedOnlyStaleOnly.value === nextValue && namedOnlyFaces.value.length > 0) return
+    namedOnlyStaleOnly.value = nextValue
+    await loadNamedOnly(true)
   }
 
   async function linkNamedOnlyFace(faceId, personId, treeId = null) {
@@ -603,6 +612,7 @@ export function useFacesData() {
     namedOnlyTotal,
     namedOnlyLoading,
     namedOnlyDecisionState,
+    namedOnlyStaleOnly,
     unidentifiedFaces,
     unidentifiedPage,
     unidentifiedTotal,
@@ -624,6 +634,7 @@ export function useFacesData() {
     loadNamedOnly,
     loadMoreNamedOnly,
     setNamedOnlyDecisionState,
+    setNamedOnlyStaleOnly,
     linkNamedOnlyFace,
     decideNamedOnlyFace,
     unhideFace,

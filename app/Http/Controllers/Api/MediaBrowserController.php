@@ -3624,6 +3624,7 @@ class MediaBrowserController extends Controller
         $offset = (int) $request->get('offset', 0);
         $staleNamedOnlyHours = 24;
         $decisionState = (string) $request->get('decision_state', 'open');
+        $staleOnly = $request->boolean('stale');
         if (! in_array($decisionState, ['open', 'decided', 'all'], true)) {
             return response()->json([
                 'success' => false,
@@ -3656,6 +3657,11 @@ class MediaBrowserController extends Controller
             $decisionFilter = "AND JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.terminal')) = 'true'";
         }
 
+        $staleFilter = $staleOnly
+            ? 'AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR)'
+            : '';
+        $whereParams = $staleOnly ? [$staleNamedOnlyHours] : [];
+
         $faces = DB::select("
             SELECT frf.id as face_id, frf.file_registry_id, frf.person_name,
                    frf.genealogy_person_id, frf.region_x, frf.region_y,
@@ -3673,9 +3679,10 @@ class MediaBrowserController extends Controller
             {$decisionJoin}
             WHERE {$namedOnlyFilter}
               {$decisionFilter}
+              {$staleFilter}
             ORDER BY frf.updated_at DESC, frf.id DESC
             LIMIT ? OFFSET ?
-        ", [$staleNamedOnlyHours, $limit, $offset]);
+        ", array_merge([$staleNamedOnlyHours], $whereParams, [$limit, $offset]));
 
         $faces = array_map(function (object $face): object {
             $face->backlog_age_hours = (int) ($face->backlog_age_hours ?? 0);
@@ -3690,13 +3697,15 @@ class MediaBrowserController extends Controller
             {$decisionJoin}
             WHERE {$namedOnlyFilter}
               {$decisionFilter}
-        ");
+              {$staleFilter}
+        ", $whereParams);
 
         return response()->json([
             'success' => true,
             'data' => $faces,
             'total' => (int) ($total->cnt ?? 0),
             'decision_state' => $decisionState,
+            'stale_only' => $staleOnly,
             'limit' => $limit,
             'offset' => $offset,
         ]);
