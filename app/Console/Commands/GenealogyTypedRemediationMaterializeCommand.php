@@ -86,6 +86,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                     'source' => $source,
                     'operation_types' => $inspection['operation_types'] ?? $operationTypes,
                     'packet' => null,
+                    'packet_summary' => $inspection['packet_summary'] ?? null,
                     'validation' => $inspection['validation'] ?? null,
                     'typed_remediation_preview' => $inspection['typed_remediation_preview'] ?? $preview,
                 ]), self::FAILURE);
@@ -109,6 +110,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                     'token' => (string) $existing->token,
                     'materialized_existing' => true,
                 ],
+                'packet_summary' => $inspection['packet_summary'] ?? null,
                 'validation' => $inspection['validation'] ?? null,
                 'typed_remediation_preview' => $preview,
             ]));
@@ -132,6 +134,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                 'materialized_existing' => (bool) ($result['materialized_existing'] ?? false),
             ] : null,
             'error' => $result['error'] ?? null,
+            'packet_summary' => $result['packet_summary'] ?? null,
             'validation' => $result['validation'] ?? null,
             'typed_remediation_preview' => $result['typed_remediation_preview'] ?? $preview,
         ]);
@@ -382,13 +385,20 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             $failedGuards = is_array($preview['failed_guard_names'] ?? null)
                 ? implode(',', array_filter($preview['failed_guard_names'], 'is_string'))
                 : '';
+            $packetSummary = is_array($emitPayload['packet_summary'] ?? null)
+                ? $emitPayload['packet_summary']
+                : [];
             $this->line(sprintf(
-                'Genealogy typed remediation materialization compact: status=%s mode=%s action=%s success=%s operation_types=%s operation_statuses=%s guards=%s failed_guards=%s row_touches=%s no_canonical_write=%s apply_held=%s',
+                'Genealogy typed remediation materialization compact: status=%s mode=%s action=%s success=%s operation_types=%s source_locators=%s claims=%s validation_errors=%s preview_only=%s operation_statuses=%s guards=%s failed_guards=%s row_touches=%s no_canonical_write=%s apply_held=%s',
                 (string) ($emitPayload['status'] ?? 'unknown'),
                 (string) ($emitPayload['mode'] ?? 'unknown'),
                 (string) ($emitPayload['action'] ?? 'unknown'),
                 ($emitPayload['success'] ?? false) ? 'yes' : 'no',
                 $operationTypes !== '' ? $operationTypes : 'none',
+                (string) ($packetSummary['source_locator_count'] ?? 0),
+                (string) ($packetSummary['claim_count'] ?? 0),
+                (string) ($packetSummary['validation_error_count'] ?? 0),
+                ($packetSummary['preview_only'] ?? false) ? 'yes' : 'no',
                 $this->countMapText($preview['operation_status_counts'] ?? []),
                 $this->countMapText($preview['guard_status_counts'] ?? []),
                 $failedGuards !== '' ? $failedGuards : 'none',
@@ -455,9 +465,31 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                 'present' => true,
                 'materialized_existing' => (bool) ($packet['materialized_existing'] ?? false),
             ],
+            'packet_summary' => $this->compactPacketSummary($payload['packet_summary'] ?? null),
             'validation' => $this->compactValidation($payload['validation'] ?? null),
             'safety' => $payload['safety'] ?? $this->safetyPayload(),
             'typed_remediation_preview' => $this->compactPreview($payload['typed_remediation_preview'] ?? null),
+        ];
+    }
+
+    private function compactPacketSummary(mixed $summary): ?array
+    {
+        if (! is_array($summary)) {
+            return null;
+        }
+
+        return [
+            'target_review_type' => (string) ($summary['target_review_type'] ?? 'genealogy_review_packet'),
+            'source_locator_count' => (int) ($summary['source_locator_count'] ?? 0),
+            'claim_count' => (int) ($summary['claim_count'] ?? 0),
+            'identity_present' => (bool) ($summary['identity_present'] ?? false),
+            'privacy_present' => (bool) ($summary['privacy_present'] ?? false),
+            'validation_valid' => (bool) ($summary['validation_valid'] ?? false),
+            'validation_error_count' => (int) ($summary['validation_error_count'] ?? 0),
+            'validation_warning_count' => (int) ($summary['validation_warning_count'] ?? 0),
+            'preview_only' => (bool) ($summary['preview_only'] ?? false),
+            'mutates_accepted_facts' => (bool) ($summary['mutates_accepted_facts'] ?? false),
+            'dedup_key_present' => (bool) ($summary['dedup_key_present'] ?? false),
         ];
     }
 

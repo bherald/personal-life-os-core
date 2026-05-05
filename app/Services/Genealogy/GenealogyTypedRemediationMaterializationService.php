@@ -78,6 +78,7 @@ class GenealogyTypedRemediationMaterializationService
         $result['source_dedup_key'] = $inspection['source_dedup_key'] ?? '';
         $result['typed_remediation_preview'] = $inspection['typed_remediation_preview'] ?? [];
         $result['operation_types'] = $inspection['operation_types'] ?? [];
+        $result['packet_summary'] = $inspection['packet_summary'] ?? null;
 
         return $result;
     }
@@ -126,11 +127,13 @@ class GenealogyTypedRemediationMaterializationService
 
         $packet = $this->buildPacket($row, $details, $preview, $operationTypes, $sourceDedupKey);
         $validation = $this->validator->validate($packet);
+        $packetSummary = $this->packetSummary($packet, $validation, $preview, $sourceDedupKey);
         if (! ($validation['valid'] ?? false)) {
             return [
                 'success' => false,
                 'error' => 'packet_validation_failed',
                 'validation' => $validation,
+                'packet_summary' => $packetSummary,
                 'source_review_queue_id' => (int) $row->id,
                 'source_dedup_key' => $sourceDedupKey,
                 'typed_remediation_preview' => $preview,
@@ -146,7 +149,26 @@ class GenealogyTypedRemediationMaterializationService
             'typed_remediation_preview' => $preview,
             'operation_types' => $operationTypes,
             'validation' => $validation,
+            'packet_summary' => $packetSummary,
             'packet_candidate' => $packet,
+        ];
+    }
+
+    private function packetSummary(array $packet, array $validation, array $preview, string $sourceDedupKey): array
+    {
+        return [
+            'target_review_type' => self::TARGET_REVIEW_TYPE,
+            'source_locator_count' => count($this->validator->collectSourceLocators($packet)),
+            'claim_count' => count(array_values(array_filter((array) ($packet['claims'] ?? []), 'is_array'))),
+            'identity_present' => is_array($packet['identity'] ?? null) && $packet['identity'] !== [],
+            'privacy_present' => is_array($packet['privacy'] ?? null) && $packet['privacy'] !== [],
+            'validation_valid' => (bool) ($validation['valid'] ?? false),
+            'validation_error_count' => is_array($validation['errors'] ?? null) ? count($validation['errors']) : 0,
+            'validation_warning_count' => is_array($validation['warnings'] ?? null) ? count($validation['warnings']) : 0,
+            'preview_only' => (string) ($preview['status'] ?? '') === 'preview_only'
+                && ! (bool) ($preview['mutates_accepted_facts'] ?? false),
+            'mutates_accepted_facts' => (bool) ($preview['mutates_accepted_facts'] ?? false),
+            'dedup_key_present' => $sourceDedupKey !== '',
         ];
     }
 
