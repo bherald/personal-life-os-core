@@ -3633,14 +3633,18 @@ class MediaBrowserController extends Controller
         }
 
         $decisionJoin = "
-            LEFT JOIN (
-                SELECT file_registry_face_id, MAX(id) AS latest_queue_id
-                FROM genealogy_face_match_queue
-                WHERE file_registry_face_id IS NOT NULL
-                  AND JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.action')) IS NOT NULL
-                GROUP BY file_registry_face_id
-            ) q_latest ON q_latest.file_registry_face_id = frf.id
-            LEFT JOIN genealogy_face_match_queue q ON q.id = q_latest.latest_queue_id
+            LEFT JOIN genealogy_face_match_queue q ON q.file_registry_face_id = frf.id
+              AND JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.action')) IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM genealogy_face_match_queue q2
+                WHERE q2.file_registry_face_id = frf.id
+                  AND JSON_UNQUOTE(JSON_EXTRACT(q2.match_details, '$.latest_candidate_decision.action')) IS NOT NULL
+                  AND (
+                    q2.updated_at > q.updated_at
+                    OR (q2.updated_at = q.updated_at AND q2.id > q.id)
+                  )
+              )
         ";
         $namedOnlyFilter = "frf.hidden = 0
               AND frf.genealogy_person_id IS NULL
