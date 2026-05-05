@@ -16,6 +16,7 @@ class AwoReplayService
     {
         $cutoff = $this->cutoffForWindow($window);
         $limit = max(1, min(5000, $limit));
+        $recording = $this->recordingPosture();
         $rows = DB::table('agent_review_queue')
             ->select([
                 'id',
@@ -68,6 +69,9 @@ class AwoReplayService
             'cutoff' => $cutoff->toDateTimeString(),
             'limit' => $limit,
             'status' => $this->status($summary),
+            'awo_recording' => $recording,
+            'recording_enabled' => $recording['recording_enabled'],
+            'recording_source' => $recording['recording_source'],
             'summary' => $summary,
             'by_agent' => $this->byAgent($items),
             'items' => $items,
@@ -138,6 +142,7 @@ class AwoReplayService
                 'cutoff' => $current['cutoff'],
                 'limit' => $current['limit'],
                 'status' => $current['status'],
+                'awo_recording' => $this->payloadRecordingPosture($current),
                 'summary' => $current['summary'],
             ],
             'field_matches' => $fieldMatches,
@@ -161,6 +166,8 @@ class AwoReplayService
             '- Window: `'.($payload['window'] ?? 'unknown').'`',
             '- Cutoff: `'.($payload['cutoff'] ?? 'unknown').'`',
             '- Limit: `'.($payload['limit'] ?? 'unknown').'`',
+            '- AWO recording enabled: `'.($this->payloadRecordingPosture($payload)['recording_enabled'] ? 'yes' : 'no').'`',
+            '- AWO recording source: `'.$this->payloadRecordingPosture($payload)['recording_source'].'`',
             '',
             '## Summary',
             '',
@@ -202,6 +209,7 @@ class AwoReplayService
             'cutoff' => $payload['cutoff'] ?? null,
             'limit' => isset($payload['limit']) && is_numeric($payload['limit']) ? (int) $payload['limit'] : null,
             'status' => $payload['status'] ?? 'unknown',
+            'awo_recording' => $this->payloadRecordingPosture($payload),
             'summary' => $summary,
             'agent_rollup' => $this->compactAgentRollup($byAgent),
             'promotion_decisions' => $this->compactPromotionDecisions($promotionDecisions),
@@ -221,7 +229,7 @@ class AwoReplayService
         $promotion = is_array($compact['promotion_decisions'] ?? null) ? $compact['promotion_decisions'] : [];
 
         return sprintf(
-            'AWO replay compact: %s window=%s rows=%d completed=%d approval_worthy=%d approval_rate=%s hard_fails=%d pending_hard_fail_signals=%d agents=%d promotion_decisions=%d read_only=true',
+            'AWO replay compact: %s window=%s rows=%d completed=%d approval_worthy=%d approval_rate=%s hard_fails=%d pending_hard_fail_signals=%d agents=%d promotion_decisions=%d recording_enabled=%s read_only=true',
             $compact['status'] ?? 'unknown',
             $compact['window'] ?? 'unknown',
             (int) ($summary['rows_scanned'] ?? 0),
@@ -232,6 +240,7 @@ class AwoReplayService
             (int) ($summary['pending_hard_fail_signal_count'] ?? 0),
             (int) ($agentRollup['agent_count'] ?? 0),
             (int) ($promotion['count'] ?? 0),
+            ($compact['awo_recording']['recording_enabled'] ?? false) ? 'true' : 'false',
         )."\n";
     }
 
@@ -253,6 +262,8 @@ class AwoReplayService
             '- Window: `'.($compact['window'] ?? 'unknown').'`',
             '- Cutoff: `'.($compact['cutoff'] ?? 'unknown').'`',
             '- Limit: `'.($compact['limit'] ?? 'unknown').'`',
+            '- AWO recording enabled: `'.(($compact['awo_recording']['recording_enabled'] ?? false) ? 'yes' : 'no').'`',
+            '- AWO recording source: `'.($compact['awo_recording']['recording_source'] ?? 'unknown').'`',
             '- Rows scanned: `'.(int) ($summary['rows_scanned'] ?? 0).'`',
             '- Completed reviews: `'.(int) ($summary['completed_reviews'] ?? 0).'`',
             '- Approval-worthy reviews: `'.(int) ($summary['approval_worthy_reviews'] ?? 0).'`',
@@ -296,6 +307,7 @@ class AwoReplayService
             '- Window: `'.($current['window'] ?? 'unknown').'`',
             '- Cutoff: `'.($current['cutoff'] ?? 'unknown').'`',
             '- Status: `'.($current['status'] ?? 'unknown').'`',
+            '- AWO recording enabled: `'.(($current['awo_recording']['recording_enabled'] ?? false) ? 'yes' : 'no').'`',
             '- Rows scanned: `'.(int) ($currentSummary['rows_scanned'] ?? 0).'`',
             '- Completed reviews: `'.(int) ($currentSummary['completed_reviews'] ?? 0).'`',
             '- Approval-worthy reviews: `'.(int) ($currentSummary['approval_worthy_reviews'] ?? 0).'`',
@@ -691,6 +703,55 @@ class AwoReplayService
         return [
             'count' => count($items),
             'items' => $items,
+        ];
+    }
+
+    /**
+     * @return array{recording_enabled: bool, recording_source: string}
+     */
+    private function recordingPosture(): array
+    {
+        try {
+            $row = DB::table('system_configs')
+                ->select(['config_value'])
+                ->where('section', 'awo')
+                ->where('config_key', 'recording_enabled')
+                ->first();
+
+            if ($row === null) {
+                return [
+                    'recording_enabled' => false,
+                    'recording_source' => 'system_config_default',
+                ];
+            }
+
+            return [
+                'recording_enabled' => filter_var($row->config_value, FILTER_VALIDATE_BOOLEAN),
+                'recording_source' => 'system_config',
+            ];
+        } catch (\Throwable) {
+            return [
+                'recording_enabled' => false,
+                'recording_source' => 'unavailable',
+            ];
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{recording_enabled: bool, recording_source: string}
+     */
+    private function payloadRecordingPosture(array $payload): array
+    {
+        $recording = is_array($payload['awo_recording'] ?? null) ? $payload['awo_recording'] : [];
+
+        return [
+            'recording_enabled' => filter_var(
+                $recording['recording_enabled'] ?? $payload['recording_enabled'] ?? false,
+                FILTER_VALIDATE_BOOLEAN
+            ),
+            'recording_source' => $this->nullableString($recording['recording_source'] ?? $payload['recording_source'] ?? null)
+                ?? 'unknown',
         ];
     }
 
