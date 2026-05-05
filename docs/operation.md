@@ -116,6 +116,25 @@ unlock apply/writeback, bulk approve, reject, or clear the source advisory row.
 Treat the materialized packet as review context only until a separate operator
 decision path explicitly supports apply.
 
+For already-authored source-backed packet JSON, use the direct packet
+materializer. Its default mode validates the file and reports whether it would
+create or reuse one pending review packet:
+
+```bash
+php artisan genealogy:materialize-review-packet --file=/path/to/packet.json --json --compact
+```
+
+Only after reviewing that dry-run output should the same file be run with
+`--execute`:
+
+```bash
+php artisan genealogy:materialize-review-packet --file=/path/to/packet.json --execute --json
+```
+
+This command is limited to `agent_review_queue` packet materialization. It must
+not write canonical genealogy tables, enable apply/writeback, or approve packet
+decisions.
+
 Use genealogy agent triage before any genealogy research-agent re-enablement
 discussion:
 

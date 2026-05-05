@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Support\JsonColumn;
 use Illuminate\Support\Facades\DB;
 
 class GenealogyTypedRemediationMaterializationService
@@ -163,14 +164,12 @@ class GenealogyTypedRemediationMaterializationService
             ->where('review_type', self::TARGET_REVIEW_TYPE)
             ->where('status', 'pending')
             ->where(function ($query) use ($sourceReviewQueueId, $sourceDedupKey): void {
-                $query
-                    ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(details, '$.packet.materialization.source_review_queue_id')) = ?", [(string) $sourceReviewQueueId])
-                    ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(details, '$.packet.source_review_queue.id')) = ?", [(string) $sourceReviewQueueId]);
+                JsonColumn::whereScalarEquals($query, 'details', '$.packet.materialization.source_review_queue_id', (string) $sourceReviewQueueId);
+                JsonColumn::orWhereScalarEquals($query, 'details', '$.packet.source_review_queue.id', (string) $sourceReviewQueueId);
 
                 if ($sourceDedupKey !== '') {
-                    $query
-                        ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(details, '$.packet.materialization.source_dedup_key')) = ?", [$sourceDedupKey])
-                        ->orWhereRaw("JSON_UNQUOTE(JSON_EXTRACT(details, '$.packet.source_review_queue.dedup_key')) = ?", [$sourceDedupKey]);
+                    JsonColumn::orWhereScalarEquals($query, 'details', '$.packet.materialization.source_dedup_key', $sourceDedupKey);
+                    JsonColumn::orWhereScalarEquals($query, 'details', '$.packet.source_review_queue.dedup_key', $sourceDedupKey);
                 }
             })
             ->orderBy('id')

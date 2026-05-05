@@ -41,6 +41,8 @@ class OperatorEvidenceService
 
     private const GENEALOGY_EVIDENCE_SPRINT_CACHE_KEY = 'operator_evidence:genealogy_evidence_sprint:v1';
 
+    private const FACE_LINK_WEEKLY_REPORT_JOB = 'face_link_weekly_report';
+
     private const GENEALOGY_AUTOMATION_TARGETS = [
         'genealogy_analyst',
         'genealogy_auto_research',
@@ -241,6 +243,13 @@ class OperatorEvidenceService
             'approved_missing_person_media' => (int) ($counts['approved_missing_person_media'] ?? 0),
             'candidate_decision_rows' => (int) ($counts['candidate_decision_rows'] ?? 0),
             'candidate_recent_decisions' => (int) ($counts['candidate_recent_decisions'] ?? 0),
+            'weekly_report_status' => $this->nullableString($counts['weekly_report_status'] ?? null),
+            'weekly_report_enabled' => (bool) ($counts['weekly_report_enabled'] ?? false),
+            'weekly_report_latest_run_status' => $this->nullableString($counts['weekly_report_latest_run_status'] ?? null),
+            'weekly_report_latest_success_completed_at' => $this->nullableString($counts['weekly_report_latest_success_completed_at'] ?? null),
+            'weekly_report_latest_success_age_hours' => $counts['weekly_report_latest_success_age_hours'] ?? null,
+            'weekly_report_has_bridge_alignment' => (bool) ($counts['weekly_report_has_bridge_alignment'] ?? false),
+            'weekly_report_has_candidate_decisions' => (bool) ($counts['weekly_report_has_candidate_decisions'] ?? false),
         ];
     }
 
@@ -1631,6 +1640,7 @@ class OperatorEvidenceService
                  ) decisions
                  WHERE action IN ('keep_name_only', 'outside_tree', 'too_vague', 'not_this_person', 'defer')"
             );
+            $weeklyReport = $this->collectFaceWeeklyReportProof();
 
             $counts = [
                 'pending_total' => (int) ($queue->pending_total ?? 0),
@@ -1660,6 +1670,14 @@ class OperatorEvidenceService
                 'candidate_terminal_decisions' => (int) ($decisions->candidate_terminal_decisions ?? 0),
                 'candidate_recent_decisions' => (int) ($decisions->candidate_recent_decisions ?? 0),
                 'candidate_latest_decision_at' => $decisions->candidate_latest_decision_at ?? null,
+                'weekly_report_status' => (string) ($weeklyReport['status'] ?? 'missing'),
+                'weekly_report_enabled' => (bool) ($weeklyReport['enabled'] ?? false),
+                'weekly_report_latest_run_status' => $this->nullableString($weeklyReport['latest_run_status'] ?? null),
+                'weekly_report_latest_success_completed_at' => $this->nullableString($weeklyReport['latest_success_completed_at'] ?? null),
+                'weekly_report_latest_success_age_hours' => $weeklyReport['latest_success_age_hours'] ?? null,
+                'weekly_report_next_run_at' => $this->nullableString($weeklyReport['next_run_at'] ?? null),
+                'weekly_report_has_bridge_alignment' => (bool) ($weeklyReport['has_bridge_alignment'] ?? false),
+                'weekly_report_has_candidate_decisions' => (bool) ($weeklyReport['has_candidate_decisions'] ?? false),
             ];
 
             $status = match (true) {
@@ -1667,17 +1685,117 @@ class OperatorEvidenceService
                 $counts['pending_total'] > 0 || $counts['unlinked_faces'] > 0 => 'watch',
                 default => 'healthy',
             };
+            if ($counts['weekly_report_status'] !== 'success') {
+                $status = $this->maxStatus($status, 'watch');
+            }
 
             return $this->section(
                 $status,
                 $sampledAt,
-                ['genealogy_face_match_queue', 'file_registry_faces', 'genealogy_person_media', 'FaceLinkBridgeService'],
+                ['genealogy_face_match_queue', 'file_registry_faces', 'genealogy_person_media', 'FaceLinkBridgeService', 'scheduled_jobs', 'scheduled_job_runs'],
                 $counts,
                 $status === 'healthy' ? null : 'Review face match queue and bridge missing approved links.'
             );
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['genealogy_face_match_queue', 'file_registry_faces'], $e, 'Face backlog query failed.');
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function collectFaceWeeklyReportProof(): array
+    {
+        if (! Schema::hasTable('scheduled_jobs') || ! Schema::hasTable('scheduled_job_runs')) {
+            return $this->missingFaceWeeklyReportProof('missing_support_table');
+        }
+
+        try {
+            $row = DB::selectOne(
+                "SELECT
+                    j.enabled,
+                    j.last_run_status AS job_last_run_status,
+                    j.last_run_at AS job_last_run_at,
+                    j.next_run_at,
+                    latest.status AS latest_run_status,
+                    latest.completed_at AS latest_completed_at,
+                    success.completed_at AS latest_success_completed_at,
+                    TIMESTAMPDIFF(HOUR, success.completed_at, NOW()) AS latest_success_age_hours,
+                    CASE WHEN success.output LIKE '%Bridge Alignment%' THEN 1 ELSE 0 END AS has_bridge_alignment,
+                    CASE WHEN success.output LIKE '%Candidate Decisions%' THEN 1 ELSE 0 END AS has_candidate_decisions
+                 FROM scheduled_jobs j
+                 LEFT JOIN scheduled_job_runs latest ON latest.id = (
+                    SELECT r.id
+                    FROM scheduled_job_runs r
+                    WHERE r.scheduled_job_id = j.id
+                    ORDER BY r.started_at DESC, r.id DESC
+                    LIMIT 1
+                 )
+                 LEFT JOIN scheduled_job_runs success ON success.id = (
+                    SELECT r.id
+                    FROM scheduled_job_runs r
+                    WHERE r.scheduled_job_id = j.id
+                      AND r.status = 'success'
+                    ORDER BY r.completed_at DESC, r.id DESC
+                    LIMIT 1
+                 )
+                 WHERE j.name = ?
+                 LIMIT 1",
+                [self::FACE_LINK_WEEKLY_REPORT_JOB]
+            );
+
+            if ($row === null) {
+                return $this->missingFaceWeeklyReportProof('missing');
+            }
+
+            $enabled = (int) ($row->enabled ?? 0) === 1;
+            $latestSuccessCompletedAt = $this->nullableString($row->latest_success_completed_at ?? null);
+            $hasBridgeAlignment = (int) ($row->has_bridge_alignment ?? 0) === 1;
+            $hasCandidateDecisions = (int) ($row->has_candidate_decisions ?? 0) === 1;
+            $latestRunStatus = $this->nullableString($row->latest_run_status ?? $row->job_last_run_status ?? null);
+
+            $status = match (true) {
+                ! $enabled => 'disabled',
+                $latestSuccessCompletedAt === null && in_array((string) $latestRunStatus, ['failed', 'timeout'], true) => 'latest_failed',
+                $latestSuccessCompletedAt === null => 'pending_first_success',
+                ! $hasBridgeAlignment || ! $hasCandidateDecisions => 'success_missing_sections',
+                default => 'success',
+            };
+
+            return [
+                'status' => $status,
+                'enabled' => $enabled,
+                'latest_run_status' => $latestRunStatus,
+                'job_last_run_at' => $this->nullableString($row->job_last_run_at ?? null),
+                'latest_completed_at' => $this->nullableString($row->latest_completed_at ?? null),
+                'latest_success_completed_at' => $latestSuccessCompletedAt,
+                'latest_success_age_hours' => isset($row->latest_success_age_hours) ? (int) $row->latest_success_age_hours : null,
+                'next_run_at' => $this->nullableString($row->next_run_at ?? null),
+                'has_bridge_alignment' => $hasBridgeAlignment,
+                'has_candidate_decisions' => $hasCandidateDecisions,
+            ];
+        } catch (\Throwable) {
+            return $this->missingFaceWeeklyReportProof('unavailable');
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function missingFaceWeeklyReportProof(string $status): array
+    {
+        return [
+            'status' => $status,
+            'enabled' => false,
+            'latest_run_status' => null,
+            'job_last_run_at' => null,
+            'latest_completed_at' => null,
+            'latest_success_completed_at' => null,
+            'latest_success_age_hours' => null,
+            'next_run_at' => null,
+            'has_bridge_alignment' => false,
+            'has_candidate_decisions' => false,
+        ];
     }
 
     private function collectOfflineDegradedState(Carbon $sampledAt): array

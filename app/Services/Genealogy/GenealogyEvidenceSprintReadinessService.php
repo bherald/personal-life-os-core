@@ -546,6 +546,14 @@ class GenealogyEvidenceSprintReadinessService
             return 'ready_for_review';
         }
 
+        if ($summary['source_backed_pending'] >= self::TARGET_PACKETS && ! $readiness['boundary_consistent']) {
+            return 'needs_boundary_consistency';
+        }
+
+        if (($readiness['needs_reviewable_packet_details'] ?? false) === true) {
+            return 'needs_reviewable_packet_details';
+        }
+
         if ($summary['source_backed_packets'] > 0) {
             return 'in_progress';
         }

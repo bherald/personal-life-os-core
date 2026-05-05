@@ -7,6 +7,8 @@ use Throwable;
 
 class FaceTelemetryReportService
 {
+    private const WEEKLY_REPORT_JOB = 'face_link_weekly_report';
+
     private const STATUS_RANK = [
         'observe_ok' => 0,
         'observe_warning' => 1,
@@ -264,6 +266,7 @@ class FaceTelemetryReportService
                     'recent_failed_runs' => $this->intValue($jobs['recent_failed_runs'] ?? 0),
                     'latest_run_at' => $this->nullableString($jobs['latest_run_at'] ?? null),
                     'next_run_at' => $this->nullableString($jobs['next_run_at'] ?? null),
+                    'weekly_report' => $this->compactWeeklyReport($jobs['weekly_report'] ?? null),
                 ],
             ],
         ];
@@ -336,13 +339,17 @@ class FaceTelemetryReportService
                 $sections['postgres_face_vectors']['total_clusters']
             ),
             sprintf(
-                '- Face jobs: `%s`, total=`%s`, enabled=`%s`, running=`%s`, recent_failed=`%s`, next=`%s`',
+                '- Face jobs: `%s`, total=`%s`, enabled=`%s`, running=`%s`, recent_failed=`%s`, next=`%s`, weekly_report=`%s`, weekly_success=`%s`, bridge_section=`%s`, decisions_section=`%s`',
                 $sections['face_jobs']['status'],
                 $sections['face_jobs']['total_jobs'],
                 $sections['face_jobs']['enabled_jobs'],
                 $sections['face_jobs']['running_jobs'],
                 $sections['face_jobs']['recent_failed_runs'],
-                $sections['face_jobs']['next_run_at'] ?? 'none'
+                $sections['face_jobs']['next_run_at'] ?? 'none',
+                $sections['face_jobs']['weekly_report']['status'],
+                $sections['face_jobs']['weekly_report']['latest_success_completed_at'] ?? 'none',
+                $sections['face_jobs']['weekly_report']['has_bridge_alignment'] ? 'yes' : 'no',
+                $sections['face_jobs']['weekly_report']['has_candidate_decisions'] ? 'yes' : 'no'
             ),
         ];
 
@@ -430,7 +437,7 @@ class FaceTelemetryReportService
                 $sections['postgres_face_vectors']['unreviewed_clusters']
             ),
             sprintf(
-                'face-jobs: %s total=%s enabled=%s running=%s recent=%s success=%s failed=%s latest=%s next=%s',
+                'face-jobs: %s total=%s enabled=%s running=%s recent=%s success=%s failed=%s latest=%s next=%s weekly_report=%s weekly_success=%s weekly_age_hours=%s bridge_section=%s decisions_section=%s',
                 $sections['face_jobs']['status'],
                 $sections['face_jobs']['total_jobs'],
                 $sections['face_jobs']['enabled_jobs'],
@@ -439,7 +446,12 @@ class FaceTelemetryReportService
                 $sections['face_jobs']['recent_success_runs'],
                 $sections['face_jobs']['recent_failed_runs'],
                 $sections['face_jobs']['latest_run_at'] ?? 'none',
-                $sections['face_jobs']['next_run_at'] ?? 'none'
+                $sections['face_jobs']['next_run_at'] ?? 'none',
+                $sections['face_jobs']['weekly_report']['status'],
+                $sections['face_jobs']['weekly_report']['latest_success_completed_at'] ?? 'none',
+                $sections['face_jobs']['weekly_report']['latest_success_age_hours'] ?? 'none',
+                $sections['face_jobs']['weekly_report']['has_bridge_alignment'] ? 'yes' : 'no',
+                $sections['face_jobs']['weekly_report']['has_candidate_decisions'] ? 'yes' : 'no'
             ),
         ])."\n";
     }
@@ -783,9 +795,14 @@ class FaceTelemetryReportService
             $totalJobs = $this->intValue($jobs->total_jobs ?? 0);
             $failedJobs = $this->intValue($jobs->last_failed_jobs ?? 0);
             $failedRuns = $this->intValue($runs->recent_failed_runs ?? 0);
+            $weeklyReport = $this->collectWeeklyReportProof();
+            $weeklyReportStatus = (string) ($weeklyReport['status'] ?? 'missing');
+            $weeklyReportOk = $weeklyReportStatus === 'success';
 
             return [
-                'status' => $totalJobs === 0 || $failedJobs > 0 || $failedRuns > 0 ? 'observe_warning' : 'observe_ok',
+                'status' => $totalJobs === 0 || $failedJobs > 0 || $failedRuns > 0 || ! $weeklyReportOk
+                    ? 'observe_warning'
+                    : 'observe_ok',
                 'source' => 'mysql.scheduled_jobs+scheduled_job_runs',
                 'summary' => [
                     'total_jobs' => $totalJobs,
@@ -799,11 +816,126 @@ class FaceTelemetryReportService
                     'recent_success_runs' => $this->intValue($runs->recent_success_runs ?? 0),
                     'recent_failed_runs' => $failedRuns,
                     'latest_completed_at' => $this->nullableString($runs->latest_completed_at ?? null),
+                    'weekly_report' => $weeklyReport,
                 ],
             ];
         } catch (Throwable $e) {
             return $this->failedSection('mysql.face_jobs', $e);
         }
+    }
+
+    private function collectWeeklyReportProof(): array
+    {
+        $row = DB::selectOne(
+            "SELECT
+                j.name AS job_name,
+                j.enabled,
+                j.last_run_status AS job_last_run_status,
+                j.last_run_at AS job_last_run_at,
+                j.next_run_at,
+                latest.status AS latest_run_status,
+                latest.completed_at AS latest_completed_at,
+                success.completed_at AS latest_success_completed_at,
+                TIMESTAMPDIFF(HOUR, success.completed_at, NOW()) AS latest_success_age_hours,
+                CASE WHEN success.output LIKE '%Bridge Alignment%' THEN 1 ELSE 0 END AS has_bridge_alignment,
+                CASE WHEN success.output LIKE '%Candidate Decisions%' THEN 1 ELSE 0 END AS has_candidate_decisions
+             FROM scheduled_jobs j
+             LEFT JOIN scheduled_job_runs latest ON latest.id = (
+                SELECT r.id
+                FROM scheduled_job_runs r
+                WHERE r.scheduled_job_id = j.id
+                ORDER BY r.started_at DESC, r.id DESC
+                LIMIT 1
+             )
+             LEFT JOIN scheduled_job_runs success ON success.id = (
+                SELECT r.id
+                FROM scheduled_job_runs r
+                WHERE r.scheduled_job_id = j.id
+                  AND r.status = 'success'
+                ORDER BY r.completed_at DESC, r.id DESC
+                LIMIT 1
+             )
+             WHERE j.name = ?
+             LIMIT 1",
+            [self::WEEKLY_REPORT_JOB]
+        );
+
+        if ($row === null) {
+            return $this->missingWeeklyReportProof();
+        }
+
+        $enabled = (int) ($row->enabled ?? 0) === 1;
+        $latestSuccessCompletedAt = $this->nullableString($row->latest_success_completed_at ?? null);
+        $hasBridgeAlignment = (int) ($row->has_bridge_alignment ?? 0) === 1;
+        $hasCandidateDecisions = (int) ($row->has_candidate_decisions ?? 0) === 1;
+
+        $status = match (true) {
+            ! $enabled => 'disabled',
+            $latestSuccessCompletedAt === null && in_array((string) ($row->latest_run_status ?? $row->job_last_run_status ?? ''), ['failed', 'timeout'], true) => 'latest_failed',
+            $latestSuccessCompletedAt === null => 'pending_first_success',
+            ! $hasBridgeAlignment || ! $hasCandidateDecisions => 'success_missing_sections',
+            default => 'success',
+        };
+
+        return [
+            'job_name' => self::WEEKLY_REPORT_JOB,
+            'enabled' => $enabled,
+            'status' => $status,
+            'job_last_run_status' => $this->nullableString($row->job_last_run_status ?? null),
+            'latest_run_status' => $this->nullableString($row->latest_run_status ?? null),
+            'job_last_run_at' => $this->nullableString($row->job_last_run_at ?? null),
+            'latest_completed_at' => $this->nullableString($row->latest_completed_at ?? null),
+            'latest_success_completed_at' => $latestSuccessCompletedAt,
+            'latest_success_age_hours' => isset($row->latest_success_age_hours) ? $this->intValue($row->latest_success_age_hours) : null,
+            'next_run_at' => $this->nullableString($row->next_run_at ?? null),
+            'has_bridge_alignment' => $hasBridgeAlignment,
+            'has_candidate_decisions' => $hasCandidateDecisions,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function missingWeeklyReportProof(): array
+    {
+        return [
+            'job_name' => self::WEEKLY_REPORT_JOB,
+            'enabled' => false,
+            'status' => 'missing',
+            'job_last_run_status' => null,
+            'latest_run_status' => null,
+            'job_last_run_at' => null,
+            'latest_completed_at' => null,
+            'latest_success_completed_at' => null,
+            'latest_success_age_hours' => null,
+            'next_run_at' => null,
+            'has_bridge_alignment' => false,
+            'has_candidate_decisions' => false,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function compactWeeklyReport(mixed $weeklyReport): array
+    {
+        if (! is_array($weeklyReport)) {
+            return $this->missingWeeklyReportProof();
+        }
+
+        return [
+            'job_name' => self::WEEKLY_REPORT_JOB,
+            'enabled' => (bool) ($weeklyReport['enabled'] ?? false),
+            'status' => $this->nullableString($weeklyReport['status'] ?? null) ?? 'missing',
+            'latest_run_status' => $this->nullableString($weeklyReport['latest_run_status'] ?? null),
+            'latest_success_completed_at' => $this->nullableString($weeklyReport['latest_success_completed_at'] ?? null),
+            'latest_success_age_hours' => isset($weeklyReport['latest_success_age_hours'])
+                ? $this->intValue($weeklyReport['latest_success_age_hours'])
+                : null,
+            'next_run_at' => $this->nullableString($weeklyReport['next_run_at'] ?? null),
+            'has_bridge_alignment' => (bool) ($weeklyReport['has_bridge_alignment'] ?? false),
+            'has_candidate_decisions' => (bool) ($weeklyReport['has_candidate_decisions'] ?? false),
+        ];
     }
 
     private function evaluateThresholds(array $sections): array
@@ -868,6 +1000,8 @@ class FaceTelemetryReportService
         $totalJobs = (int) ($jobs['total_jobs'] ?? 0);
         $failedJobs = (int) ($jobs['last_failed_jobs'] ?? 0);
         $failedRuns = (int) ($jobs['recent_failed_runs'] ?? 0);
+        $weeklyReport = is_array($jobs['weekly_report'] ?? null) ? $jobs['weekly_report'] : [];
+        $weeklyReportStatus = (string) ($weeklyReport['status'] ?? 'missing');
         if ($totalJobs === 0) {
             $breaches[] = [
                 'id' => 'face-jobs-missing',
@@ -882,6 +1016,14 @@ class FaceTelemetryReportService
                 'message' => ($failedJobs + $failedRuns).' face-related scheduled job failure signal(s) were observed.',
             ];
             $recommendations[] = 'Review face-related scheduled job output before treating face backlog or cluster telemetry as fresh.';
+        }
+        if ($weeklyReportStatus !== 'success') {
+            $breaches[] = [
+                'id' => 'face-weekly-report-proof',
+                'status' => 'observe_warning',
+                'message' => self::WEEKLY_REPORT_JOB.' retained report proof is '.$weeklyReportStatus.'.',
+            ];
+            $recommendations[] = 'Let the weekly face-link report produce retained Markdown with Bridge Alignment and Candidate Decisions sections before treating recurring bridge monitoring as proven.';
         }
 
         return [$breaches, array_values(array_unique($recommendations))];

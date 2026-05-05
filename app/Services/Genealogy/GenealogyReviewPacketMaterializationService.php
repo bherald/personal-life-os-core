@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Support\JsonColumn;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Throwable;
@@ -95,7 +96,7 @@ class GenealogyReviewPacketMaterializationService
             ->where('status', 'pending');
 
         if ($dedupKey !== '') {
-            $query->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(details, '$.dedup_key')) = ?", [$dedupKey]);
+            JsonColumn::whereScalarEquals($query, 'details', '$.dedup_key', $dedupKey);
         } else {
             $query->where('title', $title);
         }
