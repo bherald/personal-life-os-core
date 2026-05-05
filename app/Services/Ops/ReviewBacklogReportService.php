@@ -211,10 +211,10 @@ class ReviewBacklogReportService
         $materialization = $this->nextTargetMaterializationText($target);
 
         return sprintf(
-            'Review backlog next target: %s focus=%s unified_id=%s type=%s finding=%s classification=%s priority=%s created=%s action=%s',
+            'Review backlog next target: %s focus=%s target_ref=%s type=%s finding=%s classification=%s priority=%s created=%s action=%s',
             $payload['status'] ?? 'unknown',
             $payload['focus'] ?? 'global',
-            $target['unified_id'] ?? 'unknown',
+            $target['target_ref'] ?? 'unknown',
             $target['review_type'] ?? 'unknown',
             $target['finding_type'] ?? 'none',
             $target['classification'] ?? 'unknown',
@@ -247,7 +247,7 @@ class ReviewBacklogReportService
             '',
             '- Status: `'.($payload['status'] ?? 'unknown').'`',
             '- Focus: `'.($payload['focus'] ?? 'global').'`',
-            '- Unified ID: `'.($target['unified_id'] ?? 'unknown').'`',
+            '- Target ref: `'.($target['target_ref'] ?? 'unknown').'`',
             '- Review type: `'.($target['review_type'] ?? 'unknown').'`',
             '- Finding type: `'.($target['finding_type'] ?? 'none').'`',
             '- Classification: `'.($target['classification'] ?? 'unknown').'`',
@@ -294,11 +294,12 @@ class ReviewBacklogReportService
         }
 
         $safety = is_array($materialization['safety'] ?? null) ? $materialization['safety'] : [];
-        $command = $this->materializationDryRunCommand($materialization);
 
         return sprintf(
-            ' materialization_command="%s" no_canonical_write=%s apply_enabled=%s apply_held=%s',
-            $command ?? 'unavailable',
+            ' materialization=%s dry_run_available=%s operator_action=%s no_canonical_write=%s apply_enabled=%s apply_held=%s',
+            (string) ($materialization['status'] ?? 'unknown'),
+            ($materialization['dry_run_available'] ?? false) ? 'true' : 'false',
+            (string) ($materialization['operator_action'] ?? 'review_private_target_details'),
             ($safety['no_canonical_write'] ?? false) ? 'true' : 'false',
             ($safety['apply_enabled'] ?? true) ? 'true' : 'false',
             ($safety['apply_held'] ?? false) ? 'true' : 'false',
@@ -322,7 +323,9 @@ class ReviewBacklogReportService
         $lines[] = '- Materialization available: `'.(($materialization['available'] ?? false) ? 'true' : 'false').'`';
 
         if (($materialization['available'] ?? false) === true) {
-            $lines[] = '- Materialization dry run: `'.($this->materializationDryRunCommand($materialization) ?? 'unavailable').'`';
+            $lines[] = '- Materialization status: `'.($materialization['status'] ?? 'unknown').'`';
+            $lines[] = '- Materialization dry run available: `'.(($materialization['dry_run_available'] ?? false) ? 'true' : 'false').'`';
+            $lines[] = '- Materialization operator action: `'.($materialization['operator_action'] ?? 'review_private_target_details').'`';
         } else {
             $lines[] = '- Materialization reason: `'.($materialization['reason'] ?? 'not_materializable').'`';
             $missing = $this->missingMaterializationInputsText($materialization);
@@ -339,48 +342,6 @@ class ReviewBacklogReportService
             ($safety['apply_enabled'] ?? true) ? 'true' : 'false',
             ($safety['apply_held'] ?? false) ? 'true' : 'false',
         );
-    }
-
-    /**
-     * @param  array<string, mixed>  $materialization
-     */
-    private function materializationDryRunCommand(array $materialization): ?string
-    {
-        $selector = is_array($materialization['selector'] ?? null) ? $materialization['selector'] : [];
-        $option = $this->nullableString($selector['option'] ?? null);
-        $value = $selector['value'] ?? null;
-        $command = $this->nullableString($materialization['command'] ?? null);
-
-        if ($option === null || ! is_scalar($value) || $command === null) {
-            return null;
-        }
-
-        $options = $this->materializationDryRunOptions($materialization);
-
-        return sprintf(
-            'php artisan %s %s %s %s',
-            $command,
-            $option,
-            escapeshellarg((string) $value),
-            implode(' ', $options)
-        );
-    }
-
-    /**
-     * @param  array<string, mixed>  $materialization
-     * @return list<string>
-     */
-    private function materializationDryRunOptions(array $materialization): array
-    {
-        $options = is_array($materialization['dry_run_options'] ?? null)
-            ? $materialization['dry_run_options']
-            : ['--json', '--compact'];
-
-        $options = array_values(array_filter($options, function (mixed $option): bool {
-            return is_string($option) && preg_match('/^--[a-z0-9-]+(?:=[a-z0-9_.:-]+)?$/', $option) === 1;
-        }));
-
-        return $options !== [] ? $options : ['--json', '--compact'];
     }
 
     /**
@@ -1453,7 +1414,7 @@ class ReviewBacklogReportService
         }
 
         $candidate = [
-            'unified_id' => $this->unifiedReviewId($row, $reviewType),
+            'target_ref' => $this->targetReference($row, $reviewType, $findingType),
             'review_type' => $reviewType,
             'finding_type' => $findingType,
             'classification' => $classification,
@@ -1532,22 +1493,16 @@ class ReviewBacklogReportService
             'source' => 'agent_review_queue',
             'source_review_type' => 'genealogy_finding',
             'target_review_type' => 'genealogy_review_packet',
-            'command' => 'genealogy:materialize-typed-remediation',
             'default_mode' => 'dry_run',
+            'dry_run_available' => $hasOperation,
             'dry_run_first' => true,
+            'operator_action' => 'materialize_typed_remediation_dry_run',
+            'selector_required' => $hasOperation,
+            'selector_redacted' => true,
             'execute_effect' => 'create_or_reuse_pending_genealogy_review_packet_only',
             'operation_types' => $operationTypes,
             'safety' => $this->materializationSafetyPayload(),
         ];
-
-        if ($hasOperation) {
-            $hint['selector'] = $this->reviewQueueSelector($row);
-            $hint['dry_run_options'] = ['--json', '--compact'];
-        }
-
-        if ($available) {
-            $hint['execute_options'] = ['--execute', '--json'];
-        }
 
         return $hint;
     }
@@ -1666,27 +1621,6 @@ class ReviewBacklogReportService
     }
 
     /**
-     * @return array{type:string,option:string,value:int|string}
-     */
-    private function reviewQueueSelector(object $row): array
-    {
-        $token = $this->nullableString($row->token ?? null);
-        if ($token !== null) {
-            return [
-                'type' => 'token',
-                'option' => '--token',
-                'value' => $token,
-            ];
-        }
-
-        return [
-            'type' => 'id',
-            'option' => '--id',
-            'value' => (int) ($row->id ?? 0),
-        ];
-    }
-
-    /**
      * @return array<string, bool|string>
      */
     private function materializationSafetyPayload(): array
@@ -1775,14 +1709,21 @@ class ReviewBacklogReportService
         };
     }
 
-    private function unifiedReviewId(object $row, string $reviewType): string
+    private function targetReference(object $row, string $reviewType, ?string $findingType): string
     {
-        $token = $this->nullableString($row->token ?? null);
-        if ($token !== null) {
-            return $reviewType.':'.$token;
-        }
+        $basis = implode('|', [
+            $reviewType,
+            $findingType ?? 'none',
+            (string) ($row->id ?? ''),
+            (string) ($row->token ?? ''),
+            (string) ($row->created_at ?? ''),
+        ]);
+        $key = (string) config('app.key', '');
+        $digest = $key !== ''
+            ? hash_hmac('sha256', $basis, $key)
+            : hash('sha256', $basis);
 
-        return $reviewType.':'.(int) ($row->id ?? 0);
+        return $reviewType.':target-'.substr($digest, 0, 12);
     }
 
     private function isStaleCreatedAt(?string $createdAt, int $staleDays): bool
