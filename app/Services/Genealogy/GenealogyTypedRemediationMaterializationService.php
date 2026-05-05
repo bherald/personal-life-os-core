@@ -16,6 +16,17 @@ class GenealogyTypedRemediationMaterializationService
         'family_child_unlink',
         'source_duplicate_mark',
         'source_duplicate_cleanup',
+        'genealogy_todo_create',
+    ];
+
+    private const SUPPORTED_INPUT_OPERATION_TYPES = [
+        'family_duplicate_mark',
+        'family_child_unlink',
+        'source_duplicate_mark',
+        'source_duplicate_cleanup',
+        'genealogy_todo_create',
+        'data_quality_review',
+        'genealogy_data_quality',
     ];
 
     public function __construct(
@@ -66,6 +77,7 @@ class GenealogyTypedRemediationMaterializationService
         $result['source_review_queue_id'] = $inspection['source_review_queue_id'] ?? null;
         $result['source_dedup_key'] = $inspection['source_dedup_key'] ?? '';
         $result['typed_remediation_preview'] = $inspection['typed_remediation_preview'] ?? [];
+        $result['operation_types'] = $inspection['operation_types'] ?? [];
 
         return $result;
     }
@@ -74,6 +86,7 @@ class GenealogyTypedRemediationMaterializationService
     {
         $row = (object) $row;
         $details = $this->decodeDetails($row->details ?? null);
+        $details = $this->withRowFindingTypeContext($row, $details);
 
         if ((string) ($row->review_type ?? '') !== self::SOURCE_REVIEW_TYPE
             || (string) ($row->status ?? '') !== 'pending') {
@@ -185,9 +198,9 @@ class GenealogyTypedRemediationMaterializationService
             && ! isset($packet['remediation_packets'])) {
             $packet['remediation'] = $details;
 
-            foreach (['operation_type', 'operation', 'type', 'change_type'] as $key) {
+            foreach (['operation_type', 'operation', 'type', 'change_type', 'finding_type'] as $key) {
                 $value = $this->text($packet[$key] ?? null);
-                if ($value !== null && in_array($value, self::SUPPORTED_OPERATION_TYPES, true)) {
+                if ($value !== null && in_array($value, self::SUPPORTED_INPUT_OPERATION_TYPES, true)) {
                     unset($packet[$key]);
                 }
             }
@@ -228,6 +241,16 @@ class GenealogyTypedRemediationMaterializationService
         $decoded = json_decode($details, true);
 
         return is_array($decoded) ? $decoded : [];
+    }
+
+    private function withRowFindingTypeContext(object $row, array $details): array
+    {
+        $findingType = $this->text($row->finding_type ?? null);
+        if ($findingType !== null && ! isset($details['finding_type'])) {
+            $details['finding_type'] = $findingType;
+        }
+
+        return $details;
     }
 
     /**

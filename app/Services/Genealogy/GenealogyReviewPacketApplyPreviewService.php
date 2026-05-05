@@ -7,6 +7,7 @@ class GenealogyReviewPacketApplyPreviewService
     public function __construct(
         private readonly GenealogyFamilyRemediationPreviewService $familyRemediationPreview = new GenealogyFamilyRemediationPreviewService,
         private readonly GenealogySourceRemediationPreviewService $sourceRemediationPreview = new GenealogySourceRemediationPreviewService,
+        private readonly GenealogyDataQualityRemediationPreviewService $dataQualityRemediationPreview = new GenealogyDataQualityRemediationPreviewService,
     ) {}
 
     public function preview(array $packet): array
@@ -64,7 +65,7 @@ class GenealogyReviewPacketApplyPreviewService
             }
         }
 
-        if ($inputs === [] && $this->isRemediationPreviewType($this->scalarText($packet, ['operation_type', 'operation', 'type', 'change_type']))) {
+        if ($inputs === [] && $this->isRemediationPreviewType($this->scalarText($packet, ['operation_type', 'operation', 'type', 'change_type', 'finding_type']))) {
             $inputs[] = $packet;
         }
 
@@ -226,7 +227,8 @@ class GenealogyReviewPacketApplyPreviewService
     private function remediationPreview(array $payload, int $index): ?array
     {
         return $this->familyRemediationPreview->preview($payload, $index)
-            ?? $this->sourceRemediationPreview->preview($payload, $index);
+            ?? $this->sourceRemediationPreview->preview($payload, $index)
+            ?? $this->dataQualityRemediationPreview->preview($payload, $index);
     }
 
     private function isRemediationPreviewType(mixed $type): bool
@@ -236,6 +238,9 @@ class GenealogyReviewPacketApplyPreviewService
             'family_child_unlink',
             'source_duplicate_mark',
             'source_duplicate_cleanup',
+            'genealogy_todo_create',
+            'data_quality_review',
+            'genealogy_data_quality',
         ], true);
     }
 }

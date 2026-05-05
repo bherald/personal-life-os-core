@@ -14,6 +14,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
         'family_child_unlink',
         'source_duplicate_mark',
         'source_duplicate_cleanup',
+        'genealogy_todo_create',
     ];
 
     protected $signature = 'genealogy:materialize-typed-remediation
@@ -44,7 +45,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             ]), self::FAILURE);
         }
 
-        $details = $this->decodeDetails($row->details ?? null);
+        $details = $this->withRowFindingTypeContext($row, $this->decodeDetails($row->details ?? null));
         $preview = $applyPreview->preview($details);
         $operationTypes = $this->supportedOperationTypes($preview);
         $sourceDedupKey = $this->sourceDedupKey($row, $details);
@@ -280,6 +281,16 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
         $decoded = json_decode($details, true);
 
         return is_array($decoded) ? $decoded : [];
+    }
+
+    private function withRowFindingTypeContext(object $row, array $details): array
+    {
+        $findingType = $this->text($row->finding_type ?? null);
+        if ($findingType !== null && ! isset($details['finding_type'])) {
+            $details['finding_type'] = $findingType;
+        }
+
+        return $details;
     }
 
     /**

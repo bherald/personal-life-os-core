@@ -33,6 +33,7 @@ class ReviewBacklogReportService
         'family_duplicate_mark',
         'family_child_unlink',
         'source_duplicate_mark',
+        'genealogy_todo_create',
     ];
 
     /**
@@ -1066,6 +1067,7 @@ class ReviewBacklogReportService
 
                 continue;
             }
+            $details = $this->withFindingTypeContext($details, $this->nullableString($row->finding_type ?? null));
 
             foreach ($this->changeTypes($details) as $changeType) {
                 $readiness['change_types'][$changeType] = (int) ($readiness['change_types'][$changeType] ?? 0) + 1;
@@ -1100,6 +1102,7 @@ class ReviewBacklogReportService
             $hasSourceContext = $this->hasSourceProposedChangeIds($details);
             $familyContextSignals = $this->familyContextSignals($details);
             $hasFamilyContext = in_array(true, $familyContextSignals, true);
+            $hasTodoContext = $this->hasGenealogyTodoContext($details);
 
             if ($hasSourceIds) {
                 $readiness['source_duplicate_id_candidates']++;
@@ -1125,7 +1128,7 @@ class ReviewBacklogReportService
             if (($hasSourceContext || $hasFamilyContext) && ! $hasApplyPreview) {
                 $readiness['context_ready_without_preview_rows']++;
             }
-            if (! $hasSourceIds && ! $hasFamilyIds) {
+            if (! $hasSourceIds && ! $hasFamilyIds && ! $hasTodoContext) {
                 $readiness['without_materialized_ids']++;
             }
         }
@@ -1386,12 +1389,14 @@ class ReviewBacklogReportService
         $details = json_decode((string) ($row->details ?? ''), true);
         $malformedDetails = ! is_array($details);
         $details = is_array($details) ? $details : [];
+        $details = $this->withFindingTypeContext($details, $findingType);
         $hasApplyPreview = is_array($details['apply_preview'] ?? null);
         $familySignals = $this->familyContextSignals($details);
         $hasFamilyContext = in_array(true, $familySignals, true);
         $hasSourceContext = $this->hasSourceProposedChangeIds($details);
         $hasSourceIds = $this->hasSourceDuplicateIds($details);
         $hasFamilyIds = $this->hasFamilyRemediationIds($details);
+        $hasTodoContext = $this->hasGenealogyTodoContext($details);
         $isTypedRemediation = in_array($findingType, self::REMEDIATION_FINDING_TYPES, true);
         $supportedPreviewOperations = $this->supportedPreviewOperations($details);
         $materializableOperationTypes = $isTypedRemediation
@@ -1435,7 +1440,7 @@ class ReviewBacklogReportService
                 'supported_preview_operation' => $supportedPreviewOperations !== [],
                 'materializable_remediation' => $materializationReady,
                 'context_ready_without_preview' => ($hasSourceContext || $hasFamilyContext) && ! $hasApplyPreview,
-                'without_materialized_ids' => $isTypedRemediation && ! $hasSourceIds && ! $hasFamilyIds,
+                'without_materialized_ids' => $isTypedRemediation && ! $hasSourceIds && ! $hasFamilyIds && ! $hasTodoContext,
                 'malformed_details' => $malformedDetails,
                 'possible_change_type_typo' => $hasChangeTypeTypo,
             ],
@@ -1456,6 +1461,7 @@ class ReviewBacklogReportService
                     materializableRemediation: $materializationReady,
                     hasSourceDuplicateIds: $hasSourceIds,
                     hasFamilyRemediationIds: $hasFamilyIds,
+                    hasGenealogyTodoContext: $hasTodoContext,
                     hasSourceProposedChangeIds: $hasSourceContext,
                     hasFamilyContext: $hasFamilyContext,
                     familyContextSignals: $familySignals,
@@ -1519,6 +1525,7 @@ class ReviewBacklogReportService
         bool $materializableRemediation,
         bool $hasSourceDuplicateIds,
         bool $hasFamilyRemediationIds,
+        bool $hasGenealogyTodoContext,
         bool $hasSourceProposedChangeIds,
         bool $hasFamilyContext,
         array $familyContextSignals,
@@ -1536,6 +1543,7 @@ class ReviewBacklogReportService
             'materializable_remediation' => $materializableRemediation,
             'has_source_duplicate_ids' => $hasSourceDuplicateIds,
             'has_family_remediation_ids' => $hasFamilyRemediationIds,
+            'has_genealogy_todo_context' => $hasGenealogyTodoContext,
             'has_source_proposed_change_ids' => $hasSourceProposedChangeIds,
             'has_family_context' => $hasFamilyContext,
             'family_context_signals' => [
@@ -1798,7 +1806,7 @@ class ReviewBacklogReportService
         $operations = $this->supportedPreviewOperations($details);
 
         $this->walkArrays($details, function (array $payload) use (&$operations): void {
-            foreach (['operation_type', 'operation', 'type', 'change_type'] as $key) {
+            foreach (['operation_type', 'operation', 'type', 'change_type', 'finding_type'] as $key) {
                 $operationType = $this->normalizeOperationType($payload[$key] ?? null);
                 if ($operationType !== null) {
                     $operations[] = $operationType;
@@ -1909,6 +1917,50 @@ class ReviewBacklogReportService
         return $found;
     }
 
+    private function hasGenealogyTodoContext(array $details): bool
+    {
+        $found = false;
+
+        $this->walkArrays($details, function (array $payload) use (&$found): void {
+            if ($found) {
+                return;
+            }
+
+            $operation = $this->normalizeOperationType($payload['operation_type'] ?? $payload['operation'] ?? $payload['type'] ?? $payload['change_type'] ?? $payload['finding_type'] ?? null);
+            if ($operation !== 'genealogy_todo_create') {
+                return;
+            }
+
+            $hasTarget = $this->firstPositiveInt($payload, [
+                'tree_id',
+                'target_tree_id',
+                'person_id',
+                'target_person_id',
+                'family_id',
+                'target_family_id',
+                'source_id',
+                'target_source_id',
+                'suspect_family_id',
+            ]) !== null;
+            $hasQuestion = $this->firstNonEmptyString($payload, [
+                'research_question',
+                'question',
+                'todo',
+                'task',
+                'proposed_value',
+                'evidence_summary',
+                'summary',
+                'claim_text',
+                'claim',
+                'statement',
+            ]) !== null;
+
+            $found = $hasTarget && $hasQuestion;
+        });
+
+        return $found;
+    }
+
     private function normalizeOperationType(mixed $value): ?string
     {
         $type = $this->nullableString($value);
@@ -1920,8 +1972,18 @@ class ReviewBacklogReportService
             'family_duplicate_mark', 'family_duplicate_mark_preview' => 'family_duplicate_mark',
             'family_child_unlink', 'family_child_unlink_preview' => 'family_child_unlink',
             'source_duplicate_mark', 'source_duplicate_mark_preview', 'source_duplicate_cleanup' => 'source_duplicate_mark',
+            'genealogy_todo_create', 'genealogy_todo_create_preview', 'data_quality_review', 'genealogy_data_quality' => 'genealogy_todo_create',
             default => null,
         };
+    }
+
+    private function withFindingTypeContext(array $details, ?string $findingType): array
+    {
+        if ($findingType !== null && ! isset($details['finding_type'])) {
+            $details['finding_type'] = $findingType;
+        }
+
+        return $details;
     }
 
     private function firstPositiveInt(array $payload, array $keys): ?int
@@ -1930,6 +1992,18 @@ class ReviewBacklogReportService
             $value = $payload[$key] ?? null;
             if (is_numeric($value) && (int) $value > 0) {
                 return (int) $value;
+            }
+        }
+
+        return null;
+    }
+
+    private function firstNonEmptyString(array $payload, array $keys): ?string
+    {
+        foreach ($keys as $key) {
+            $value = $payload[$key] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
             }
         }
 
