@@ -133,6 +133,7 @@ class OperatorEvidenceService
             'scheduler' => $this->compactSchedulerHeadline($sections),
             'dba_arc' => $this->compactDbaArcHeadline($sections),
             'genealogy_evidence_sprint' => $this->compactGenealogyEvidenceSprintHeadline($sections),
+            'genealogy_agent_triage' => $this->compactGenealogyAgentTriageHeadline($sections),
         ];
 
         if (is_array($sections['agent_doctor'] ?? null)) {
@@ -346,6 +347,45 @@ class OperatorEvidenceService
             'ready_for_five_packet_review' => (bool) ($counts['ready_for_five_packet_review'] ?? false),
             'recommendations' => (int) ($counts['recommendations'] ?? 0),
             'evidence_errors' => (int) ($counts['evidence_errors'] ?? 0),
+        ];
+    }
+
+    private function compactGenealogyAgentTriageHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'genealogy_agent_triage');
+        $counts = $this->compactCounts($section);
+        $schedulerEnablementAllowed = (int) ($counts['scheduler_enablement_allowed_targets'] ?? 0);
+        $productionWritebackAllowed = (int) ($counts['production_writeback_allowed_targets'] ?? 0);
+        $canonicalWritebackAllowed = (int) ($counts['canonical_genealogy_writeback_allowed_targets'] ?? 0);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'window_days' => (int) ($counts['window_days'] ?? 0),
+            'targets_total' => (int) ($counts['targets_total'] ?? 0),
+            'configured_targets' => (int) ($counts['configured_targets'] ?? 0),
+            'enabled_targets' => (int) ($counts['enabled_targets'] ?? 0),
+            'disabled_targets' => (int) ($counts['disabled_targets'] ?? 0),
+            'missing_targets' => (int) ($counts['missing_targets'] ?? 0),
+            'blocked_targets' => (int) ($counts['blocked_targets'] ?? 0),
+            'degraded_targets' => (int) ($counts['degraded_targets'] ?? 0),
+            'watch_targets' => (int) ($counts['watch_targets'] ?? 0),
+            'completed_sessions_window' => (int) ($counts['completed_sessions_window'] ?? 0),
+            'review_outputs_window' => (int) ($counts['review_outputs_window'] ?? 0),
+            'awo_completed_reviews_window' => (int) ($counts['awo_completed_reviews_window'] ?? 0),
+            'awo_approval_worthy_reviews_window' => (int) ($counts['awo_approval_worthy_reviews_window'] ?? 0),
+            'awo_approval_worthy_rate' => $counts['awo_approval_worthy_rate'] ?? null,
+            'targets_needing_review_count' => (int) ($counts['targets_needing_review_count'] ?? 0),
+            'source_backed_review_packets_required_targets' => (int) ($counts['source_backed_review_packets_required_targets'] ?? 0),
+            'scenario_test_required_targets' => (int) ($counts['scenario_test_required_targets'] ?? 0),
+            'operator_approval_required_targets' => (int) ($counts['operator_approval_required_targets'] ?? 0),
+            'awo_sample_floor_met_targets' => (int) ($counts['awo_sample_floor_met_targets'] ?? 0),
+            'awo_approval_worthy_present_targets' => (int) ($counts['awo_approval_worthy_present_targets'] ?? 0),
+            'scheduler_enablement_allowed_targets' => $schedulerEnablementAllowed,
+            'production_writeback_allowed_targets' => $productionWritebackAllowed,
+            'canonical_genealogy_writeback_allowed_targets' => $canonicalWritebackAllowed,
+            'scheduler_enablement_guard_ok' => $schedulerEnablementAllowed === 0,
+            'production_writeback_guard_ok' => $productionWritebackAllowed === 0,
+            'canonical_writeback_guard_ok' => $canonicalWritebackAllowed === 0,
         ];
     }
 
@@ -2026,6 +2066,11 @@ class OperatorEvidenceService
         try {
             $payload = ($this->genealogyTriage ?? app(GenealogyAgentTriageService::class))->collect(30);
             $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $targets = array_values(array_filter((array) ($payload['targets'] ?? []), 'is_array'));
+            $targetsNeedingReview = array_values(array_filter(
+                (array) ($summary['targets_needing_review'] ?? []),
+                'is_string'
+            ));
             $status = (string) ($payload['status'] ?? 'watch');
             if (! array_key_exists($status, self::STATUSES)) {
                 $status = 'watch';
@@ -2046,10 +2091,16 @@ class OperatorEvidenceService
                 'awo_completed_reviews_window' => (int) ($summary['awo_completed_reviews_window'] ?? 0),
                 'awo_approval_worthy_reviews_window' => (int) ($summary['awo_approval_worthy_reviews_window'] ?? 0),
                 'awo_approval_worthy_rate' => $summary['awo_approval_worthy_rate'] ?? null,
-                'targets_needing_review' => array_values(array_filter(
-                    (array) ($summary['targets_needing_review'] ?? []),
-                    'is_string'
-                )),
+                'targets_needing_review_count' => count($targetsNeedingReview),
+                'targets_needing_review' => $targetsNeedingReview,
+                'source_backed_review_packets_required_targets' => $this->countTriagePreEnableFlag($targets, 'source_backed_review_packets_required'),
+                'scenario_test_required_targets' => $this->countTriageScenarioTestTargets($targets),
+                'operator_approval_required_targets' => $this->countTriagePreEnableFlag($targets, 'operator_approval_required'),
+                'scheduler_enablement_allowed_targets' => $this->countTriagePreEnableFlag($targets, 'scheduler_enablement_allowed'),
+                'production_writeback_allowed_targets' => $this->countTriagePreEnableFlag($targets, 'production_writeback_allowed'),
+                'canonical_genealogy_writeback_allowed_targets' => $this->countTriagePreEnableFlag($targets, 'canonical_genealogy_writeback_allowed'),
+                'awo_sample_floor_met_targets' => $this->countTriageAwoFlag($targets, 'sample_floor_met'),
+                'awo_approval_worthy_present_targets' => $this->countTriageAwoFlag($targets, 'approval_worthy_present'),
             ];
 
             return $this->section(
@@ -2062,6 +2113,52 @@ class OperatorEvidenceService
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['GenealogyAgentTriageService', 'scheduled_jobs'], $e, 'Genealogy agent triage query failed.');
         }
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $targets
+     */
+    private function countTriagePreEnableFlag(array $targets, string $flag): int
+    {
+        return count(array_filter(
+            $targets,
+            function (array $target) use ($flag): bool {
+                $gates = is_array($target['pre_enable_gates'] ?? null) ? $target['pre_enable_gates'] : [];
+
+                return ! empty($gates[$flag]);
+            }
+        ));
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $targets
+     */
+    private function countTriageScenarioTestTargets(array $targets): int
+    {
+        return count(array_filter(
+            $targets,
+            function (array $target): bool {
+                $gates = is_array($target['pre_enable_gates'] ?? null) ? $target['pre_enable_gates'] : [];
+                $tests = $gates['scenario_tests_required'] ?? [];
+
+                return is_array($tests) && $tests !== [];
+            }
+        ));
+    }
+
+    /**
+     * @param  list<array<string,mixed>>  $targets
+     */
+    private function countTriageAwoFlag(array $targets, string $flag): int
+    {
+        return count(array_filter(
+            $targets,
+            function (array $target) use ($flag): bool {
+                $awo = is_array($target['awo'] ?? null) ? $target['awo'] : [];
+
+                return ! empty($awo[$flag]);
+            }
+        ));
     }
 
     private function collectAgentFailuresStaleWork(Carbon $sampledAt): array

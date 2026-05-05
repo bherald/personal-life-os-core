@@ -148,6 +148,26 @@ class OperatorEvidenceCommand extends Command
             $dba['arc_retention_dry_run_status'] ?? '-'
         ));
 
+        $genealogyTriage = is_array($headlines['genealogy_agent_triage'] ?? null)
+            ? $headlines['genealogy_agent_triage']
+            : [];
+        $this->line(sprintf(
+            'genealogy-triage: %s targets=%s disabled=%s missing=%s review_needed=%s sessions=%s reviews=%s awo=%s/%s rate=%s scheduler_enable_allowed=%s writeback_allowed=%s canonical_writeback_allowed=%s',
+            $genealogyTriage['status'] ?? 'unavailable',
+            $genealogyTriage['targets_total'] ?? '-',
+            $genealogyTriage['disabled_targets'] ?? '-',
+            $genealogyTriage['missing_targets'] ?? '-',
+            $genealogyTriage['targets_needing_review_count'] ?? '-',
+            $genealogyTriage['completed_sessions_window'] ?? '-',
+            $genealogyTriage['review_outputs_window'] ?? '-',
+            $genealogyTriage['awo_approval_worthy_reviews_window'] ?? '-',
+            $genealogyTriage['awo_completed_reviews_window'] ?? '-',
+            $this->valueOrDash($genealogyTriage['awo_approval_worthy_rate'] ?? null),
+            $genealogyTriage['scheduler_enablement_allowed_targets'] ?? '-',
+            $genealogyTriage['production_writeback_allowed_targets'] ?? '-',
+            $genealogyTriage['canonical_genealogy_writeback_allowed_targets'] ?? '-'
+        ));
+
         if (is_array($headlines['agent_doctor'] ?? null)) {
             $agentDoctor = $headlines['agent_doctor'];
             $this->line(sprintf(
@@ -165,5 +185,10 @@ class OperatorEvidenceCommand extends Command
     private function minutes(mixed $value): string
     {
         return $value === null ? '-' : $value.'m';
+    }
+
+    private function valueOrDash(mixed $value): string
+    {
+        return $value === null ? '-' : (string) $value;
     }
 }
