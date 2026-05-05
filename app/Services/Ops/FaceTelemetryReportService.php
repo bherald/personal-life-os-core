@@ -97,6 +97,23 @@ class FaceTelemetryReportService
             $lines[] = '- Newest named-only updated at: `'.($registrySummary['newest_named_only_updated_at'] ?? 'none').'`';
         }
 
+        $queueSummary = $payload['sections']['review_queue']['summary'] ?? null;
+        if (is_array($queueSummary)) {
+            $lines[] = '';
+            $lines[] = '## Review Queue';
+            $lines[] = '';
+            $lines[] = '- Total queue items: `'.($queueSummary['total_queue_items'] ?? 0).'`';
+            $lines[] = '- Pending items: `'.($queueSummary['pending_items'] ?? 0).'`';
+            $lines[] = '- No-match pending items: `'.($queueSummary['no_match_pending'] ?? 0).'`';
+            $lines[] = '- Stale pending items: `'.($queueSummary['stale_pending_items'] ?? 0).'`';
+            $lines[] = '- Stale no-match pending items: `'.($queueSummary['stale_no_match_pending'] ?? 0).'`';
+            $lines[] = '- Named-only no-match pending items: `'.($queueSummary['named_only_no_match_pending'] ?? 0).'`';
+            $lines[] = '- Stale named-only no-match pending items: `'.($queueSummary['stale_named_only_no_match_pending'] ?? 0).'`';
+            $lines[] = '- Oldest pending at: `'.($queueSummary['oldest_pending_at'] ?? 'none').'`';
+            $lines[] = '- Oldest no-match pending at: `'.($queueSummary['oldest_no_match_pending_at'] ?? 'none').'`';
+            $lines[] = '- Oldest named-only no-match pending at: `'.($queueSummary['oldest_named_only_no_match_pending_at'] ?? 'none').'`';
+        }
+
         $candidateSummary = $payload['sections']['candidate_decisions']['summary'] ?? null;
         if (is_array($candidateSummary)) {
             $lines[] = '';
@@ -217,10 +234,15 @@ class FaceTelemetryReportService
                     'status' => $this->sectionStatus($sections, 'review_queue'),
                     'total_queue_items' => $this->intValue($queue['total_queue_items'] ?? 0),
                     'pending_items' => $this->intValue($queue['pending_items'] ?? 0),
+                    'no_match_pending' => $this->intValue($queue['no_match_pending'] ?? 0),
                     'stale_pending_items' => $this->intValue($queue['stale_pending_items'] ?? 0),
                     'stale_no_match_pending' => $this->intValue($queue['stale_no_match_pending'] ?? 0),
+                    'named_only_no_match_pending' => $this->intValue($queue['named_only_no_match_pending'] ?? 0),
+                    'stale_named_only_no_match_pending' => $this->intValue($queue['stale_named_only_no_match_pending'] ?? 0),
                     'recent_updates' => $this->intValue($queue['recent_updates'] ?? 0),
                     'oldest_pending_at' => $this->nullableString($queue['oldest_pending_at'] ?? null),
+                    'oldest_no_match_pending_at' => $this->nullableString($queue['oldest_no_match_pending_at'] ?? null),
+                    'oldest_named_only_no_match_pending_at' => $this->nullableString($queue['oldest_named_only_no_match_pending_at'] ?? null),
                 ],
                 'candidate_decisions' => [
                     'status' => $this->sectionStatus($sections, 'candidate_decisions'),
@@ -306,13 +328,18 @@ class FaceTelemetryReportService
                 $sections['mysql_face_registry']['unclustered_visible_faces']
             ),
             sprintf(
-                '- Review queue: `%s`, pending=`%s`, stale=`%s`, stale_no_match=`%s`, recent_updates=`%s`, oldest_pending=`%s`',
+                '- Review queue: `%s`, pending=`%s`, no_match=`%s`, stale=`%s`, stale_no_match=`%s`, named_only_no_match=`%s`, stale_named_only_no_match=`%s`, recent_updates=`%s`, oldest_pending=`%s`, oldest_no_match=`%s`, oldest_named_only_no_match=`%s`',
                 $sections['review_queue']['status'],
                 $sections['review_queue']['pending_items'],
+                $sections['review_queue']['no_match_pending'],
                 $sections['review_queue']['stale_pending_items'],
                 $sections['review_queue']['stale_no_match_pending'],
+                $sections['review_queue']['named_only_no_match_pending'],
+                $sections['review_queue']['stale_named_only_no_match_pending'],
                 $sections['review_queue']['recent_updates'],
-                $sections['review_queue']['oldest_pending_at'] ?? 'none'
+                $sections['review_queue']['oldest_pending_at'] ?? 'none',
+                $sections['review_queue']['oldest_no_match_pending_at'] ?? 'none',
+                $sections['review_queue']['oldest_named_only_no_match_pending_at'] ?? 'none'
             ),
             sprintf(
                 '- Candidate decisions: `%s`, rows=`%s`, recent=`%s`, terminal=`%s`, latest=`%s`',
@@ -392,14 +419,19 @@ class FaceTelemetryReportService
                 $sections['mysql_face_registry']['unclustered_visible_faces']
             ),
             sprintf(
-                'review-queue: %s total=%s pending=%s stale=%s stale_no_match=%s recent_updates=%s oldest_pending=%s',
+                'review-queue: %s total=%s pending=%s no_match=%s stale=%s stale_no_match=%s named_only_no_match=%s stale_named_only_no_match=%s recent_updates=%s oldest_pending=%s oldest_no_match=%s oldest_named_only_no_match=%s',
                 $sections['review_queue']['status'],
                 $sections['review_queue']['total_queue_items'],
                 $sections['review_queue']['pending_items'],
+                $sections['review_queue']['no_match_pending'],
                 $sections['review_queue']['stale_pending_items'],
                 $sections['review_queue']['stale_no_match_pending'],
+                $sections['review_queue']['named_only_no_match_pending'],
+                $sections['review_queue']['stale_named_only_no_match_pending'],
                 $sections['review_queue']['recent_updates'],
-                $sections['review_queue']['oldest_pending_at'] ?? 'none'
+                $sections['review_queue']['oldest_pending_at'] ?? 'none',
+                $sections['review_queue']['oldest_no_match_pending_at'] ?? 'none',
+                $sections['review_queue']['oldest_named_only_no_match_pending_at'] ?? 'none'
             ),
             sprintf(
                 'candidate-decisions: %s rows=%s faces=%s recent=%s latest=%s terminal=%s keep=%s outside=%s vague=%s not-this=%s defer=%s',
@@ -520,17 +552,23 @@ class FaceTelemetryReportService
             $row = DB::selectOne(
                 "SELECT
                     COUNT(*) AS total_queue_items,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_items,
-                    SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved_items,
-                    SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected_items,
-                    SUM(CASE WHEN status = 'auto_linked' THEN 1 ELSE 0 END) AS auto_linked_items,
-                    SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) AS ignored_items,
-                    SUM(CASE WHEN status = 'pending' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_pending_items,
-                    SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_no_match_pending,
-                    SUM(CASE WHEN updated_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS recent_updates,
-                    MIN(CASE WHEN status = 'pending' THEN created_at ELSE NULL END) AS oldest_pending_at
-                 FROM genealogy_face_match_queue",
-                [$hours, $hours, $hours]
+                    SUM(CASE WHEN q.status = 'pending' THEN 1 ELSE 0 END) AS pending_items,
+                    SUM(CASE WHEN q.status = 'approved' THEN 1 ELSE 0 END) AS approved_items,
+                    SUM(CASE WHEN q.status = 'rejected' THEN 1 ELSE 0 END) AS rejected_items,
+                    SUM(CASE WHEN q.status = 'auto_linked' THEN 1 ELSE 0 END) AS auto_linked_items,
+                    SUM(CASE WHEN q.status = 'ignored' THEN 1 ELSE 0 END) AS ignored_items,
+                    SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' THEN 1 ELSE 0 END) AS no_match_pending,
+                    SUM(CASE WHEN q.status = 'pending' AND q.created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_pending_items,
+                    SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND q.created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_no_match_pending,
+                    SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS named_only_no_match_pending,
+                    SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND q.created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_named_only_no_match_pending,
+                    SUM(CASE WHEN q.updated_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS recent_updates,
+                    MIN(CASE WHEN q.status = 'pending' THEN q.created_at ELSE NULL END) AS oldest_pending_at,
+                    MIN(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' THEN q.created_at ELSE NULL END) AS oldest_no_match_pending_at,
+                    MIN(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN q.created_at ELSE NULL END) AS oldest_named_only_no_match_pending_at
+                 FROM genealogy_face_match_queue q
+                 LEFT JOIN file_registry_faces frf ON frf.id = q.file_registry_face_id",
+                [$hours, $hours, $hours, $hours]
             );
 
             $pending = $this->intValue($row->pending_items ?? 0);
@@ -546,10 +584,15 @@ class FaceTelemetryReportService
                     'rejected_items' => $this->intValue($row->rejected_items ?? 0),
                     'auto_linked_items' => $this->intValue($row->auto_linked_items ?? 0),
                     'ignored_items' => $this->intValue($row->ignored_items ?? 0),
+                    'no_match_pending' => $this->intValue($row->no_match_pending ?? 0),
                     'stale_pending_items' => $stalePending,
                     'stale_no_match_pending' => $this->intValue($row->stale_no_match_pending ?? 0),
+                    'named_only_no_match_pending' => $this->intValue($row->named_only_no_match_pending ?? 0),
+                    'stale_named_only_no_match_pending' => $this->intValue($row->stale_named_only_no_match_pending ?? 0),
                     'recent_updates' => $this->intValue($row->recent_updates ?? 0),
                     'oldest_pending_at' => $this->nullableString($row->oldest_pending_at ?? null),
+                    'oldest_no_match_pending_at' => $this->nullableString($row->oldest_no_match_pending_at ?? null),
+                    'oldest_named_only_no_match_pending_at' => $this->nullableString($row->oldest_named_only_no_match_pending_at ?? null),
                 ],
             ];
         } catch (Throwable $e) {

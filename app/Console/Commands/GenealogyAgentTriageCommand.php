@@ -192,9 +192,12 @@ class GenealogyAgentTriageCommand extends Command
                 ? (float) $awo['approval_worthy_rate']
                 : null,
             'scenario_test_count' => count($scenarioTests),
+            'source_backed_review_packets_required' => (bool) ($preEnableGates['source_backed_review_packets_required'] ?? true),
             'minimum_awo_scored_reviews' => (int) ($preEnableGates['minimum_awo_scored_reviews'] ?? 10),
+            'operator_approval_required' => (bool) ($preEnableGates['operator_approval_required'] ?? true),
             'scheduler_enablement_allowed' => (bool) ($preEnableGates['scheduler_enablement_allowed'] ?? false),
             'production_writeback_allowed' => (bool) ($preEnableGates['production_writeback_allowed'] ?? false),
+            'canonical_genealogy_writeback_allowed' => (bool) ($preEnableGates['canonical_genealogy_writeback_allowed'] ?? false),
             'next_action' => $target['next_action'] ?? '',
         ];
     }
@@ -219,10 +222,43 @@ class GenealogyAgentTriageCommand extends Command
         $reviewGateVisible = $targetsTotal > 0
             && count($targets) === $targetsTotal
             && $this->allTargetsHave($targets, ['reviews_completed', 'reviews_total', 'next_action']);
+        $sourceBackedPacketGateVisible = $targetsTotal > 0
+            && count($targets) === $targetsTotal
+            && $this->allTargetsHave($targets, ['source_backed_review_packets_required']);
+        $scenarioTestGateVisible = $targetsTotal > 0
+            && count($targets) === $targetsTotal
+            && $this->allTargetsHave($targets, ['scenario_test_count']);
         $awoGateVisible = $targetsTotal > 0
             && count($targets) === $targetsTotal
             && $this->allTargetsHave($targets, ['awo_completed_reviews', 'awo_approval_worthy_reviews', 'awo_approval_worthy_rate']);
+        $operatorApprovalGateVisible = $targetsTotal > 0
+            && count($targets) === $targetsTotal
+            && $this->allTargetsHave($targets, ['operator_approval_required']);
+        $schedulerEnablementGuardVisible = $targetsTotal > 0
+            && count($targets) === $targetsTotal
+            && $this->allTargetsHave($targets, ['scheduler_enablement_allowed']);
+        $productionWritebackGuardVisible = $targetsTotal > 0
+            && count($targets) === $targetsTotal
+            && $this->allTargetsHave($targets, ['production_writeback_allowed']);
+        $canonicalWritebackGuardVisible = $targetsTotal > 0
+            && count($targets) === $targetsTotal
+            && $this->allTargetsHave($targets, ['canonical_genealogy_writeback_allowed']);
         $operatorReviewVisible = array_key_exists('targets_needing_review_count', $summary);
+        $allTargetsRequireSourceBackedPackets = $sourceBackedPacketGateVisible
+            && count(array_filter($targets, fn (array $target): bool => empty($target['source_backed_review_packets_required']))) === 0;
+        $allTargetsHaveScenarioTests = $scenarioTestGateVisible
+            && count(array_filter($targets, fn (array $target): bool => (int) ($target['scenario_test_count'] ?? 0) < 1)) === 0;
+        $allTargetsRequireOperatorApproval = $operatorApprovalGateVisible
+            && count(array_filter($targets, fn (array $target): bool => empty($target['operator_approval_required']))) === 0;
+        $noTargetSchedulerEnablement = $schedulerEnablementGuardVisible
+            && count(array_filter($targets, fn (array $target): bool => ! empty($target['scheduler_enablement_allowed']))) === 0;
+        $noTargetProductionWriteback = $productionWritebackGuardVisible
+            && count(array_filter($targets, fn (array $target): bool => ! empty($target['production_writeback_allowed']))) === 0;
+        $noTargetCanonicalWriteback = $canonicalWritebackGuardVisible
+            && count(array_filter($targets, fn (array $target): bool => ! empty($target['canonical_genealogy_writeback_allowed']))) === 0;
+        $awoApprovalWorthyRate = is_numeric($summary['awo_approval_worthy_rate'] ?? null)
+            ? (string) $summary['awo_approval_worthy_rate']
+            : 'null';
 
         $gates = [
             [
@@ -230,12 +266,6 @@ class GenealogyAgentTriageCommand extends Command
                 'visible' => true,
                 'passed' => $mode === 'observe',
                 'evidence' => 'mode='.$mode,
-            ],
-            [
-                'id' => 'production_writeback_guard',
-                'visible' => true,
-                'passed' => true,
-                'evidence' => 'command emits read-only triage; no scheduler, approval, rejection, or agent state writeback is performed',
             ],
             [
                 'id' => 'scheduler_state_visible',
@@ -251,6 +281,18 @@ class GenealogyAgentTriageCommand extends Command
                 ),
             ],
             [
+                'id' => 'source_backed_packet_gate_visible',
+                'visible' => $sourceBackedPacketGateVisible,
+                'passed' => $allTargetsRequireSourceBackedPackets,
+                'evidence' => 'source_backed_required_targets='.count(array_filter($targets, fn (array $target): bool => ! empty($target['source_backed_review_packets_required']))).'/'.$targetsTotal,
+            ],
+            [
+                'id' => 'scenario_test_gate_visible',
+                'visible' => $scenarioTestGateVisible,
+                'passed' => $allTargetsHaveScenarioTests,
+                'evidence' => 'scenario_test_targets='.count(array_filter($targets, fn (array $target): bool => (int) ($target['scenario_test_count'] ?? 0) > 0)).'/'.$targetsTotal,
+            ],
+            [
                 'id' => 'review_output_gate_visible',
                 'visible' => $reviewGateVisible,
                 'passed' => $reviewGateVisible && (int) ($summary['review_outputs_window'] ?? 0) > 0,
@@ -264,10 +306,32 @@ class GenealogyAgentTriageCommand extends Command
                     'awo_completed=%d awo_approval_worthy=%d rate=%s',
                     (int) ($summary['awo_completed_reviews_window'] ?? 0),
                     (int) ($summary['awo_approval_worthy_reviews_window'] ?? 0),
-                    is_numeric($summary['awo_approval_worthy_rate'] ?? null)
-                        ? (string) $summary['awo_approval_worthy_rate']
-                        : 'null',
+                    $awoApprovalWorthyRate,
                 ),
+            ],
+            [
+                'id' => 'operator_approval_gate_visible',
+                'visible' => $operatorApprovalGateVisible,
+                'passed' => $allTargetsRequireOperatorApproval,
+                'evidence' => 'operator_approval_required_targets='.count(array_filter($targets, fn (array $target): bool => ! empty($target['operator_approval_required']))).'/'.$targetsTotal,
+            ],
+            [
+                'id' => 'scheduler_enablement_guard',
+                'visible' => $schedulerEnablementGuardVisible,
+                'passed' => $noTargetSchedulerEnablement,
+                'evidence' => 'scheduler_enablement_allowed_targets='.count(array_filter($targets, fn (array $target): bool => ! empty($target['scheduler_enablement_allowed']))).'/'.$targetsTotal,
+            ],
+            [
+                'id' => 'production_writeback_guard',
+                'visible' => $productionWritebackGuardVisible,
+                'passed' => $noTargetProductionWriteback,
+                'evidence' => 'production_writeback_allowed_targets='.count(array_filter($targets, fn (array $target): bool => ! empty($target['production_writeback_allowed']))).'/'.$targetsTotal,
+            ],
+            [
+                'id' => 'canonical_writeback_guard',
+                'visible' => $canonicalWritebackGuardVisible,
+                'passed' => $noTargetCanonicalWriteback,
+                'evidence' => 'canonical_writeback_allowed_targets='.count(array_filter($targets, fn (array $target): bool => ! empty($target['canonical_genealogy_writeback_allowed']))).'/'.$targetsTotal,
             ],
             [
                 'id' => 'operator_review_gate_visible',
@@ -357,7 +421,7 @@ class GenealogyAgentTriageCommand extends Command
             }
 
             $this->line(sprintf(
-                'target=%s agent=%s enabled=%s state=%s sessions=%d/%d reviews=%d/%d awo=%d/%d scenarios=%d min_awo=%d scheduler_enable=%s writeback=%s action=%s',
+                'target=%s agent=%s enabled=%s state=%s sessions=%d/%d reviews=%d/%d awo=%d/%d source_packet=%s scenarios=%d min_awo=%d operator_approval=%s scheduler_enable=%s writeback=%s canonical_writeback=%s action=%s',
                 (string) ($target['job_name'] ?? ''),
                 (string) ($target['agent_id'] ?? '-'),
                 ! empty($target['enabled']) ? 'yes' : 'no',
@@ -368,10 +432,13 @@ class GenealogyAgentTriageCommand extends Command
                 (int) ($target['reviews_total'] ?? 0),
                 (int) ($target['awo_approval_worthy_reviews'] ?? 0),
                 (int) ($target['awo_completed_reviews'] ?? 0),
+                ! empty($target['source_backed_review_packets_required']) ? 'yes' : 'no',
                 (int) ($target['scenario_test_count'] ?? 0),
                 (int) ($target['minimum_awo_scored_reviews'] ?? 10),
+                ! empty($target['operator_approval_required']) ? 'yes' : 'no',
                 ! empty($target['scheduler_enablement_allowed']) ? 'yes' : 'no',
                 ! empty($target['production_writeback_allowed']) ? 'yes' : 'no',
+                ! empty($target['canonical_genealogy_writeback_allowed']) ? 'yes' : 'no',
                 (string) ($target['next_action'] ?? ''),
             ));
         }
