@@ -354,7 +354,7 @@ class RagScaleReviewCommand extends Command
 
         $path = $this->resolvePath($file);
         if (! is_file($path)) {
-            throw new \InvalidArgumentException('Retrieval evidence file not found: '.$file);
+            throw new \InvalidArgumentException('Retrieval evidence file not found. Check --retrieval-file path.');
         }
 
         $decoded = json_decode((string) file_get_contents($path), true);
@@ -407,7 +407,7 @@ class RagScaleReviewCommand extends Command
 
         $path = $this->resolvePath($file);
         if (! is_file($path)) {
-            throw new \InvalidArgumentException('Previous scale review file not found: '.$file);
+            throw new \InvalidArgumentException('Previous scale review file not found. Check --previous-file path.');
         }
 
         $decoded = json_decode((string) file_get_contents($path), true);

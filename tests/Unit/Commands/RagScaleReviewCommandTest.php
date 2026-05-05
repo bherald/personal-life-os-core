@@ -471,12 +471,31 @@ class RagScaleReviewCommandTest extends TestCase
         $service->shouldNotReceive('getNetBurn');
         $this->app->instance(RagBacklogService::class, $service);
 
-        $exit = Artisan::call('rag:scale-review', [
-            '--retrieval-file' => '/tmp/does-not-exist-rag-review.json',
-        ]);
+        $cases = [
+            '/tmp/does-not-exist-rag-review.json' => [
+                '/tmp/does-not-exist-rag-review.json',
+                'does-not-exist-rag-review.json',
+            ],
+            'storage/app/private-rag-proof/missing-retrieval.json' => [
+                'storage/app/private-rag-proof/missing-retrieval.json',
+                'private-rag-proof',
+                'missing-retrieval.json',
+            ],
+        ];
 
-        $this->assertSame(1, $exit);
-        $this->assertStringContainsString('Retrieval evidence file not found', Artisan::output());
+        foreach ($cases as $path => $redactedFragments) {
+            $exit = Artisan::call('rag:scale-review', [
+                '--retrieval-file' => $path,
+            ]);
+
+            $this->assertSame(1, $exit, $path);
+            $output = Artisan::output();
+            $this->assertStringContainsString('Retrieval evidence file not found. Check --retrieval-file path.', $output, $path);
+
+            foreach ($redactedFragments as $fragment) {
+                $this->assertStringNotContainsString($fragment, $output, $path);
+            }
+        }
     }
 
     public function test_missing_previous_file_fails_before_collecting_evidence(): void
@@ -487,13 +506,32 @@ class RagScaleReviewCommandTest extends TestCase
         $service->shouldNotReceive('getNetBurn');
         $this->app->instance(RagBacklogService::class, $service);
 
-        $exit = Artisan::call('rag:scale-review', [
-            '--previous-file' => '/tmp/does-not-exist-rag-scale-review.json',
-            '--json' => true,
-        ]);
+        $cases = [
+            '/tmp/does-not-exist-rag-scale-review.json' => [
+                '/tmp/does-not-exist-rag-scale-review.json',
+                'does-not-exist-rag-scale-review.json',
+            ],
+            '~/private-rag-proof/missing-scale-review.json' => [
+                '~/private-rag-proof/missing-scale-review.json',
+                'private-rag-proof',
+                'missing-scale-review.json',
+            ],
+        ];
 
-        $this->assertSame(1, $exit);
-        $this->assertStringContainsString('Previous scale review file not found', Artisan::output());
+        foreach ($cases as $path => $redactedFragments) {
+            $exit = Artisan::call('rag:scale-review', [
+                '--previous-file' => $path,
+                '--json' => true,
+            ]);
+
+            $this->assertSame(1, $exit, $path);
+            $output = Artisan::output();
+            $this->assertStringContainsString('Previous scale review file not found. Check --previous-file path.', $output, $path);
+
+            foreach ($redactedFragments as $fragment) {
+                $this->assertStringNotContainsString($fragment, $output, $path);
+            }
+        }
     }
 
     public function test_json_and_markdown_options_are_mutually_exclusive(): void

@@ -16,8 +16,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:review-backlog-report --markdown --compact',
     'ops:review-backlog-report --next-target',
     'ops:review-backlog-report --json --next-target',
-    'ops:review-backlog-report --json --next-target --focus=typed-remediation',
-    'ops:review-backlog-report --json --next-target --focus=materializable-remediation',
+    'ops:review-backlog-report --next-target --focus=typed-remediation --json',
+    'ops:review-backlog-report --next-target --focus=materializable-remediation --json',
     'ops:offline-status --json',
     'ops:offline-smoke --json',
     'ops:agent-doctor --json --since=24',
@@ -100,8 +100,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:review-backlog-report --markdown --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target/);
   assert.match(listing, /php artisan ops:review-backlog-report --json --next-target/);
-  assert.match(listing, /php artisan ops:review-backlog-report --json --next-target --focus=typed-remediation/);
-  assert.match(listing, /php artisan ops:review-backlog-report --json --next-target --focus=materializable-remediation/);
+  assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=typed-remediation --json/);
+  assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=materializable-remediation --json/);
   assert.match(listing, /php artisan ops:offline-smoke --json/);
   assert.match(listing, /php artisan ops:agent-doctor --json --since=24/);
   assert.match(listing, /php artisan ops:agent-doctor --compact/);
@@ -218,6 +218,30 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(arbitraryNextTargetFocusResult, /Blocked:/);
   assert.match(arbitraryNextTargetFocusResult, /Use command "list"/);
 
+  const arbitraryCanonicalNextTargetFocusResult = await plosArtisan({
+    command: 'ops:review-backlog-report --next-target --focus=all --json',
+    on_prod: false,
+  });
+
+  assert.match(arbitraryCanonicalNextTargetFocusResult, /Blocked:/);
+  assert.match(arbitraryCanonicalNextTargetFocusResult, /Use command "list"/);
+
+  const typedFocusOldOrderResult = await plosArtisan({
+    command: 'ops:review-backlog-report --json --next-target --focus=typed-remediation',
+    on_prod: false,
+  });
+
+  assert.match(typedFocusOldOrderResult, /Blocked:/);
+  assert.match(typedFocusOldOrderResult, /Use command "list"/);
+
+  const materializableFocusOldOrderResult = await plosArtisan({
+    command: 'ops:review-backlog-report --json --next-target --focus=materializable-remediation',
+    on_prod: false,
+  });
+
+  assert.match(materializableFocusOldOrderResult, /Blocked:/);
+  assert.match(materializableFocusOldOrderResult, /Use command "list"/);
+
   const reorderedNextTargetFocusResult = await plosArtisan({
     command: 'ops:review-backlog-report --next-target --json --focus=typed-remediation',
     on_prod: false,
@@ -233,6 +257,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(reorderedMaterializableFocusResult, /Blocked:/);
   assert.match(reorderedMaterializableFocusResult, /Use command "list"/);
+
+  const canonicalNextTargetFocusExtraOptionResult = await plosArtisan({
+    command: 'ops:review-backlog-report --next-target --focus=typed-remediation --json --include-details',
+    on_prod: false,
+  });
+
+  assert.match(canonicalNextTargetFocusExtraOptionResult, /Blocked:/);
+  assert.match(canonicalNextTargetFocusExtraOptionResult, /Use command "list"/);
 
   const arbitraryRunProofResult = await plosArtisan({
     command: 'news:pushover-proof --workflow=news_brief --run-id=1185 --json --compact',

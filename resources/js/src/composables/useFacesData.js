@@ -25,10 +25,12 @@ const hiddenFaces = ref([])
 const namedOnlyFaces = ref([])
 const namedOnlyTotal = ref(0)
 const namedOnlyLoading = ref(false)
+const namedOnlyDecisionState = ref('open')
 const PAGE_SIZE_RECOGNIZED = 60
 const PAGE_SIZE_NEW = 50
 const PAGE_SIZE_HIDDEN = 60
 const PAGE_SIZE_NAMED_ONLY = 50
+const NAMED_ONLY_DECISION_STATES = new Set(['open', 'decided', 'all'])
 
 // Unidentified faces (N63)
 const unidentifiedFaces = ref([])
@@ -169,9 +171,10 @@ export function useFacesData() {
     await loadHidden(false)
   }
 
-  async function loadNamedOnly(reset = false) {
+  async function loadNamedOnly(reset = false, decisionState = namedOnlyDecisionState.value) {
     if (namedOnlyLoading.value && !reset) return
     namedOnlyLoading.value = true
+    namedOnlyDecisionState.value = normalizeNamedOnlyDecisionState(decisionState)
 
     if (reset) {
       namedOnlyPage.value = 0
@@ -184,7 +187,7 @@ export function useFacesData() {
         params: {
           limit: PAGE_SIZE_NAMED_ONLY,
           offset: namedOnlyPage.value * PAGE_SIZE_NAMED_ONLY,
-          decision_state: 'open',
+          decision_state: namedOnlyDecisionState.value,
         }
       })
 
@@ -203,6 +206,13 @@ export function useFacesData() {
   async function loadMoreNamedOnly() {
     if (!hasMoreNamedOnly.value || namedOnlyLoading.value) return
     await loadNamedOnly(false)
+  }
+
+  async function setNamedOnlyDecisionState(decisionState) {
+    const nextState = normalizeNamedOnlyDecisionState(decisionState)
+    if (namedOnlyDecisionState.value === nextState && namedOnlyFaces.value.length > 0) return
+    namedOnlyDecisionState.value = nextState
+    await loadNamedOnly(true, nextState)
   }
 
   async function linkNamedOnlyFace(faceId, personId, treeId = null) {
@@ -228,7 +238,7 @@ export function useFacesData() {
     try {
       const result = await api.post(`/media/faces/${faceId}/candidate-decision`, decision)
       if (result.success) {
-        if (result.decision?.terminal) {
+        if (result.decision?.terminal && namedOnlyDecisionState.value === 'open') {
           namedOnlyFaces.value = namedOnlyFaces.value.filter(f => f.face_id !== faceId)
           namedOnlyTotal.value = Math.max(0, namedOnlyTotal.value - 1)
           hasMoreNamedOnly.value = namedOnlyFaces.value.length < namedOnlyTotal.value
@@ -525,6 +535,11 @@ export function useFacesData() {
     selectedIds.value = new Set()
   }
 
+  function normalizeNamedOnlyDecisionState(decisionState) {
+    const normalized = String(decisionState || 'open').trim()
+    return NAMED_ONLY_DECISION_STATES.has(normalized) ? normalized : 'open'
+  }
+
   // --- Keyboard ---
 
   function handleKeydown(e) {
@@ -587,6 +602,7 @@ export function useFacesData() {
     namedOnlyFaces,
     namedOnlyTotal,
     namedOnlyLoading,
+    namedOnlyDecisionState,
     unidentifiedFaces,
     unidentifiedPage,
     unidentifiedTotal,
@@ -607,6 +623,7 @@ export function useFacesData() {
     loadMoreHidden,
     loadNamedOnly,
     loadMoreNamedOnly,
+    setNamedOnlyDecisionState,
     linkNamedOnlyFace,
     decideNamedOnlyFace,
     unhideFace,

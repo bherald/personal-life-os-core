@@ -173,7 +173,7 @@ class RagRetrievalEvidenceCommand extends Command
 
         $path = $this->resolvePath($file);
         if (! is_file($path)) {
-            throw new \InvalidArgumentException('Query file not found: '.$file);
+            throw new \InvalidArgumentException('Query file not found. Check --queries-file path.');
         }
 
         $decoded = json_decode((string) file_get_contents($path), true);

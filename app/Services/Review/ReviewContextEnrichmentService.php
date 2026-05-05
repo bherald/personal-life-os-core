@@ -154,6 +154,7 @@ class ReviewContextEnrichmentService
         $mergeContext = $type === 'genealogy_merge'
             ? $this->buildMergeContext($details)
             : null;
+        $mediaRefs = $this->resolveMediaReferences($details);
 
         $context = [
             'item' => [
@@ -188,11 +189,11 @@ class ReviewContextEnrichmentService
             // proposals/evidence to genealogy_media rows so the detail
             // pane can surface a clickable source link instead of a
             // bare "media #13986" string.
-            'media_refs' => $this->resolveMediaReferences($details),
+            'media_refs' => $mediaRefs,
         ];
 
         if ($type === 'genealogy_review_packet') {
-            $context = array_merge($context, $this->buildGenealogyReviewPacketContext($details, $person));
+            $context = array_merge($context, $this->buildGenealogyReviewPacketContext($details, $person, $mediaRefs));
         }
 
         if ($type === 'genealogy_finding') {
@@ -309,9 +310,10 @@ class ReviewContextEnrichmentService
      * agent_review_queue.details; packet review decisions live elsewhere.
      *
      * @param  array<string, mixed>  $details
+     * @param  array<int, array<string, mixed>>  $mediaRefs
      * @return array<string, mixed>
      */
-    private function buildGenealogyReviewPacketContext(array $details, ?array $person = null): array
+    private function buildGenealogyReviewPacketContext(array $details, ?array $person = null, array $mediaRefs = []): array
     {
         [$applyPreview, $applyPreviewMeta] = $this->packetApplyPreviewContext($details);
         $validation = $this->detailArray($details, 'validation');
@@ -333,7 +335,7 @@ class ReviewContextEnrichmentService
             'apply_preview' => $applyPreview,
             'apply_preview_meta' => $applyPreviewMeta,
             'decision_log' => $this->detailArray($details, 'decision_log'),
-            'review_focus' => $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person),
+            'review_focus' => $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person, $mediaRefs),
         ];
     }
 

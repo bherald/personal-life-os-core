@@ -46,6 +46,7 @@ class PublicExportPackagingTest extends TestCase
             'tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php',
             'tests/Feature/Quality/PublicGithubMonitorScriptTest.php',
             'tests/Feature/Console/OpsMcpHealthCommandTest.php',
+            'tests/Unit/Commands/RagRetrievalEvidenceCommandTest.php',
             'tests/Unit/Commands/RagScaleReviewCommandTest.php',
             'tests/Unit/Nodes/PushoverNotifyTest.php',
             'tests/Feature/Console/OpsReviewBacklogReportCommandTest.php',
@@ -80,6 +81,52 @@ class PublicExportPackagingTest extends TestCase
         foreach (['ctype', 'openssl', 'pdo', 'tokenizer'] as $extension) {
             $this->assertStringContainsString($extension, $workflow, "Public readiness CI should request ext-{$extension} explicitly.");
         }
+    }
+
+    #[Test]
+    public function public_support_copy_stays_neutral_and_non_promissory(): void
+    {
+        foreach ($this->publicSupportPosturePaths() as $path) {
+            $body = file_get_contents(base_path($path));
+            $lines = preg_split('/\R/', $body) ?: [];
+
+            foreach ($lines as $index => $line) {
+                foreach ([
+                    '/\bdonations?\b/i' => 'donation wording',
+                    '/\btax[- ]deductible\b/i' => 'tax-deductible claim',
+                    '/\bSLA\b/i' => 'SLA promise',
+                    '/\bguaranteed support\b/i' => 'guaranteed support promise',
+                    '/\bpaid[- ]support[- ]level\b/i' => 'paid support-level claim',
+                    '/\bsupport[- ]level promises?\b/i' => 'support-level promise',
+                    '/\bcommercial support\b/i' => 'commercial support claim',
+                ] as $pattern => $label) {
+                    $this->assertDoesNotMatchRegularExpression(
+                        $pattern,
+                        $line,
+                        sprintf('%s:%d must not contain %s.', $path, $index + 1, $label)
+                    );
+                }
+
+                foreach ([
+                    '/\benterprise support\b/i' => 'enterprise support',
+                    '/\bpaid support\b/i' => 'paid support',
+                    '/\bcustom commercial integration work\b/i' => 'custom commercial integration',
+                ] as $pattern => $label) {
+                    if (! preg_match($pattern, $line)) {
+                        continue;
+                    }
+
+                    $this->assertMatchesRegularExpression(
+                        '/\b(?:does not imply|do not imply|not|no|without|never)\b/i',
+                        $line,
+                        sprintf('%s:%d may mention %s only as a non-promise boundary.', $path, $index + 1, $label)
+                    );
+                }
+            }
+        }
+
+        $this->assertStringContainsString('GitHub Sponsors', file_get_contents(base_path('README.md')));
+        $this->assertStringContainsString('github: [b'.'herald]', file_get_contents(base_path('.github/FUNDING.yml')));
     }
 
     #[Test]
@@ -1340,5 +1387,34 @@ class PublicExportPackagingTest extends TestCase
                 && ! str_starts_with($line, 'Public export destination:')
                 && ! str_starts_with($line, 'Allowlisted tracked files:');
         }));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function publicSupportPosturePaths(): array
+    {
+        return [
+            'README.md',
+            '.github/FUNDING.yml',
+            '.github/ISSUE_TEMPLATE/bug_report.yml',
+            '.github/ISSUE_TEMPLATE/config.yml',
+            '.github/ISSUE_TEMPLATE/docs_gap.yml',
+            '.github/ISSUE_TEMPLATE/feature_request.yml',
+            '.github/ISSUE_TEMPLATE/install_help.yml',
+            '.github/ISSUE_TEMPLATE/maintainer_roadmap_task.yml',
+            '.github/ISSUE_TEMPLATE/provenance_license_concern.yml',
+            '.github/ISSUE_TEMPLATE/security_privacy_redirect.yml',
+            '.github/PULL_REQUEST_TEMPLATE.md',
+            'docs/README.md',
+            'docs/quickstart.md',
+            'docs/operation.md',
+            'docs/troubleshooting.md',
+            'docs/roadmap.md',
+            'docs/security-privacy.md',
+            'docs/public-release-readiness.md',
+            'docs/public-github-first-push-checklist.md',
+            'docs/public-install-prerequisites.md',
+        ];
     }
 }

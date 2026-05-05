@@ -126,6 +126,29 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
         $this->assertSame(0, $this->packetCount());
     }
 
+    public function test_dry_run_does_not_mutate_review_queue_or_canonical_genealogy_tables(): void
+    {
+        $path = $this->packetFile($this->validPacket());
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $payload = $this->callJson([
+                '--file' => $path,
+                '--json' => true,
+            ]);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+        }
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('would_create_packet', $payload['action']);
+        $this->assertSame([], $this->mutationTargets($queries));
+        $this->assertNoCanonicalGenealogyMutationQueries($queries);
+        $this->assertSame(0, $this->packetCount());
+    }
+
     public function test_execute_creates_then_reuses_one_pending_review_packet(): void
     {
         $path = $this->packetFile($this->validPacket());
@@ -164,6 +187,94 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
         $this->assertSame('genealogy_review_packet.v1', $details['schema']);
         $this->assertSame('Review packet command fixture', $details['packet_label']);
         $this->assertFalse($details['apply_preview']['mutates_accepted_facts']);
+    }
+
+    public function test_execute_mutates_only_agent_review_queue(): void
+    {
+        $path = $this->packetFile($this->validPacket());
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $payload = $this->callJson([
+                '--file' => $path,
+                '--execute' => true,
+                '--json' => true,
+            ]);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+        }
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('created_packet', $payload['action']);
+        $this->assertSame(['agent_review_queue'], $this->mutationTargets($queries));
+        $this->assertNoCanonicalGenealogyMutationQueries($queries);
+        $this->assertSame(1, $this->packetCount());
+    }
+
+    public function test_execute_preserves_multi_source_multi_claim_packet_counts(): void
+    {
+        $packet = $this->fixturePacket([
+            'packet_key' => 'source-backed-review-packet-multi-source-claim',
+            'packet_label' => 'Source-backed review packet multi source claim',
+            'sources' => [
+                [
+                    'locator' => 'https://catalog.archives.gov/id/999999101',
+                    'access_class' => 'public_archive_fixture',
+                    'label' => 'Synthetic public archive locator 1',
+                ],
+                [
+                    'locator' => 'https://www.loc.gov/item/synthetic-review-packet-2/',
+                    'access_class' => 'public_archive_fixture',
+                    'label' => 'Synthetic LOC locator 2',
+                ],
+            ],
+            'claims' => [
+                [
+                    'claim_text' => 'Evelyn Hart lived in Example Township in 1911.',
+                    'field_name' => 'residence',
+                    'change_type' => 'field_update',
+                    'person_id' => 4321,
+                    'source_ref' => 'synthetic-public-archive-page-1',
+                    'proposed_value' => 'Example Township',
+                ],
+                [
+                    'claim_text' => 'Evelyn Hart was recorded near Mill Creek in 1912.',
+                    'field_name' => 'residence_note',
+                    'change_type' => 'field_update',
+                    'person_id' => 4321,
+                    'source_ref' => 'synthetic-loc-page-2',
+                    'proposed_value' => 'Mill Creek',
+                ],
+            ],
+        ]);
+
+        $payload = $this->callJson([
+            '--file' => $this->packetFile($packet),
+            '--execute' => true,
+            '--json' => true,
+        ]);
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('created_packet', $payload['action']);
+        $this->assertSame(2, $payload['packet_summary']['source_locator_count']);
+        $this->assertSame(2, $payload['packet_summary']['claim_count']);
+        $this->assertTrue($payload['safety']['no_canonical_write']);
+        $this->assertTrue($payload['safety']['apply_held']);
+
+        $row = DB::table('agent_review_queue')->where('id', $payload['packet']['review_queue_id'])->first();
+        $this->assertNotNull($row);
+
+        $details = json_decode((string) $row->details, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('Source-backed review packet multi source claim', $details['packet_label']);
+        $this->assertCount(2, $details['source_locators']);
+        $this->assertSame('https://catalog.archives.gov/id/999999101', $details['source_locators'][0]);
+        $this->assertSame('https://www.loc.gov/item/synthetic-review-packet-2/', $details['source_locators'][1]);
+        $this->assertCount(2, $details['claims']);
+        $this->assertSame('synthetic-public-archive-page-1', $details['claims'][0]['source_ref']);
+        $this->assertSame('synthetic-loc-page-2', $details['claims'][1]['source_ref']);
+        $this->assertSame(1, $this->packetCount());
     }
 
     public function test_public_fixture_materializes_five_packets_for_sprint_readiness(): void
@@ -364,6 +475,50 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
         return DB::table('agent_review_queue')
             ->where('review_type', 'genealogy_review_packet')
             ->count();
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $queries
+     * @return list<string>
+     */
+    private function mutationTargets(array $queries): array
+    {
+        $targets = [];
+
+        foreach ($queries as $query) {
+            $sql = strtolower((string) ($query['query'] ?? ''));
+            if (
+                preg_match(
+                    '/^\s*(?:insert\s+into|replace\s+into|update|delete\s+from|alter\s+table|drop\s+table|create\s+table)\s+[`"\[]?([a-z0-9_]+)/',
+                    $sql,
+                    $matches
+                ) === 1
+            ) {
+                $targets[] = $matches[1];
+            }
+        }
+
+        return array_values(array_unique($targets));
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $queries
+     */
+    private function assertNoCanonicalGenealogyMutationQueries(array $queries): void
+    {
+        $mutations = [];
+
+        foreach ($queries as $query) {
+            $sql = strtolower((string) ($query['query'] ?? ''));
+            if (
+                preg_match('/^\s*(insert|update|delete|replace|alter|drop|create)\b/', $sql) === 1
+                && preg_match('/\bgenealogy_/', $sql) === 1
+            ) {
+                $mutations[] = $query['query'];
+            }
+        }
+
+        $this->assertSame([], $mutations);
     }
 
     private function createCompatibleQueueTable(): void

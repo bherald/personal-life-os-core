@@ -181,6 +181,8 @@ const packetContextItems = computed(() => {
       compactLocator(packetFieldValue('source_locator')),
       stringOrNull(packetFieldValue('source_locator'))
     ),
+    packetContextEntry('access', 'Access', formatPacketStatus(packetFocusFieldValue('source_access_class'))),
+    packetContextEntry('media', 'Media', formatMediaHealth()),
     packetContextEntry('claims', 'Claims', formatCount(packetFieldValue('claim_count'))),
     packetContextEntry('sources', 'Sources', formatCount(packetFieldValue('source_count'))),
     packetContextEntry(
@@ -291,6 +293,30 @@ const formatCount = (value) => {
 
   const numeric = Number(value)
   return Number.isFinite(numeric) ? String(numeric) : String(value)
+}
+
+const formatMediaHealth = () => {
+  const total = numberOrNull(packetFocusFieldValue('media_ref_count'))
+  const resolved = numberOrNull(packetFocusFieldValue('resolved_media_count'))
+  const missing = numberOrNull(packetFocusFieldValue('missing_media_count'))
+
+  if (total === null && resolved === null && missing === null) {
+    return null
+  }
+
+  const count = total ?? resolved ?? 0
+  return missing && missing > 0
+    ? `${count} refs, ${missing} missing`
+    : `${count} refs`
+}
+
+const numberOrNull = (value) => {
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
 }
 
 const compactLocator = (value) => {
@@ -468,6 +494,12 @@ const getImageUrl = (source) => {
 
 .packet-context-chip.is-source {
   max-width: min(100%, 34rem);
+}
+
+.packet-context-chip.is-access,
+.packet-context-chip.is-media {
+  border-color: rgba(99, 179, 237, 0.32);
+  background: rgba(99, 179, 237, 0.08);
 }
 
 .packet-context-chip.is-claim {

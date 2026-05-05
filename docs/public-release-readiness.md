@@ -150,6 +150,20 @@ records the exact current source commit, generated time, and 1,611 tracked files
 for the final pushed tree. The private-staged GitHub repository passed both
 `Public Readiness` and `Repository Governance` after the CI follow-up commits.
 
+2026-05-05 current-head smoke and public GitHub monitor evidence:
+`scripts/public-smoke.sh --force
+"$HOME/tmp/personal-life-os-core-smoke-20260505-rag-path-redaction-current-head"`
+passed from source commit `93f2851c83c62a4bb9f1f38f254bc8243ebbdadf`.
+The export staged 1,652 tracked files; public audit, dependency installs,
+frontend build, setup doctor slices, license/audit checks, script syntax,
+staged diff checks, and focused public tests passed. Result: 230 tests /
+40,314 assertions. The current public GitHub repository monitor also passed
+strict public-core and latest-workflow checks for `Public Readiness` and
+`Repository Governance`; the latest public workflow SHA was `e03e1f8`. This is
+release-readiness evidence for the public extraction path. Deployment approval,
+public sync, and tag approval remain separate gates and must be rechecked after
+the final public-bound sync.
+
 2026-05-01 foreign VM proof: the history-free export from source commit
 `1db129e171cab9667bb13f0f7956d42c9f028b5b` was copied to a separate Ubuntu
 24.04.4 Hyper-V proof VM and passed the public non-Docker smoke path from

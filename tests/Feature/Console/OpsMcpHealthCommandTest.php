@@ -322,6 +322,68 @@ class OpsMcpHealthCommandTest extends TestCase
         $this->assertStringNotContainsString('another-secret', $output);
     }
 
+    public function test_compact_operator_outputs_omit_sensitive_values_process_lines_and_absolute_paths(): void
+    {
+        $envSecret = 'synthetic-compact-env-redaction-marker';
+        $argSecret = '--redaction-arg=synthetic-compact-arg-redaction-marker';
+        $processSecret = 'process_token=synthetic-compact-process-redaction-marker';
+        $externalEntry = sys_get_temp_dir().'/mcp-health-compact-secret-boundary.js';
+        $processLine = '777 1 Sl node '.$this->fixtureEntry.' '.$argSecret.' '.$processSecret.' '.$externalEntry;
+
+        config()->set('mcp.servers', [
+            'sensitive-critical' => [
+                'enabled' => true,
+                'type' => 'external',
+                'transport' => 'external_process',
+                'command' => 'node',
+                'args' => [
+                    $this->fixtureEntry,
+                    $argSecret,
+                    $externalEntry,
+                ],
+                'env' => [
+                    'MCP_API_TOKEN' => $envSecret,
+                    'MCP_ENTRY_PATH' => $this->fixtureEntry,
+                ],
+                'trust_boundary' => 'local_user',
+                'network_required' => 'optional',
+                'write_scope' => 'read',
+                'secret_surface_risk' => 'high',
+            ],
+        ]);
+        $this->useFixturePs([$processLine]);
+        $sensitiveValues = [
+            $envSecret,
+            $argSecret,
+            $processSecret,
+            '777 1 Sl',
+            $processLine,
+            $this->fixtureEntry,
+            $externalEntry,
+            base_path(),
+            storage_path(),
+        ];
+
+        $exit = Artisan::call('ops:mcp-health', ['--json' => true, '--compact' => true]);
+
+        $this->assertSame(0, $exit);
+        $jsonOutput = (string) Artisan::output();
+        $compact = json_decode($jsonOutput, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertTrue($compact['compact']);
+        $this->assertSame(1, $compact['config_posture']['external_absolute_entries']);
+        $this->assertSame(1, $compact['config_posture']['enabled_external_absolute_entries'] ?? 0);
+        $this->assertCompactOutputDoesNotExposeSensitiveMaterial($jsonOutput, $sensitiveValues);
+
+        $exit = Artisan::call('ops:mcp-health', ['--compact' => true]);
+
+        $this->assertSame(0, $exit);
+        $textOutput = (string) Artisan::output();
+        $this->assertStringContainsString('MCP health compact: CRITICAL', $textOutput);
+        $this->assertStringContainsString('external_absolute_entries=1 enabled_external_absolute_entries=1', $textOutput);
+        $this->assertStringContainsString('attention=sensitive-critical status=critical', $textOutput);
+        $this->assertCompactOutputDoesNotExposeSensitiveMaterial($textOutput, $sensitiveValues);
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -381,5 +443,15 @@ class OpsMcpHealthCommandTest extends TestCase
         putenv('PATH='.$path);
         $_ENV['PATH'] = $path;
         $_SERVER['PATH'] = $path;
+    }
+
+    /**
+     * @param  list<string>  $sensitiveValues
+     */
+    private function assertCompactOutputDoesNotExposeSensitiveMaterial(string $output, array $sensitiveValues): void
+    {
+        foreach ($sensitiveValues as $sensitiveValue) {
+            $this->assertStringNotContainsString($sensitiveValue, $output);
+        }
     }
 }

@@ -299,14 +299,14 @@
     <section class="packet-section">
       <div class="section-heading">
         <span>Apply preview</span>
-        <span class="section-status preview">preview only</span>
+        <span class="section-status" :class="applyPreviewStatusClass">{{ previewStatusLabel }}</span>
       </div>
       <div class="preview-note">
         mutates_accepted_facts:
         <strong :class="applyPreviewMutates ? 'text-danger' : 'text-ok'">{{ String(applyPreviewMutates) }}</strong>
       </div>
-      <div class="preview-note muted">
-        Accepted facts are not changed by this packet preview.
+      <div class="preview-note muted" :class="applyPreviewSafetyClass">
+        {{ applyPreviewSafetyNote }}
       </div>
 
       <div v-if="applyPreviewSummaryRows.length" class="kv-grid compact preview-summary">
@@ -668,7 +668,9 @@ const reviewFocusRows = computed(() => [
   focusRow('person', 'Person', reviewFocusPersonLabel.value),
   focusRow('status', 'Packet status', packetStatusLabel.value),
   focusRow('boundary', 'Boundary', reviewFocusBoundaryLabel.value, null, reviewFocusBoundaryLabel.value),
+  focusRow('access', 'Access', formatPacketStatus(reviewFocus.value.source_access_class)),
   focusRow('sources', 'Sources', formatCount(reviewFocus.value.source_count ?? sourceLocators.value.length)),
+  focusRow('media', 'Media', reviewFocusMediaLabel.value),
   focusRow('claims', 'Claims', formatCount(reviewFocus.value.claim_count ?? claims.value.length)),
   focusRow('preview', 'Preview', previewStatusLabel.value, previewStatusClass.value),
 ].filter(Boolean))
@@ -705,6 +707,21 @@ const reviewFocusBoundaryLabel = computed(() => {
 
 const reviewFocusSource = computed(() => stringOrNull(reviewFocus.value.source_locator) || sourceLocators.value[0] || null)
 
+const reviewFocusMediaLabel = computed(() => {
+  const total = numberOrNull(reviewFocus.value.media_ref_count)
+  const resolved = numberOrNull(reviewFocus.value.resolved_media_count)
+  const missing = numberOrNull(reviewFocus.value.missing_media_count)
+
+  if (total === null && resolved === null && missing === null) {
+    return null
+  }
+
+  const count = total ?? resolved ?? 0
+  return missing && missing > 0
+    ? `${count} refs, ${missing} missing`
+    : `${count} refs`
+})
+
 const reviewFocusCanonicalMutation = computed(() => {
   if (typeof reviewFocus.value.canonical_mutation === 'boolean') {
     return reviewFocus.value.canonical_mutation
@@ -729,6 +746,28 @@ const previewStatusLabel = computed(() => formatPacketStatus(reviewFocus.value.p
 const previewStatusClass = computed(() => {
   if (reviewFocusCanonicalMutation.value === true || !applyPreviewIsPreviewOnly.value) return 'danger'
   return 'ok'
+})
+
+const applyPreviewStatusClass = computed(() => {
+  if (previewStatusClass.value === 'danger') return 'status-danger'
+  if (previewStatusClass.value === 'ok') return 'status-ok'
+  return 'status-warning'
+})
+
+const applyPreviewSafetyClass = computed(() => {
+  return applyPreviewStatusClass.value === 'status-danger' ? 'text-danger' : ''
+})
+
+const applyPreviewSafetyNote = computed(() => {
+  if (reviewFocusCanonicalMutation.value === true) {
+    return 'Preview metadata indicates a possible canonical genealogy mutation; Mark reviewed stays blocked.'
+  }
+
+  if (!applyPreviewIsPreviewOnly.value) {
+    return 'Preview metadata is not approval-ready; Mark reviewed stays blocked until preview-only status is proven.'
+  }
+
+  return 'Accepted facts are not changed by this packet preview.'
 })
 
 const latestDecision = computed(() => {
@@ -905,6 +944,12 @@ function stringOrNull(value) {
 function formatCount(value) {
   const numeric = Number(value)
   return Number.isFinite(numeric) ? String(numeric) : displayValue(value)
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
 }
 
 function formatPersonId(value) {

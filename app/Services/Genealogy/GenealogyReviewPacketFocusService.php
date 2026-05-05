@@ -10,6 +10,7 @@ class GenealogyReviewPacketFocusService
      * @param  array<string, mixed>  $applyPreviewMeta
      * @param  array<string, mixed>  $validation
      * @param  array<string, mixed>|null  $person
+     * @param  array<int, array<string, mixed>>  $mediaRefs
      * @return array<string, mixed>
      */
     public function fromContext(
@@ -17,9 +18,10 @@ class GenealogyReviewPacketFocusService
         array $applyPreview,
         array $applyPreviewMeta,
         array $validation,
-        ?array $person = null
+        ?array $person = null,
+        array $mediaRefs = []
     ): array {
-        return $this->build($details, $applyPreview, $applyPreviewMeta, $validation, $person);
+        return $this->build($details, $applyPreview, $applyPreviewMeta, $validation, $person, $mediaRefs);
     }
 
     /**
@@ -37,7 +39,7 @@ class GenealogyReviewPacketFocusService
         ];
         $validation = is_array($details['validation'] ?? null) ? $details['validation'] : [];
 
-        return $this->build($details, $applyPreview, $applyPreviewMeta, $validation, null);
+        return $this->build($details, $applyPreview, $applyPreviewMeta, $validation, null, []);
     }
 
     /**
@@ -46,6 +48,7 @@ class GenealogyReviewPacketFocusService
      * @param  array<string, mixed>  $applyPreviewMeta
      * @param  array<string, mixed>  $validation
      * @param  array<string, mixed>|null  $person
+     * @param  array<int, array<string, mixed>>  $mediaRefs
      * @return array<string, mixed>
      */
     private function build(
@@ -53,7 +56,8 @@ class GenealogyReviewPacketFocusService
         array $applyPreview,
         array $applyPreviewMeta,
         array $validation,
-        ?array $person
+        ?array $person,
+        array $mediaRefs
     ): array {
         $claims = is_array($details['claims'] ?? null) ? $details['claims'] : [];
         $sourceLocators = is_array($details['source_locators'] ?? null) ? $details['source_locators'] : [];
@@ -75,8 +79,12 @@ class GenealogyReviewPacketFocusService
             'boundary_label' => $this->boundaryLabel($details),
             'source_locator' => $sourceLocator,
             'source_label' => $this->firstSourceLabel($sources),
+            'source_access_class' => $this->firstSourceAccessClass($details, $sources),
             'source_count' => $this->sourceCount($sourceLocators, $sources),
             'claim_count' => count(array_filter($claims, 'is_array')),
+            'media_ref_count' => $this->mediaRefCount($details, $mediaRefs),
+            'resolved_media_count' => $this->resolvedMediaCount($details, $mediaRefs),
+            'missing_media_count' => $this->missingMediaCount($details, $mediaRefs),
             'claim_summary' => $firstClaim !== null ? $this->claimSummary($firstClaim) : null,
             'claim_field' => $firstClaim !== null ? $this->firstScalarText($firstClaim, ['field_name']) : null,
             'claim_change_type' => $firstClaim !== null ? $this->firstScalarText($firstClaim, ['change_type', 'relationship_type']) : null,
@@ -230,6 +238,39 @@ class GenealogyReviewPacketFocusService
     }
 
     /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, mixed>  $sources
+     */
+    private function firstSourceAccessClass(array $details, array $sources): ?string
+    {
+        $direct = $this->firstScalarText($details, [
+            'source_access_class',
+            'access_class',
+            'provider_boundary_status',
+        ]);
+        if ($direct !== null) {
+            return $direct;
+        }
+
+        foreach ($sources as $source) {
+            if (! is_array($source)) {
+                continue;
+            }
+
+            $value = $this->firstScalarText($source, [
+                'source_access_class',
+                'access_class',
+                'provider_boundary_status',
+            ]);
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * @param  array<int, mixed>  $sourceLocators
      * @param  array<int, mixed>  $sources
      */
@@ -238,6 +279,64 @@ class GenealogyReviewPacketFocusService
         $locators = array_values(array_filter($sourceLocators, fn (mixed $value): bool => is_scalar($value) && trim((string) $value) !== ''));
 
         return count($locators !== [] ? $locators : array_filter($sources, 'is_array'));
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, array<string, mixed>>  $mediaRefs
+     */
+    private function mediaRefCount(array $details, array $mediaRefs): ?int
+    {
+        if ($mediaRefs !== []) {
+            return count($mediaRefs);
+        }
+
+        return $this->nonNegativeIntOrNull($details['media_ref_count'] ?? null)
+            ?? $this->detailMediaRefCount($details);
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, array<string, mixed>>  $mediaRefs
+     */
+    private function resolvedMediaCount(array $details, array $mediaRefs): ?int
+    {
+        if ($mediaRefs !== []) {
+            return count(array_filter($mediaRefs, fn (array $media): bool => $this->positiveInt($media['id'] ?? null) !== null));
+        }
+
+        return $this->nonNegativeIntOrNull($details['resolved_media_count'] ?? null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, array<string, mixed>>  $mediaRefs
+     */
+    private function missingMediaCount(array $details, array $mediaRefs): ?int
+    {
+        if ($mediaRefs !== []) {
+            return count(array_filter($mediaRefs, fn (array $media): bool => ($media['file_exists'] ?? null) === false));
+        }
+
+        return $this->nonNegativeIntOrNull($details['missing_media_count'] ?? null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     */
+    private function detailMediaRefCount(array $details): ?int
+    {
+        $mediaRefs = $details['media_refs'] ?? null;
+        if (is_array($mediaRefs)) {
+            return count(array_filter($mediaRefs, fn (mixed $value): bool => is_array($value) || is_scalar($value)));
+        }
+
+        return null;
+    }
+
+    private function nonNegativeIntOrNull(mixed $value): ?int
+    {
+        return is_numeric($value) && (int) $value >= 0 ? (int) $value : null;
     }
 
     /**

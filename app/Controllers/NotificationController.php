@@ -26,7 +26,7 @@ class NotificationController
         'agent_approval_review' => 7,
         'daily_digests' => 7,
         'workflow_node_notifications' => 10,
-        'workflow_routine_updates' => 20,
+        'workflow_routine_updates' => 60,
         'auth_token_alerts' => 10,
         'test_dev_only' => 20,
         'unknown' => 7,
