@@ -50,6 +50,7 @@ class FaceTelemetryReportService
             'postgres_face_vectors' => $this->collectPostgresFaceVectors(),
             'face_jobs' => $this->collectFaceJobs($hours),
         ];
+        $payload['sections']['named_only_next_action'] = $this->collectNamedOnlyNextAction($payload['sections']);
 
         [$breaches, $recommendations] = $this->evaluateThresholds($payload['sections']);
         $payload['threshold_breaches'] = $breaches;
@@ -112,6 +113,19 @@ class FaceTelemetryReportService
             $lines[] = '- Oldest pending at: `'.($queueSummary['oldest_pending_at'] ?? 'none').'`';
             $lines[] = '- Oldest no-match pending at: `'.($queueSummary['oldest_no_match_pending_at'] ?? 'none').'`';
             $lines[] = '- Oldest named-only no-match pending at: `'.($queueSummary['oldest_named_only_no_match_pending_at'] ?? 'none').'`';
+        }
+
+        $namedOnlyNextAction = $payload['sections']['named_only_next_action']['summary'] ?? null;
+        if (is_array($namedOnlyNextAction)) {
+            $lines[] = '';
+            $lines[] = '## Named-Only Next Action';
+            $lines[] = '';
+            $lines[] = '- State: `'.($namedOnlyNextAction['state'] ?? 'unknown').'`';
+            $lines[] = '- Reason: `'.($namedOnlyNextAction['reason_code'] ?? 'unknown').'`';
+            $lines[] = '- Operator action: `'.($namedOnlyNextAction['operator_action'] ?? 'none').'`';
+            $lines[] = '- Targeting scope: `'.($namedOnlyNextAction['targeting_scope'] ?? 'aggregate_only').'`';
+            $lines[] = '- Automation allowed: `'.(($namedOnlyNextAction['automation_allowed'] ?? false) ? 'yes' : 'no').'`';
+            $lines[] = '- Create-person allowed: `'.(($namedOnlyNextAction['create_person_allowed'] ?? false) ? 'yes' : 'no').'`';
         }
 
         $candidateSummary = $payload['sections']['candidate_decisions']['summary'] ?? null;
@@ -189,6 +203,7 @@ class FaceTelemetryReportService
         $sections = $payload['sections'] ?? [];
         $registry = $this->summary($sections, 'mysql_face_registry');
         $queue = $this->summary($sections, 'review_queue');
+        $nextAction = $this->summary($sections, 'named_only_next_action');
         $decisions = $this->summary($sections, 'candidate_decisions');
         $bridge = $this->summary($sections, 'bridge_alignment');
         $vectors = $this->summary($sections, 'postgres_face_vectors');
@@ -243,6 +258,22 @@ class FaceTelemetryReportService
                     'oldest_pending_at' => $this->nullableString($queue['oldest_pending_at'] ?? null),
                     'oldest_no_match_pending_at' => $this->nullableString($queue['oldest_no_match_pending_at'] ?? null),
                     'oldest_named_only_no_match_pending_at' => $this->nullableString($queue['oldest_named_only_no_match_pending_at'] ?? null),
+                ],
+                'named_only_next_action' => [
+                    'status' => $this->sectionStatus($sections, 'named_only_next_action'),
+                    'state' => $this->nullableString($nextAction['state'] ?? null) ?? 'unknown',
+                    'reason_code' => $this->nullableString($nextAction['reason_code'] ?? null) ?? 'unknown',
+                    'operator_action' => $this->nullableString($nextAction['operator_action'] ?? null) ?? 'none',
+                    'targeting_scope' => $this->nullableString($nextAction['targeting_scope'] ?? null) ?? 'aggregate_only',
+                    'operator_approval_required' => (bool) ($nextAction['operator_approval_required'] ?? false),
+                    'automation_allowed' => (bool) ($nextAction['automation_allowed'] ?? false),
+                    'create_person_allowed' => (bool) ($nextAction['create_person_allowed'] ?? false),
+                    'uses_row_identifiers' => (bool) ($nextAction['uses_row_identifiers'] ?? false),
+                    'open_named_only_faces' => $this->intValue($nextAction['open_named_only_faces'] ?? 0),
+                    'stale_open_named_only_faces' => $this->intValue($nextAction['stale_open_named_only_faces'] ?? 0),
+                    'stale_named_only_no_match_pending' => $this->intValue($nextAction['stale_named_only_no_match_pending'] ?? 0),
+                    'oldest_named_only_updated_at' => $this->nullableString($nextAction['oldest_named_only_updated_at'] ?? null),
+                    'oldest_named_only_no_match_pending_at' => $this->nullableString($nextAction['oldest_named_only_no_match_pending_at'] ?? null),
                 ],
                 'candidate_decisions' => [
                     'status' => $this->sectionStatus($sections, 'candidate_decisions'),
@@ -342,6 +373,18 @@ class FaceTelemetryReportService
                 $sections['review_queue']['oldest_named_only_no_match_pending_at'] ?? 'none'
             ),
             sprintf(
+                '- Named-only next action: `%s`, state=`%s`, reason=`%s`, action=`%s`, scope=`%s`, approval_required=`%s`, automation_allowed=`%s`, create_person_allowed=`%s`, row_identifiers=`%s`',
+                $sections['named_only_next_action']['status'],
+                $sections['named_only_next_action']['state'],
+                $sections['named_only_next_action']['reason_code'],
+                $sections['named_only_next_action']['operator_action'],
+                $sections['named_only_next_action']['targeting_scope'],
+                $sections['named_only_next_action']['operator_approval_required'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['automation_allowed'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['create_person_allowed'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['uses_row_identifiers'] ? 'yes' : 'no'
+            ),
+            sprintf(
                 '- Candidate decisions: `%s`, rows=`%s`, recent=`%s`, terminal=`%s`, latest=`%s`',
                 $sections['candidate_decisions']['status'],
                 $sections['candidate_decisions']['decision_rows'],
@@ -432,6 +475,18 @@ class FaceTelemetryReportService
                 $sections['review_queue']['oldest_pending_at'] ?? 'none',
                 $sections['review_queue']['oldest_no_match_pending_at'] ?? 'none',
                 $sections['review_queue']['oldest_named_only_no_match_pending_at'] ?? 'none'
+            ),
+            sprintf(
+                'named-only-next-action: %s state=%s reason=%s action=%s scope=%s approval_required=%s automation_allowed=%s create_person_allowed=%s row_identifiers=%s',
+                $sections['named_only_next_action']['status'],
+                $sections['named_only_next_action']['state'],
+                $sections['named_only_next_action']['reason_code'],
+                $sections['named_only_next_action']['operator_action'],
+                $sections['named_only_next_action']['targeting_scope'],
+                $sections['named_only_next_action']['operator_approval_required'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['automation_allowed'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['create_person_allowed'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['uses_row_identifiers'] ? 'yes' : 'no'
             ),
             sprintf(
                 'candidate-decisions: %s rows=%s faces=%s recent=%s latest=%s terminal=%s keep=%s outside=%s vague=%s not-this=%s defer=%s',
@@ -598,6 +653,66 @@ class FaceTelemetryReportService
         } catch (Throwable $e) {
             return $this->failedSection('mysql.genealogy_face_match_queue', $e);
         }
+    }
+
+    private function collectNamedOnlyNextAction(array $sections): array
+    {
+        $registry = $sections['mysql_face_registry']['summary'] ?? [];
+        $queue = $sections['review_queue']['summary'] ?? [];
+
+        $openNamedOnly = $this->intValue($registry['open_named_only_faces'] ?? 0);
+        $staleOpenNamedOnly = $this->intValue($registry['stale_open_named_only_faces'] ?? 0);
+        $terminalNamedOnly = $this->intValue($registry['terminal_decided_named_only_faces'] ?? 0);
+        $staleNamedOnlyNoMatch = $this->intValue($queue['stale_named_only_no_match_pending'] ?? 0);
+
+        [$state, $reasonCode, $operatorAction] = match (true) {
+            $staleNamedOnlyNoMatch > 0 => [
+                'review_recommended',
+                'stale_named_only_no_match_queue',
+                'review_stale_named_only_queue',
+            ],
+            $staleOpenNamedOnly > 0 => [
+                'review_recommended',
+                'stale_open_named_only_faces',
+                'review_stale_open_named_only_faces',
+            ],
+            $openNamedOnly > 0 => [
+                'review_recommended',
+                'open_named_only_faces',
+                'review_open_named_only_faces',
+            ],
+            $terminalNamedOnly > 0 => [
+                'monitor',
+                'terminal_named_only_decisions_present',
+                'monitor_terminal_named_only_decisions',
+            ],
+            default => [
+                'clear',
+                'none',
+                'none',
+            ],
+        };
+
+        return [
+            'status' => $state === 'clear' ? 'observe_ok' : 'observe_warning',
+            'source' => 'derived.mysql.file_registry_faces+genealogy_face_match_queue',
+            'summary' => [
+                'state' => $state,
+                'reason_code' => $reasonCode,
+                'operator_action' => $operatorAction,
+                'targeting_scope' => 'aggregate_only',
+                'operator_approval_required' => $state !== 'clear',
+                'automation_allowed' => false,
+                'create_person_allowed' => false,
+                'uses_row_identifiers' => false,
+                'open_named_only_faces' => $openNamedOnly,
+                'stale_open_named_only_faces' => $staleOpenNamedOnly,
+                'terminal_decided_named_only_faces' => $terminalNamedOnly,
+                'stale_named_only_no_match_pending' => $staleNamedOnlyNoMatch,
+                'oldest_named_only_updated_at' => $this->nullableString($registry['oldest_named_only_updated_at'] ?? null),
+                'oldest_named_only_no_match_pending_at' => $this->nullableString($queue['oldest_named_only_no_match_pending_at'] ?? null),
+            ],
+        ];
     }
 
     private function collectCandidateDecisions(int $hours): array
