@@ -254,6 +254,9 @@ class NewsPushoverProofCommand extends Command
             'part_numbers_sent' => $this->intList($data['part_numbers_sent'] ?? null),
             'part_numbers_suppressed' => $this->intList($data['part_numbers_suppressed'] ?? null),
             'part_numbers_failed' => $this->intList($data['part_numbers_failed'] ?? null),
+            'part_timestamps_enabled' => $this->boolOrNull($data['part_timestamps_enabled'] ?? null),
+            'part_timestamp_strategy' => $this->stringOrNull($data['part_timestamp_strategy'] ?? null),
+            'part_timestamps' => $this->intMap($data['part_timestamps'] ?? null),
             'message_length' => $this->intOrNull($data['message_length'] ?? null),
             'has_url' => $this->boolOrNull($data['has_url'] ?? null),
             'inter_chunk_delay_seconds' => $this->intOrNull($data['inter_chunk_delay_seconds'] ?? null),
@@ -271,15 +274,25 @@ class NewsPushoverProofCommand extends Command
                 wn.id,
                 wn.node_order,
                 wn.node_type,
-                wnc.config_value AS inter_chunk_delay_seconds
+                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS inter_chunk_delay_seconds,
+                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS part_timestamps_enabled
              FROM workflow_nodes wn
              LEFT JOIN workflow_node_configs wnc
                 ON wnc.workflow_node_id = wn.id
-               AND wnc.config_key = ?
+               AND wnc.config_key IN (?, ?)
              WHERE wn.workflow_id = ?
                AND (wn.node_type = ? OR wn.node_type LIKE ?)
+             GROUP BY wn.id, wn.node_order, wn.node_type
              ORDER BY wn.node_order ASC, wn.id ASC',
-            ['inter_chunk_delay_seconds', $workflowId, 'PushoverNotify', '%\\PushoverNotify']
+            [
+                'inter_chunk_delay_seconds',
+                'part_timestamps_enabled',
+                'inter_chunk_delay_seconds',
+                'part_timestamps_enabled',
+                $workflowId,
+                'PushoverNotify',
+                '%\\PushoverNotify',
+            ]
         );
 
         if ($rows === []) {
@@ -295,6 +308,8 @@ class NewsPushoverProofCommand extends Command
             'node_type' => (string) $last->node_type,
             'configured_inter_chunk_delay_seconds' => $configuredDelay,
             'effective_inter_chunk_delay_seconds' => $configuredDelay ?? 2,
+            'configured_part_timestamps_enabled' => $this->boolOrNull($last->part_timestamps_enabled),
+            'effective_part_timestamps_enabled' => $this->boolOrNull($last->part_timestamps_enabled) ?? false,
         ];
     }
 
@@ -624,6 +639,9 @@ class NewsPushoverProofCommand extends Command
                 'total_parts' => $report['pushover']['total_parts'] ?? null,
                 'part_numbers_sent' => $report['pushover']['part_numbers_sent'] ?? [],
                 'part_numbers_failed' => $report['pushover']['part_numbers_failed'] ?? [],
+                'part_timestamps_enabled' => $report['pushover']['part_timestamps_enabled'] ?? null,
+                'part_timestamp_strategy' => $report['pushover']['part_timestamp_strategy'] ?? null,
+                'part_timestamps' => $report['pushover']['part_timestamps'] ?? [],
                 'inter_chunk_delay_seconds' => $report['pushover']['inter_chunk_delay_seconds'] ?? null,
                 'timed_out' => $report['pushover']['timed_out'] ?? null,
                 'duration_ms' => $report['pushover']['duration_ms'] ?? null,
@@ -657,6 +675,7 @@ class NewsPushoverProofCommand extends Command
             .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
             .' failed_parts='.implode(',', $pushover['part_numbers_failed'] ?? [])
             .' delay_s='.($pushover['inter_chunk_delay_seconds'] ?? 'n/a')
+            .' part_timestamps='.var_export($pushover['part_timestamps_enabled'] ?? null, true)
             .' timeout='.var_export($pushover['timed_out'], true)
             .' duration_ms='.($pushover['duration_ms'] ?? 'n/a'));
 
@@ -705,6 +724,7 @@ class NewsPushoverProofCommand extends Command
             .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
             .' failed_parts='.implode(',', $pushover['part_numbers_failed'] ?? [])
             .' delay_s='.($pushover['inter_chunk_delay_seconds'] ?? 'n/a')
+            .' part_timestamps='.var_export($pushover['part_timestamps_enabled'] ?? null, true)
             .' timeout='.var_export($pushover['timed_out'] ?? null, true)
             .' duration_ms='.($pushover['duration_ms'] ?? 'n/a'));
 
@@ -803,6 +823,27 @@ class NewsPushoverProofCommand extends Command
             array_map(fn ($item): ?int => is_numeric($item) ? (int) $item : null, $value),
             fn (?int $item): bool => $item !== null
         ));
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function intMap(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $mapped = [];
+        foreach ($value as $key => $item) {
+            if (! is_numeric($item)) {
+                continue;
+            }
+
+            $mapped[(string) $key] = (int) $item;
+        }
+
+        return $mapped;
     }
 
     private function isTimeoutError(?string $error): bool

@@ -18,6 +18,10 @@ class PushoverNotify extends BaseNode
             $retryDelaySeconds = max(0, (int) $this->getConfigValue('retry_delay_seconds', 1));
             $interChunkDelaySeconds = max(0, (int) $this->getConfigValue('inter_chunk_delay_seconds', 2));
             $timeoutSeconds = max(1, (int) $this->getConfigValue('timeout_seconds', 300));
+            $partTimestampsEnabled = filter_var(
+                $this->getConfigValue('part_timestamps_enabled', false),
+                FILTER_VALIDATE_BOOLEAN
+            );
             $nodeStartedAt = microtime(true);
 
             // Enhanced formatting options
@@ -62,6 +66,8 @@ class PushoverNotify extends BaseNode
             $sentParts = [];
             $suppressedParts = [];
             $failedParts = [];
+            $partTimestamps = [];
+            $partTimestampBase = time();
             $sourceGroup = (string) $this->getConfigValue('source_group', 'workflow_node_notifications');
 
             // Send chunks in REVERSE order so they appear in correct reading order on Pushover
@@ -100,6 +106,11 @@ class PushoverNotify extends BaseNode
 
                 if ($ttl !== null) {
                     $payload['ttl'] = $ttl;
+                }
+
+                if ($totalChunks > 1 && $partTimestampsEnabled) {
+                    $payload['timestamp'] = $partTimestampBase + ($totalChunks - $partNumber);
+                    $partTimestamps[$partNumber] = $payload['timestamp'];
                 }
 
                 // Emergency priority parameters
@@ -160,6 +171,9 @@ class PushoverNotify extends BaseNode
                 'part_numbers_sent' => $sentParts,
                 'part_numbers_suppressed' => $suppressedParts,
                 'part_numbers_failed' => $failedParts,
+                'part_timestamps_enabled' => $totalChunks > 1 && $partTimestampsEnabled,
+                'part_timestamp_strategy' => $totalChunks > 1 && $partTimestampsEnabled ? 'ascending_display_order' : null,
+                'part_timestamps' => $partTimestamps,
                 'format_type' => $formatType,
                 'has_url' => $url !== null,
                 'source_group' => $sourceGroup,

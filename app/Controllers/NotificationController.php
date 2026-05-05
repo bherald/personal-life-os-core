@@ -176,6 +176,22 @@ class NotificationController
             }
 
             $body = $response->json();
+            $pushoverStatus = $body['status'] ?? null;
+            if ($pushoverStatus !== 1) {
+                $errors = $body['errors'] ?? null;
+                $errorMessage = is_array($errors) && $errors !== []
+                    ? implode('; ', array_map(static fn ($error): string => (string) $error, $errors))
+                    : 'Pushover API returned unsuccessful status.';
+
+                Log::error('Pushover notification failed', [
+                    'status' => $response->status(),
+                    'pushover_status' => $pushoverStatus,
+                    'errors' => $errors,
+                    'request' => $body['request'] ?? null,
+                ]);
+
+                return ['success' => false, 'error' => $errorMessage];
+            }
 
             // Increment rate limit counter on successful send
             Cache::put($rateCacheKey, $currentCount + 1, self::PUSHOVER_RATE_LIMIT_TTL);

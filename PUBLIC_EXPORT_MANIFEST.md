@@ -1,9 +1,9 @@
 # PLOS Public Export Manifest
 
-Generated: 2026-05-05T22:30:51Z
-Source commit: 5e120bf4d285280ef08b4113b58846be11ff7241
+Generated: 2026-05-05T22:48:39Z
+Source commit: 3a0f7ac1343111509c65dda42aa6237c069f86d1
 Source tree status: reviewed tracked worktree contents copied from the source tree
-Tracked files copied: 1654
+Tracked files copied: 1655
 
 This export is a fresh public-candidate tree. It intentionally omits private
 repository history, production operations docs, local Claude/MCP control files,

@@ -100,6 +100,50 @@ class PushoverNotifyTest extends TestCase
         $this->assertSame('workflow_routine_updates', $result['meta']['source_group']);
     }
 
+    public function test_multipart_payloads_can_include_ordering_timestamps(): void
+    {
+        $payloads = [];
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')
+            ->times(3)
+            ->with('pushover', Mockery::on(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return true;
+            }))
+            ->andReturn(['success' => true]);
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", [
+                'First packet '.str_repeat('A', 980),
+                'Second packet '.str_repeat('B', 980),
+                'Third packet '.str_repeat('C', 980),
+            ]),
+            'part_timestamps_enabled' => true,
+            'inter_chunk_delay_seconds' => 0,
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertTrue($result['data']['part_timestamps_enabled']);
+        $this->assertSame('ascending_display_order', $result['data']['part_timestamp_strategy']);
+        $this->assertCount(3, $payloads);
+        $this->assertSame('Daily News (Part 3/3)', $payloads[0]['title']);
+        $this->assertSame('Daily News (Part 2/3)', $payloads[1]['title']);
+        $this->assertSame('Daily News (Part 1/3)', $payloads[2]['title']);
+        $this->assertArrayHasKey('timestamp', $payloads[0]);
+        $this->assertSame(1, $payloads[1]['timestamp'] - $payloads[0]['timestamp']);
+        $this->assertSame(1, $payloads[2]['timestamp'] - $payloads[1]['timestamp']);
+        $this->assertSame([
+            3 => $payloads[0]['timestamp'],
+            2 => $payloads[1]['timestamp'],
+            1 => $payloads[2]['timestamp'],
+        ], $result['data']['part_timestamps']);
+    }
+
     public function test_multipart_http_posts_are_distinct_and_sent_in_reverse_order(): void
     {
         config([
