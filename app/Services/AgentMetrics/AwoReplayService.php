@@ -184,6 +184,96 @@ class AwoReplayService
         return implode("\n", $lines)."\n";
     }
 
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function compactPayload(array $payload): array
+    {
+        $summary = $this->compactSummary(is_array($payload['summary'] ?? null) ? $payload['summary'] : []);
+        $byAgent = is_array($payload['by_agent'] ?? null) ? $payload['by_agent'] : [];
+        $promotionDecisions = is_array($payload['promotion_decisions'] ?? null) ? $payload['promotion_decisions'] : [];
+
+        return [
+            'version' => (int) ($payload['version'] ?? 1),
+            'compact' => true,
+            'mode' => $payload['mode'] ?? 'observe',
+            'window' => $payload['window'] ?? 'unknown',
+            'cutoff' => $payload['cutoff'] ?? null,
+            'limit' => isset($payload['limit']) && is_numeric($payload['limit']) ? (int) $payload['limit'] : null,
+            'status' => $payload['status'] ?? 'unknown',
+            'summary' => $summary,
+            'agent_rollup' => $this->compactAgentRollup($byAgent),
+            'promotion_decisions' => $this->compactPromotionDecisions($promotionDecisions),
+            'stop_rules' => $this->replayStopRules(),
+            'note' => 'Compact replay is read-only and omits row-level review items, review queue ids, details, reviewer notes, titles, summaries, and tokens.',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    public function toCompactText(array $payload): string
+    {
+        $compact = $this->compactPayload($payload);
+        $summary = is_array($compact['summary'] ?? null) ? $compact['summary'] : [];
+        $agentRollup = is_array($compact['agent_rollup'] ?? null) ? $compact['agent_rollup'] : [];
+        $promotion = is_array($compact['promotion_decisions'] ?? null) ? $compact['promotion_decisions'] : [];
+
+        return sprintf(
+            'AWO replay compact: %s window=%s rows=%d completed=%d approval_worthy=%d approval_rate=%s hard_fails=%d pending_hard_fail_signals=%d agents=%d promotion_decisions=%d read_only=true',
+            $compact['status'] ?? 'unknown',
+            $compact['window'] ?? 'unknown',
+            (int) ($summary['rows_scanned'] ?? 0),
+            (int) ($summary['completed_reviews'] ?? 0),
+            (int) ($summary['approval_worthy_reviews'] ?? 0),
+            $this->percent($summary['approval_worthy_rate'] ?? null),
+            (int) ($summary['completed_hard_fail_count'] ?? $summary['hard_fail_count'] ?? 0),
+            (int) ($summary['pending_hard_fail_signal_count'] ?? 0),
+            (int) ($agentRollup['agent_count'] ?? 0),
+            (int) ($promotion['count'] ?? 0),
+        )."\n";
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    public function toCompactMarkdown(array $payload): string
+    {
+        $compact = $this->compactPayload($payload);
+        $summary = is_array($compact['summary'] ?? null) ? $compact['summary'] : [];
+        $agentRollup = is_array($compact['agent_rollup'] ?? null) ? $compact['agent_rollup'] : [];
+        $promotion = is_array($compact['promotion_decisions'] ?? null) ? $compact['promotion_decisions'] : [];
+
+        $lines = [
+            '# AWO Replay Compact Report',
+            '',
+            '- Mode: `'.($compact['mode'] ?? 'observe').'`',
+            '- Status: `'.($compact['status'] ?? 'unknown').'`',
+            '- Window: `'.($compact['window'] ?? 'unknown').'`',
+            '- Cutoff: `'.($compact['cutoff'] ?? 'unknown').'`',
+            '- Limit: `'.($compact['limit'] ?? 'unknown').'`',
+            '- Rows scanned: `'.(int) ($summary['rows_scanned'] ?? 0).'`',
+            '- Completed reviews: `'.(int) ($summary['completed_reviews'] ?? 0).'`',
+            '- Approval-worthy reviews: `'.(int) ($summary['approval_worthy_reviews'] ?? 0).'`',
+            '- Approval-worthy rate: `'.$this->percent($summary['approval_worthy_rate'] ?? null).'`',
+            '- Completed hard fails: `'.(int) ($summary['completed_hard_fail_count'] ?? $summary['hard_fail_count'] ?? 0).'`',
+            '- Pending hard-fail signals: `'.(int) ($summary['pending_hard_fail_signal_count'] ?? 0).'`',
+            '- Scanned hard-fail signals: `'.(int) ($summary['scanned_hard_fail_signal_count'] ?? 0).'`',
+            '- Agents represented: `'.(int) ($agentRollup['agent_count'] ?? 0).'`',
+            '- Promotion decisions: `'.(int) ($promotion['count'] ?? 0).'`',
+            '',
+            '## Guardrail',
+            '',
+        ];
+
+        foreach (($compact['stop_rules'] ?? []) as $rule) {
+            $lines[] = '- '.$rule;
+        }
+
+        return implode("\n", $lines)."\n";
+    }
+
     public function comparisonToMarkdown(array $payload): string
     {
         $current = is_array($payload['current_replay'] ?? null) ? $payload['current_replay'] : [];
@@ -512,5 +602,107 @@ class AwoReplayService
         }
 
         return (string) round(((float) $value) * 100).'%';
+    }
+
+    /**
+     * @param  array<string, mixed>  $summary
+     * @return array<string, mixed>
+     */
+    private function compactSummary(array $summary): array
+    {
+        return [
+            'rows_scanned' => (int) ($summary['rows_scanned'] ?? 0),
+            'completed_reviews' => (int) ($summary['completed_reviews'] ?? 0),
+            'approval_worthy_reviews' => (int) ($summary['approval_worthy_reviews'] ?? 0),
+            'approval_worthy_rate' => $summary['approval_worthy_rate'] ?? null,
+            'review_approval_yield' => $summary['review_approval_yield'] ?? null,
+            'operator_rework_rate' => $summary['operator_rework_rate'] ?? null,
+            'hard_fail_count' => (int) ($summary['hard_fail_count'] ?? 0),
+            'completed_hard_fail_count' => (int) ($summary['completed_hard_fail_count'] ?? $summary['hard_fail_count'] ?? 0),
+            'pending_hard_fail_signal_count' => (int) ($summary['pending_hard_fail_signal_count'] ?? 0),
+            'scanned_hard_fail_signal_count' => (int) ($summary['scanned_hard_fail_signal_count'] ?? $summary['hard_fail_count'] ?? 0),
+            'insufficient_data' => (bool) ($summary['insufficient_data'] ?? true),
+        ];
+    }
+
+    /**
+     * @param  array<int, mixed>  $byAgent
+     * @return array<string, mixed>
+     */
+    private function compactAgentRollup(array $byAgent): array
+    {
+        $agentIds = [];
+        $completed = 0;
+        $approvalWorthy = 0;
+        $hardFails = 0;
+        $pendingHardFailSignals = 0;
+        $rework = 0;
+
+        foreach ($byAgent as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $agentId = trim((string) ($row['agent_id'] ?? ''));
+            if ($agentId !== '') {
+                $agentIds[] = $agentId;
+            }
+
+            $completed += (int) ($row['completed_reviews'] ?? 0);
+            $approvalWorthy += (int) ($row['approval_worthy_reviews'] ?? 0);
+            $hardFails += (int) ($row['completed_hard_fail_count'] ?? $row['hard_fail_count'] ?? 0);
+            $pendingHardFailSignals += (int) ($row['pending_hard_fail_signal_count'] ?? 0);
+            $rework += (int) ($row['rework_count'] ?? 0);
+        }
+
+        $agentIds = array_values(array_unique($agentIds));
+        sort($agentIds);
+
+        return [
+            'agent_count' => count($agentIds),
+            'agent_ids' => $agentIds,
+            'completed_reviews' => $completed,
+            'approval_worthy_reviews' => $approvalWorthy,
+            'completed_hard_fail_count' => $hardFails,
+            'pending_hard_fail_signal_count' => $pendingHardFailSignals,
+            'rework_count' => $rework,
+        ];
+    }
+
+    /**
+     * @param  array<int, mixed>  $decisions
+     * @return array<string, mixed>
+     */
+    private function compactPromotionDecisions(array $decisions): array
+    {
+        $items = [];
+        foreach ($decisions as $decision) {
+            if (! is_array($decision)) {
+                continue;
+            }
+
+            $items[] = array_filter([
+                'agent_id' => $this->nullableString($decision['agent_id'] ?? null),
+                'action' => $this->nullableString($decision['action'] ?? null),
+                'status' => $this->nullableString($decision['status'] ?? null),
+            ], fn (mixed $value): bool => $value !== null);
+        }
+
+        return [
+            'count' => count($items),
+            'items' => $items,
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function replayStopRules(): array
+    {
+        return [
+            'Replay is read-only and does not promote, disable, approve, reject, or write agent state.',
+            'Do not enable AWO recording or agent promotion from compact output alone.',
+            'Use compact output for aggregate evidence only; inspect approved private details separately when needed.',
+        ];
     }
 }

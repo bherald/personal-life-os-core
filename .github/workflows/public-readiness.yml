@@ -156,6 +156,7 @@ jobs:
             tests/Unit/Commands/RagScaleReviewCommandTest.php \
             tests/Unit/Nodes/PushoverNotifyTest.php \
             tests/Unit/Services/MetadataWritebackSafetyTest.php \
+            tests/Feature/Console/AwoReplayCommandTest.php \
             tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php \
             tests/Feature/Console/OpsMcpHealthCommandTest.php \
             tests/Feature/Console/OpsReviewBacklogReportCommandTest.php \

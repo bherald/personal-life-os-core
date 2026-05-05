@@ -12,6 +12,7 @@ class AwoReplayCommand extends Command
         {--limit=500 : Maximum review rows to score}
         {--compare-scheduled : Compare current replay summary with latest retained weekly scheduled report}
         {--scheduled-job=awo_replay_weekly_report : Scheduled job name for --compare-scheduled}
+        {--compact : Emit sanitized compact output without row-level replay items}
         {--markdown : Emit Markdown}
         {--json : Emit machine-readable JSON}';
 
@@ -21,6 +22,12 @@ class AwoReplayCommand extends Command
     {
         if ($this->option('json') && $this->option('markdown')) {
             $this->error('Choose either --json or --markdown, not both.');
+
+            return self::FAILURE;
+        }
+
+        if ($this->option('compare-scheduled') && $this->option('compact')) {
+            $this->error('The --compact option is only supported for normal replay output.');
 
             return self::FAILURE;
         }
@@ -78,7 +85,10 @@ class AwoReplayCommand extends Command
         }
 
         if ($this->option('json')) {
-            $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            $json = json_encode(
+                $this->option('compact') ? $replay->compactPayload($payload) : $payload,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+            );
             if ($json === false) {
                 $this->error('Failed to encode AWO replay JSON.');
 
@@ -91,7 +101,13 @@ class AwoReplayCommand extends Command
         }
 
         if ($this->option('markdown')) {
-            $this->line($replay->toMarkdown($payload));
+            $this->line($this->option('compact') ? $replay->toCompactMarkdown($payload) : $replay->toMarkdown($payload));
+
+            return self::SUCCESS;
+        }
+
+        if ($this->option('compact')) {
+            $this->line($replay->toCompactText($payload));
 
             return self::SUCCESS;
         }

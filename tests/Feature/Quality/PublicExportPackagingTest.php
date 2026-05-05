@@ -43,6 +43,7 @@ class PublicExportPackagingTest extends TestCase
         $publicQualityPaths = [
             'tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php',
             'tests/Feature/Quality/PublicGithubMonitorScriptTest.php',
+            'tests/Feature/Console/AwoReplayCommandTest.php',
             'tests/Feature/Console/OpsMcpHealthCommandTest.php',
             'tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php',
             'tests/Feature/Console/OpsReviewBacklogReportCommandTest.php',

@@ -59,6 +59,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:source-registry --validate',
     'awo:replay --window=7d --json',
     'awo:replay --window=7d --limit=500 --json',
+    'awo:replay --window=7d --limit=500 --compact',
+    'awo:replay --window=7d --limit=500 --json --compact',
+    'awo:replay --window=7d --limit=500 --markdown --compact',
     'awo:replay --window=7d --limit=500 --markdown',
     'awo:replay --compare-scheduled --window=7d --limit=500 --json',
     'scheduler:optimize-report --json',
@@ -139,6 +142,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan rag:backlog-report --compact/);
   assert.match(listing, /php artisan rag:backlog-report --json --compact/);
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --json/);
+  assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --compact/);
+  assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --json --compact/);
+  assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --markdown --compact/);
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --markdown/);
   assert.match(listing, /php artisan awo:replay --compare-scheduled --window=7d --limit=500 --json/);
   assert.match(listing, /php artisan graph:audit-provenance --json/);
@@ -177,6 +183,30 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(compareMarkdownResult, /Blocked:/);
   assert.match(compareMarkdownResult, /Use command "list"/);
+
+  const compareCompactResult = await plosArtisan({
+    command: 'awo:replay --compare-scheduled --window=7d --limit=500 --json --compact',
+    on_prod: false,
+  });
+
+  assert.match(compareCompactResult, /Blocked:/);
+  assert.match(compareCompactResult, /Use command "list"/);
+
+  const reorderedAwoCompactResult = await plosArtisan({
+    command: 'awo:replay --window=7d --limit=500 --compact --json',
+    on_prod: false,
+  });
+
+  assert.match(reorderedAwoCompactResult, /Blocked:/);
+  assert.match(reorderedAwoCompactResult, /Use command "list"/);
+
+  const arbitraryAwoCompactLimitResult = await plosArtisan({
+    command: 'awo:replay --window=7d --limit=1000 --json --compact',
+    on_prod: false,
+  });
+
+  assert.match(arbitraryAwoCompactLimitResult, /Blocked:/);
+  assert.match(arbitraryAwoCompactLimitResult, /Use command "list"/);
 
   const arcExecuteResult = await plosArtisan({
     command: 'ops:arc-retention --execute --json',
