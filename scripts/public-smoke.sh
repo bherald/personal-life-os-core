@@ -99,7 +99,7 @@ PUBLIC_AUDIT_LIMIT="${PUBLIC_AUDIT_LIMIT:-120}" scripts/guards/public-release-au
 scripts/snapshot-npm-licenses.sh --check
 scripts/snapshot-python-licenses.sh --tier=core --check
 scripts/audit-licenses.sh
-bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-licenses.sh scripts/snapshot-python-licenses.sh scripts/audit-licenses.sh scripts/guards/production-fix-commit-message-check.sh scripts/guards/public-github-monitor.sh scripts/guards/github-auth-storage-audit.sh
+bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-licenses.sh scripts/snapshot-python-licenses.sh scripts/audit-licenses.sh scripts/guards/production-fix-commit-message-check.sh scripts/guards/public-github-monitor.sh scripts/guards/github-auth-storage-audit.sh scripts/guards/public-workflow-push-preflight.sh
 git diff --check --cached
 
 if [[ "${PLOS_PUBLIC_SMOKE_SKIP_TESTS:-0}" != "1" ]]; then

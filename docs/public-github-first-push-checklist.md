@@ -55,9 +55,15 @@ Then push only from the exported tree:
 
 ```bash
 git commit -m "chore: seed public plos core"
+scripts/guards/public-workflow-push-preflight.sh
 git remote add origin <new-public-repo-url>
 git push -u origin main
 ```
+
+If the preflight reports `.github/workflows` changes, use a session-scoped
+`GH_TOKEN` or `GITHUB_TOKEN` with `workflow` scope for that shell. The guard
+allows the approved transitional persistent `gh` bridge to remain in place, but
+workflow-file pushes must be backed by the session token check.
 
 After the push, confirm the `Public Readiness` workflow passes on GitHub:
 

@@ -702,6 +702,9 @@ class PublicExportPackagingTest extends TestCase
         $this->assertStringContainsString('bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/snapshot-npm-licenses.sh scripts/snapshot-python-licenses.sh scripts/audit-licenses.sh', file_get_contents(base_path('scripts/public-smoke.sh')));
         $this->assertStringContainsString('scripts/guards/public-github-monitor.sh', file_get_contents(base_path('scripts/public-smoke.sh')));
         $this->assertStringContainsString('scripts/guards/github-auth-storage-audit.sh', file_get_contents(base_path('scripts/public-smoke.sh')));
+        $this->assertStringContainsString('scripts/guards/public-workflow-push-preflight.sh', file_get_contents(base_path('scripts/public-smoke.sh')));
+        $this->assertStringContainsString('scripts/guards/public-workflow-push-preflight.sh', file_get_contents(base_path('scripts/public-export.sh')));
+        $this->assertStringContainsString('scripts/guards/public-workflow-push-preflight.sh', file_get_contents(base_path('docs/public-github-first-push-checklist.md')));
         $this->assertStringContainsString('public-release/npm-license-snapshot.md', file_get_contents(base_path('docs/README.md')));
         $docsReadme = file_get_contents(base_path('docs/README.md'));
         $this->assertStringContainsString('public-release/python-license-snapshot-core.md', $docsReadme);
