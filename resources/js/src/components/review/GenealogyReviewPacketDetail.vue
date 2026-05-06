@@ -39,6 +39,25 @@
       </div>
     </section>
 
+    <section v-if="reviewPassRows.length" class="packet-section review-pass-section">
+      <div class="section-heading">
+        <span>Review pass</span>
+        <span class="section-status preview">display only</span>
+      </div>
+      <div class="checklist-grid proof-grid">
+        <div
+          v-for="row in reviewPassRows"
+          :key="row.key"
+          class="checklist-row proof-row"
+          :class="checklistStateClass(row.state)"
+        >
+          <span class="checklist-state">{{ checklistStateLabel(row.state) }}</span>
+          <span class="checklist-label">{{ row.label }}</span>
+          <span class="checklist-value" :title="row.value">{{ row.value }}</span>
+        </div>
+      </div>
+    </section>
+
     <section v-if="reviewProofRows.length" class="packet-section review-proof-section">
       <div class="section-heading">
         <span>Review proof</span>
@@ -759,6 +778,7 @@ const claimContexts = computed(() => arrayValue(props.context?.claim_contexts).f
 const reviewFocus = computed(() => objectValue(props.context?.review_focus))
 const packetOutcome = computed(() => objectValue(props.context?.packet_outcome))
 const reviewProof = computed(() => objectValue(props.context?.review_proof))
+const reviewPass = computed(() => objectValue(props.context?.review_pass))
 const packetChecklist = computed(() => objectValue(props.context?.review_checklist))
 const evidenceLens = computed(() => objectValue(props.context?.evidence_lens))
 const remediationOrigin = computed(() => objectValue(reviewFocus.value.remediation_origin))
@@ -793,6 +813,28 @@ const packetOutcomeRows = computed(() => [
   outcomeRow('actor', 'Actor', packetOutcome.value.latest_actor),
   outcomeRow('time', 'Time', packetOutcome.value.latest_at ? formatDate(packetOutcome.value.latest_at) : null),
 ].filter(Boolean))
+
+const reviewPassRows = computed(() => {
+  const counts = objectValue(reviewPass.value.counts)
+  const signals = objectValue(reviewPass.value.signals)
+  const posture = objectValue(reviewPass.value.posture)
+
+  return [
+    reviewPassRow('state', 'State', reviewPass.value.label || reviewPass.value.state, reviewPassState(reviewPass.value.state)),
+    reviewPassRow('reason', 'Reason', reviewPass.value.reason_code ? labelize(reviewPass.value.reason_code) : null, 'warning'),
+    reviewPassRow('blockers', 'Blockers', reviewPass.value.blocker_count, Number(reviewPass.value.blocker_count || 0) > 0 ? 'blocked' : 'ok'),
+    reviewPassRow('claims', 'Claims', counts.claim_count, 'ok'),
+    reviewPassRow('sources', 'Sources', counts.source_count, 'ok'),
+    reviewPassRow('media', 'Media', mediaReviewPassLabel(counts), (Number(counts.missing_media_count || 0) > 0) ? 'warning' : 'ok'),
+    reviewPassRow('checklist', 'Checklist rows', counts.checklist_row_count, 'ok'),
+    reviewPassRow('validation', 'Validation', signals.validation_state, signals.validation_state === 'valid' ? 'ok' : 'warning'),
+    reviewPassRow('preview_only', 'Preview only', displayBoolean(signals.preview_only), signals.preview_only === true ? 'ok' : 'blocked'),
+    reviewPassRow('canonical_mutation', 'Canonical mutation', displayBoolean(signals.canonical_mutation), signals.canonical_mutation === true ? 'blocked' : 'ok'),
+    reviewPassRow('details', 'Details included', displayBoolean(posture.details_included), posture.details_included === true ? 'blocked' : 'ok'),
+    reviewPassRow('tokens', 'Tokens included', displayBoolean(posture.tokens_included), posture.tokens_included === true ? 'blocked' : 'ok'),
+    reviewPassRow('locators', 'Locators included', displayBoolean(posture.locators_included), posture.locators_included === true ? 'blocked' : 'ok'),
+  ].filter(Boolean)
+})
 
 const packetChecklistRows = computed(() => arrayValue(packetChecklist.value.rows)
   .filter(isPlainObject)
@@ -1152,6 +1194,32 @@ function outcomeRow(key, label, value) {
   return { key, label, raw: value, value: displayValue(value) }
 }
 
+function reviewPassRow(key, label, value, state = 'warning') {
+  if (value === null || value === undefined || value === '') return null
+  return {
+    key,
+    label,
+    raw: value,
+    value: displayValue(value),
+    state,
+  }
+}
+
+function reviewPassState(state) {
+  const value = stringOrNull(state)
+  if (value === 'ready') return 'ok'
+  if (value === 'blocked') return 'blocked'
+  if (value === 'empty') return 'missing'
+  return 'warning'
+}
+
+function mediaReviewPassLabel(counts) {
+  const resolved = numberOrNull(counts.resolved_media_count)
+  const missing = numberOrNull(counts.missing_media_count)
+  if (resolved === null && missing === null) return null
+  return `${resolved ?? 0} resolved, ${missing ?? 0} missing`
+}
+
 function checklistStateClass(state) {
   const value = String(state || '').toLowerCase()
   if (value === 'ok') return 'check-ok'
@@ -1239,6 +1307,12 @@ function displayValue(value) {
   if (value === false) return 'false'
   if (Array.isArray(value) || isPlainObject(value)) return compactJson(value)
   return String(value)
+}
+
+function displayBoolean(value) {
+  if (value === true) return 'yes'
+  if (value === false) return 'no'
+  return null
 }
 
 function compactJson(value) {
