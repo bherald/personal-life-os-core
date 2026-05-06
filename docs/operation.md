@@ -68,6 +68,7 @@ when planning cleanup work:
 ```bash
 php artisan ops:review-backlog-report --compact
 php artisan ops:review-backlog-report --next-target
+php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json
 php artisan ops:review-backlog-report --json --compact
 php artisan ops:review-backlog-report --json
 php artisan ops:review-backlog-report --markdown
@@ -80,6 +81,20 @@ high-priority status, typed-remediation readiness, and aggregate
 reject, expire, archive, notify, or mutate review rows. Use `--compact` for
 routine operator or MCP checks that only need aggregate counts and cleanup
 guidance.
+
+Use the source-backed packet focus during a Genealogy Evidence Sprint or packet
+review pass. It returns one redacted `genealogy_review_packet` pointer only when
+the packet is source-backed, review-ready, preview-only, boundary-labeled, and
+not marked as a canonical-mutation candidate:
+
+```bash
+php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json
+```
+
+The packet target output is count-only. It must not contain row ids, tokens,
+source locators, claim text, person ids, raw packet details, repair selectors,
+or materializer commands. Open the selected packet in Review Hub and decide it
+one at a time; do not use batch review or canonical writeback.
 
 Typed remediation materialization has a separate, dry-run-first operator
 handoff. Use it only when the next backlog target is a pending

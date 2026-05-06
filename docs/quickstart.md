@@ -18,6 +18,9 @@ Edit `.env` before first boot:
 - leave private connector paths blank unless you are configuring them locally;
 - do not add real credentials to committed files.
 
+The default `WEB_UI_MASTER_PASSWORD=change-me` placeholder intentionally fails
+setup doctor; replace it before using the stack.
+
 ## 2. Build And Generate Keys
 
 ```bash
@@ -53,7 +56,8 @@ profiles.
 In Docker, zero failures is the first-boot target. Warnings for host-owned
 tools such as Node/npm or the Docker binary can be normal inside the PHP app
 container because frontend builds run in the `vite` service and Docker runs on
-the host.
+the host. Warnings for non-localhost Compose service names can also be normal
+when the core services are healthy and failure count is zero.
 
 Setup doctor profiles are additive health gates:
 
