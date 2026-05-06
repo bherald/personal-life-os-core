@@ -57,7 +57,9 @@ class GenealogyEvidenceSprintReadinessService
 
         $remaining = max(0, self::TARGET_PACKETS - (int) $summary['source_backed_packets']);
         $remainingReviewable = max(0, self::TARGET_PACKETS - (int) $summary['reviewable_pending_packets']);
+        $operatorOutcomePackets = $summary['terminal_outcome_packets'] + $summary['followup_outcome_packets'];
         $operatorPassRecorded = $summary['operator_touched_preview_only_packets'] >= self::TARGET_PACKETS
+            && $operatorOutcomePackets >= self::TARGET_PACKETS
             && $summary['operator_boundary_packets'] >= self::TARGET_PACKETS
             && $summary['packets_missing_boundary'] === 0
             && $summary['boundary_label_count'] === 1
