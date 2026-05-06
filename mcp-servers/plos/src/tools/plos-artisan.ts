@@ -32,6 +32,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:agent-doctor --json --since=24': { description: 'Observe-only agent health diagnostics', timeout: 30_000 },
   'ops:agent-doctor --compact': { description: 'Compact observe-only agent health diagnostics', timeout: 30_000 },
   'ops:agent-doctor --json --compact': { description: 'Compact observe-only agent health diagnostics JSON', timeout: 30_000 },
+  'ops:agent-doctor --json --compact --since=24': { description: 'Compact observe-only 24-hour agent health diagnostics JSON', timeout: 30_000 },
   'plos:agent-doctor --compact': { description: 'Compact PLOS operator-facing agent diagnostics', timeout: 30_000 },
   'plos:agent-doctor --json --compact': { description: 'Compact PLOS operator-facing agent diagnostics JSON', timeout: 30_000 },
   'ops:agent-doctor-snapshot --dry-run --json': { description: 'Dry-run aggregate Agent Doctor readiness snapshot', timeout: 30_000 },

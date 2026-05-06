@@ -24,6 +24,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:agent-doctor --json --since=24',
     'ops:agent-doctor --compact',
     'ops:agent-doctor --json --compact',
+    'ops:agent-doctor --json --compact --since=24',
     'plos:agent-doctor --compact',
     'plos:agent-doctor --json --compact',
     'ops:agent-doctor-snapshot --dry-run --json',
@@ -115,6 +116,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:agent-doctor --json --since=24/);
   assert.match(listing, /php artisan ops:agent-doctor --compact/);
   assert.match(listing, /php artisan ops:agent-doctor --json --compact/);
+  assert.match(listing, /php artisan ops:agent-doctor --json --compact --since=24/);
   assert.match(listing, /php artisan plos:agent-doctor --compact/);
   assert.match(listing, /php artisan plos:agent-doctor --json --compact/);
   assert.match(listing, /php artisan ops:agent-doctor-snapshot --dry-run --json/);
@@ -185,6 +187,30 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(historyWindowResult, /Blocked:/);
   assert.match(historyWindowResult, /Use command "list"/);
+
+  const agentDoctorReorderedSinceResult = await plosArtisan({
+    command: 'ops:agent-doctor --json --since=24 --compact',
+    on_prod: false,
+  });
+
+  assert.match(agentDoctorReorderedSinceResult, /Blocked:/);
+  assert.match(agentDoctorReorderedSinceResult, /Use command "list"/);
+
+  const agentDoctorWideWindowResult = await plosArtisan({
+    command: 'ops:agent-doctor --json --compact --since=168',
+    on_prod: false,
+  });
+
+  assert.match(agentDoctorWideWindowResult, /Blocked:/);
+  assert.match(agentDoctorWideWindowResult, /Use command "list"/);
+
+  const agentDoctorDetailsResult = await plosArtisan({
+    command: 'ops:agent-doctor --json --compact --since=24 --include-agents',
+    on_prod: false,
+  });
+
+  assert.match(agentDoctorDetailsResult, /Blocked:/);
+  assert.match(agentDoctorDetailsResult, /Use command "list"/);
 
   const traceTailWiderWindowResult = await plosArtisan({
     command: 'plos:agent-trace-tail --limit=20 --since=168 --json',
