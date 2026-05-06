@@ -63,6 +63,7 @@ class NewsPushoverProofCommand extends Command
             $report['pushover'],
             $report['current_pushover_config']
         );
+        $report['part_content_proof'] = $this->summarizePartContentProof($report['pushover']);
 
         if ((string) $run->workflow_name !== $workflow) {
             $report['status_reasons']['fail'][] = "workflow_runs.id {$run->id} belongs to workflow '{$run->workflow_name}', not '{$workflow}'.";
@@ -261,6 +262,9 @@ class NewsPushoverProofCommand extends Command
             'part_timestamps_enabled' => $this->boolOrNull($data['part_timestamps_enabled'] ?? null),
             'part_timestamp_strategy' => $this->stringOrNull($data['part_timestamp_strategy'] ?? null),
             'part_timestamps' => $this->intMap($data['part_timestamps'] ?? null),
+            'part_message_lengths' => $this->intMap($data['part_message_lengths'] ?? null),
+            'part_message_hashes' => $this->stringMap($data['part_message_hashes'] ?? null),
+            'part_response_requests' => $this->stringMap($data['part_response_requests'] ?? null),
             'message_length' => $this->intOrNull($data['message_length'] ?? null),
             'has_url' => $this->boolOrNull($data['has_url'] ?? null),
             'inter_chunk_delay_seconds' => $this->intOrNull($data['inter_chunk_delay_seconds'] ?? null),
@@ -545,6 +549,117 @@ class NewsPushoverProofCommand extends Command
         ];
     }
 
+    private function summarizePartContentProof(array $pushover): array
+    {
+        if (($pushover['present'] ?? false) !== true) {
+            return [
+                'state' => 'pushover_absent',
+                'reason' => 'Pushover node was not found in the inspected run.',
+                'complete' => false,
+                'hashes_available' => false,
+                'lengths_available' => false,
+                'request_ids_available' => false,
+                'distinct_hashes' => 0,
+            ];
+        }
+
+        $totalParts = $this->intOrNull($pushover['total_parts'] ?? null);
+        if ($totalParts === null || $totalParts <= 1) {
+            return [
+                'state' => 'not_required',
+                'reason' => 'Single-part or unknown-part notification; per-part content proof is not required.',
+                'complete' => true,
+                'hashes_available' => false,
+                'lengths_available' => false,
+                'request_ids_available' => false,
+                'distinct_hashes' => 0,
+            ];
+        }
+
+        $sentParts = $this->intList($pushover['part_numbers_sent'] ?? null);
+        $expectedParts = $totalParts > 0 ? range($totalParts, 1) : [];
+        $hashes = $this->stringMap($pushover['part_message_hashes'] ?? null);
+        $lengths = $this->intMap($pushover['part_message_lengths'] ?? null);
+        $requestIds = $this->stringMap($pushover['part_response_requests'] ?? null);
+
+        if ($hashes === [] || $lengths === []) {
+            return [
+                'state' => 'metadata_missing',
+                'reason' => 'Per-part content fingerprints were not recorded for this run; use the next natural run for distinct-content proof.',
+                'complete' => false,
+                'hashes_available' => $hashes !== [],
+                'lengths_available' => $lengths !== [],
+                'request_ids_available' => $requestIds !== [],
+                'distinct_hashes' => count(array_unique(array_values($hashes))),
+            ];
+        }
+
+        $hashParts = array_map(static fn ($key): int => (int) $key, array_keys($hashes));
+        $lengthParts = array_map(static fn ($key): int => (int) $key, array_keys($lengths));
+        if ($hashParts !== $expectedParts || $lengthParts !== $expectedParts || ($sentParts !== [] && $sentParts !== $expectedParts)) {
+            return [
+                'state' => 'part_content_incomplete',
+                'reason' => 'Per-part content fingerprints do not cover every sent multipart packet in reverse send order.',
+                'complete' => false,
+                'hashes_available' => true,
+                'lengths_available' => true,
+                'request_ids_available' => $requestIds !== [],
+                'distinct_hashes' => count(array_unique(array_values($hashes))),
+            ];
+        }
+
+        foreach ($hashes as $hash) {
+            if (preg_match('/^[a-f0-9]{64}$/', $hash) !== 1) {
+                return [
+                    'state' => 'part_content_hash_invalid',
+                    'reason' => 'Per-part content fingerprint metadata contains a malformed hash.',
+                    'complete' => false,
+                    'hashes_available' => true,
+                    'lengths_available' => true,
+                    'request_ids_available' => $requestIds !== [],
+                    'distinct_hashes' => count(array_unique(array_values($hashes))),
+                ];
+            }
+        }
+
+        foreach ($lengths as $length) {
+            if ($length <= 0) {
+                return [
+                    'state' => 'part_content_length_invalid',
+                    'reason' => 'Per-part content fingerprint metadata contains an invalid message length.',
+                    'complete' => false,
+                    'hashes_available' => true,
+                    'lengths_available' => true,
+                    'request_ids_available' => $requestIds !== [],
+                    'distinct_hashes' => count(array_unique(array_values($hashes))),
+                ];
+            }
+        }
+
+        $distinctHashes = count(array_unique(array_values($hashes)));
+        if ($distinctHashes !== $totalParts) {
+            return [
+                'state' => 'duplicate_content_hash',
+                'reason' => 'Per-part content fingerprints are present, but not every accepted multipart packet has distinct content.',
+                'complete' => false,
+                'hashes_available' => true,
+                'lengths_available' => true,
+                'request_ids_available' => $requestIds !== [],
+                'distinct_hashes' => $distinctHashes,
+            ];
+        }
+
+        return [
+            'state' => 'recorded',
+            'reason' => 'Per-part content fingerprints show every accepted multipart packet had distinct content without storing message text.',
+            'complete' => true,
+            'hashes_available' => true,
+            'lengths_available' => true,
+            'request_ids_available' => $requestIds !== [],
+            'distinct_hashes' => $distinctHashes,
+        ];
+    }
+
     private function determineStatus(array $report): array
     {
         $fail = $report['status_reasons']['fail'] ?? [];
@@ -581,6 +696,16 @@ class NewsPushoverProofCommand extends Command
             $partTimestampProof = $report['part_timestamp_proof'] ?? [];
             if (($partTimestampProof['required'] ?? false) === true && ($partTimestampProof['state'] ?? null) !== 'recorded') {
                 $inconclusive[] = (string) ($partTimestampProof['reason'] ?? 'Multipart part timestamp proof is inconclusive.');
+            }
+
+            $partContentProof = $report['part_content_proof'] ?? [];
+            if (in_array(($partContentProof['state'] ?? null), [
+                'part_content_incomplete',
+                'part_content_hash_invalid',
+                'part_content_length_invalid',
+                'duplicate_content_hash',
+            ], true)) {
+                $inconclusive[] = (string) ($partContentProof['reason'] ?? 'Multipart part content proof is inconclusive.');
             }
         }
 
@@ -732,6 +857,9 @@ class NewsPushoverProofCommand extends Command
                 'part_timestamps_enabled' => $report['pushover']['part_timestamps_enabled'] ?? null,
                 'part_timestamp_strategy' => $report['pushover']['part_timestamp_strategy'] ?? null,
                 'part_timestamps' => $report['pushover']['part_timestamps'] ?? [],
+                'part_message_lengths' => $report['pushover']['part_message_lengths'] ?? [],
+                'part_message_hashes' => $report['pushover']['part_message_hashes'] ?? [],
+                'part_response_requests' => $report['pushover']['part_response_requests'] ?? [],
                 'inter_chunk_delay_seconds' => $report['pushover']['inter_chunk_delay_seconds'] ?? null,
                 'timed_out' => $report['pushover']['timed_out'] ?? null,
                 'duration_ms' => $report['pushover']['duration_ms'] ?? null,
@@ -740,6 +868,7 @@ class NewsPushoverProofCommand extends Command
             'pacing_config' => $report['pacing_config'] ?? null,
             'part_number_proof' => $report['part_number_proof'] ?? null,
             'part_timestamp_proof' => $report['part_timestamp_proof'] ?? null,
+            'part_content_proof' => $report['part_content_proof'] ?? null,
             'status_reasons' => $report['status_reasons'] ?? [
                 'fail' => [],
                 'inconclusive' => [],
@@ -794,6 +923,17 @@ class NewsPushoverProofCommand extends Command
                 .' required='.var_export($timestampProof['required'] ?? null, true)
                 .' complete='.var_export($timestampProof['complete'] ?? null, true)
                 .' reason='.$timestampProof['reason']);
+        }
+
+        if (! empty($report['part_content_proof'])) {
+            $contentProof = $report['part_content_proof'];
+            $this->line('Part content: state='.$contentProof['state']
+                .' complete='.var_export($contentProof['complete'] ?? null, true)
+                .' hashes='.var_export($contentProof['hashes_available'] ?? null, true)
+                .' lengths='.var_export($contentProof['lengths_available'] ?? null, true)
+                .' requests='.var_export($contentProof['request_ids_available'] ?? null, true)
+                .' distinct_hashes='.($contentProof['distinct_hashes'] ?? 'n/a')
+                .' reason='.$contentProof['reason']);
         }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
@@ -851,6 +991,17 @@ class NewsPushoverProofCommand extends Command
                 .' required='.var_export($timestampProof['required'] ?? null, true)
                 .' complete='.var_export($timestampProof['complete'] ?? null, true)
                 .' reason='.$timestampProof['reason']);
+        }
+
+        if (! empty($report['part_content_proof'])) {
+            $contentProof = $report['part_content_proof'];
+            $this->line('Part content: state='.$contentProof['state']
+                .' complete='.var_export($contentProof['complete'] ?? null, true)
+                .' hashes='.var_export($contentProof['hashes_available'] ?? null, true)
+                .' lengths='.var_export($contentProof['lengths_available'] ?? null, true)
+                .' requests='.var_export($contentProof['request_ids_available'] ?? null, true)
+                .' distinct_hashes='.($contentProof['distinct_hashes'] ?? 'n/a')
+                .' reason='.$contentProof['reason']);
         }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
@@ -948,6 +1099,32 @@ class NewsPushoverProofCommand extends Command
             }
 
             $mapped[(string) $key] = (int) $item;
+        }
+
+        return $mapped;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function stringMap(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $mapped = [];
+        foreach ($value as $key => $item) {
+            if (! is_scalar($item)) {
+                continue;
+            }
+
+            $string = trim((string) $item);
+            if ($string === '') {
+                continue;
+            }
+
+            $mapped[(string) $key] = $string;
         }
 
         return $mapped;

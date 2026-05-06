@@ -67,6 +67,9 @@ class PushoverNotify extends BaseNode
             $suppressedParts = [];
             $failedParts = [];
             $partTimestamps = [];
+            $partMessageLengths = [];
+            $partMessageHashes = [];
+            $partResponseRequests = [];
             $partTimestampBase = time();
             $sourceGroup = (string) $this->getConfigValue('source_group', 'workflow_node_notifications');
 
@@ -135,6 +138,11 @@ class PushoverNotify extends BaseNode
                     if (! empty($result['success']) && empty($result['suppressed'])) {
                         $sentCount++;
                         $sentParts[] = $partNumber;
+                        $partMessageLengths[$partNumber] = strlen($chunk);
+                        $partMessageHashes[$partNumber] = hash('sha256', $chunk);
+                        if (isset($result['request']) && is_scalar($result['request']) && trim((string) $result['request']) !== '') {
+                            $partResponseRequests[$partNumber] = (string) $result['request'];
+                        }
                         break;
                     }
 
@@ -174,6 +182,9 @@ class PushoverNotify extends BaseNode
                 'part_timestamps_enabled' => $totalChunks > 1 && $partTimestampsEnabled,
                 'part_timestamp_strategy' => $totalChunks > 1 && $partTimestampsEnabled ? 'ascending_display_order' : null,
                 'part_timestamps' => $partTimestamps,
+                'part_message_lengths' => $partMessageLengths,
+                'part_message_hashes' => $partMessageHashes,
+                'part_response_requests' => $partResponseRequests,
                 'format_type' => $formatType,
                 'has_url' => $url !== null,
                 'source_group' => $sourceGroup,

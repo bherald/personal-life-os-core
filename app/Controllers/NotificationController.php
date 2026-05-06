@@ -211,6 +211,7 @@ class NotificationController
             return [
                 'success' => true,
                 'receipt' => $body['receipt'] ?? null,
+                'request' => $body['request'] ?? null,
                 'source_group' => $sourceGroup,
             ];
 
