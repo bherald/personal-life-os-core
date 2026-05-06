@@ -174,6 +174,28 @@ class OperatorEvidenceCommand extends Command
             $genealogyTriage['canonical_genealogy_writeback_allowed_targets'] ?? '-'
         ));
 
+        $genealogyGates = is_array($headlines['genealogy_no_decision_gates'] ?? null)
+            ? $headlines['genealogy_no_decision_gates']
+            : [];
+        $this->line(sprintf(
+            'genealogy-gates: %s state=%s mode=%s review_ready=%s pass=%s packet_ready=%s packet_blocked=%s named_only_open=%s no_decision=%s triage_review=%s guarded=%s next=%s automation_allowed=%s writeback_allowed=%s canonical_allowed=%s',
+            $genealogyGates['status'] ?? 'unavailable',
+            $genealogyGates['state'] ?? '-',
+            $genealogyGates['mode'] ?? '-',
+            $this->yesNo($genealogyGates['packet_review_ready'] ?? null),
+            $this->yesNo($genealogyGates['packet_operator_pass_recorded'] ?? null),
+            $genealogyGates['packet_ready_rows'] ?? '-',
+            $genealogyGates['packet_blocked_rows'] ?? '-',
+            $genealogyGates['open_named_only_unlinked'] ?? '-',
+            $genealogyGates['named_only_without_candidate_decision'] ?? '-',
+            $genealogyGates['triage_targets_needing_review'] ?? '-',
+            $genealogyGates['scheduled_guarded_output_runs_window'] ?? '-',
+            $genealogyGates['next_gate'] ?? '-',
+            $this->yesNo($genealogyGates['automation_allowed'] ?? null),
+            $this->yesNo($genealogyGates['production_writeback_allowed'] ?? null),
+            $this->yesNo($genealogyGates['canonical_writeback_allowed'] ?? null)
+        ));
+
         if (is_array($headlines['agent_doctor'] ?? null)) {
             $agentDoctor = $headlines['agent_doctor'];
             $this->line(sprintf(
@@ -196,5 +218,10 @@ class OperatorEvidenceCommand extends Command
     private function valueOrDash(mixed $value): string
     {
         return $value === null ? '-' : (string) $value;
+    }
+
+    private function yesNo(mixed $value): string
+    {
+        return $value === null ? '-' : ((bool) $value ? 'yes' : 'no');
     }
 }

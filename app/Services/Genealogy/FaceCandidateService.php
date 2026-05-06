@@ -174,6 +174,7 @@ class FaceCandidateService
                     'living_privacy' => $this->livingPrivacy($person->living_privacy ?? null),
                     'privacy_state' => $this->privacyState($person),
                     'requires_elevated_review' => $this->requiresElevatedReview($person),
+                    'review_posture' => $this->reviewPosture($person),
                     'face_count' => (int) $person->face_count,
                     'score' => $score,
                     'reasons' => $reasons,
@@ -497,5 +498,77 @@ class FaceCandidateService
         return $living === true
             || in_array($privacyOverride, ['private', 'restricted'], true)
             || ($living === null && $livingPrivacy === 'hide_all');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function reviewPosture(object $person): array
+    {
+        $living = $this->nullableBool($person->living ?? null);
+        $livingStatus = $this->livingStatus($person->living ?? null);
+        $privacyOverride = $this->privacyOverride($person->privacy_override ?? null);
+        $treePrivacy = $this->treePrivacy($person->tree_privacy ?? null);
+        $livingPrivacy = $this->livingPrivacy($person->living_privacy ?? null);
+        $privacyState = $this->privacyState($person);
+        $requiresElevatedReview = $this->requiresElevatedReview($person);
+        $badges = [];
+
+        if ($requiresElevatedReview) {
+            $badges[] = [
+                'key' => 'elevated-review',
+                'label' => 'Extra review',
+                'tone' => 'warning',
+            ];
+        }
+
+        if ($living === true || $livingStatus === 'living') {
+            $badges[] = [
+                'key' => 'living',
+                'label' => 'Living',
+                'tone' => 'warning',
+            ];
+        } elseif ($livingStatus === 'unknown') {
+            $badges[] = [
+                'key' => 'living-unknown',
+                'label' => 'Living unknown',
+                'tone' => 'muted',
+            ];
+        }
+
+        if ($privacyOverride !== 'default') {
+            $badges[] = [
+                'key' => 'privacy-override-'.$privacyOverride,
+                'label' => 'Person '.$this->formatBadgeValue($privacyOverride),
+                'tone' => $privacyOverride === 'public' ? 'muted' : 'warning',
+            ];
+        }
+
+        $badges[] = [
+            'key' => 'tree-privacy-'.$treePrivacy,
+            'label' => 'Tree '.$this->formatBadgeValue($treePrivacy),
+            'tone' => 'muted',
+        ];
+
+        if ($livingPrivacy !== '' && ($living === true || $livingStatus === 'unknown')) {
+            $badges[] = [
+                'key' => 'living-privacy-'.$livingPrivacy,
+                'label' => 'Living '.$this->formatBadgeValue($livingPrivacy),
+                'tone' => $livingPrivacy === 'show_all' ? 'muted' : 'warning',
+            ];
+        }
+
+        return [
+            'projection_only' => true,
+            'living_status' => $livingStatus,
+            'privacy_state' => $privacyState,
+            'requires_elevated_review' => $requiresElevatedReview,
+            'badges' => $badges,
+        ];
+    }
+
+    private function formatBadgeValue(string $value): string
+    {
+        return str_replace('_', ' ', $value);
     }
 }

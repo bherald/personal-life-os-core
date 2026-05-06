@@ -473,6 +473,13 @@ function formatReason(reason) {
 }
 
 function candidatePrivacyBadges(candidate) {
+  const postureBadges = Array.isArray(candidate?.review_posture?.badges)
+    ? candidate.review_posture.badges
+    : []
+  if (postureBadges.length) {
+    return postureBadges.filter(badge => badge?.key && badge?.label)
+  }
+
   const badges = []
 
   if (candidate?.requires_elevated_review) {

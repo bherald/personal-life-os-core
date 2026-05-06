@@ -139,6 +139,7 @@ class OperatorEvidenceService
         if (is_array($sections['agent_doctor'] ?? null)) {
             $headlines['agent_doctor'] = $this->compactAgentDoctorHeadline($sections);
         }
+        $headlines['genealogy_no_decision_gates'] = $this->compactGenealogyNoDecisionGatesHeadline($headlines);
 
         return [
             'version' => (int) ($payload['version'] ?? 1),
@@ -408,6 +409,109 @@ class OperatorEvidenceService
             'scheduler_enablement_guard_ok' => $schedulerEnablementAllowed === 0,
             'production_writeback_guard_ok' => $productionWritebackAllowed === 0,
             'canonical_writeback_guard_ok' => $canonicalWritebackAllowed === 0,
+        ];
+    }
+
+    private function compactGenealogyNoDecisionGatesHeadline(array $headlines): array
+    {
+        $review = is_array($headlines['review_backlog'] ?? null) ? $headlines['review_backlog'] : [];
+        $face = is_array($headlines['face'] ?? null) ? $headlines['face'] : [];
+        $sprint = is_array($headlines['genealogy_evidence_sprint'] ?? null) ? $headlines['genealogy_evidence_sprint'] : [];
+        $triage = is_array($headlines['genealogy_agent_triage'] ?? null) ? $headlines['genealogy_agent_triage'] : [];
+        $doctor = is_array($headlines['agent_doctor'] ?? null) ? $headlines['agent_doctor'] : [];
+
+        $packetTarget = max(0, (int) ($sprint['target_packets'] ?? 0));
+        $reviewablePackets = max(0, (int) ($sprint['reviewable_pending_packets'] ?? 0));
+        $remainingReviewable = max(0, (int) ($sprint['remaining_reviewable_to_target'] ?? max(0, $packetTarget - $reviewablePackets)));
+        $packetReviewReady = (bool) ($sprint['ready_for_five_packet_review'] ?? false);
+        if (! $packetReviewReady && $packetTarget > 0) {
+            $packetReviewReady = $reviewablePackets >= $packetTarget && $remainingReviewable === 0;
+        }
+
+        $operatorPassRecorded = (bool) ($sprint['operator_pass_recorded'] ?? false);
+        $packetReadyRows = max(0, (int) ($review['packet_ready_rows'] ?? 0));
+        $packetBlockedRows = max(0, (int) ($review['packet_blocked_rows'] ?? 0));
+        $packetPreviewOnlyRows = max(0, (int) ($review['packet_preview_only_rows'] ?? 0));
+        $packetCanonicalMutationRows = max(0, (int) ($review['packet_canonical_mutation_rows'] ?? 0));
+        $openNamedOnly = max(0, (int) ($face['open_named_only_unlinked'] ?? 0));
+        $namedOnlyWithoutDecision = max(0, (int) ($face['named_only_open_without_candidate_decision'] ?? 0));
+        $candidateDecisionRows = max(0, (int) ($face['candidate_decision_rows'] ?? 0));
+        $triageTargetsNeedingReview = max(0, (int) ($triage['targets_needing_review_count'] ?? 0));
+        $schedulerAllowedTargets = max(0, (int) ($triage['scheduler_enablement_allowed_targets'] ?? 0));
+        $productionWritebackAllowedTargets = max(0, (int) ($triage['production_writeback_allowed_targets'] ?? 0));
+        $canonicalWritebackAllowedTargets = max(0, (int) ($triage['canonical_genealogy_writeback_allowed_targets'] ?? 0));
+        $guardedOutputRuns = max(0, (int) ($doctor['scheduled_guarded_output_runs_window'] ?? 0));
+        $mutationGuardOk = (bool) ($sprint['mutation_guard_ok'] ?? true);
+        $guardViolation = ! $mutationGuardOk
+            || $packetCanonicalMutationRows > 0
+            || $schedulerAllowedTargets > 0
+            || $productionWritebackAllowedTargets > 0
+            || $canonicalWritebackAllowedTargets > 0;
+
+        $blockingCategories = [];
+        if ($guardViolation) {
+            $blockingCategories[] = 'write_guard_review';
+        }
+        if (! $packetReviewReady) {
+            $blockingCategories[] = 'packet_precheck';
+        } elseif (! $operatorPassRecorded) {
+            $blockingCategories[] = 'operator_packet_review';
+        }
+        if ($openNamedOnly > 0) {
+            $blockingCategories[] = 'face_decision_backlog';
+        }
+        if ($triageTargetsNeedingReview > 0) {
+            $blockingCategories[] = 'agent_triage_review';
+        }
+        if ($guardedOutputRuns > 0) {
+            $blockingCategories[] = 'agent_output_guard';
+        }
+
+        $nextGate = match (true) {
+            $guardViolation => 'hold_and_review_guards',
+            ! $packetReviewReady => 'finish_source_backed_packet_precheck',
+            ! $operatorPassRecorded => 'operator_review_five_packets',
+            $openNamedOnly > 0 => 'operator_face_decision_review',
+            $triageTargetsNeedingReview > 0 => 'operator_agent_triage_review',
+            $guardedOutputRuns > 0 => 'review_agent_output_guards',
+            default => 'continue_no_decision_slices',
+        };
+
+        $state = match (true) {
+            $guardViolation => 'guard_violation',
+            ! $packetReviewReady => 'blocked_pending_packet_precheck',
+            ! $operatorPassRecorded => 'blocked_pending_operator_review',
+            $blockingCategories !== [] => 'blocked_pending_followup_review',
+            default => 'clear_for_next_no_decision_slice',
+        };
+
+        return [
+            'status' => $guardViolation ? 'degraded' : ($blockingCategories === [] ? 'healthy' : 'watch'),
+            'state' => $state,
+            'mode' => 'aggregate_only',
+            'operator_review_required' => $blockingCategories !== [],
+            'automation_allowed' => false,
+            'scheduler_enablement_allowed' => $schedulerAllowedTargets > 0,
+            'production_writeback_allowed' => $productionWritebackAllowedTargets > 0,
+            'canonical_writeback_allowed' => $canonicalWritebackAllowedTargets > 0,
+            'packet_review_ready' => $packetReviewReady,
+            'packet_operator_pass_recorded' => $operatorPassRecorded,
+            'packet_review_target' => $packetTarget,
+            'reviewable_pending_packets' => $reviewablePackets,
+            'remaining_reviewable_to_target' => $remainingReviewable,
+            'packet_ready_rows' => $packetReadyRows,
+            'packet_blocked_rows' => $packetBlockedRows,
+            'packet_preview_only_rows' => $packetPreviewOnlyRows,
+            'packet_canonical_mutation_rows' => $packetCanonicalMutationRows,
+            'open_named_only_unlinked' => $openNamedOnly,
+            'named_only_without_candidate_decision' => $namedOnlyWithoutDecision,
+            'candidate_decision_rows' => $candidateDecisionRows,
+            'triage_targets_needing_review' => $triageTargetsNeedingReview,
+            'awo_approval_worthy_reviews_window' => max(0, (int) ($triage['awo_approval_worthy_reviews_window'] ?? 0)),
+            'awo_completed_reviews_window' => max(0, (int) ($triage['awo_completed_reviews_window'] ?? 0)),
+            'scheduled_guarded_output_runs_window' => $guardedOutputRuns,
+            'blocking_categories' => $blockingCategories,
+            'next_gate' => $nextGate,
         ];
     }
 
