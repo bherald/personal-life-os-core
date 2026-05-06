@@ -75,6 +75,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:agent-triage --compact': { description: 'Compact genealogy agent re-enablement triage text', timeout: 30_000 },
   'genealogy:agent-triage --json --compact': { description: 'Compact genealogy agent re-enablement triage', timeout: 30_000 },
   'genealogy:source-registry --validate': { description: 'Read-only genealogy source registry posture validation', timeout: 30_000 },
+  'genealogy:source-registry --validate --json --compact': { description: 'Compact read-only genealogy source registry posture validation JSON', timeout: 30_000 },
   'awo:replay --window=7d --json': { description: 'Approval-worthy-output read-only replay', timeout: 30_000 },
   'awo:replay --window=7d --compact': { description: 'Compact approval-worthy-output read-only replay with default evidence limit', timeout: 30_000 },
   'awo:replay --window=7d --json --compact': { description: 'Compact approval-worthy-output read-only replay JSON with default evidence limit', timeout: 30_000 },

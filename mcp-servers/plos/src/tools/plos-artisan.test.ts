@@ -63,6 +63,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:agent-triage --compact',
     'genealogy:agent-triage --json --compact',
     'genealogy:source-registry --validate',
+    'genealogy:source-registry --validate --json --compact',
     'awo:replay --window=7d --json',
     'awo:replay --window=7d --compact',
     'awo:replay --window=7d --json --compact',
@@ -142,6 +143,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:agent-triage --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json --compact/);
   assert.match(listing, /php artisan genealogy:source-registry --validate/);
+  assert.match(listing, /php artisan genealogy:source-registry --validate --json --compact/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --days=30 --json/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --compact/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --json --compact/);
@@ -217,6 +219,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(agentDoctorDetailsResult, /Blocked:/);
   assert.match(agentDoctorDetailsResult, /Use command "list"/);
+
+  const sourceRegistryReorderedResult = await plosArtisan({
+    command: 'genealogy:source-registry --json --compact --validate',
+    on_prod: false,
+  });
+
+  assert.match(sourceRegistryReorderedResult, /Blocked:/);
+  assert.match(sourceRegistryReorderedResult, /Use command "list"/);
 
   const traceTailWiderWindowResult = await plosArtisan({
     command: 'plos:agent-trace-tail --limit=20 --since=168 --json',

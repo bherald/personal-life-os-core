@@ -50,3 +50,19 @@ the privacy/secret blocker groups and that public-release docs reference this
 baseline. For manual spot checks, inject a private-looking literal only in a
 throwaway public-bound test copy, confirm the guard fails with the matching
 blocker group, then discard the copy before committing.
+
+## Refresh - 2026-05-06
+
+Post-public scan refresh after public commit `378c2f6`:
+
+- Public release audit: passed.
+- Public workflow push preflight: passed; no workflow files were in the pending
+  push surface.
+- Dependency provenance check: passed, including fixture provenance and public
+  MCP workspace README tests.
+- GitHub auth storage audit: passed only with `--allow-plaintext`; persistent
+  `gh` auth remains the documented temporary release-management bridge, token
+  output was redacted, and no session-scoped token was active.
+
+Current baseline remains unchanged: no new public-bound privacy/secret blocker
+was found, and GitHub auth hardening remains the known follow-up.

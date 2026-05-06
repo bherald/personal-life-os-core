@@ -17,7 +17,13 @@ use Illuminate\Support\Facades\DB;
  */
 class GenealogySourceRegistrySeed extends Command
 {
-    protected $signature = 'genealogy:source-registry {--seed : Seed from routing matrix} {--stats : Show statistics} {--list : List all entries} {--validate : Validate manual/public automation posture}';
+    protected $signature = 'genealogy:source-registry
+        {--seed : Seed from routing matrix}
+        {--stats : Show statistics}
+        {--list : List all entries}
+        {--validate : Validate manual/public automation posture}
+        {--json : Output machine-readable JSON for validate, stats, or list modes}
+        {--compact : Omit detailed row payloads from JSON output where possible}';
 
     protected $description = 'GEN-1: Manage genealogy source registry';
 
@@ -48,6 +54,32 @@ class GenealogySourceRegistrySeed extends Command
     {
         $result = app(SourceRegistryService::class)->validatePublicSourcePosture();
         $summary = $result['summary'] ?? ['checked' => 0, 'errors' => 0];
+
+        if ($this->option('json')) {
+            $errors = is_array($result['errors'] ?? null) ? $result['errors'] : [];
+            $payload = [
+                'version' => 1,
+                'generated_at' => now()->toIso8601String(),
+                'mode' => 'validate',
+                'compact' => (bool) $this->option('compact'),
+                'status' => ! empty($result['valid']) ? 'pass' : 'fail',
+                'valid' => ! empty($result['valid']),
+                'summary' => [
+                    'checked' => (int) ($summary['checked'] ?? 0),
+                    'errors' => (int) ($summary['errors'] ?? 0),
+                ],
+                'error_codes' => $this->countErrorCodes($errors),
+            ];
+
+            if (! $this->option('compact')) {
+                $payload['errors'] = $errors;
+            }
+
+            $this->line($this->encodeJson($payload));
+
+            return ! empty($result['valid']) ? 0 : 1;
+        }
+
         $this->line(sprintf(
             'Genealogy source registry posture: checked=%d errors=%d valid=%s',
             (int) ($summary['checked'] ?? 0),
@@ -123,6 +155,19 @@ class GenealogySourceRegistrySeed extends Command
     private function showStats(): int
     {
         $stats = app(\App\Services\Genealogy\SourceRegistryService::class)->getStatistics();
+
+        if ($this->option('json')) {
+            $this->line($this->encodeJson([
+                'version' => 1,
+                'generated_at' => now()->toIso8601String(),
+                'mode' => 'stats',
+                'status' => isset($stats['error']) ? 'error' : 'pass',
+                'stats' => $stats,
+            ]));
+
+            return isset($stats['error']) ? 1 : 0;
+        }
+
         $this->table(['Metric', 'Value'], collect($stats)->map(fn ($v, $k) => [$k, $v])->values()->toArray());
 
         return 0;
@@ -131,10 +176,60 @@ class GenealogySourceRegistrySeed extends Command
     private function listEntries(): int
     {
         $entries = DB::select('SELECT archive_name, tool_name, priority, access_type, search_count, hit_count FROM genealogy_source_registry WHERE is_active = 1 ORDER BY priority');
+
+        if ($this->option('json')) {
+            $this->line($this->encodeJson([
+                'version' => 1,
+                'generated_at' => now()->toIso8601String(),
+                'mode' => 'list',
+                'compact' => (bool) $this->option('compact'),
+                'status' => 'pass',
+                'count' => count($entries),
+                'entries' => array_map(
+                    fn ($entry): array => [
+                        'archive_name' => $entry->archive_name,
+                        'tool_name' => $entry->tool_name,
+                        'priority' => (int) $entry->priority,
+                        'access_type' => $entry->access_type,
+                        'search_count' => (int) $entry->search_count,
+                        'hit_count' => (int) $entry->hit_count,
+                    ],
+                    $entries
+                ),
+            ]));
+
+            return 0;
+        }
+
         $this->table(['Archive', 'Tool', 'Pri', 'Access', 'Searches', 'Hits'],
             array_map(fn ($e) => [$e->archive_name, $e->tool_name ?? '-', $e->priority, $e->access_type, $e->search_count, $e->hit_count], $entries));
 
         return 0;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $errors
+     * @return array<string, int>
+     */
+    private function countErrorCodes(array $errors): array
+    {
+        $counts = [];
+        foreach ($errors as $error) {
+            $code = (string) ($error['code'] ?? 'unknown');
+            $counts[$code] = ($counts[$code] ?? 0) + 1;
+        }
+
+        ksort($counts);
+
+        return $counts;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function encodeJson(array $payload): string
+    {
+        return json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '{}';
     }
 
     /**
