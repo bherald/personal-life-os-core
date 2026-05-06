@@ -318,6 +318,30 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(materializeDryRunResult, /Blocked:/);
   assert.match(materializeDryRunResult, /Use command "list"/);
 
+  const materializeCompactIdResult = await plosArtisan({
+    command: 'genealogy:materialize-typed-remediation --id=123 --json --compact',
+    on_prod: false,
+  });
+
+  assert.match(materializeCompactIdResult, /Blocked:/);
+  assert.match(materializeCompactIdResult, /Use command "list"/);
+
+  const materializeCompactTokenResult = await plosArtisan({
+    command: 'genealogy:materialize-typed-remediation --token=abc --json --compact',
+    on_prod: false,
+  });
+
+  assert.match(materializeCompactTokenResult, /Blocked:/);
+  assert.match(materializeCompactTokenResult, /Use command "list"/);
+
+  const materializeExecuteResult = await plosArtisan({
+    command: 'genealogy:materialize-typed-remediation --id=123 --execute --json',
+    on_prod: false,
+  });
+
+  assert.match(materializeExecuteResult, /Blocked:/);
+  assert.match(materializeExecuteResult, /Use command "list"/);
+
   const ragScaleReviewFileResult = await plosArtisan({
     command: 'rag:scale-review --json --retrieval-file=/tmp/evidence.json',
     on_prod: false,
