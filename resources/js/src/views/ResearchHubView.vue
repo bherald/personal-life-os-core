@@ -149,6 +149,30 @@
         </div>
       </div>
 
+      <div class="flex flex-wrap items-center gap-2 mb-4 p-2 bg-ops-sky/10 border border-ops-sky/20 rounded">
+        <label class="flex flex-1 min-w-[18rem] items-center gap-2">
+          <span class="text-xs text-ops-text-muted uppercase whitespace-nowrap">Target ref</span>
+          <input
+            v-model="targetRefQuery"
+            type="search"
+            class="flex-1 min-w-0 bg-ops-black border border-ops-sky/40 text-ops-peach text-xs rounded px-2 py-1 font-mono"
+            placeholder="genealogy_review_packet:target-..."
+            autocomplete="off"
+          />
+        </label>
+        <span v-if="targetRefActive" class="text-xs text-ops-text-muted">
+          {{ targetRefMatchCount }} match{{ targetRefMatchCount === 1 ? '' : 'es' }}
+        </span>
+        <button
+          v-if="targetRefActive"
+          type="button"
+          class="ops-btn ops-btn-plum text-xs"
+          @click="clearTargetRefFilter"
+        >
+          Clear
+        </button>
+      </div>
+
       <!-- Phase 5: keyboard shortcut hint -->
       <div class="text-[10px] text-ops-text-muted mb-2 uppercase tracking-wide">
         Shortcuts: <kbd>J</kbd>/<kbd>K</kbd> next/prev · <kbd>A</kbd> approve · <kbd>R</kbd> reject · <kbd>X</kbd> close detail
@@ -478,6 +502,7 @@ const detailUnifiedId = ref(null)
 const sortMode = ref('confidence_desc')   // 'confidence_desc' | 'recent_first' | 'by_person'
 const confidenceThreshold = ref(0)        // 0..95 in 5% increments
 const dailyQuotaTarget = ref(20)
+const targetRefQuery = ref('')
 
 // F4 fix: build the storage key from LOCAL date components on each
 // access (not UTC, not via a Vue computed). The previous version used
@@ -583,6 +608,21 @@ const normalizeRouteString = (value) => {
   return normalized === '' ? null : normalized
 }
 
+const normalizeTargetRef = (value) => {
+  const text = `${value ?? ''}`.trim()
+  if (text === '') return null
+  const full = text.match(/genealogy_review_packet:target-[a-f0-9]{12}/i)
+  if (full) return full[0].toLowerCase()
+  const short = text.match(/target-[a-f0-9]{12}/i)
+  return short ? `genealogy_review_packet:${short[0].toLowerCase()}` : null
+}
+
+const itemTargetRef = (item) => {
+  return normalizeTargetRef(item?.target_ref)
+    || normalizeTargetRef(item?.review_focus?.target_ref)
+    || normalizeTargetRef(item?.details?.target_ref)
+}
+
 const scrollItemIntoView = async (unifiedId) => {
   if (!unifiedId) return
   await nextTick()
@@ -635,6 +675,12 @@ const totalPending = computed(() => {
 })
 
 const emptyStateMessage = computed(() => {
+  if (targetRefActive.value) {
+    return targetRef.value
+      ? `No loaded packet matches ${targetRef.value} with the current filters.`
+      : 'Enter a full genealogy review packet target ref.'
+  }
+
   const requestedId = normalizeRouteString(route.query.unified_id)
   if (requestedId) {
     return `No pending review item is available for ${requestedId} with the current filters.`
@@ -655,6 +701,12 @@ const filteredItems = computed(() => {
     const min = confidenceThreshold.value / 100
     result = result.filter(item => item.confidence === null || item.confidence === undefined || (item.confidence ?? 1) >= min)
   }
+  if (targetRefQuery.value.trim() !== '' && !targetRef.value) {
+    return []
+  }
+  if (targetRef.value) {
+    result = result.filter(item => itemTargetRef(item) === targetRef.value)
+  }
   // Phase 5: sort
   const sorted = [...result]
   if (sortMode.value === 'confidence_desc') {
@@ -671,6 +723,17 @@ const filteredItems = computed(() => {
   }
   return sorted
 })
+
+const targetRef = computed(() => normalizeTargetRef(targetRefQuery.value))
+const targetRefActive = computed(() => targetRefQuery.value.trim() !== '')
+const targetRefMatchCount = computed(() => {
+  if (!targetRef.value) return 0
+  return items.value.filter(item => itemTargetRef(item) === targetRef.value).length
+})
+
+const clearTargetRefFilter = () => {
+  targetRefQuery.value = ''
+}
 
 // N60: Duplicate proposal warning — persons with >1 pending proposal
 const duplicatePersonIds = computed(() => {
@@ -1400,10 +1463,18 @@ watch(
   }
 )
 
+watch(
+  () => route.query.target_ref,
+  (value) => {
+    targetRefQuery.value = normalizeRouteString(value) || ''
+  }
+)
+
 // Lifecycle
 onMounted(async () => {
   const requestedCategory = normalizeRouteString(route.query.category)
   const includeExpired = ['1', 'true', 'yes'].includes(`${route.query.include_expired ?? ''}`.toLowerCase())
+  const requestedTargetRef = normalizeRouteString(route.query.target_ref)
 
   if (requestedCategory) {
     activeCategory.value = requestedCategory
@@ -1411,6 +1482,10 @@ onMounted(async () => {
 
   if (includeExpired) {
     showExpired.value = true
+  }
+
+  if (requestedTargetRef) {
+    targetRefQuery.value = requestedTargetRef
   }
 
   await loadData()
