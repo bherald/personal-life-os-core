@@ -3624,11 +3624,18 @@ class MediaBrowserController extends Controller
         $offset = (int) $request->get('offset', 0);
         $staleNamedOnlyHours = 24;
         $decisionState = (string) $request->get('decision_state', 'open');
+        $sort = (string) $request->get('sort', 'recent');
         $staleOnly = $request->boolean('stale');
         if (! in_array($decisionState, ['open', 'decided', 'all'], true)) {
             return response()->json([
                 'success' => false,
                 'error' => 'invalid_decision_state',
+            ], 422);
+        }
+        if (! in_array($sort, ['recent', 'oldest'], true)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'invalid_sort',
             ], 422);
         }
 
@@ -3665,6 +3672,10 @@ class MediaBrowserController extends Controller
             ? 'AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR)'
             : '';
         $whereParams = $staleOnly ? [$staleNamedOnlyHours] : [];
+        $sortSql = match ($sort) {
+            'oldest' => 'frf.updated_at ASC, frf.id ASC',
+            default => 'frf.updated_at DESC, frf.id DESC',
+        };
 
         $faces = DB::select("
             SELECT frf.id as face_id, frf.file_registry_id, frf.person_name,
@@ -3684,7 +3695,7 @@ class MediaBrowserController extends Controller
             WHERE {$namedOnlyFilter}
               {$decisionFilter}
               {$staleFilter}
-            ORDER BY frf.updated_at DESC, frf.id DESC
+            ORDER BY {$sortSql}
             LIMIT ? OFFSET ?
         ", array_merge([$staleNamedOnlyHours], $whereParams, [$limit, $offset]));
 
@@ -3710,6 +3721,7 @@ class MediaBrowserController extends Controller
             'total' => (int) ($total->cnt ?? 0),
             'decision_state' => $decisionState,
             'stale_only' => $staleOnly,
+            'sort' => $sort,
             'limit' => $limit,
             'offset' => $offset,
         ]);

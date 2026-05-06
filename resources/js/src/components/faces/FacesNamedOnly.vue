@@ -28,6 +28,18 @@
             />
             Stale
           </label>
+          <div class="inline-flex rounded border border-ops-plum/40 bg-black/20 p-0.5">
+            <button
+              v-for="sort in namedOnlySortOptions"
+              :key="sort.value"
+              class="min-w-[4.5rem] rounded px-2.5 py-1 text-xs font-semibold uppercase tracking-wide transition-colors"
+              :class="namedOnlySort === sort.value ? 'bg-ops-gold text-black' : 'text-ops-text-muted hover:text-ops-peach'"
+              :disabled="namedOnlyLoading"
+              @click="changeSort(sort.value)"
+            >
+              {{ sort.label }}
+            </button>
+          </div>
         </div>
         <button
           class="rounded border border-ops-plum/40 px-3 py-1.5 text-xs uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-40"
@@ -281,11 +293,13 @@ const {
   namedOnlyLoading,
   namedOnlyDecisionState,
   namedOnlyStaleOnly,
+  namedOnlySort,
   hasMoreNamedOnly,
   loadNamedOnly,
   loadMoreNamedOnly,
   setNamedOnlyDecisionState,
   setNamedOnlyStaleOnly,
+  setNamedOnlySort,
   linkNamedOnlyFace,
   decideNamedOnlyFace,
 } = useFacesData()
@@ -308,6 +322,10 @@ const namedOnlyDecisionFilters = [
   { value: 'open', label: 'Open' },
   { value: 'decided', label: 'Decided' },
   { value: 'all', label: 'All' },
+]
+const namedOnlySortOptions = [
+  { value: 'recent', label: 'Recent' },
+  { value: 'oldest', label: 'Oldest' },
 ]
 
 const selectedFace = computed(() => faces.value.find(face => face.face_id === selectedFaceId.value) || null)
@@ -344,6 +362,12 @@ async function changeDecisionState(decisionState) {
 async function changeStaleOnly(staleOnly) {
   clearCandidatePanel()
   await setNamedOnlyStaleOnly(staleOnly)
+}
+
+async function changeSort(sort) {
+  if (namedOnlySort.value === sort) return
+  clearCandidatePanel()
+  await setNamedOnlySort(sort)
 }
 
 async function loadCandidates(faceId = selectedFaceId.value) {

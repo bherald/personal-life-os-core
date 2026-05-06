@@ -27,11 +27,13 @@ const namedOnlyTotal = ref(0)
 const namedOnlyLoading = ref(false)
 const namedOnlyDecisionState = ref('open')
 const namedOnlyStaleOnly = ref(false)
+const namedOnlySort = ref('recent')
 const PAGE_SIZE_RECOGNIZED = 60
 const PAGE_SIZE_NEW = 50
 const PAGE_SIZE_HIDDEN = 60
 const PAGE_SIZE_NAMED_ONLY = 50
 const NAMED_ONLY_DECISION_STATES = new Set(['open', 'decided', 'all'])
+const NAMED_ONLY_SORTS = new Set(['recent', 'oldest'])
 
 // Unidentified faces (N63)
 const unidentifiedFaces = ref([])
@@ -190,6 +192,7 @@ export function useFacesData() {
           offset: namedOnlyPage.value * PAGE_SIZE_NAMED_ONLY,
           decision_state: namedOnlyDecisionState.value,
           stale: namedOnlyStaleOnly.value ? 1 : undefined,
+          sort: namedOnlySort.value,
         }
       })
 
@@ -221,6 +224,13 @@ export function useFacesData() {
     const nextValue = Boolean(staleOnly)
     if (namedOnlyStaleOnly.value === nextValue && namedOnlyFaces.value.length > 0) return
     namedOnlyStaleOnly.value = nextValue
+    await loadNamedOnly(true)
+  }
+
+  async function setNamedOnlySort(sort) {
+    const nextSort = normalizeNamedOnlySort(sort)
+    if (namedOnlySort.value === nextSort && namedOnlyFaces.value.length > 0) return
+    namedOnlySort.value = nextSort
     await loadNamedOnly(true)
   }
 
@@ -549,6 +559,11 @@ export function useFacesData() {
     return NAMED_ONLY_DECISION_STATES.has(normalized) ? normalized : 'open'
   }
 
+  function normalizeNamedOnlySort(sort) {
+    const normalized = String(sort || 'recent').trim()
+    return NAMED_ONLY_SORTS.has(normalized) ? normalized : 'recent'
+  }
+
   // --- Keyboard ---
 
   function handleKeydown(e) {
@@ -613,6 +628,7 @@ export function useFacesData() {
     namedOnlyLoading,
     namedOnlyDecisionState,
     namedOnlyStaleOnly,
+    namedOnlySort,
     unidentifiedFaces,
     unidentifiedPage,
     unidentifiedTotal,
@@ -635,6 +651,7 @@ export function useFacesData() {
     loadMoreNamedOnly,
     setNamedOnlyDecisionState,
     setNamedOnlyStaleOnly,
+    setNamedOnlySort,
     linkNamedOnlyFace,
     decideNamedOnlyFace,
     unhideFace,
