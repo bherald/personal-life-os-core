@@ -244,6 +244,25 @@
       </div>
     </section>
 
+    <section v-if="evidenceLensRows.length" class="packet-section evidence-lens-section">
+      <div class="section-heading">
+        <span>Evidence lens</span>
+        <span class="section-status preview">display only</span>
+      </div>
+      <div class="checklist-grid evidence-lens-grid">
+        <div
+          v-for="row in evidenceLensRows"
+          :key="row.key"
+          class="checklist-row evidence-lens-row"
+          :class="checklistStateClass(row.state)"
+        >
+          <span class="checklist-state">{{ checklistStateLabel(row.state) }}</span>
+          <span class="checklist-label">{{ row.label }}</span>
+          <span class="checklist-value" :title="row.value">{{ row.value }}</span>
+        </div>
+      </div>
+    </section>
+
     <section v-if="claimEvidenceRows.length" class="packet-section">
       <div class="section-heading">
         <span>Claim to source</span>
@@ -716,6 +735,7 @@ const reviewFocus = computed(() => objectValue(props.context?.review_focus))
 const packetOutcome = computed(() => objectValue(props.context?.packet_outcome))
 const reviewProof = computed(() => objectValue(props.context?.review_proof))
 const packetChecklist = computed(() => objectValue(props.context?.review_checklist))
+const evidenceLens = computed(() => objectValue(props.context?.evidence_lens))
 const remediationOrigin = computed(() => objectValue(reviewFocus.value.remediation_origin))
 const personSnapshot = computed(() => {
   const person = props.context?.person
@@ -763,6 +783,15 @@ const reviewProofRows = computed(() => arrayValue(reviewProof.value.rows)
   .map((row) => ({
     key: stringOrNull(row.key) || compactJson(row),
     label: stringOrNull(row.label) || labelize(row.key || 'proof'),
+    value: displayValue(row.value),
+    state: stringOrNull(row.state) || 'warning',
+  })))
+
+const evidenceLensRows = computed(() => arrayValue(evidenceLens.value.rows)
+  .filter(isPlainObject)
+  .map((row) => ({
+    key: stringOrNull(row.key) || compactJson(row),
+    label: stringOrNull(row.label) || labelize(row.key || 'evidence'),
     value: displayValue(row.value),
     state: stringOrNull(row.state) || 'warning',
   })))
@@ -1838,9 +1867,18 @@ function objectKeys(value) {
   border-color: rgba(47, 158, 68, 0.28);
 }
 
+.evidence-lens-section {
+  border-color: rgba(99, 179, 237, 0.28);
+}
+
 .proof-row {
   border-color: rgba(47, 158, 68, 0.22);
   background: rgba(47, 158, 68, 0.06);
+}
+
+.evidence-lens-row {
+  border-color: rgba(99, 179, 237, 0.22);
+  background: rgba(99, 179, 237, 0.06);
 }
 
 .checklist-grid {

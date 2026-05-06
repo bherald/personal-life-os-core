@@ -352,6 +352,7 @@ class ReviewContextEnrichmentService
         $reviewFocus = $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person, $mediaRefs);
         $reviewFocus['target_ref'] = $targetRef;
         $reviewChecklist = $this->reviewPacketChecklist($details, $reviewFocus, $packetOutcome, $claimContexts);
+        $evidenceLens = $this->reviewPacketEvidenceLens($details, $claimContexts);
 
         return [
             'target_ref' => $targetRef,
@@ -375,6 +376,7 @@ class ReviewContextEnrichmentService
             'claim_contexts' => $claimContexts,
             'review_focus' => $reviewFocus,
             'review_checklist' => $reviewChecklist,
+            'evidence_lens' => $evidenceLens,
             'review_proof' => $this->reviewPacketProof(
                 $details,
                 $reviewFocus,
@@ -383,6 +385,116 @@ class ReviewContextEnrichmentService
                 $claimContexts,
                 $validation
             ),
+        ];
+    }
+
+    /**
+     * Display-only evidence quality projection for review packets.
+     *
+     * This is intentionally a narrow, whitelisted summary. It reports
+     * classification and presence signals that help the operator review the
+     * packet, but it does not expose raw claim text, source locators, row IDs,
+     * tokens, or any apply/write path.
+     *
+     * @param  array<string, mixed>  $details
+     * @param  list<array<string, mixed>>  $claimContexts
+     * @return array<string, mixed>
+     */
+    private function reviewPacketEvidenceLens(array $details, array $claimContexts): array
+    {
+        $sources = $this->detailArray($details, 'sources');
+        $claims = $this->detailArray($details, 'claims');
+        $source = $this->firstArrayRow($sources);
+        $claim = $this->firstArrayRow($claims);
+        $claimRaw = is_array($claim['raw'] ?? null) ? $claim['raw'] : [];
+        $classification = $this->evidenceLensClassification($details, $sources, $claims);
+        $payloads = [$details, $source, $claim, $claimRaw];
+
+        $sourceOrigin = $this->firstScalarTextFromPayloads($payloads, [
+            'source_origin',
+            'source_type',
+            'record_origin',
+            'origin_type',
+        ]) ?: $classification['source_type'];
+        $informationType = $this->firstScalarTextFromPayloads($payloads, [
+            'information_type',
+            'information_quality',
+            'info_type',
+        ]) ?: $classification['information_type'];
+        $evidenceType = $this->firstScalarTextFromPayloads($payloads, [
+            'evidence_type',
+            'evidence_quality',
+        ]) ?: $classification['evidence_type'];
+        $citationQuality = $this->firstScalarTextFromPayloads($payloads, [
+            'citation_quality',
+            'citation_status',
+            'source_quality',
+            'citation_quality_label',
+        ]);
+        $extractionCertainty = $this->firstScalarTextFromPayloads($payloads, [
+            'extraction_certainty',
+            'extraction_confidence',
+            'certainty',
+            'confidence_label',
+            'confidence',
+        ]);
+        $conflictSignal = $this->firstBooleanFromPayloads($payloads, [
+            'has_conflict',
+            'conflict',
+            'conflict_flag',
+            'conflict_present',
+            'conflicting_evidence',
+        ]) ?? false;
+        $negativeEvidence = $this->firstBooleanFromPayloads($payloads, [
+            'negative_evidence',
+            'has_negative_evidence',
+            'negative_evidence_present',
+        ]) ?? (strtolower((string) $evidenceType) === 'negative');
+        $locatorPresent = $this->evidenceLensLocatorPresent($details, $sources, $claimContexts);
+        $extractPresent = $this->evidenceLensExtractPresent($details, $sources, $claims);
+        $note = $this->evidenceLensNote([$details, $source, $claim, $claimRaw]);
+
+        $rows = [
+            $this->checklistRow('source_origin', 'Source origin', $this->evidenceLensValue($sourceOrigin), $this->evidenceLensKnownState($sourceOrigin)),
+            $this->checklistRow('information_type', 'Information type', $this->evidenceLensValue($informationType), $this->evidenceLensKnownState($informationType)),
+            $this->checklistRow('evidence_type', 'Evidence type', $this->evidenceLensValue($evidenceType), $this->evidenceLensKnownState($evidenceType)),
+            $this->checklistRow('citation_quality', 'Citation quality', $this->evidenceLensValue($citationQuality), $citationQuality !== null ? 'ok' : 'warning'),
+            $this->checklistRow('extraction_certainty', 'Extraction certainty', $this->evidenceLensValue($extractionCertainty), $extractionCertainty !== null ? 'ok' : 'warning'),
+            $this->checklistRow('conflict_signal', 'Conflict signal', $conflictSignal ? 'possible' : 'not signaled', $conflictSignal ? 'warning' : 'ok'),
+            $this->checklistRow('negative_evidence', 'Negative evidence', $negativeEvidence ? 'yes' : 'no', $negativeEvidence ? 'warning' : 'ok'),
+            $this->checklistRow('locator_present', 'Locator present', $locatorPresent ? 'yes' : 'no', $locatorPresent ? 'ok' : 'missing'),
+            $this->checklistRow('extract_present', 'Extract present', $extractPresent ? 'yes' : 'no', $extractPresent ? 'ok' : 'missing'),
+        ];
+
+        if ($note !== null) {
+            $rows[] = $this->checklistRow('evidence_note', 'Evidence note', $note, 'ok');
+        }
+
+        return [
+            'schema' => 'genealogy_review_packet_evidence_lens.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'details_included' => false,
+            'summary' => [
+                'source_origin' => $this->evidenceLensValue($sourceOrigin),
+                'information_type' => $this->evidenceLensValue($informationType),
+                'evidence_type' => $this->evidenceLensValue($evidenceType),
+                'citation_quality' => $this->evidenceLensValue($citationQuality),
+                'extraction_certainty' => $this->evidenceLensValue($extractionCertainty),
+                'has_conflict' => $conflictSignal,
+                'has_negative_evidence' => $negativeEvidence,
+                'locator_present' => $locatorPresent,
+                'extract_present' => $extractPresent,
+                'note_present' => $note !== null,
+            ],
+            'row_count' => count($rows),
+            'rows' => $rows,
+            'state_counts' => array_count_values(array_map(
+                fn (array $row): string => (string) ($row['state'] ?? 'unknown'),
+                $rows
+            )),
         ];
     }
 
@@ -701,6 +813,292 @@ class ReviewContextEnrichmentService
         }
 
         return 'missing';
+    }
+
+    /**
+     * @param  array<int, mixed>  $rows
+     * @return array<string, mixed>
+     */
+    private function firstArrayRow(array $rows): array
+    {
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                return $row;
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $payloads
+     * @param  list<string>  $keys
+     */
+    private function firstScalarTextFromPayloads(array $payloads, array $keys): ?string
+    {
+        foreach ($payloads as $payload) {
+            $value = $this->firstScalarText($payload, $keys);
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $payloads
+     * @param  list<string>  $keys
+     */
+    private function firstBooleanFromPayloads(array $payloads, array $keys): ?bool
+    {
+        foreach ($payloads as $payload) {
+            foreach ($keys as $key) {
+                if (! array_key_exists($key, $payload)) {
+                    continue;
+                }
+
+                $value = $this->booleanSignal($payload[$key]);
+                if ($value !== null) {
+                    return $value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function booleanSignal(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value)) {
+            return $value === 1 ? true : ($value === 0 ? false : null);
+        }
+        if (is_string($value)) {
+            $normalized = strtolower(trim($value));
+            if (in_array($normalized, ['1', 'true', 'yes', 'y', 'present', 'possible'], true)) {
+                return true;
+            }
+            if (in_array($normalized, ['0', 'false', 'no', 'n', 'absent', 'none', 'not signaled'], true)) {
+                return false;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, mixed>  $sources
+     * @param  array<int, mixed>  $claims
+     * @return array{source_type: string, information_type: string, evidence_type: string}
+     */
+    private function evidenceLensClassification(array $details, array $sources, array $claims): array
+    {
+        foreach ([$details, $this->firstArrayRow($sources), $this->firstArrayRow($claims)] as $payload) {
+            $classification = $this->extractAgentSourceClassification($payload);
+            if ($classification !== null) {
+                return [
+                    'source_type' => $classification['source_type'],
+                    'information_type' => $classification['information_type'],
+                    'evidence_type' => $classification['evidence_type'],
+                ];
+            }
+        }
+
+        [$sourceType, $informationType, $evidenceType] = $this->classifyText(
+            $this->evidenceLensClassificationText($details, $sources, $claims)
+        );
+
+        return [
+            'source_type' => $sourceType,
+            'information_type' => $informationType,
+            'evidence_type' => $evidenceType,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, mixed>  $sources
+     * @param  array<int, mixed>  $claims
+     */
+    private function evidenceLensClassificationText(array $details, array $sources, array $claims): string
+    {
+        $parts = [];
+        $this->appendEvidenceLensTextParts($parts, $details, [
+            'source_locator',
+            'source_label',
+            'citation',
+            'title',
+            'summary',
+        ]);
+
+        foreach ([$sources, $claims] as $rows) {
+            foreach ($rows as $row) {
+                if (! is_array($row)) {
+                    continue;
+                }
+                $this->appendEvidenceLensTextParts($parts, $row, [
+                    'locator',
+                    'source_locator',
+                    'url',
+                    'uri',
+                    'path',
+                    'citation',
+                    'title',
+                    'name',
+                    'label',
+                    'source_ref',
+                    'evidence_source',
+                ]);
+            }
+        }
+
+        return trim(implode(' ', $parts));
+    }
+
+    /**
+     * @param  list<string>  $parts
+     * @param  array<string, mixed>  $payload
+     * @param  list<string>  $keys
+     */
+    private function appendEvidenceLensTextParts(array &$parts, array $payload, array $keys): void
+    {
+        foreach ($keys as $key) {
+            $value = $payload[$key] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                $parts[] = trim((string) $value);
+            }
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, mixed>  $sources
+     * @param  list<array<string, mixed>>  $claimContexts
+     */
+    private function evidenceLensLocatorPresent(array $details, array $sources, array $claimContexts): bool
+    {
+        if ($this->firstScalarText($details, ['source_locator']) !== null) {
+            return true;
+        }
+
+        foreach ($this->detailArray($details, 'source_locators') as $locator) {
+            if (is_scalar($locator) && trim((string) $locator) !== '') {
+                return true;
+            }
+        }
+
+        foreach ($sources as $source) {
+            if (is_array($source) && $this->firstScalarText($source, [
+                'locator',
+                'source_locator',
+                'url',
+                'uri',
+                'path',
+                'citation',
+            ]) !== null) {
+                return true;
+            }
+        }
+
+        foreach ($claimContexts as $context) {
+            if ($this->firstScalarText($context, ['source_locator', 'source_ref']) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, mixed>  $sources
+     * @param  array<int, mixed>  $claims
+     */
+    private function evidenceLensExtractPresent(array $details, array $sources, array $claims): bool
+    {
+        foreach ([$details, $this->firstArrayRow($sources)] as $payload) {
+            if ($this->firstScalarText($payload, [
+                'extract',
+                'excerpt',
+                'transcript',
+                'quote',
+                'ocr_text',
+                'extracted_text',
+            ]) !== null) {
+                return true;
+            }
+        }
+
+        foreach ($claims as $claim) {
+            if (! is_array($claim)) {
+                continue;
+            }
+            $raw = is_array($claim['raw'] ?? null) ? $claim['raw'] : [];
+            if ($this->firstScalarTextFromPayloads([$claim, $raw], [
+                'extract',
+                'excerpt',
+                'transcript',
+                'quote',
+                'ocr_text',
+                'text',
+                'extracted_text',
+                'extracted_claim',
+            ]) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $payloads
+     */
+    private function evidenceLensNote(array $payloads): ?string
+    {
+        $note = $this->firstScalarTextFromPayloads($payloads, [
+            'evidence_note',
+            'evidence_notes',
+            'citation_note',
+            'citation_notes',
+            'extraction_note',
+            'extraction_notes',
+            'notes',
+            'note',
+        ]);
+        if ($note === null) {
+            return null;
+        }
+
+        $note = preg_replace('/\s+/', ' ', $note);
+        $note = is_string($note) ? trim($note) : '';
+        if ($note === '' || preg_match('/(?:[a-z][a-z0-9+.-]*:\/\/|\/[^ ]+|[a-f0-9]{24,})/i', $note) === 1) {
+            return null;
+        }
+
+        return mb_strlen($note) > 120 ? mb_substr($note, 0, 117).'...' : $note;
+    }
+
+    private function evidenceLensValue(?string $value): string
+    {
+        if ($value === null) {
+            return 'unknown';
+        }
+
+        $value = strtolower(trim($value));
+
+        return $value !== '' ? str_replace('_', ' ', $value) : 'unknown';
+    }
+
+    private function evidenceLensKnownState(?string $value): string
+    {
+        $normalized = $this->evidenceLensValue($value);
+
+        return $normalized !== 'unknown' && $normalized !== 'unclassified' ? 'ok' : 'warning';
     }
 
     /**
