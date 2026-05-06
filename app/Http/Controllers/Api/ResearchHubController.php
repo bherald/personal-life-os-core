@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Services\AgentProceduralMemoryService;
 use App\Services\Genealogy\PersonService;
 use App\Services\Review\ReviewContextEnrichmentService;
+use App\Services\Review\ReviewTargetReferenceService;
 use App\Services\ReviewTypeRegistryService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,6 +21,8 @@ use Illuminate\Support\Facades\Log;
  */
 class ResearchHubController extends Controller
 {
+    private const GENEALOGY_PACKET_TARGET_REF_LOOKUP_LIMIT = 2000;
+
     public function __construct(
         private ReviewTypeRegistryService $registry,
         private ReviewContextEnrichmentService $enrichment,
@@ -235,6 +238,15 @@ class ResearchHubController extends Controller
             }
         }
 
+        $item = $this->directPendingGenealogyPacketItemByTargetRef($targetRef);
+        if ($item !== null) {
+            return response()->json([
+                'success' => true,
+                'target_ref' => $targetRef,
+                'item' => $item,
+            ]);
+        }
+
         return response()->json([
             'success' => false,
             'target_ref' => $targetRef,
@@ -342,6 +354,56 @@ class ResearchHubController extends Controller
         return $this->normalizeGenealogyPacketTargetRef($item['target_ref'] ?? null)
             ?? $this->normalizeGenealogyPacketTargetRef($item['review_focus']['target_ref'] ?? null)
             ?? $this->normalizeGenealogyPacketTargetRef($item['details']['target_ref'] ?? null);
+    }
+
+    private function directPendingGenealogyPacketItemByTargetRef(string $targetRef): ?array
+    {
+        $rows = DB::table('agent_review_queue')
+            ->select([
+                'id',
+                'agent_id',
+                'review_type',
+                'title',
+                'summary',
+                'details',
+                'confidence',
+                'priority',
+                'token',
+                'expires_at',
+                'created_at',
+            ])
+            ->where('status', 'pending')
+            ->where('review_type', 'genealogy_review_packet')
+            ->where(function ($query): void {
+                $query->whereNull('expires_at')
+                    ->orWhere('expires_at', '>', now());
+            })
+            ->orderByDesc('priority')
+            ->orderBy('created_at')
+            ->limit(self::GENEALOGY_PACKET_TARGET_REF_LOOKUP_LIMIT)
+            ->get()
+            ->all();
+
+        if ($rows === []) {
+            return null;
+        }
+
+        $targetReference = app(ReviewTargetReferenceService::class);
+        foreach ($rows as $row) {
+            if ($targetReference->forReviewRow($row, 'genealogy_review_packet') !== $targetRef) {
+                continue;
+            }
+
+            $items = $this->enrichItemsWithTreeName(
+                $this->enrichItemsWithRemediation(
+                    $this->registry->mapRowsForDisplay('genealogy_review_packet', [$row])
+                )
+            );
+
+            return $items[0] ?? null;
+        }
+
+        return null;
     }
 
     /**

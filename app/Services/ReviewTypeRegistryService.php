@@ -579,6 +579,23 @@ class ReviewTypeRegistryService
         return $item;
     }
 
+    /**
+     * Map raw source rows into the same display item shape used by fetchItems().
+     */
+    public function mapRowsForDisplay(string $typeName, array $rows): array
+    {
+        if ($rows === []) {
+            return [];
+        }
+
+        $type = $this->getType($typeName);
+        if (! $type) {
+            return [];
+        }
+
+        return $this->mapItems($rows, $type);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
