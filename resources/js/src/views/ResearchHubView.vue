@@ -784,7 +784,7 @@ const emptyStateMessage = computed(() => {
       return `No pending packet was found for ${targetRef.value}.`
     }
     return targetRef.value
-      ? `No loaded packet matches ${targetRef.value} with the current filters.`
+      ? `No loaded packet matches ${targetRef.value}.`
       : 'Enter a full genealogy review packet target ref.'
   }
 
@@ -802,17 +802,17 @@ const emptyStateMessage = computed(() => {
 
 const filteredItems = computed(() => {
   let result = items.value.filter(item => !EXCLUDED_CATEGORIES.includes(item.category))
+  if (targetRefQuery.value.trim() !== '' && !targetRef.value) {
+    return []
+  }
+  if (targetRef.value) {
+    return result.filter(item => itemTargetRef(item) === targetRef.value)
+  }
   if (activeCategory.value) result = result.filter(item => item.category === activeCategory.value)
   // Phase 5: confidence threshold filter (NULL confidence always passes — system alerts etc.)
   if (confidenceThreshold.value > 0) {
     const min = confidenceThreshold.value / 100
     result = result.filter(item => item.confidence === null || item.confidence === undefined || (item.confidence ?? 1) >= min)
-  }
-  if (targetRefQuery.value.trim() !== '' && !targetRef.value) {
-    return []
-  }
-  if (targetRef.value) {
-    result = result.filter(item => itemTargetRef(item) === targetRef.value)
   }
   // Phase 5: sort
   const sorted = [...result]
