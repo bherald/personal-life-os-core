@@ -457,7 +457,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import api from '@/utils/api'
 import DynamicReviewCard from '@/components/review/DynamicReviewCard.vue'
 import ReviewDetailPane from '@/components/review/ReviewDetailPane.vue'
@@ -468,6 +468,7 @@ const props = defineProps({
   embedded: { type: Boolean, default: false }
 })
 const route = useRoute()
+const router = useRouter()
 
 // State
 const loading = ref(true)
@@ -733,6 +734,22 @@ const targetRefMatchCount = computed(() => {
 
 const clearTargetRefFilter = () => {
   targetRefQuery.value = ''
+}
+
+const syncTargetRefQueryParam = () => {
+  if (!targetRefActive.value) {
+    if (route.query.target_ref !== undefined) {
+      router.replace({ query: { ...route.query, target_ref: undefined } }).catch(() => {})
+    }
+    return
+  }
+
+  const normalized = targetRef.value
+  if (!normalized || normalizeTargetRef(route.query.target_ref) === normalized) {
+    return
+  }
+
+  router.replace({ query: { ...route.query, target_ref: normalized } }).catch(() => {})
 }
 
 // N60: Duplicate proposal warning — persons with >1 pending proposal
@@ -1469,6 +1486,8 @@ watch(
     targetRefQuery.value = normalizeRouteString(value) || ''
   }
 )
+
+watch(targetRefQuery, syncTargetRefQueryParam)
 
 // Lifecycle
 onMounted(async () => {
