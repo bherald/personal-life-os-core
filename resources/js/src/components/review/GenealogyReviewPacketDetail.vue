@@ -29,9 +29,9 @@
         <span class="focus-label">Claim</span>
         <span class="focus-line-value">{{ reviewFocusClaim }}</span>
       </div>
-      <div v-if="reviewFocusSource" class="focus-line">
+      <div v-if="reviewFocusSourceLabel" class="focus-line">
         <span class="focus-label">Source</span>
-        <span class="focus-line-value mono" :title="reviewFocusSource">{{ reviewFocusSource }}</span>
+        <span class="focus-line-value">{{ reviewFocusSourceLabel }}</span>
       </div>
       <div class="focus-boundary" :class="{ danger: reviewFocusCanonicalMutation === true }">
         <span class="focus-label">Canonical mutation</span>
@@ -176,18 +176,21 @@
         <span v-if="sourceLocators.length" class="section-count">{{ sourceLocators.length }}</span>
       </div>
       <div v-if="sourceLocators.length" class="locator-list">
-        <template v-for="(locator, idx) in sourceLocators" :key="`locator-${idx}-${locator}`">
+        <template v-for="(locator, idx) in sourceLocators" :key="`locator-${idx}`">
           <a
             v-if="locatorHref(locator)"
             :href="locatorHref(locator)"
             target="_blank"
             rel="noopener noreferrer"
             class="locator-row"
+            :title="`Open source ${idx + 1}`"
           >
-            {{ locator }}
+            <span>{{ sourcePointerLabel(locator, idx) }}</span>
+            <span class="locator-kind">{{ sourcePointerKind(locator) }}</span>
           </a>
           <div v-else class="locator-row">
-            {{ locator }}
+            <span>{{ sourcePointerLabel(locator, idx) }}</span>
+            <span class="locator-kind">{{ sourcePointerKind(locator) }}</span>
           </div>
         </template>
       </div>
@@ -196,9 +199,9 @@
       <div v-if="sources.length" class="source-payloads">
         <div class="subheading">Source payloads</div>
         <div v-for="(source, idx) in sources" :key="sourceKey(source, idx)" class="source-row">
-          <div class="source-row-title">{{ source.locator || source.source_locator || source.url || source.path || `Source ${idx + 1}` }}</div>
+          <div class="source-row-title">{{ sourceDisplayLabel(source, idx) }}</div>
           <div class="kv-grid compact">
-            <div v-for="row in kvRows(source)" :key="row.key" class="kv-row">
+            <div v-for="row in sourcePayloadRows(source)" :key="row.key" class="kv-row">
               <span class="kv-key">{{ row.label }}</span>
               <span class="kv-value">{{ row.value }}</span>
             </div>
@@ -209,18 +212,18 @@
       <div v-if="mediaRefs.length" class="media-refs">
         <div class="subheading">Resolved source media</div>
         <div class="media-ref-list">
-          <template v-for="media in mediaRefs" :key="media.id">
+          <template v-for="(media, mediaIdx) in mediaRefs" :key="mediaRefKey(media, mediaIdx)">
             <a
               v-if="mediaRefHref(media)"
               :href="mediaRefHref(media)"
               target="_blank"
               rel="noopener noreferrer"
               class="media-ref-card"
-              :title="media.nextcloud_path || ''"
+              :title="media.title || 'Open media item'"
             >
-              <span class="media-ref-id">#{{ media.id }}</span>
+              <span class="media-ref-id">{{ mediaDisplayLabel(media, mediaIdx) }}</span>
               <span class="media-ref-main">
-                <span class="media-ref-title">{{ media.title || `Media #${media.id}` }}</span>
+                <span class="media-ref-title">{{ media.title || 'Media item' }}</span>
                 <span class="media-ref-sub">
                   {{ media.file_format || media.mime_type || 'unknown format' }}
                   <span v-if="media.media_type"> · {{ media.media_type }}</span>
@@ -228,10 +231,10 @@
               </span>
               <span class="media-ref-open">Open</span>
             </a>
-            <div v-else class="media-ref-card media-ref-disabled" :title="media.nextcloud_path || ''">
-              <span class="media-ref-id">#{{ media.id }}</span>
+            <div v-else class="media-ref-card media-ref-disabled" :title="media.title || 'Media item'">
+              <span class="media-ref-id">{{ mediaDisplayLabel(media, mediaIdx) }}</span>
               <span class="media-ref-main">
-                <span class="media-ref-title">{{ media.title || `Media #${media.id}` }}</span>
+                <span class="media-ref-title">{{ media.title || 'Media item' }}</span>
                 <span class="media-ref-sub">
                   {{ media.file_format || media.mime_type || 'unknown format' }}
                   <span v-if="media.media_type"> · {{ media.media_type }}</span>
@@ -280,9 +283,9 @@
             <div class="claim-source-text">{{ row.claimText || 'No claim text supplied.' }}</div>
           </div>
           <div class="claim-source-ref">
-            <div v-if="row.sourceRef" class="claim-source-ref-line">
+            <div v-if="row.sourceRefLabel" class="claim-source-ref-line">
               <span class="claim-source-label">ref</span>
-              <span class="claim-source-value mono" :title="row.sourceRef">{{ row.sourceRef }}</span>
+              <span class="claim-source-value">{{ row.sourceRefLabel }}</span>
             </div>
             <div class="claim-source-ref-line">
               <span class="claim-source-label">source</span>
@@ -292,11 +295,11 @@
                 :href="row.sourceHref"
                 target="_blank"
                 rel="noopener noreferrer"
-                :title="row.sourceLocator || row.sourceLabel"
+                title="Open linked source"
               >
                 {{ row.sourceLabel }}
               </a>
-              <span v-else class="claim-source-value" :title="row.sourceLocator || row.sourceLabel">
+              <span v-else class="claim-source-value">
                 {{ row.sourceLabel }}
               </span>
             </div>
@@ -314,16 +317,16 @@
                     target="_blank"
                     rel="noopener noreferrer"
                     class="claim-media-pill"
-                    :title="media.nextcloud_path || media.title || ''"
+                    :title="media.title || 'Open media item'"
                   >
-                    {{ media.title || `Media #${media.id}` }}
+                    {{ media.title || 'Media item' }}
                   </a>
                   <span
                     v-else
                     class="claim-media-pill disabled"
-                    :title="media.nextcloud_path || media.title || ''"
+                    :title="media.title || 'Media item'"
                   >
-                    {{ media.title || `Media #${media.id}` }}
+                    {{ media.title || 'Media item' }}
                   </span>
                 </template>
               </span>
@@ -348,8 +351,8 @@
           </div>
           <div class="claim-text">{{ claimText(claim) || 'No claim text supplied.' }}</div>
           <div class="claim-meta">
-            <span v-if="claim.person_id">person #{{ claim.person_id }}</span>
-            <span v-if="claim.source_ref">source {{ claim.source_ref }}</span>
+            <span v-if="claim.person_id">person reference present</span>
+            <span v-if="claim.source_ref">source reference present</span>
             <span v-if="claimConfidence(claim) !== null">{{ claimConfidence(claim) }}% confidence</span>
           </div>
         </div>
@@ -573,7 +576,7 @@
               </div>
               <div v-if="touchedRows(operation.proposed_effect).length" class="touch-list">
                 <div v-for="(row, touchIdx) in touchedRows(operation.proposed_effect)" :key="`touch-${touchIdx}`" class="touch-row">
-                  {{ row.table || 'row' }} #{{ row.id || '-' }} · {{ row.action || 'inspect' }}
+                  {{ touchedRowLabel(row, touchIdx) }}
                 </div>
               </div>
             </div>
@@ -596,7 +599,7 @@
             <span v-if="entry.created_at" class="decision-time">{{ formatDate(entry.created_at) }}</span>
           </div>
           <div v-if="entry.note || entry.notes" class="decision-note">{{ entry.note || entry.notes }}</div>
-          <pre v-if="entry.meta && objectKeys(entry.meta).length" class="inline-json">{{ formatJson(entry.meta) }}</pre>
+          <div v-if="decisionMetaSummary(entry)" class="decision-note muted">{{ decisionMetaSummary(entry) }}</div>
         </div>
       </div>
       <div v-else class="empty-line">No decision log entries yet.</div>
@@ -718,6 +721,28 @@ const reasonCodeOptions = [
   { value: 'duplicate_packet', label: 'Duplicate packet' },
   { value: 'other', label: 'Other' },
 ]
+
+const RAW_SOURCE_PAYLOAD_KEYS = new Set([
+  'id',
+  'source_id',
+  'media_id',
+  'person_id',
+  'family_id',
+  'tree_id',
+  'locator',
+  'source_locator',
+  'url',
+  'uri',
+  'path',
+  'nextcloud_path',
+  'citation',
+  'uid',
+  'uuid',
+  'token',
+  'hash',
+  'gedcom_id',
+  'proposed_change_id',
+])
 
 const item = computed(() => objectValue(props.context?.item))
 const details = computed(() => objectValue(props.context?.item?.details))
@@ -879,7 +904,7 @@ const reviewFocusPersonLabel = computed(() => {
 
   if (personSnapshot.value) {
     const name = [personSnapshot.value.given_name, personSnapshot.value.surname].filter(Boolean).join(' ').trim()
-    if (name) return `${name} (#${personSnapshot.value.id})`
+    if (name) return name
   }
 
   const personId = reviewFocus.value.person_id ?? identity.value.person_id ?? claims.value.find((claim) => claim?.person_id)?.person_id
@@ -914,6 +939,10 @@ const reviewFocusBoundaryLabel = computed(() => {
 })
 
 const reviewFocusSource = computed(() => stringOrNull(reviewFocus.value.source_locator) || sourceLocators.value[0] || null)
+
+const reviewFocusSourceLabel = computed(() => {
+  return reviewFocusSource.value ? sourcePointerLabel(reviewFocusSource.value, 0) : null
+})
 
 const reviewFocusMediaLabel = computed(() => {
   const total = numberOrNull(reviewFocus.value.media_ref_count)
@@ -1196,7 +1225,7 @@ function numberOrNull(value) {
 
 function formatPersonId(value) {
   const text = stringOrNull(value)
-  return text ? `person #${text}` : null
+  return text ? 'person reference present' : null
 }
 
 function formatPacketStatus(value) {
@@ -1220,16 +1249,20 @@ function compactJson(value) {
   }
 }
 
-function formatJson(value) {
-  try {
-    return JSON.stringify(value ?? {}, null, 2)
-  } catch (e) {
-    return String(value)
-  }
-}
-
 function locatorHref(locator) {
   return /^https?:\/\//i.test(locator) ? locator : null
+}
+
+function sourcePointerLabel(locator, idx) {
+  return `Source ${idx + 1}`
+}
+
+function sourcePointerKind(locator) {
+  const text = stringOrNull(locator)
+  if (!text) return 'source reference'
+  if (locatorHref(text)) return 'external link'
+  if (/[\\/]/.test(text)) return 'private locator'
+  return 'source reference'
 }
 
 function mediaRefHref(media) {
@@ -1237,8 +1270,16 @@ function mediaRefHref(media) {
   return typeof media.view_url === 'string' && media.view_url.trim() !== '' ? media.view_url : null
 }
 
+function mediaRefKey(media, idx) {
+  return `${media?.view_url || media?.title || 'media'}-${idx}`
+}
+
+function mediaDisplayLabel(media, idx) {
+  return `Media ${idx + 1}`
+}
+
 function sourceKey(source, idx) {
-  return `${source.locator || source.source_locator || source.url || source.path || source.id || 'source'}-${idx}`
+  return `source-${idx}`
 }
 
 function fieldDiffKey(diff, idx) {
@@ -1277,6 +1318,7 @@ function claimEvidenceRow(claim, idx) {
     personLabel: formatPersonId(claim.person_id ?? raw.person_id),
     claimText: claimText(claim),
     sourceRef,
+    sourceRefLabel: sourceRef ? 'source reference present' : null,
     sourceLocator,
     sourceLabel,
     sourceHref: sourceLocator ? locatorHref(sourceLocator) : null,
@@ -1300,6 +1342,7 @@ function claimEvidenceRowFromContext(context, idx) {
     personLabel: stringOrNull(context.person_label) || formatPersonId(context.person_id),
     claimText: stringOrNull(context.claim_text),
     sourceRef: stringOrNull(context.source_ref),
+    sourceRefLabel: stringOrNull(context.source_ref) ? 'source reference present' : null,
     sourceLocator,
     sourceLabel,
     sourceHref: sourceLocator ? locatorHref(sourceLocator) : null,
@@ -1325,7 +1368,7 @@ function matchClaimSource(sourceRef, idx) {
 
     const locator = sourceLocators.value.find((candidate) => sourceMatches(ref, candidate))
     if (locator) {
-      return { locator, label: locator }
+      return { locator, label: sourcePointerLabel(locator, idx) }
     }
   }
 
@@ -1391,8 +1434,30 @@ function sourceLabel(source, idx) {
   return stringOrNull(source.title)
     || stringOrNull(source.name)
     || stringOrNull(source.label)
-    || sourceLocator(source)
-    || (source.id ? `Source #${source.id}` : `Source ${idx + 1}`)
+    || `Source ${idx + 1}`
+}
+
+function sourceDisplayLabel(source, idx) {
+  return sourceLabel(source, idx)
+}
+
+function sourcePayloadRows(source) {
+  const rows = kvRows(source)
+    .filter((row) => !isRawSourcePayloadKey(row.key))
+
+  return rows.length
+    ? rows
+    : [{ key: 'payload', label: 'payload', value: 'available' }]
+}
+
+function isRawSourcePayloadKey(key) {
+  const normalized = String(key || '').toLowerCase()
+  return RAW_SOURCE_PAYLOAD_KEYS.has(normalized)
+    || normalized.endsWith('_id')
+    || normalized.includes('locator')
+    || normalized.includes('path')
+    || normalized.includes('token')
+    || normalized.includes('hash')
 }
 
 function locatorFromRef(sourceRef) {
@@ -1462,7 +1527,7 @@ function operationTargetLabel(operation) {
     return 'preview only'
   }
 
-  return operation.target_table || null
+  return operation.target_table ? 'target table selected' : null
 }
 
 function operationRows(operation) {
@@ -1527,19 +1592,22 @@ function guardStatusClass(guard) {
 
 function familyRows(family) {
   const value = objectValue(family)
-  return [
-    'id',
-    'tree_id',
-    'gedcom_id',
-    'husband_id',
+  const rows = referencePresenceRows(value, {
+    id: 'family reference',
+    tree_id: 'tree reference',
+    gedcom_id: 'GEDCOM reference',
+    husband_id: 'husband reference',
+    wife_id: 'wife reference',
+  })
+
+  return rows.concat([
     'husband_name',
-    'wife_id',
     'wife_name',
     'marriage_date',
     'marriage_place',
   ]
     .filter((key) => value[key] !== undefined)
-    .map((key) => toKvRow(key, value[key]))
+    .map((key) => toKvRow(key, value[key])))
 }
 
 function familyChildren(family) {
@@ -1548,24 +1616,27 @@ function familyChildren(family) {
 
 function sourceRows(source) {
   const value = objectValue(source)
-  return [
-    'id',
-    'tree_id',
-    'gedcom_id',
-    'uid',
+  const rows = referencePresenceRows(value, {
+    id: 'source reference',
+    tree_id: 'tree reference',
+    gedcom_id: 'GEDCOM reference',
+    uid: 'source UID',
+    url: 'source URL',
+  })
+
+  return rows.concat([
     'title',
     'author',
     'publication',
     'repository',
     'call_number',
-    'url',
     'source_quality',
     'source_category',
     'information_quality',
   ]
     .filter((key) => value[key] !== undefined)
     .map((key) => toKvRow(key, value[key]))
-    .concat(sourceUsageRows(value.usage_counts))
+    .concat(sourceUsageRows(value.usage_counts)))
 }
 
 function sourceUsageRows(counts) {
@@ -1576,13 +1647,12 @@ function sourceUsageRows(counts) {
 function dataQualityTodoRows(operation) {
   const state = objectValue(operation?.current_state)
   const context = objectValue(state.target_context)
-  const rows = []
-
-  for (const key of ['tree_id', 'person_id', 'family_id', 'source_id']) {
-    if (context[key] !== null && context[key] !== undefined && context[key] !== '') {
-      rows.push(toKvRow(key, context[key]))
-    }
-  }
+  const rows = referencePresenceRows(context, {
+    tree_id: 'tree reference',
+    person_id: 'person reference',
+    family_id: 'family reference',
+    source_id: 'source reference',
+  })
 
   for (const key of ['task_type', 'priority', 'question_present']) {
     if (state[key] !== null && state[key] !== undefined && state[key] !== '') {
@@ -1613,7 +1683,7 @@ function sourceResolutionRows(operation) {
 }
 
 function locatorGroupKey(group, idx) {
-  return `${group.locator_key || group.locator || 'locator'}-${idx}`
+  return `locator-group-${idx}`
 }
 
 function locatorGroupMeta(group) {
@@ -1623,32 +1693,31 @@ function locatorGroupMeta(group) {
   const statusText = Object.entries(statuses).map(([key, value]) => `${key}: ${value}`).join(', ')
   if (statusText) parts.push(statusText)
   const sourceIds = arrayValue(group.resolved_source_ids)
-  if (sourceIds.length) parts.push(`source rows ${sourceIds.join(', ')}`)
+  if (sourceIds.length) parts.push(`${sourceIds.length} source row${sourceIds.length === 1 ? '' : 's'} resolved`)
   const proposalIds = arrayValue(group.proposed_change_ids)
-  if (proposalIds.length) parts.push(`proposal ids ${proposalIds.join(', ')}`)
+  if (proposalIds.length) parts.push(`${proposalIds.length} proposal${proposalIds.length === 1 ? '' : 's'} linked`)
   return parts.length ? parts.join(' · ') : '-'
 }
 
 function sourceResolutionKey(row, idx) {
-  return `${row.proposed_change_id || 'proposal'}-${idx}`
+  return `source-resolution-${idx}`
 }
 
 function sourceResolutionLabel(row) {
   const parts = []
-  if (row.proposed_change_id) parts.push(`#${row.proposed_change_id}`)
+  if (row.proposed_change_id) parts.push('proposal linked')
   if (row.proposal_status) parts.push(row.proposal_status)
   if (row.resolution_status) parts.push(`resolution ${row.resolution_status}`)
   if (row.resolution_method) parts.push(row.resolution_method)
-  if (row.resolved_source_id) parts.push(`source #${row.resolved_source_id}`)
-  if (row.locator || row.url) parts.push(row.locator || row.url)
+  if (row.resolved_source_id) parts.push('source row resolved')
+  if (row.locator || row.url) parts.push('source locator matched')
   if (row.message) parts.push(row.message)
   return parts.length ? parts.join(' · ') : displayValue(row)
 }
 
 function childLabel(child) {
   const parts = [
-    child.name || `person #${child.person_id || '-'}`,
-    child.person_id ? `person #${child.person_id}` : null,
+    child.name || (child.person_id ? 'child reference present' : 'child'),
     child.birth_date ? `b. ${child.birth_date}` : null,
     child.birth_order !== null && child.birth_order !== undefined ? `order ${child.birth_order}` : null,
   ].filter(Boolean)
@@ -1657,11 +1726,18 @@ function childLabel(child) {
 }
 
 function proposedEffectRows(effect) {
-  return kvRows(objectValue(effect)).filter((row) => row.key !== 'rows_that_would_be_touched')
+  return kvRows(objectValue(effect))
+    .filter((row) => row.key !== 'rows_that_would_be_touched')
+    .filter((row) => !isRawSourcePayloadKey(row.key))
 }
 
 function touchedRows(effect) {
   return arrayValue(objectValue(effect).rows_that_would_be_touched).filter(isPlainObject)
+}
+
+function touchedRowLabel(row, idx) {
+  const action = stringOrNull(row.action) || 'inspect'
+  return `Affected row ${idx + 1} · ${labelize(action)}`
 }
 
 function sharedChildText(operation) {
@@ -1671,10 +1747,10 @@ function sharedChildText(operation) {
     const retainedLinks = arrayValue(state.retained_child_links)
     const suspectLinks = arrayValue(state.suspect_child_links)
     const linkedIds = retainedLinks.length ? retainedLinks : suspectLinks
-    return linkedIds.length ? linkedIds.map((link) => link.person_id).filter(Boolean).join(', ') : '-'
+    return linkedIds.length ? `${linkedIds.length} linked child reference${linkedIds.length === 1 ? '' : 's'}` : '-'
   }
 
-  return shared.length ? shared.join(', ') : '-'
+  return shared.length ? `${shared.length} shared child reference${shared.length === 1 ? '' : 's'}` : '-'
 }
 
 function matchingFieldText(operation) {
@@ -1700,6 +1776,31 @@ function decisionReason(entry) {
     if (typeof value === 'string' && value.trim() !== '') return value.trim()
   }
   return null
+}
+
+function decisionMetaSummary(entry) {
+  if (!isPlainObject(entry)) return null
+  const meta = objectValue(entry.meta)
+  const parts = []
+
+  for (const key of ['reason_code', 'outcome_state', 'preview_only', 'canonical_mutation', 'blocker_count']) {
+    if (meta[key] !== null && meta[key] !== undefined && meta[key] !== '') {
+      parts.push(`${labelize(key)}: ${displayValue(meta[key])}`)
+    }
+  }
+
+  return parts.length ? parts.join(' · ') : null
+}
+
+function referencePresenceRows(value, labels) {
+  return Object.entries(labels)
+    .filter(([key]) => value[key] !== null && value[key] !== undefined && value[key] !== '')
+    .map(([key, label]) => ({
+      key,
+      label,
+      raw: value[key],
+      value: 'present',
+    }))
 }
 
 function submitDecision(action) {
@@ -2061,7 +2162,9 @@ function objectKeys(value) {
 }
 
 .locator-row {
-  display: block;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
   color: #bfe1ff;
   background: rgba(99, 179, 237, 0.08);
   border: 1px solid rgba(99, 179, 237, 0.22);
@@ -2072,6 +2175,11 @@ function objectKeys(value) {
   line-height: 1.35;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.locator-kind {
+  flex: 0 0 auto;
+  color: #9b8bb5;
 }
 
 	a.locator-row:hover {
@@ -2580,19 +2688,6 @@ a.media-ref-card:hover {
   line-height: 1.35;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-}
-
-.inline-json {
-  margin: 0.4rem 0 0;
-  color: #d8d0e4;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(102, 102, 102, 0.25);
-  border-radius: 0.35rem;
-  padding: 0.55rem;
-  font-size: 0.72rem;
-  line-height: 1.35;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .packet-actions {

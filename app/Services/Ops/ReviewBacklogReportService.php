@@ -519,6 +519,7 @@ class ReviewBacklogReportService
 
         if (($payload['packet_readiness'] ?? []) !== []) {
             $packetReadiness = $payload['packet_readiness'];
+            $reviewPass = is_array($packetReadiness['review_pass'] ?? null) ? $packetReadiness['review_pass'] : [];
             $lines[] = '';
             $lines[] = '## Packet Readiness';
             $lines[] = '';
@@ -542,6 +543,16 @@ class ReviewBacklogReportService
                 (int) ($packetReadiness['validation_errors_rows'] ?? 0),
                 (int) ($packetReadiness['malformed_details'] ?? 0),
             );
+            if ($reviewPass !== []) {
+                $lines[] = sprintf(
+                    '- Review pass: `%s`; `%d` ready row(s), `%d` blocked row(s), `%d` canonical-mutation row(s); details included: `%s`.',
+                    (string) ($reviewPass['state'] ?? 'unknown'),
+                    (int) ($reviewPass['counts']['ready_rows'] ?? 0),
+                    (int) ($reviewPass['counts']['blocked_rows'] ?? 0),
+                    (int) ($reviewPass['counts']['canonical_mutation_rows'] ?? 0),
+                    (($reviewPass['posture']['details_included'] ?? true) === true) ? 'true' : 'false',
+                );
+            }
             foreach (($packetReadiness['reason_code_counts'] ?? []) as $reasonCode => $count) {
                 $lines[] = sprintf('- Packet reason `%s`: `%d` row(s).', (string) $reasonCode, (int) $count);
             }
@@ -568,6 +579,28 @@ class ReviewBacklogReportService
         $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
         $readiness = is_array($payload['remediation_readiness'] ?? null) ? $payload['remediation_readiness'] : [];
         $packetReadiness = is_array($payload['packet_readiness'] ?? null) ? $payload['packet_readiness'] : [];
+
+        $packetReadinessCompact = [
+            'pending_packet_rows' => (int) ($packetReadiness['pending_packet_rows'] ?? 0),
+            'ready_rows' => (int) ($packetReadiness['ready_rows'] ?? 0),
+            'blocked_rows' => (int) ($packetReadiness['blocked_rows'] ?? 0),
+            'source_backed_rows' => (int) ($packetReadiness['source_backed_rows'] ?? 0),
+            'boundary_labeled_rows' => (int) ($packetReadiness['boundary_labeled_rows'] ?? 0),
+            'source_locator_rows' => (int) ($packetReadiness['source_locator_rows'] ?? 0),
+            'claim_rows' => (int) ($packetReadiness['claim_rows'] ?? 0),
+            'preview_only_rows' => (int) ($packetReadiness['preview_only_rows'] ?? 0),
+            'canonical_mutation_rows' => (int) ($packetReadiness['canonical_mutation_rows'] ?? 0),
+            'apply_preview_missing_rows' => (int) ($packetReadiness['apply_preview_missing_rows'] ?? 0),
+            'persisted_apply_preview_not_array_rows' => (int) ($packetReadiness['persisted_apply_preview_not_array_rows'] ?? 0),
+            'preview_not_preview_only_rows' => (int) ($packetReadiness['preview_not_preview_only_rows'] ?? 0),
+            'validation_missing_rows' => (int) ($packetReadiness['validation_missing_rows'] ?? 0),
+            'validation_not_valid_rows' => (int) ($packetReadiness['validation_not_valid_rows'] ?? 0),
+            'validation_errors_rows' => (int) ($packetReadiness['validation_errors_rows'] ?? 0),
+            'malformed_details' => (int) ($packetReadiness['malformed_details'] ?? 0),
+            'reason_code_counts' => $this->integerCountMap($packetReadiness['reason_code_counts'] ?? []),
+            'blocker_code_counts' => $this->integerCountMap($packetReadiness['blocker_code_counts'] ?? []),
+        ];
+        $packetReadinessCompact['review_pass'] = $this->packetReadinessReviewPass($packetReadinessCompact);
 
         return [
             'version' => 1,
@@ -624,26 +657,7 @@ class ReviewBacklogReportService
                 'malformed_details' => (int) ($readiness['malformed_details'] ?? 0),
                 'possible_change_type_typos' => $readiness['possible_change_type_typos'] ?? [],
             ],
-            'packet_readiness' => [
-                'pending_packet_rows' => (int) ($packetReadiness['pending_packet_rows'] ?? 0),
-                'ready_rows' => (int) ($packetReadiness['ready_rows'] ?? 0),
-                'blocked_rows' => (int) ($packetReadiness['blocked_rows'] ?? 0),
-                'source_backed_rows' => (int) ($packetReadiness['source_backed_rows'] ?? 0),
-                'boundary_labeled_rows' => (int) ($packetReadiness['boundary_labeled_rows'] ?? 0),
-                'source_locator_rows' => (int) ($packetReadiness['source_locator_rows'] ?? 0),
-                'claim_rows' => (int) ($packetReadiness['claim_rows'] ?? 0),
-                'preview_only_rows' => (int) ($packetReadiness['preview_only_rows'] ?? 0),
-                'canonical_mutation_rows' => (int) ($packetReadiness['canonical_mutation_rows'] ?? 0),
-                'apply_preview_missing_rows' => (int) ($packetReadiness['apply_preview_missing_rows'] ?? 0),
-                'persisted_apply_preview_not_array_rows' => (int) ($packetReadiness['persisted_apply_preview_not_array_rows'] ?? 0),
-                'preview_not_preview_only_rows' => (int) ($packetReadiness['preview_not_preview_only_rows'] ?? 0),
-                'validation_missing_rows' => (int) ($packetReadiness['validation_missing_rows'] ?? 0),
-                'validation_not_valid_rows' => (int) ($packetReadiness['validation_not_valid_rows'] ?? 0),
-                'validation_errors_rows' => (int) ($packetReadiness['validation_errors_rows'] ?? 0),
-                'malformed_details' => (int) ($packetReadiness['malformed_details'] ?? 0),
-                'reason_code_counts' => $this->integerCountMap($packetReadiness['reason_code_counts'] ?? []),
-                'blocker_code_counts' => $this->integerCountMap($packetReadiness['blocker_code_counts'] ?? []),
-            ],
+            'packet_readiness' => $packetReadinessCompact,
             'recommendation_count' => count($payload['recommendations'] ?? []),
             'recommendations' => array_values(array_filter($payload['recommendations'] ?? [], 'is_string')),
         ];
@@ -743,6 +757,20 @@ class ReviewBacklogReportService
             $lines[] = sprintf('packet_blocker=%s rows=%s', $blockerCode, $count);
         }
 
+        $reviewPass = is_array($packetReadiness['review_pass'] ?? null) ? $packetReadiness['review_pass'] : [];
+        if ($reviewPass !== []) {
+            $lines[] = sprintf(
+                'packet_review_pass state=%s ready=%s blocked=%s canonical_mutation=%s details_included=%s tokens_included=%s locators_included=%s',
+                $reviewPass['state'] ?? 'unknown',
+                $reviewPass['counts']['ready_rows'] ?? 0,
+                $reviewPass['counts']['blocked_rows'] ?? 0,
+                $reviewPass['counts']['canonical_mutation_rows'] ?? 0,
+                (($reviewPass['posture']['details_included'] ?? true) === true) ? 'true' : 'false',
+                (($reviewPass['posture']['tokens_included'] ?? true) === true) ? 'true' : 'false',
+                (($reviewPass['posture']['locators_included'] ?? true) === true) ? 'true' : 'false',
+            );
+        }
+
         return implode("\n", $lines)."\n";
     }
 
@@ -773,6 +801,7 @@ class ReviewBacklogReportService
             '- Packet blocked rows: `'.$packetReadiness['blocked_rows'].'`',
             '- Packet preview-only rows: `'.$packetReadiness['preview_only_rows'].'`',
             '- Packet canonical-mutation rows: `'.$packetReadiness['canonical_mutation_rows'].'`',
+            '- Packet review-pass state: `'.($packetReadiness['review_pass']['state'] ?? 'unknown').'`',
             '',
             '## Triage Buckets',
             '',
@@ -1376,6 +1405,7 @@ class ReviewBacklogReportService
 
         ksort($readiness['reason_code_counts']);
         ksort($readiness['blocker_code_counts']);
+        $readiness['review_pass'] = $this->packetReadinessReviewPass($readiness);
 
         return $readiness;
     }
@@ -1714,6 +1744,10 @@ class ReviewBacklogReportService
 
         if ($packetTarget !== null) {
             $candidate['packet_review'] = $packetTarget;
+            $candidate['review_pass'] = $this->packetTargetReviewPass(
+                $this->nullableString($candidate['target_ref'] ?? null),
+                $packetTarget
+            );
         }
 
         if ($isTypedRemediation && $reviewType === 'genealogy_finding') {
@@ -1794,6 +1828,177 @@ class ReviewBacklogReportService
             'canonical_write_allowed' => false,
             'batch_review_allowed' => false,
             'details_included' => false,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $packetTarget
+     * @return array<string, mixed>
+     */
+    private function packetTargetReviewPass(?string $targetRef, array $packetTarget): array
+    {
+        $state = $this->safeReviewPassCode($packetTarget['readiness_state'] ?? null) ?? 'unknown';
+        $reasonCode = $this->safeReviewPassCode($packetTarget['readiness_reason_code'] ?? null);
+        $blockerCodes = $reasonCode !== null ? [$reasonCode] : [];
+
+        return [
+            'schema' => 'genealogy_review_packet_review_pass.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'target_ref' => $this->safePacketTargetRef($targetRef),
+            'state' => $state,
+            'label' => $this->reviewPassLabel($state, $reasonCode),
+            'reason_code' => $reasonCode,
+            'blocker_count' => (int) ($packetTarget['approval_blocker_count'] ?? count($blockerCodes)),
+            'blocker_codes' => $blockerCodes,
+            'counts' => [
+                'claim_count' => (int) ($packetTarget['claim_count'] ?? 0),
+                'source_count' => (int) ($packetTarget['source_count'] ?? 0),
+                'resolved_media_count' => (int) ($packetTarget['media_resolved_count'] ?? 0),
+                'missing_media_count' => (int) ($packetTarget['media_missing_count'] ?? 0),
+            ],
+            'signals' => [
+                'review_ready' => ($packetTarget['review_ready'] ?? null) === true,
+                'source_backed' => ($packetTarget['source_backed'] ?? null) === true,
+                'boundary_present' => ($packetTarget['boundary_labeled'] ?? null) === true,
+                'identity_present' => null,
+                'privacy_cleared' => null,
+                'preview_only' => ($packetTarget['preview_only'] ?? null) === true,
+                'canonical_mutation' => ($packetTarget['canonical_mutation'] ?? null) === true,
+                'validation_state' => null,
+                'outcome_state' => null,
+                'locator_present' => (int) ($packetTarget['source_count'] ?? 0) > 0,
+            ],
+            'posture' => $this->reviewPassPosture(),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $readiness
+     * @return array<string, mixed>
+     */
+    private function packetReadinessReviewPass(array $readiness): array
+    {
+        $pending = (int) ($readiness['pending_packet_rows'] ?? 0);
+        $ready = (int) ($readiness['ready_rows'] ?? 0);
+        $blocked = (int) ($readiness['blocked_rows'] ?? 0);
+        $canonicalMutation = (int) ($readiness['canonical_mutation_rows'] ?? 0);
+        $state = match (true) {
+            $pending === 0 => 'empty',
+            $blocked === 0 && $ready === $pending => 'ready',
+            default => 'blocked',
+        };
+        $reasonCounts = $this->safeReviewPassCountMap($readiness['reason_code_counts'] ?? []);
+        $blockerCounts = $this->safeReviewPassCountMap($readiness['blocker_code_counts'] ?? []);
+        $firstReasonCode = array_key_first($reasonCounts);
+
+        return [
+            'schema' => 'genealogy_review_packet_review_pass_aggregate.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'scope' => 'aggregate',
+            'state' => $state,
+            'label' => $this->reviewPassLabel($state, is_string($firstReasonCode) ? $firstReasonCode : null),
+            'reason_code' => is_string($firstReasonCode) ? $firstReasonCode : null,
+            'counts' => [
+                'pending_packet_rows' => $pending,
+                'ready_rows' => $ready,
+                'blocked_rows' => $blocked,
+                'source_backed_rows' => (int) ($readiness['source_backed_rows'] ?? 0),
+                'boundary_labeled_rows' => (int) ($readiness['boundary_labeled_rows'] ?? 0),
+                'locator_present_rows' => (int) ($readiness['source_locator_rows'] ?? 0),
+                'claim_rows' => (int) ($readiness['claim_rows'] ?? 0),
+                'preview_only_rows' => (int) ($readiness['preview_only_rows'] ?? 0),
+                'canonical_mutation_rows' => $canonicalMutation,
+                'malformed_details_rows' => (int) ($readiness['malformed_details'] ?? 0),
+            ],
+            'signals' => [
+                'all_pending_ready' => $pending > 0 && $ready === $pending && $blocked === 0,
+                'has_blockers' => $blocked > 0,
+                'has_canonical_mutation' => $canonicalMutation > 0,
+                'has_malformed_details' => (int) ($readiness['malformed_details'] ?? 0) > 0,
+            ],
+            'reason_code_counts' => $reasonCounts,
+            'blocker_code_counts' => $blockerCounts,
+            'posture' => $this->reviewPassPosture(),
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function safeReviewPassCountMap(mixed $counts): array
+    {
+        $safe = [];
+        foreach ($this->integerCountMap($counts) as $code => $count) {
+            $code = $this->safeReviewPassCode($code);
+            if ($code !== null) {
+                $safe[$code] = $count;
+            }
+        }
+
+        ksort($safe);
+
+        return $safe;
+    }
+
+    private function reviewPassLabel(string $state, ?string $reasonCode): string
+    {
+        if ($state === 'ready') {
+            return 'Ready for review';
+        }
+        if ($state === 'empty') {
+            return 'No pending review packets';
+        }
+
+        return match ($reasonCode) {
+            'apply_preview_missing' => 'Blocked: Apply preview missing',
+            'preview_not_preview_only' => 'Blocked: Preview is not preview-only',
+            'canonical_mutation_possible' => 'Blocked: Canonical mutation possible',
+            'validation_missing' => 'Blocked: Validation missing',
+            'validation_not_valid' => 'Blocked: Validation is not valid',
+            'validation_errors' => 'Blocked: Validation errors present',
+            'malformed_details' => 'Blocked: Malformed packet details',
+            default => 'Blocked: Review readiness unknown',
+        };
+    }
+
+    private function safeReviewPassCode(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+        if ($value === '' || preg_match('/^[a-z0-9_:-]{1,80}$/', $value) !== 1) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    private function safePacketTargetRef(?string $targetRef): ?string
+    {
+        if ($targetRef === null || preg_match('/^genealogy_review_packet:target-[a-f0-9]{12}$/', $targetRef) !== 1) {
+            return null;
+        }
+
+        return $targetRef;
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    private function reviewPassPosture(): array
+    {
+        return [
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'automation_allowed' => false,
+            'details_included' => false,
+            'raw_identifiers_included' => false,
+            'tokens_included' => false,
+            'locators_included' => false,
         ];
     }
 

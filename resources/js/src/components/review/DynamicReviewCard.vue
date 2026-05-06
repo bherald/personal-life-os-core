@@ -198,7 +198,11 @@ const packetContextItems = computed(() => {
 
   return [
     packetContextEntry('target', 'Target', compactTargetRef(packetFieldValue('target_ref'))),
-    packetContextEntry('person', 'Person', formatPersonId(packetFieldValue('person_id'))),
+    packetContextEntry(
+      'person',
+      'Person',
+      stringOrNull(packetFocusFieldValue('person_label')) || formatPersonId(packetFieldValue('person_id'))
+    ),
     packetContextEntry('status', 'Status', formatPacketStatus(packetFieldValue('packet_status'))),
     packetContextEntry(
       'origin',
@@ -215,8 +219,7 @@ const packetContextItems = computed(() => {
     packetContextEntry(
       'source',
       'Source',
-      compactLocator(packetFocusFieldValue('source_locator')),
-      stringOrNull(packetFocusFieldValue('source_locator'))
+      compactLocator(packetFocusFieldValue('source_locator'))
     ),
     packetContextEntry('access', 'Access', formatPacketStatus(packetFocusFieldValue('source_access_class'))),
     packetContextEntry('media', 'Media', formatMediaHealth()),
@@ -398,7 +401,7 @@ const stringOrNull = (value) => {
 
 const formatPersonId = (value) => {
   const str = stringOrNull(value)
-  return str ? `#${str}` : null
+  return str ? 'person reference' : null
 }
 
 const formatPacketStatus = (value) => {
@@ -494,11 +497,7 @@ const compactLocator = (value) => {
     return null
   }
 
-  if (str.length <= 64) {
-    return str
-  }
-
-  return `${str.slice(0, 34)}...${str.slice(-24)}`
+  return /^https?:\/\//i.test(str) ? 'external source' : 'source reference'
 }
 
 const compactText = (value) => {

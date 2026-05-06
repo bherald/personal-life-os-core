@@ -353,6 +353,14 @@ class ReviewContextEnrichmentService
         $reviewFocus['target_ref'] = $targetRef;
         $reviewChecklist = $this->reviewPacketChecklist($details, $reviewFocus, $packetOutcome, $claimContexts);
         $evidenceLens = $this->reviewPacketEvidenceLens($details, $claimContexts);
+        $reviewProof = $this->reviewPacketProof(
+            $details,
+            $reviewFocus,
+            $reviewChecklist,
+            $packetOutcome,
+            $claimContexts,
+            $validation
+        );
 
         return [
             'target_ref' => $targetRef,
@@ -377,13 +385,13 @@ class ReviewContextEnrichmentService
             'review_focus' => $reviewFocus,
             'review_checklist' => $reviewChecklist,
             'evidence_lens' => $evidenceLens,
-            'review_proof' => $this->reviewPacketProof(
-                $details,
+            'review_proof' => $reviewProof,
+            'review_pass' => $this->reviewPacketPass(
                 $reviewFocus,
                 $reviewChecklist,
+                $evidenceLens,
+                $reviewProof,
                 $packetOutcome,
-                $claimContexts,
-                $validation
             ),
         ];
     }
@@ -693,6 +701,141 @@ class ReviewContextEnrichmentService
                 fn (array $row): string => (string) ($row['state'] ?? 'unknown'),
                 $rows
             )),
+        ];
+    }
+
+    /**
+     * Compact display-only Review Hub pass projection.
+     *
+     * This intentionally summarizes the existing sanitized projections instead
+     * of copying packet details. It omits raw row IDs, person IDs, tokens, raw
+     * source locators, claim text, source rows, media rows, and details JSON.
+     *
+     * @param  array<string, mixed>  $reviewFocus
+     * @param  array<string, mixed>  $reviewChecklist
+     * @param  array<string, mixed>  $evidenceLens
+     * @param  array<string, mixed>  $reviewProof
+     * @param  array<string, mixed>  $packetOutcome
+     * @return array<string, mixed>
+     */
+    private function reviewPacketPass(
+        array $reviewFocus,
+        array $reviewChecklist,
+        array $evidenceLens,
+        array $reviewProof,
+        array $packetOutcome
+    ): array {
+        $proofSummary = is_array($reviewProof['summary'] ?? null) ? $reviewProof['summary'] : [];
+        $evidenceSummary = is_array($evidenceLens['summary'] ?? null) ? $evidenceLens['summary'] : [];
+        $readiness = is_array($reviewFocus['review_readiness'] ?? null) ? $reviewFocus['review_readiness'] : [];
+        $reasonCode = $this->safeReviewPassCode($readiness['reason_code'] ?? null);
+        $state = $this->safeReviewPassCode($readiness['state'] ?? null) ?? 'unknown';
+        $blockerCodes = $this->reviewPassBlockerCodes($reviewFocus);
+
+        return [
+            'schema' => 'genealogy_review_packet_review_pass.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'target_ref' => $this->safeTargetRef($this->firstScalarText($reviewFocus, ['target_ref'])),
+            'state' => $state,
+            'label' => $this->reviewPassLabel($state, $reasonCode),
+            'reason_code' => $reasonCode,
+            'blocker_count' => $this->nonNegativeInt($readiness['blocker_count'] ?? null) ?? count($blockerCodes),
+            'blocker_codes' => $blockerCodes,
+            'counts' => [
+                'claim_count' => $this->nonNegativeInt($proofSummary['claim_count'] ?? null) ?? 0,
+                'source_count' => $this->nonNegativeInt($proofSummary['source_count'] ?? null) ?? 0,
+                'resolved_media_count' => $this->nonNegativeInt($proofSummary['resolved_media_count'] ?? null) ?? 0,
+                'missing_media_count' => $this->nonNegativeInt($proofSummary['missing_media_count'] ?? null) ?? 0,
+                'checklist_row_count' => $this->nonNegativeInt($proofSummary['checklist_row_count'] ?? null)
+                    ?? $this->nonNegativeInt($reviewChecklist['row_count'] ?? null)
+                    ?? 0,
+            ],
+            'signals' => [
+                'review_ready' => ($proofSummary['review_ready'] ?? null) === true,
+                'source_backed' => ($proofSummary['source_backed'] ?? null) === true,
+                'boundary_present' => ($proofSummary['boundary_present'] ?? null) === true,
+                'identity_present' => ($proofSummary['identity_present'] ?? null) === true,
+                'privacy_cleared' => ($proofSummary['privacy_cleared'] ?? null) === true,
+                'preview_only' => ($proofSummary['preview_only'] ?? null) === true,
+                'canonical_mutation' => ($proofSummary['canonical_mutation'] ?? null) === true,
+                'validation_state' => $this->safeReviewPassCode($proofSummary['validation_state'] ?? null) ?? 'unknown',
+                'outcome_state' => $this->safeReviewPassCode($packetOutcome['outcome_state'] ?? null) ?? 'unknown',
+                'conflict_signal' => ($evidenceSummary['has_conflict'] ?? null) === true,
+                'negative_evidence' => ($evidenceSummary['has_negative_evidence'] ?? null) === true,
+                'locator_present' => ($evidenceSummary['locator_present'] ?? null) === true,
+                'extract_present' => ($evidenceSummary['extract_present'] ?? null) === true,
+            ],
+            'posture' => $this->reviewPassPosture(),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $reviewFocus
+     * @return list<string>
+     */
+    private function reviewPassBlockerCodes(array $reviewFocus): array
+    {
+        $codes = [];
+        foreach ((array) ($reviewFocus['approval_blockers'] ?? []) as $blocker) {
+            if (! is_array($blocker)) {
+                continue;
+            }
+
+            $code = $this->safeReviewPassCode($blocker['code'] ?? null);
+            if ($code !== null) {
+                $codes[] = $code;
+            }
+        }
+
+        return array_values(array_unique($codes));
+    }
+
+    private function reviewPassLabel(string $state, ?string $reasonCode): string
+    {
+        if ($state === 'ready') {
+            return 'Ready for review';
+        }
+
+        return match ($reasonCode) {
+            'apply_preview_missing' => 'Blocked: Apply preview missing',
+            'preview_not_preview_only' => 'Blocked: Preview is not preview-only',
+            'canonical_mutation_possible' => 'Blocked: Canonical mutation possible',
+            'validation_missing' => 'Blocked: Validation missing',
+            'validation_not_valid' => 'Blocked: Validation is not valid',
+            'validation_errors' => 'Blocked: Validation errors present',
+            'malformed_details' => 'Blocked: Malformed packet details',
+            default => 'Blocked: Review readiness unknown',
+        };
+    }
+
+    private function safeReviewPassCode(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+        if ($value === '' || preg_match('/^[a-z0-9_:-]{1,80}$/', $value) !== 1) {
+            return null;
+        }
+
+        return $value;
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    private function reviewPassPosture(): array
+    {
+        return [
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'automation_allowed' => false,
+            'details_included' => false,
+            'raw_identifiers_included' => false,
+            'tokens_included' => false,
+            'locators_included' => false,
         ];
     }
 
