@@ -317,6 +317,49 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
         $this->assertSame(5, $this->packetCount());
     }
 
+    public function test_public_fixture_decision_logs_without_outcomes_do_not_record_operator_pass(): void
+    {
+        foreach ($this->fixturePackets() as $packet) {
+            $payload = $this->callJson([
+                '--file' => $this->packetFile($packet),
+                '--execute' => true,
+                '--json' => true,
+                '--compact' => true,
+            ]);
+
+            $this->assertTrue($payload['success']);
+        }
+
+        DB::table('agent_review_queue')
+            ->where('review_type', 'genealogy_review_packet')
+            ->orderBy('id')
+            ->get(['id', 'details'])
+            ->each(function (object $row): void {
+                $details = json_decode((string) $row->details, true, 512, JSON_THROW_ON_ERROR);
+                $details['packet_status'] = 'pending';
+                $details['decision_log'] = [[
+                    'action' => 'packet_review_started',
+                    'meta' => ['reason_code' => 'needs_operator_outcome'],
+                ]];
+
+                DB::table('agent_review_queue')
+                    ->where('id', $row->id)
+                    ->update([
+                        'details' => json_encode($details, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                        'updated_at' => now(),
+                    ]);
+            });
+
+        $readiness = app(GenealogyEvidenceSprintReadinessService::class)->collect(days: 30);
+
+        $this->assertSame('ready_for_review', $readiness['status']);
+        $this->assertSame(5, $readiness['summary']['operator_touched_packets']);
+        $this->assertSame(5, $readiness['summary']['operator_touched_preview_only_packets']);
+        $this->assertSame(0, $readiness['summary']['terminal_outcome_packets']);
+        $this->assertSame(0, $readiness['summary']['followup_outcome_packets']);
+        $this->assertFalse($readiness['readiness']['operator_pass_recorded']);
+    }
+
     public function test_dry_run_reuse_existing_packet_reports_without_new_insert(): void
     {
         $path = $this->packetFile($this->validPacket());
