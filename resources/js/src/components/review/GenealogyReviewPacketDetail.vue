@@ -39,6 +39,25 @@
       </div>
     </section>
 
+    <section v-if="reviewProofRows.length" class="packet-section review-proof-section">
+      <div class="section-heading">
+        <span>Review proof</span>
+        <span class="section-status preview">display only</span>
+      </div>
+      <div class="checklist-grid proof-grid">
+        <div
+          v-for="row in reviewProofRows"
+          :key="row.key"
+          class="checklist-row proof-row"
+          :class="checklistStateClass(row.state)"
+        >
+          <span class="checklist-state">{{ checklistStateLabel(row.state) }}</span>
+          <span class="checklist-label">{{ row.label }}</span>
+          <span class="checklist-value" :title="row.value">{{ row.value }}</span>
+        </div>
+      </div>
+    </section>
+
     <section v-if="packetChecklistRows.length" class="packet-section review-checklist-section">
       <div class="section-heading">
         <span>Review checklist</span>
@@ -564,16 +583,6 @@
       <div v-else class="empty-line">No decision log entries yet.</div>
     </section>
 
-    <details class="raw-details">
-      <summary>Raw details JSON</summary>
-      <pre>{{ formatJson(details) }}</pre>
-    </details>
-
-    <details class="raw-details">
-      <summary>Packet JSON</summary>
-      <pre>{{ formatJson(packet) }}</pre>
-    </details>
-
     <section class="packet-section packet-actions">
       <div class="section-heading">
         <span>Packet action</span>
@@ -705,6 +714,7 @@ const mediaRefs = computed(() => arrayValue(props.context?.media_refs).filter(is
 const claimContexts = computed(() => arrayValue(props.context?.claim_contexts).filter(isPlainObject))
 const reviewFocus = computed(() => objectValue(props.context?.review_focus))
 const packetOutcome = computed(() => objectValue(props.context?.packet_outcome))
+const reviewProof = computed(() => objectValue(props.context?.review_proof))
 const packetChecklist = computed(() => objectValue(props.context?.review_checklist))
 const remediationOrigin = computed(() => objectValue(reviewFocus.value.remediation_origin))
 const personSnapshot = computed(() => {
@@ -744,6 +754,15 @@ const packetChecklistRows = computed(() => arrayValue(packetChecklist.value.rows
   .map((row) => ({
     key: stringOrNull(row.key) || compactJson(row),
     label: stringOrNull(row.label) || labelize(row.key || 'check'),
+    value: displayValue(row.value),
+    state: stringOrNull(row.state) || 'warning',
+  })))
+
+const reviewProofRows = computed(() => arrayValue(reviewProof.value.rows)
+  .filter(isPlainObject)
+  .map((row) => ({
+    key: stringOrNull(row.key) || compactJson(row),
+    label: stringOrNull(row.label) || labelize(row.key || 'proof'),
     value: displayValue(row.value),
     state: stringOrNull(row.state) || 'warning',
   })))
@@ -1815,6 +1834,15 @@ function objectKeys(value) {
   border-color: rgba(99, 179, 237, 0.24);
 }
 
+.review-proof-section {
+  border-color: rgba(47, 158, 68, 0.28);
+}
+
+.proof-row {
+  border-color: rgba(47, 158, 68, 0.22);
+  background: rgba(47, 158, 68, 0.06);
+}
+
 .checklist-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
@@ -2516,8 +2544,7 @@ a.media-ref-card:hover {
   white-space: pre-wrap;
 }
 
-.inline-json,
-.raw-details pre {
+.inline-json {
   margin: 0.4rem 0 0;
   color: #d8d0e4;
   background: rgba(0, 0, 0, 0.25);
@@ -2528,23 +2555,6 @@ a.media-ref-card:hover {
   line-height: 1.35;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.raw-details {
-  background: rgba(0, 0, 0, 0.14);
-  border: 1px solid rgba(102, 102, 102, 0.25);
-  border-radius: 0.5rem;
-  padding: 0.55rem 0.7rem;
-  min-width: 0;
-}
-
-.raw-details summary {
-  color: #b39ddb;
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
 }
 
 .packet-actions {

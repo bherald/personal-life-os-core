@@ -351,6 +351,7 @@ class ReviewContextEnrichmentService
         $claimContexts = $this->reviewPacketClaimContexts($details, $person, $mediaRefs);
         $reviewFocus = $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person, $mediaRefs);
         $reviewFocus['target_ref'] = $targetRef;
+        $reviewChecklist = $this->reviewPacketChecklist($details, $reviewFocus, $packetOutcome, $claimContexts);
 
         return [
             'target_ref' => $targetRef,
@@ -373,7 +374,15 @@ class ReviewContextEnrichmentService
             'packet_outcome' => $packetOutcome,
             'claim_contexts' => $claimContexts,
             'review_focus' => $reviewFocus,
-            'review_checklist' => $this->reviewPacketChecklist($details, $reviewFocus, $packetOutcome, $claimContexts),
+            'review_checklist' => $reviewChecklist,
+            'review_proof' => $this->reviewPacketProof(
+                $details,
+                $reviewFocus,
+                $reviewChecklist,
+                $packetOutcome,
+                $claimContexts,
+                $validation
+            ),
         ];
     }
 
@@ -484,6 +493,125 @@ class ReviewContextEnrichmentService
                 $rows
             )),
         ];
+    }
+
+    /**
+     * Display-only proof receipt for the operator review pass. This is a
+     * whitelisted projection of derived packet context, not a raw JSON dump.
+     *
+     * @param  array<string, mixed>  $details
+     * @param  array<string, mixed>  $reviewFocus
+     * @param  array<string, mixed>  $reviewChecklist
+     * @param  array<string, mixed>  $packetOutcome
+     * @param  list<array<string, mixed>>  $claimContexts
+     * @param  array<string, mixed>  $validation
+     * @return array<string, mixed>
+     */
+    private function reviewPacketProof(
+        array $details,
+        array $reviewFocus,
+        array $reviewChecklist,
+        array $packetOutcome,
+        array $claimContexts,
+        array $validation
+    ): array {
+        $privacy = $this->detailArray($details, 'privacy');
+        $targetRef = $this->safeTargetRef($this->firstScalarText($reviewFocus, ['target_ref']));
+        $sourceBacked = ($reviewFocus['source_backed'] ?? null) === true;
+        $boundaryPresent = $this->firstScalarText($reviewFocus, ['boundary_label']) !== null;
+        $identityPresent = $this->positiveInt($reviewFocus['person_id'] ?? null) !== null;
+        $privacyCleared = ($privacy['cleared'] ?? null) === true && ($privacy['living_person_risk'] ?? null) !== true;
+        $previewOnly = ($reviewFocus['preview_only'] ?? null) === true;
+        $canonicalMutation = ($reviewFocus['canonical_mutation'] ?? null) === true;
+        $approvalReady = ($reviewFocus['approval_ready'] ?? null) === true;
+        $validationState = $this->validationProofState($validation);
+        $claimCount = count($claimContexts);
+        $sourceCount = $this->nonNegativeInt($reviewFocus['source_count'] ?? null) ?? 0;
+        $resolvedMediaCount = $this->nonNegativeInt($reviewFocus['resolved_media_count'] ?? null) ?? 0;
+        $missingMediaCount = $this->nonNegativeInt($reviewFocus['missing_media_count'] ?? null) ?? 0;
+
+        $rows = [
+            $this->checklistRow('target_ref', 'Target ref', $targetRef ?? 'missing', $targetRef !== null ? 'ok' : 'missing'),
+            $this->checklistRow('review_mode', 'Review mode', 'single packet', ($reviewFocus['review_mode'] ?? null) === 'single_packet' ? 'ok' : 'warning'),
+            $this->checklistRow('source_backed', 'Source-backed', $sourceBacked ? 'yes' : 'no', $sourceBacked ? 'ok' : 'blocked'),
+            $this->checklistRow('boundary_present', 'Boundary present', $boundaryPresent ? 'yes' : 'no', $boundaryPresent ? 'ok' : 'warning'),
+            $this->checklistRow('identity_present', 'Identity present', $identityPresent ? 'yes' : 'no', $identityPresent ? 'ok' : 'warning'),
+            $this->checklistRow('privacy_cleared', 'Privacy cleared', $privacyCleared ? 'yes' : 'no', $privacyCleared ? 'ok' : 'warning'),
+            $this->checklistRow('claim_count', 'Claim count', (string) $claimCount, $claimCount > 0 ? 'ok' : 'blocked'),
+            $this->checklistRow('source_count', 'Source count', (string) $sourceCount, $sourceCount > 0 ? 'ok' : 'warning'),
+            $this->checklistRow('media_resolved', 'Media resolved', (string) $resolvedMediaCount, 'ok'),
+            $this->checklistRow('media_missing', 'Media missing', (string) $missingMediaCount, $missingMediaCount === 0 ? 'ok' : 'warning'),
+            $this->checklistRow('validation_state', 'Validation', $validationState, $validationState === 'valid' ? 'ok' : 'blocked'),
+            $this->checklistRow('approval_ready', 'Approval-ready', $approvalReady ? 'yes' : 'no', $approvalReady ? 'ok' : 'blocked'),
+            $this->checklistRow('preview_only', 'Preview-only', $previewOnly ? 'yes' : 'no', $previewOnly ? 'ok' : 'blocked'),
+            $this->checklistRow('canonical_mutation', 'Canonical mutation', $canonicalMutation ? 'possible' : 'none', $canonicalMutation ? 'blocked' : 'ok'),
+            $this->checklistRow('outcome_state', 'Outcome state', $this->packetOutcomeLabel($packetOutcome), $this->packetOutcomeChecklistState($packetOutcome)),
+            $this->checklistRow('canonical_write_allowed', 'Canonical write allowed', 'no', 'ok'),
+            $this->checklistRow('batch_review_allowed', 'Batch review allowed', 'no', 'ok'),
+            $this->checklistRow('details_included', 'Details included', 'no', 'ok'),
+        ];
+
+        return [
+            'schema' => 'genealogy_review_packet_proof.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'target_ref' => $targetRef,
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'details_included' => false,
+            'summary' => [
+                'review_ready' => $approvalReady,
+                'source_backed' => $sourceBacked,
+                'boundary_present' => $boundaryPresent,
+                'identity_present' => $identityPresent,
+                'privacy_cleared' => $privacyCleared,
+                'claim_count' => $claimCount,
+                'source_count' => $sourceCount,
+                'resolved_media_count' => $resolvedMediaCount,
+                'missing_media_count' => $missingMediaCount,
+                'validation_state' => $validationState,
+                'preview_only' => $previewOnly,
+                'canonical_mutation' => $canonicalMutation,
+                'outcome_state' => $this->firstScalarText($packetOutcome, ['outcome_state']) ?? 'unknown',
+                'checklist_row_count' => count((array) ($reviewChecklist['rows'] ?? [])),
+            ],
+            'row_count' => count($rows),
+            'rows' => $rows,
+            'state_counts' => array_count_values(array_map(
+                fn (array $row): string => (string) ($row['state'] ?? 'unknown'),
+                $rows
+            )),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validation
+     */
+    private function validationProofState(array $validation): string
+    {
+        $errors = is_array($validation['errors'] ?? null) ? $validation['errors'] : [];
+        $warnings = is_array($validation['warnings'] ?? null) ? $validation['warnings'] : [];
+
+        if (($validation['valid'] ?? null) === true) {
+            return 'valid';
+        }
+        if ($errors !== []) {
+            return 'errors';
+        }
+        if ($warnings !== []) {
+            return 'warnings';
+        }
+
+        return $validation === [] ? 'missing' : 'unknown';
+    }
+
+    private function safeTargetRef(?string $targetRef): ?string
+    {
+        if ($targetRef === null || preg_match('/^genealogy_review_packet:target-[a-f0-9]{12}$/', $targetRef) !== 1) {
+            return null;
+        }
+
+        return $targetRef;
     }
 
     /**

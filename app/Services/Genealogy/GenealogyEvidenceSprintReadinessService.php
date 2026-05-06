@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\Review\ReviewTargetReferenceService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -38,7 +39,7 @@ class GenealogyEvidenceSprintReadinessService
 
         $cutoff = $generatedAt->copy()->subDays($days);
         $rows = DB::table('agent_review_queue')
-            ->select(['id', 'agent_id', 'status', 'details', 'created_at', 'updated_at', 'reviewed_at'])
+            ->select($this->reviewQueueSelectColumns())
             ->where('review_type', self::REVIEW_TYPE)
             ->where('created_at', '>=', $cutoff->toDateTimeString())
             ->orderByDesc('created_at')
@@ -107,6 +108,7 @@ class GenealogyEvidenceSprintReadinessService
             'window_days' => $days,
             'target_packets' => self::TARGET_PACKETS,
             'status' => $status,
+            'next_review_target' => $this->nextReviewTarget($rows),
             'summary' => $summary,
             'status_counts' => $summary['_status_counts'],
             'packet_status_counts' => $summary['_packet_status_counts'],
@@ -150,6 +152,21 @@ class GenealogyEvidenceSprintReadinessService
             $lines[] = '- '.$key.': '.$this->stringValue($value);
         }
 
+        if (is_array($payload['next_review_target'] ?? null)) {
+            $target = $payload['next_review_target'];
+            $lines[] = '';
+            $lines[] = '## Next Review Target';
+            $lines[] = '';
+            $lines[] = '- target_ref: '.$target['target_ref'];
+            $lines[] = '- selection_reason: '.$target['selection_reason'];
+            $lines[] = '- review_ready: '.$this->stringValue($target['review_ready'] ?? false);
+            $lines[] = '- source_backed: '.$this->stringValue($target['source_backed'] ?? false);
+            $lines[] = '- preview_only: '.$this->stringValue($target['preview_only'] ?? false);
+            $lines[] = '- canonical_write_allowed: '.$this->stringValue($target['canonical_write_allowed'] ?? false);
+            $lines[] = '- batch_review_allowed: '.$this->stringValue($target['batch_review_allowed'] ?? false);
+            $lines[] = '- details_included: '.$this->stringValue($target['details_included'] ?? false);
+        }
+
         if (($payload['recommendations'] ?? []) !== []) {
             $lines[] = '';
             $lines[] = '## Recommendations';
@@ -185,6 +202,7 @@ class GenealogyEvidenceSprintReadinessService
             'window_days' => (int) ($payload['window_days'] ?? 0),
             'target_packets' => (int) ($payload['target_packets'] ?? self::TARGET_PACKETS),
             'truncated' => (bool) ($payload['truncated'] ?? false),
+            'next_review_target' => $this->compactNextReviewTarget($payload['next_review_target'] ?? null),
             'summary' => [
                 'packet_rows_total' => (int) ($summary['packet_rows_total'] ?? 0),
                 'packet_rows_window' => (int) ($summary['packet_rows_window'] ?? 0),
@@ -241,6 +259,7 @@ class GenealogyEvidenceSprintReadinessService
         $compact = $this->compactPayload($payload);
         $summary = $compact['summary'];
         $readiness = $compact['readiness'];
+        $target = is_array($compact['next_review_target'] ?? null) ? $compact['next_review_target'] : null;
 
         return implode(PHP_EOL, [
             sprintf(
@@ -275,6 +294,17 @@ class GenealogyEvidenceSprintReadinessService
                 $summary['source_locator_required_packets'],
                 $summary['manual_only_source_packets'],
                 $summary['source_realism_blocked_packets']
+            ),
+            sprintf(
+                'next_review: target_ref=%s reason=%s review_ready=%s source_backed=%s preview_only=%s canonical_write_allowed=%s batch_review_allowed=%s details_included=%s',
+                $target['target_ref'] ?? 'none',
+                $target['selection_reason'] ?? 'none',
+                $this->boolValue((bool) ($target['review_ready'] ?? false)),
+                $this->boolValue((bool) ($target['source_backed'] ?? false)),
+                $this->boolValue((bool) ($target['preview_only'] ?? false)),
+                $this->boolValue((bool) ($target['canonical_write_allowed'] ?? false)),
+                $this->boolValue((bool) ($target['batch_review_allowed'] ?? false)),
+                $this->boolValue((bool) ($target['details_included'] ?? false))
             ),
             sprintf(
                 'outcomes: touched=%s touched_preview_only=%s terminal=%s followup=%s reviewed=%s rejected=%s deferred=%s clarify=%s operator_pass_recorded=%s',
@@ -312,6 +342,7 @@ class GenealogyEvidenceSprintReadinessService
         $compact = $this->compactPayload($payload);
         $summary = $compact['summary'];
         $readiness = $compact['readiness'];
+        $target = is_array($compact['next_review_target'] ?? null) ? $compact['next_review_target'] : null;
         $lines = [
             '# Genealogy Evidence Sprint Compact Readiness',
             '',
@@ -337,6 +368,16 @@ class GenealogyEvidenceSprintReadinessService
                 'missing_locator='.$summary['source_locator_required_packets'],
                 'manual_only='.$summary['manual_only_source_packets'],
                 'blocked='.$summary['source_realism_blocked_packets'],
+            ]).'`',
+            '- Next review target: `'.($target['target_ref'] ?? 'none').'`',
+            '- Next review target safety: `'.implode(', ', [
+                'reason='.($target['selection_reason'] ?? 'none'),
+                'review_ready='.$this->boolValue((bool) ($target['review_ready'] ?? false)),
+                'source_backed='.$this->boolValue((bool) ($target['source_backed'] ?? false)),
+                'preview_only='.$this->boolValue((bool) ($target['preview_only'] ?? false)),
+                'canonical_write_allowed='.$this->boolValue((bool) ($target['canonical_write_allowed'] ?? false)),
+                'batch_review_allowed='.$this->boolValue((bool) ($target['batch_review_allowed'] ?? false)),
+                'details_included='.$this->boolValue((bool) ($target['details_included'] ?? false)),
             ]).'`',
             '- Outcomes: `'.implode(', ', [
                 'touched='.$summary['operator_touched_packets'],
@@ -396,6 +437,7 @@ class GenealogyEvidenceSprintReadinessService
             'packet_status_counts' => [],
             'top_agents' => [],
             'top_reason_codes' => [],
+            'next_review_target' => null,
             'readiness' => $readiness,
             'recommendations' => $this->recommendations($status, $summary, $readiness),
             'evidence_errors' => $errors,
@@ -577,6 +619,106 @@ class GenealogyEvidenceSprintReadinessService
             : $summary['operator_boundary_packets'] - max($boundaryCounts);
 
         return $summary;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function nextReviewTarget(Collection $rows): ?array
+    {
+        $targetRow = $rows
+            ->filter(function (object $row): bool {
+                $rowStatus = $this->cleanKey($row->status ?? 'unknown');
+                if ($rowStatus !== 'pending') {
+                    return false;
+                }
+
+                [$details, $malformed] = $this->decodeDetails($row->details ?? null);
+                if ($malformed || $details === []) {
+                    return false;
+                }
+
+                return $this->isReviewReadyPendingPacket($details);
+            })
+            ->sortBy(fn (object $row): int => $this->createdAtTimestamp($row->created_at ?? null))
+            ->first();
+
+        if ($targetRow === null) {
+            return null;
+        }
+
+        [$details] = $this->decodeDetails($targetRow->details ?? null);
+
+        return [
+            'schema' => 'genealogy_evidence_sprint_next_review_target.v1',
+            'target_ref' => app(ReviewTargetReferenceService::class)->forReviewRow($targetRow, self::REVIEW_TYPE),
+            'review_type' => self::REVIEW_TYPE,
+            'selection_reason' => 'oldest_ready_source_backed_packet',
+            'review_ready' => true,
+            'source_backed' => true,
+            'preview_only' => true,
+            'claim_count' => $this->safeCount($details['claims'] ?? []),
+            'source_count' => $this->safeCount($this->packetValidator()->collectSourceLocators($details)),
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'details_included' => false,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function compactNextReviewTarget(mixed $target): ?array
+    {
+        if (! is_array($target)) {
+            return null;
+        }
+
+        $targetRef = $target['target_ref'] ?? null;
+        if (! is_string($targetRef) || preg_match('/^genealogy_review_packet:target-[a-f0-9]{12}$/', $targetRef) !== 1) {
+            return null;
+        }
+
+        return [
+            'schema' => 'genealogy_evidence_sprint_next_review_target.v1',
+            'target_ref' => $targetRef,
+            'selection_reason' => $this->safeToken($target['selection_reason'] ?? null) ?? 'oldest_ready_source_backed_packet',
+            'review_ready' => (bool) ($target['review_ready'] ?? false),
+            'source_backed' => (bool) ($target['source_backed'] ?? false),
+            'preview_only' => (bool) ($target['preview_only'] ?? false),
+            'claim_count' => (int) ($target['claim_count'] ?? 0),
+            'source_count' => (int) ($target['source_count'] ?? 0),
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'details_included' => false,
+        ];
+    }
+
+    private function isReviewReadyPendingPacket(array $details): bool
+    {
+        return $this->hasSourceEvidence($details)
+            && $this->isPreviewOnly($details)
+            && $this->hasIdentity($details)
+            && ($details['privacy']['cleared'] ?? null) === true
+            && $this->hasClaims($details)
+            && $this->validationAllowsReview($details)
+            && $this->operatorBoundaryLabel($details) !== null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function reviewQueueSelectColumns(): array
+    {
+        $columns = ['id', 'agent_id', 'status', 'details', 'created_at', 'updated_at', 'reviewed_at'];
+
+        foreach (['token', 'review_type'] as $optionalColumn) {
+            if (Schema::hasColumn('agent_review_queue', $optionalColumn)) {
+                $columns[] = $optionalColumn;
+            }
+        }
+
+        return $columns;
     }
 
     private function initialSummary(): array
@@ -907,6 +1049,36 @@ class GenealogyEvidenceSprintReadinessService
         }
 
         return false;
+    }
+
+    private function createdAtTimestamp(mixed $value): int
+    {
+        if (! is_scalar($value)) {
+            return PHP_INT_MAX;
+        }
+
+        $timestamp = strtotime((string) $value);
+
+        return $timestamp === false ? PHP_INT_MAX : $timestamp;
+    }
+
+    private function safeCount(mixed $value): int
+    {
+        return is_countable($value) ? count($value) : 0;
+    }
+
+    private function safeToken(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+        if ($value === '' || preg_match('/^[a-z0-9_-]{1,80}$/', $value) !== 1) {
+            return null;
+        }
+
+        return $value;
     }
 
     private function cleanKey(mixed $value): string
