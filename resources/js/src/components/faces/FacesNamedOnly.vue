@@ -230,6 +230,17 @@
               </span>
             </div>
 
+            <div v-if="candidatePrivacyBadges(candidate).length" class="mt-2 flex flex-wrap gap-1">
+              <span
+                v-for="badge in candidatePrivacyBadges(candidate)"
+                :key="badge.key"
+                class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                :class="privacyBadgeClass(badge)"
+              >
+                {{ badge.label }}
+              </span>
+            </div>
+
             <div class="mt-3 flex justify-end gap-2">
               <button
                 class="rounded border border-ops-orange/40 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-ops-orange hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-50"
@@ -459,6 +470,54 @@ function formatLifeSpan(candidate) {
 
 function formatReason(reason) {
   return String(reason || '').replaceAll('_', ' ')
+}
+
+function candidatePrivacyBadges(candidate) {
+  const badges = []
+
+  if (candidate?.requires_elevated_review) {
+    badges.push({ key: 'elevated-review', label: 'Extra review', tone: 'warning' })
+  }
+
+  if (candidate?.living === true || candidate?.living_status === 'living') {
+    badges.push({ key: 'living', label: 'Living', tone: 'warning' })
+  } else if (candidate?.living_status === 'unknown') {
+    badges.push({ key: 'living-unknown', label: 'Living unknown', tone: 'muted' })
+  }
+
+  if (candidate?.privacy_override && candidate.privacy_override !== 'default') {
+    badges.push({
+      key: `privacy-override-${candidate.privacy_override}`,
+      label: `Person ${formatReason(candidate.privacy_override)}`,
+      tone: candidate.privacy_override === 'public' ? 'muted' : 'warning',
+    })
+  }
+
+  if (candidate?.tree_privacy) {
+    badges.push({
+      key: `tree-privacy-${candidate.tree_privacy}`,
+      label: `Tree ${formatReason(candidate.tree_privacy)}`,
+      tone: 'muted',
+    })
+  }
+
+  if (candidate?.living_privacy && (candidate?.living === true || candidate?.living_status === 'unknown')) {
+    badges.push({
+      key: `living-privacy-${candidate.living_privacy}`,
+      label: `Living ${formatReason(candidate.living_privacy)}`,
+      tone: candidate.living_privacy === 'show_all' ? 'muted' : 'warning',
+    })
+  }
+
+  return badges
+}
+
+function privacyBadgeClass(badge) {
+  if (badge?.tone === 'warning') {
+    return 'border-ops-orange/40 bg-ops-orange/10 text-ops-orange'
+  }
+
+  return 'border-ops-plum/40 bg-black/20 text-ops-text-muted'
 }
 
 function isTerminalDecision(face) {

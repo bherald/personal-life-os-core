@@ -118,6 +118,7 @@ class FaceCandidateService
     private function rankCandidates(int $treeId, array $tokens, string $normalizedFaceName, int $limit): array
     {
         $query = DB::table('genealogy_persons as gp')
+            ->join('genealogy_trees as gt', 'gt.id', '=', 'gp.tree_id')
             ->leftJoinSub(
                 DB::table('file_registry_faces')
                     ->select('genealogy_person_id', DB::raw('COUNT(*) AS face_count'))
@@ -144,6 +145,10 @@ class FaceCandidateService
                 'gp.surname',
                 'gp.birth_date',
                 'gp.death_date',
+                'gp.living',
+                'gp.privacy_override',
+                'gt.privacy as tree_privacy',
+                'gt.living_privacy',
                 DB::raw("CONCAT_WS(' ', gp.given_name, gp.surname) AS name"),
                 DB::raw('COALESCE(face_counts.face_count, 0) AS face_count')
             )
@@ -162,6 +167,13 @@ class FaceCandidateService
                     'surname' => $person->surname,
                     'birth_date' => $person->birth_date,
                     'death_date' => $person->death_date,
+                    'living' => $this->nullableBool($person->living ?? null),
+                    'living_status' => $this->livingStatus($person->living ?? null),
+                    'privacy_override' => $this->privacyOverride($person->privacy_override ?? null),
+                    'tree_privacy' => $this->treePrivacy($person->tree_privacy ?? null),
+                    'living_privacy' => $this->livingPrivacy($person->living_privacy ?? null),
+                    'privacy_state' => $this->privacyState($person),
+                    'requires_elevated_review' => $this->requiresElevatedReview($person),
                     'face_count' => (int) $person->face_count,
                     'score' => $score,
                     'reasons' => $reasons,
@@ -380,5 +392,110 @@ class FaceCandidateService
         }
 
         return 'review';
+    }
+
+    private function nullableBool(mixed $value): ?bool
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value === 1;
+        }
+
+        $normalized = strtolower(trim((string) $value));
+        if (in_array($normalized, ['1', 'true', 'yes'], true)) {
+            return true;
+        }
+
+        if (in_array($normalized, ['0', 'false', 'no'], true)) {
+            return false;
+        }
+
+        return null;
+    }
+
+    private function livingStatus(mixed $value): string
+    {
+        $living = $this->nullableBool($value);
+
+        if ($living === null) {
+            return 'unknown';
+        }
+
+        return $living ? 'living' : 'not_living';
+    }
+
+    private function privacyOverride(mixed $value): string
+    {
+        $normalized = strtolower(trim((string) ($value ?? 'default')));
+
+        return in_array($normalized, ['default', 'public', 'private', 'restricted'], true)
+            ? $normalized
+            : 'default';
+    }
+
+    private function treePrivacy(mixed $value): string
+    {
+        $normalized = strtolower(trim((string) ($value ?? 'private')));
+
+        return in_array($normalized, ['private', 'shared', 'public'], true)
+            ? $normalized
+            : 'private';
+    }
+
+    private function livingPrivacy(mixed $value): string
+    {
+        $normalized = strtolower(trim((string) ($value ?? 'hide_details')));
+
+        return in_array($normalized, ['hide_all', 'hide_details', 'show_all'], true)
+            ? $normalized
+            : 'hide_details';
+    }
+
+    private function privacyState(object $person): string
+    {
+        $living = $this->nullableBool($person->living ?? null);
+        $privacyOverride = $this->privacyOverride($person->privacy_override ?? null);
+        $treePrivacy = $this->treePrivacy($person->tree_privacy ?? null);
+        $livingPrivacy = $this->livingPrivacy($person->living_privacy ?? null);
+
+        if (in_array($privacyOverride, ['private', 'restricted'], true)) {
+            return 'person_private';
+        }
+
+        if ($privacyOverride === 'public') {
+            return $living === true ? 'living_public_override' : 'public_override';
+        }
+
+        if ($living === true) {
+            return match ($livingPrivacy) {
+                'hide_all' => 'living_hide_all',
+                'hide_details' => 'living_hide_details',
+                default => 'living_show_all',
+            };
+        }
+
+        return match ($treePrivacy) {
+            'public' => 'tree_public',
+            'shared' => 'tree_shared',
+            default => 'tree_private',
+        };
+    }
+
+    private function requiresElevatedReview(object $person): bool
+    {
+        $living = $this->nullableBool($person->living ?? null);
+        $privacyOverride = $this->privacyOverride($person->privacy_override ?? null);
+        $livingPrivacy = $this->livingPrivacy($person->living_privacy ?? null);
+
+        return $living === true
+            || in_array($privacyOverride, ['private', 'restricted'], true)
+            || ($living === null && $livingPrivacy === 'hide_all');
     }
 }
