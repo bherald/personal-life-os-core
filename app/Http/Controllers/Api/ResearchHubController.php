@@ -204,6 +204,45 @@ class ResearchHubController extends Controller
     }
 
     /**
+     * Resolve a sanitized Review Hub target_ref to the current pending packet.
+     *
+     * This keeps operator handoff links based on target refs instead of row ids
+     * or tokens. It returns the same display item shape as /items and does not
+     * review, apply, or mutate genealogy records.
+     */
+    public function itemByTargetRef(Request $request): JsonResponse
+    {
+        $targetRef = $this->normalizeGenealogyPacketTargetRef($request->query('target_ref'));
+        if ($targetRef === null) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Invalid target_ref',
+            ], 422);
+        }
+
+        $result = $this->registry->fetchItems('genealogy_review_packet', 500, 0, null);
+        $items = $this->enrichItemsWithTreeName(
+            $this->enrichItemsWithRemediation($result['items'] ?? [])
+        );
+
+        foreach ($items as $item) {
+            if ($this->itemTargetRef($item) === $targetRef) {
+                return response()->json([
+                    'success' => true,
+                    'target_ref' => $targetRef,
+                    'item' => $item,
+                ]);
+            }
+        }
+
+        return response()->json([
+            'success' => false,
+            'target_ref' => $targetRef,
+            'error' => 'Review packet target not found',
+        ], 404);
+    }
+
+    /**
      * Approve a single item
      */
     public function approve(Request $request, string $unifiedId): JsonResponse
@@ -271,6 +310,38 @@ class ResearchHubController extends Controller
         $value = $request->input($key);
 
         return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
+    private function normalizeGenealogyPacketTargetRef(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $text = trim((string) $value);
+        if ($text === '') {
+            return null;
+        }
+
+        if (preg_match('/genealogy_review_packet:target-[a-f0-9]{12}/i', $text, $matches) === 1) {
+            return strtolower($matches[0]);
+        }
+
+        if (preg_match('/target-[a-f0-9]{12}/i', $text, $matches) === 1) {
+            return 'genealogy_review_packet:'.strtolower($matches[0]);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $item
+     */
+    private function itemTargetRef(array $item): ?string
+    {
+        return $this->normalizeGenealogyPacketTargetRef($item['target_ref'] ?? null)
+            ?? $this->normalizeGenealogyPacketTargetRef($item['review_focus']['target_ref'] ?? null)
+            ?? $this->normalizeGenealogyPacketTargetRef($item['details']['target_ref'] ?? null);
     }
 
     /**

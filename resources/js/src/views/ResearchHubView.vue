@@ -163,6 +163,12 @@
         <span v-if="targetRefActive" class="text-xs text-ops-text-muted">
           {{ targetRefMatchCount }} match{{ targetRefMatchCount === 1 ? '' : 'es' }}
         </span>
+        <span v-if="targetRefLookupLoading" class="text-xs text-ops-sky">
+          loading target
+        </span>
+        <span v-else-if="targetRefLookupError" class="text-xs text-ops-orange">
+          {{ targetRefLookupError }}
+        </span>
         <button
           v-if="targetRefLinkAvailable"
           type="button"
@@ -513,6 +519,9 @@ const sortMode = ref('confidence_desc')   // 'confidence_desc' | 'recent_first' 
 const confidenceThreshold = ref(0)        // 0..95 in 5% increments
 const dailyQuotaTarget = ref(20)
 const targetRefQuery = ref('')
+const targetRefLookupLoading = ref(false)
+const targetRefLookupMiss = ref(null)
+const targetRefLookupError = ref('')
 
 // F4 fix: build the storage key from LOCAL date components on each
 // access (not UTC, not via a Vue computed). The previous version used
@@ -676,6 +685,88 @@ const focusLinkedItem = async () => {
   await scrollItemIntoView(unifiedId)
 }
 
+const focusTargetRefItem = async (item) => {
+  if (!item?.unified_id) return
+
+  selectedItem.value = item
+  if (isReviewPacket(item)) {
+    detailUnifiedId.value = item.unified_id
+  }
+  await scrollItemIntoView(item.unified_id)
+}
+
+const loadedTargetRefItem = (value) => {
+  if (!value) return null
+  return items.value.find(item => itemTargetRef(item) === value) || null
+}
+
+const upsertReviewItem = (item) => {
+  if (!item?.unified_id) return null
+
+  const existingIndex = items.value.findIndex(candidate => candidate.unified_id === item.unified_id)
+  if (existingIndex === -1) {
+    items.value.unshift(item)
+  } else {
+    items.value.splice(existingIndex, 1, item)
+  }
+
+  return items.value.find(candidate => candidate.unified_id === item.unified_id) || item
+}
+
+const ensureTargetRefLoaded = async () => {
+  const requested = targetRef.value
+  if (!requested) return
+
+  const existing = loadedTargetRefItem(requested)
+  if (existing) {
+    await focusTargetRefItem(existing)
+    return
+  }
+
+  if (targetRefLookupLoading.value || targetRefLookupMiss.value === requested) {
+    return
+  }
+
+  targetRefLookupLoading.value = true
+  targetRefLookupError.value = ''
+
+  try {
+    const response = await api.get('/research-hub/items/by-target-ref', {
+      params: { target_ref: requested },
+    })
+
+    if (targetRef.value !== requested) {
+      return
+    }
+
+    const item = response.item || response.data?.item || null
+    if (item && itemTargetRef(item) === requested) {
+      targetRefLookupMiss.value = null
+      const inserted = upsertReviewItem(item)
+      await focusTargetRefItem(inserted)
+      return
+    }
+
+    targetRefLookupMiss.value = requested
+    targetRefLookupError.value = 'Target not found'
+  } catch (error) {
+    if (targetRef.value !== requested) {
+      return
+    }
+    if (error?.response?.status === 404) {
+      targetRefLookupMiss.value = requested
+      targetRefLookupError.value = 'Target not found'
+    } else {
+      targetRefLookupError.value = 'Target lookup failed'
+    }
+  } finally {
+    targetRefLookupLoading.value = false
+    if (targetRef.value && targetRef.value !== requested) {
+      await ensureTargetRefLoaded()
+    }
+  }
+}
+
 // Computed
 const totalPending = computed(() => {
   if (!EXCLUDED_CATEGORIES.length) return reviewStats.value._total || 0
@@ -686,6 +777,12 @@ const totalPending = computed(() => {
 
 const emptyStateMessage = computed(() => {
   if (targetRefActive.value) {
+    if (targetRefLookupLoading.value) {
+      return `Loading packet for ${targetRef.value}.`
+    }
+    if (targetRefLookupMiss.value === targetRef.value) {
+      return `No pending packet was found for ${targetRef.value}.`
+    }
     return targetRef.value
       ? `No loaded packet matches ${targetRef.value} with the current filters.`
       : 'Enter a full genealogy review packet target ref.'
@@ -750,6 +847,8 @@ const targetRefShareUrl = computed(() => {
 
 const clearTargetRefFilter = () => {
   targetRefQuery.value = ''
+  targetRefLookupMiss.value = null
+  targetRefLookupError.value = ''
 }
 
 const copyTargetRefLink = async () => {
@@ -868,6 +967,7 @@ const loadData = async () => {
     await nextTick()
     setupScrollObserver()
     await focusLinkedItem()
+    await ensureTargetRefLoaded()
   } catch (e) {
     console.error('Failed to load research hub data:', e)
   } finally {
@@ -891,6 +991,7 @@ const loadMore = async () => {
     // Re-observe after new items render
     await nextTick()
     setupScrollObserver()
+    await ensureTargetRefLoaded()
   } catch (e) {
     console.error('Failed to load more items:', e)
   } finally {
@@ -1500,6 +1601,7 @@ watch(activeCategory, async () => {
     await nextTick()
     setupScrollObserver()
     await focusLinkedItem()
+    await ensureTargetRefLoaded()
   } catch (e) {
     console.error('Failed to reload items:', e)
   } finally {
@@ -1522,6 +1624,19 @@ watch(
 )
 
 watch(targetRefQuery, syncTargetRefQueryParam)
+
+watch(
+  targetRef,
+  async (value, oldValue) => {
+    if (value !== oldValue) {
+      targetRefLookupMiss.value = null
+      targetRefLookupError.value = ''
+    }
+    if (value) {
+      await ensureTargetRefLoaded()
+    }
+  }
+)
 
 // Lifecycle
 onMounted(async () => {

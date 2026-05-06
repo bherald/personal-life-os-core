@@ -492,6 +492,7 @@ Route::prefix('research-hub')->group(function () {
     Route::get('/types', [\App\Http\Controllers\Api\ResearchHubController::class, 'types']);
     Route::get('/stats', [\App\Http\Controllers\Api\ResearchHubController::class, 'stats']);
     Route::get('/items', [\App\Http\Controllers\Api\ResearchHubController::class, 'items']);
+    Route::get('/items/by-target-ref', [\App\Http\Controllers\Api\ResearchHubController::class, 'itemByTargetRef']);
 
     // Phase 1 (Genealogy Review UI redesign): enriched detail-pane payload
     // Returns review item + on-file person dossier + per-field diffs in one call
