@@ -4,6 +4,7 @@ namespace App\Services\Review;
 
 use App\Services\Genealogy\GenealogyReviewPacketApplyPreviewService;
 use App\Services\Genealogy\GenealogyReviewPacketFocusService;
+use App\Services\Genealogy\GenealogyReviewPacketOutcomeService;
 use App\Services\Genealogy\PersonService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -112,13 +113,17 @@ class ReviewContextEnrichmentService
 
     private readonly GenealogyReviewPacketFocusService $reviewPacketFocus;
 
+    private readonly GenealogyReviewPacketOutcomeService $reviewPacketOutcome;
+
     public function __construct(
         private readonly PersonService $personService,
         ?GenealogyReviewPacketApplyPreviewService $reviewPacketApplyPreview = null,
         ?GenealogyReviewPacketFocusService $reviewPacketFocus = null,
+        ?GenealogyReviewPacketOutcomeService $reviewPacketOutcome = null,
     ) {
         $this->reviewPacketApplyPreview = $reviewPacketApplyPreview ?? new GenealogyReviewPacketApplyPreviewService;
         $this->reviewPacketFocus = $reviewPacketFocus ?? new GenealogyReviewPacketFocusService;
+        $this->reviewPacketOutcome = $reviewPacketOutcome ?? new GenealogyReviewPacketOutcomeService;
     }
 
     /**
@@ -193,7 +198,12 @@ class ReviewContextEnrichmentService
         ];
 
         if ($type === 'genealogy_review_packet') {
-            $context = array_merge($context, $this->buildGenealogyReviewPacketContext($details, $person, $mediaRefs));
+            $context = array_merge($context, $this->buildGenealogyReviewPacketContext(
+                $details,
+                $person,
+                $mediaRefs,
+                isset($row->status) && is_scalar($row->status) ? (string) $row->status : null
+            ));
         }
 
         if ($type === 'genealogy_finding') {
@@ -313,8 +323,12 @@ class ReviewContextEnrichmentService
      * @param  array<int, array<string, mixed>>  $mediaRefs
      * @return array<string, mixed>
      */
-    private function buildGenealogyReviewPacketContext(array $details, ?array $person = null, array $mediaRefs = []): array
-    {
+    private function buildGenealogyReviewPacketContext(
+        array $details,
+        ?array $person = null,
+        array $mediaRefs = [],
+        ?string $rowStatus = null
+    ): array {
         [$applyPreview, $applyPreviewMeta] = $this->packetApplyPreviewContext($details);
         $validation = $this->detailArray($details, 'validation');
 
@@ -335,6 +349,10 @@ class ReviewContextEnrichmentService
             'apply_preview' => $applyPreview,
             'apply_preview_meta' => $applyPreviewMeta,
             'decision_log' => $this->detailArray($details, 'decision_log'),
+            'packet_outcome' => $this->reviewPacketOutcome->fromDetails(
+                $details,
+                $rowStatus
+            ),
             'claim_contexts' => $this->reviewPacketClaimContexts($details, $person, $mediaRefs),
             'review_focus' => $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person, $mediaRefs),
         ];

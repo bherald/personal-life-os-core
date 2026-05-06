@@ -70,6 +70,14 @@
       >
         {{ packetReadinessLine.label }}
       </div>
+      <div
+        v-if="packetOutcomeLine"
+        class="packet-outcome-line"
+        :class="`is-${packetOutcomeLine.state}`"
+        :title="packetOutcomeLine.title"
+      >
+        {{ packetOutcomeLine.label }}
+      </div>
 
       <!-- Header Row -->
       <div v-if="schema?.card?.header" class="card-header">
@@ -269,6 +277,38 @@ const packetReadinessLine = computed(() => {
   return null
 })
 
+const packetOutcomeLine = computed(() => {
+  if (!isReviewPacket.value) {
+    return null
+  }
+
+  const outcome = props.item?.packet_outcome
+  if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) {
+    return null
+  }
+
+  const label = stringOrNull(outcome.progress_label) || stringOrNull(outcome.outcome_label)
+  if (!label) {
+    return null
+  }
+
+  const reason = stringOrNull(outcome.latest_reason_label)
+  const action = stringOrNull(outcome.latest_action_label)
+  const decisionCount = numberOrNull(outcome.decision_count)
+  const title = [
+    action ? `Latest: ${action}` : null,
+    reason ? `Reason: ${reason}` : null,
+    decisionCount !== null ? `${decisionCount} decision log entr${decisionCount === 1 ? 'y' : 'ies'}` : null,
+    outcome.preview_only === true ? 'Preview-only' : null,
+  ].filter(Boolean).join(' · ') || label
+
+  return {
+    state: normalizeOutcomeState(outcome.outcome_state),
+    label,
+    title,
+  }
+})
+
 const intakeGeneratedBadge = computed(() => {
   return props.item.category === 'genealogy'
     && typeof props.item.agent_id === 'string'
@@ -432,6 +472,15 @@ const numberOrNull = (value) => {
 const normalizeReadinessState = (value) => {
   const state = stringOrNull(value)
   if (state === 'ready' || state === 'blocked') {
+    return state
+  }
+
+  return 'unknown'
+}
+
+const normalizeOutcomeState = (value) => {
+  const state = stringOrNull(value)
+  if (state === 'terminal' || state === 'follow_up' || state === 'touched' || state === 'pending') {
     return state
   }
 
@@ -653,6 +702,31 @@ const getImageUrl = (source) => {
 .packet-readiness-line.is-blocked {
   border-left-color: var(--ops-gold);
   background: rgba(255, 204, 102, 0.08);
+}
+
+.packet-outcome-line {
+  display: flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid rgba(255, 204, 102, 0.7);
+  border-radius: 4px;
+  background: rgba(255, 204, 102, 0.08);
+  color: var(--ops-peach);
+  font-size: 0.74rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.packet-outcome-line.is-terminal {
+  border-left-color: var(--ops-green);
+  background: rgba(113, 231, 158, 0.08);
+}
+
+.packet-outcome-line.is-follow_up,
+.packet-outcome-line.is-touched {
+  border-left-color: var(--ops-sky);
+  background: rgba(99, 179, 237, 0.08);
 }
 
 .packet-context-label {

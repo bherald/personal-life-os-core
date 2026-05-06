@@ -66,6 +66,18 @@
         <span>Packet status</span>
         <span class="section-status" :class="statusClass">{{ packetStatusLabel }}</span>
       </div>
+      <div v-if="packetOutcomeRows.length" class="outcome-progress">
+        <div class="outcome-head" :class="outcomeStateClass">
+          <span class="outcome-label">{{ packetOutcomeLabel }}</span>
+          <span v-if="packetOutcomePreviewOnly" class="outcome-preview">preview-only</span>
+        </div>
+        <div class="kv-grid compact">
+          <div v-for="row in packetOutcomeRows" :key="row.key" class="kv-row">
+            <span class="kv-key">{{ row.label }}</span>
+            <span class="kv-value">{{ row.value }}</span>
+          </div>
+        </div>
+      </div>
       <div v-if="latestDecision" class="latest-decision">
         <div class="kv-grid compact">
           <div class="kv-row">
@@ -672,6 +684,7 @@ const decisionLog = computed(() => arrayValue(props.context?.decision_log, detai
 const mediaRefs = computed(() => arrayValue(props.context?.media_refs).filter(isPlainObject))
 const claimContexts = computed(() => arrayValue(props.context?.claim_contexts).filter(isPlainObject))
 const reviewFocus = computed(() => objectValue(props.context?.review_focus))
+const packetOutcome = computed(() => objectValue(props.context?.packet_outcome))
 const remediationOrigin = computed(() => objectValue(reviewFocus.value.remediation_origin))
 const personSnapshot = computed(() => {
   const person = props.context?.person
@@ -687,6 +700,30 @@ const packetStatus = computed(() => {
 })
 
 const packetStatusLabel = computed(() => packetStatus.value || item.value.status || 'pending')
+
+const packetOutcomeLabel = computed(() => {
+  return stringOrNull(packetOutcome.value.progress_label)
+    || stringOrNull(packetOutcome.value.outcome_label)
+    || 'Outcome state unknown'
+})
+
+const packetOutcomePreviewOnly = computed(() => packetOutcome.value.preview_only === true)
+
+const packetOutcomeRows = computed(() => [
+  outcomeRow('outcome', 'Outcome', packetOutcome.value.outcome_label),
+  outcomeRow('decision_count', 'Decision log entries', packetOutcome.value.decision_count),
+  outcomeRow('latest_action', 'Latest action', packetOutcome.value.latest_action_label),
+  outcomeRow('reason', 'Reason', packetOutcome.value.latest_reason_label),
+  outcomeRow('actor', 'Actor', packetOutcome.value.latest_actor),
+  outcomeRow('time', 'Time', packetOutcome.value.latest_at ? formatDate(packetOutcome.value.latest_at) : null),
+].filter(Boolean))
+
+const outcomeStateClass = computed(() => {
+  const state = stringOrNull(packetOutcome.value.outcome_state)
+  if (state === 'terminal') return 'status-ok'
+  if (state === 'follow_up' || state === 'touched') return 'status-warning'
+  return 'status-pending'
+})
 
 const canAct = computed(() => String(item.value.status || '').toLowerCase() === 'pending')
 const canMarkReviewed = computed(() => canAct.value && reviewFocusApprovalReady.value)
@@ -988,6 +1025,11 @@ function focusRow(key, label, value, className = null, title = null) {
 }
 
 function originRow(key, label, value) {
+  if (value === null || value === undefined || value === '') return null
+  return { key, label, raw: value, value: displayValue(value) }
+}
+
+function outcomeRow(key, label, value) {
   if (value === null || value === undefined || value === '') return null
   return { key, label, raw: value, value: displayValue(value) }
 }
@@ -1676,6 +1718,36 @@ function objectKeys(value) {
 
 .status-section {
   border-color: rgba(99, 179, 237, 0.24);
+}
+
+.outcome-progress {
+  margin-bottom: 0.6rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid rgba(99, 179, 237, 0.22);
+  border-radius: 0.4rem;
+  background: rgba(99, 179, 237, 0.07);
+}
+
+.outcome-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.45rem;
+}
+
+.outcome-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #ffde9a;
+}
+
+.outcome-preview {
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #bfe1ff;
 }
 
 .review-focus-section {

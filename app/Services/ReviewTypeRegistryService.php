@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Services\Genealogy\GenealogyReviewPacketFocusService;
+use App\Services\Genealogy\GenealogyReviewPacketOutcomeService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -23,6 +24,8 @@ class ReviewTypeRegistryService
     private ?\App\Services\Genealogy\GenealogyLocalReviewSummaryService $genealogyReviewSummary = null;
 
     private ?GenealogyReviewPacketFocusService $genealogyReviewPacketFocus = null;
+
+    private ?GenealogyReviewPacketOutcomeService $genealogyReviewPacketOutcome = null;
 
     private const CACHE_KEY = 'review_type_registry';
 
@@ -756,6 +759,10 @@ class ReviewTypeRegistryService
         $sources = is_array($details['sources'] ?? null) ? $details['sources'] : [];
         $item['source_count'] = count($sourceLocators !== [] ? $sourceLocators : $sources);
         $item['review_focus'] = $this->genealogyReviewPacketFocus()->fromPersistedDetails($details);
+        $item['packet_outcome'] = $this->genealogyReviewPacketOutcome()->fromDetails(
+            $details,
+            isset($item['status']) && is_scalar($item['status']) ? (string) $item['status'] : null
+        );
 
         if (isset($details['source_locator']) && is_scalar($details['source_locator'])) {
             $item['source_locator'] = (string) $details['source_locator'];
@@ -801,6 +808,11 @@ class ReviewTypeRegistryService
     private function genealogyReviewPacketFocus(): GenealogyReviewPacketFocusService
     {
         return $this->genealogyReviewPacketFocus ??= new GenealogyReviewPacketFocusService;
+    }
+
+    private function genealogyReviewPacketOutcome(): GenealogyReviewPacketOutcomeService
+    {
+        return $this->genealogyReviewPacketOutcome ??= new GenealogyReviewPacketOutcomeService;
     }
 
     private function decorateGenealogyFindingItem(array $item): array
