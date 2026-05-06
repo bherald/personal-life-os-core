@@ -57,6 +57,13 @@ class GenealogyEvidenceSprintReadinessService
 
         $remaining = max(0, self::TARGET_PACKETS - (int) $summary['source_backed_packets']);
         $remainingReviewable = max(0, self::TARGET_PACKETS - (int) $summary['reviewable_pending_packets']);
+        $operatorPassRecorded = $summary['operator_touched_preview_only_packets'] >= self::TARGET_PACKETS
+            && $summary['operator_boundary_packets'] >= self::TARGET_PACKETS
+            && $summary['packets_missing_boundary'] === 0
+            && $summary['boundary_label_count'] === 1
+            && $summary['boundary_mismatch_packets'] === 0
+            && $summary['mutating_preview_packets'] === 0
+            && $summary['malformed_details'] === 0;
         $readiness = [
             'target_packet_count' => self::TARGET_PACKETS,
             'remaining_to_target' => $remaining,
@@ -78,6 +85,7 @@ class GenealogyEvidenceSprintReadinessService
                 && $summary['boundary_mismatch_packets'] === 0
                 && $summary['mutating_preview_packets'] === 0
                 && $summary['malformed_details'] === 0,
+            'operator_pass_recorded' => $operatorPassRecorded,
         ];
 
         if ($summary['malformed_details'] > 0) {
@@ -192,6 +200,14 @@ class GenealogyEvidenceSprintReadinessService
                 'source_locator_required_packets' => (int) ($summary['source_locator_required_packets'] ?? 0),
                 'manual_only_source_packets' => (int) ($summary['manual_only_source_packets'] ?? 0),
                 'source_realism_blocked_packets' => (int) ($summary['source_realism_blocked_packets'] ?? 0),
+                'operator_touched_packets' => (int) ($summary['operator_touched_packets'] ?? 0),
+                'operator_touched_preview_only_packets' => (int) ($summary['operator_touched_preview_only_packets'] ?? 0),
+                'terminal_outcome_packets' => (int) ($summary['terminal_outcome_packets'] ?? 0),
+                'followup_outcome_packets' => (int) ($summary['followup_outcome_packets'] ?? 0),
+                'reviewed_preview_only' => (int) ($summary['reviewed_preview_only'] ?? 0),
+                'rejected_packets' => (int) ($summary['rejected_packets'] ?? 0),
+                'deferred_packets' => (int) ($summary['deferred_packets'] ?? 0),
+                'clarification_requested' => (int) ($summary['clarification_requested'] ?? 0),
                 'preview_only_packets' => (int) ($summary['preview_only_packets'] ?? 0),
                 'operator_boundary_packets' => (int) ($summary['operator_boundary_packets'] ?? 0),
                 'packets_missing_boundary' => (int) ($summary['packets_missing_boundary'] ?? 0),
@@ -209,6 +225,7 @@ class GenealogyEvidenceSprintReadinessService
                 'needs_reviewable_packet_details' => (bool) ($readiness['needs_reviewable_packet_details'] ?? false),
                 'mutation_guard_ok' => (bool) ($readiness['mutation_guard_ok'] ?? true),
                 'ready_for_five_packet_review' => (bool) ($readiness['ready_for_five_packet_review'] ?? false),
+                'operator_pass_recorded' => (bool) ($readiness['operator_pass_recorded'] ?? false),
             ],
             'recommendation_count' => count($payload['recommendations'] ?? []),
             'recommendations' => array_values(array_filter($payload['recommendations'] ?? [], 'is_string')),
@@ -256,6 +273,18 @@ class GenealogyEvidenceSprintReadinessService
                 $summary['source_locator_required_packets'],
                 $summary['manual_only_source_packets'],
                 $summary['source_realism_blocked_packets']
+            ),
+            sprintf(
+                'outcomes: touched=%s touched_preview_only=%s terminal=%s followup=%s reviewed=%s rejected=%s deferred=%s clarify=%s operator_pass_recorded=%s',
+                $summary['operator_touched_packets'],
+                $summary['operator_touched_preview_only_packets'],
+                $summary['terminal_outcome_packets'],
+                $summary['followup_outcome_packets'],
+                $summary['reviewed_preview_only'],
+                $summary['rejected_packets'],
+                $summary['deferred_packets'],
+                $summary['clarification_requested'],
+                $this->boolValue($readiness['operator_pass_recorded'])
             ),
             sprintf(
                 'boundary: has=%s consistent=%s missing=%s label_count=%s mismatch=%s needs_operator_boundary=%s',
@@ -307,9 +336,20 @@ class GenealogyEvidenceSprintReadinessService
                 'manual_only='.$summary['manual_only_source_packets'],
                 'blocked='.$summary['source_realism_blocked_packets'],
             ]).'`',
+            '- Outcomes: `'.implode(', ', [
+                'touched='.$summary['operator_touched_packets'],
+                'touched_preview_only='.$summary['operator_touched_preview_only_packets'],
+                'terminal='.$summary['terminal_outcome_packets'],
+                'followup='.$summary['followup_outcome_packets'],
+                'reviewed='.$summary['reviewed_preview_only'],
+                'rejected='.$summary['rejected_packets'],
+                'deferred='.$summary['deferred_packets'],
+                'clarify='.$summary['clarification_requested'],
+            ]).'`',
             '- Needs reviewable packet details: `'.$this->boolValue($readiness['needs_reviewable_packet_details']).'`',
             '- Boundary consistent: `'.$this->boolValue($readiness['boundary_consistent']).'`',
             '- Mutation guard ok: `'.$this->boolValue($readiness['mutation_guard_ok']).'`',
+            '- Operator pass recorded: `'.$this->boolValue($readiness['operator_pass_recorded']).'`',
             '- Evidence error count: `'.$compact['evidence_error_count'].'`',
         ];
 
@@ -339,6 +379,7 @@ class GenealogyEvidenceSprintReadinessService
             'needs_reviewable_packet_details' => false,
             'mutation_guard_ok' => true,
             'ready_for_five_packet_review' => false,
+            'operator_pass_recorded' => false,
         ];
 
         return [
@@ -470,6 +511,12 @@ class GenealogyEvidenceSprintReadinessService
                 $summary['clarification_requested']++;
             }
 
+            if ($sourceBacked && in_array($packetStatus, ['reviewed_preview_only', 'rejected'], true)) {
+                $summary['terminal_outcome_packets']++;
+            } elseif ($sourceBacked && in_array($packetStatus, ['deferred', 'clarification_requested'], true)) {
+                $summary['followup_outcome_packets']++;
+            }
+
             if ($previewOnly) {
                 $summary['preview_only_packets']++;
             }
@@ -490,8 +537,15 @@ class GenealogyEvidenceSprintReadinessService
                 $summary['packets_with_claims']++;
             }
 
-            if (($details['decision_log'] ?? []) !== []) {
+            $hasDecisionLog = $this->hasDecisionLog($details);
+            if ($hasDecisionLog) {
                 $summary['packets_with_decision_log']++;
+                if ($sourceBacked) {
+                    $summary['operator_touched_packets']++;
+                    if ($previewOnly) {
+                        $summary['operator_touched_preview_only_packets']++;
+                    }
+                }
                 foreach ($this->reasonCodes($details['decision_log']) as $reasonCode) {
                     $reasonCounts[$reasonCode] = ($reasonCounts[$reasonCode] ?? 0) + 1;
                 }
@@ -540,6 +594,10 @@ class GenealogyEvidenceSprintReadinessService
             'packets_with_privacy_clearance' => 0,
             'packets_with_claims' => 0,
             'packets_with_decision_log' => 0,
+            'operator_touched_packets' => 0,
+            'operator_touched_preview_only_packets' => 0,
+            'terminal_outcome_packets' => 0,
+            'followup_outcome_packets' => 0,
             'source_backed_pending' => 0,
             'source_backed_decided' => 0,
             'reviewable_pending_packets' => 0,
@@ -573,6 +631,10 @@ class GenealogyEvidenceSprintReadinessService
 
         if ($summary['packet_rows_total'] === 0) {
             return 'ready_for_operator_boundary';
+        }
+
+        if (($readiness['operator_pass_recorded'] ?? false) === true) {
+            return 'operator_pass_recorded';
         }
 
         if ($readiness['ready_for_five_packet_review']) {
@@ -636,6 +698,10 @@ class GenealogyEvidenceSprintReadinessService
 
         if ($status === 'ready_for_review') {
             $recommendations[] = 'Run the operator review pass in the Review Packet UX and keep decisions preview-only.';
+        }
+
+        if ($status === 'operator_pass_recorded') {
+            $recommendations[] = 'Record the one-at-a-time packet outcomes in the sprint checkpoint and keep any follow-up packets preview-only.';
         }
 
         return array_values(array_unique($recommendations));
@@ -823,6 +889,22 @@ class GenealogyEvidenceSprintReadinessService
         }
 
         return $reasonCodes;
+    }
+
+    private function hasDecisionLog(array $details): bool
+    {
+        $decisionLog = $details['decision_log'] ?? null;
+        if (! is_array($decisionLog)) {
+            return false;
+        }
+
+        foreach ($decisionLog as $entry) {
+            if (is_array($entry) && $entry !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function cleanKey(mixed $value): string
