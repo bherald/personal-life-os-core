@@ -174,6 +174,8 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $this->assertSame(0, $exit);
         $this->assertSame($payload, $decoded);
         $this->assertSame('typed_preview_needed', $decoded['next_target']['underlying_classification']);
+        $this->assertArrayNotHasKey('unified_id', $decoded['next_target']);
+        $this->assertArrayHasKey('target_ref', $decoded['next_target']);
         $this->assertArrayNotHasKey('title', $decoded['next_target']);
         $this->assertArrayNotHasKey('summary', $decoded['next_target']);
         $this->assertArrayNotHasKey('details', $decoded['next_target']);
@@ -191,7 +193,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $service->shouldReceive('toNextTargetText')
             ->once()
             ->with($payload)
-            ->andReturn("Review backlog next target: review_required unified_id=system_alert:abc\n");
+            ->andReturn("Review backlog next target: review_required target_ref=system_alert:target-abc123abc123\n");
         $service->shouldReceive('collect')->never();
         $this->app->instance(ReviewBacklogReportService::class, $service);
 
@@ -270,6 +272,124 @@ class OpsReviewBacklogReportCommandTest extends TestCase
 
         $this->assertSame(0, $exit);
         $this->assertSame('source-backed-packet', json_decode((string) Artisan::output(), true)['focus']);
+    }
+
+    public function test_source_backed_packet_next_target_text_output_is_redacted(): void
+    {
+        $payload = $this->sourceBackedPacketNextTargetPayload();
+        $expectedRef = $payload['next_target']['target_ref'];
+
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, 'source-backed-packet')
+            ->andReturn($payload);
+        $service->shouldReceive('toNextTargetText')
+            ->once()
+            ->with($payload)
+            ->andReturn("Review backlog next target: review_required focus=source-backed-packet target_ref={$expectedRef} classification=source_backed_packet_review review_pass=ready details_included=false raw_identifiers_included=false tokens_included=false locators_included=false\n");
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'source-backed-packet',
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Review backlog next target: review_required', $output);
+        $this->assertStringContainsString('focus=source-backed-packet', $output);
+        $this->assertStringContainsString('target_ref='.$expectedRef, $output);
+        $this->assertStringContainsString('classification=source_backed_packet_review', $output);
+        $this->assertStringContainsString('review_pass=ready', $output);
+        $this->assertStringContainsString('details_included=false', $output);
+        $this->assertStringContainsString('raw_identifiers_included=false', $output);
+        $this->assertStringContainsString('tokens_included=false', $output);
+        $this->assertStringContainsString('locators_included=false', $output);
+        $this->assertSourceBackedPacketCommandOutputIsRedacted($output);
+    }
+
+    public function test_source_backed_packet_next_target_markdown_output_is_redacted(): void
+    {
+        $payload = $this->sourceBackedPacketNextTargetPayload();
+        $expectedRef = $payload['next_target']['target_ref'];
+
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, 'source-backed-packet')
+            ->andReturn($payload);
+        $service->shouldReceive('toNextTargetMarkdown')
+            ->once()
+            ->with($payload)
+            ->andReturn(implode("\n", [
+                '# Review Backlog Next Target',
+                '',
+                '- Status: `review_required`',
+                '- Focus: `source-backed-packet`',
+                '- Target ref: `'.$expectedRef.'`',
+                '- Classification: `source_backed_packet_review`',
+                '- Review pass: `state=ready`, `source_backed=true`, `preview_only=true`, `canonical_mutation=false`',
+                '- Posture: `details_included=false`, `raw_identifiers_included=false`, `tokens_included=false`, `locators_included=false`',
+                '',
+            ]));
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'source-backed-packet',
+            '--markdown' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('# Review Backlog Next Target', $output);
+        $this->assertStringContainsString('- Focus: `source-backed-packet`', $output);
+        $this->assertStringContainsString('- Target ref: `'.$expectedRef.'`', $output);
+        $this->assertStringContainsString('- Classification: `source_backed_packet_review`', $output);
+        $this->assertStringContainsString('- Review pass: `state=ready`, `source_backed=true`, `preview_only=true`, `canonical_mutation=false`', $output);
+        $this->assertStringContainsString('`details_included=false`', $output);
+        $this->assertStringContainsString('`raw_identifiers_included=false`', $output);
+        $this->assertStringContainsString('`tokens_included=false`', $output);
+        $this->assertStringContainsString('`locators_included=false`', $output);
+        $this->assertSourceBackedPacketCommandOutputIsRedacted($output);
+    }
+
+    public function test_source_backed_packet_next_target_compact_flag_output_is_redacted(): void
+    {
+        $payload = $this->sourceBackedPacketNextTargetPayload();
+        $expectedRef = $payload['next_target']['target_ref'];
+
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, 'source-backed-packet')
+            ->andReturn($payload);
+        $service->shouldReceive('toNextTargetText')
+            ->once()
+            ->with($payload)
+            ->andReturn("Review backlog next target: review_required focus=source-backed-packet target_ref={$expectedRef} classification=source_backed_packet_review review_pass=ready details_included=false raw_identifiers_included=false tokens_included=false locators_included=false\n");
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'source-backed-packet',
+            '--compact' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Review backlog next target: review_required', $output);
+        $this->assertStringContainsString('target_ref='.$expectedRef, $output);
+        $this->assertStringContainsString('review_pass=ready', $output);
+        $this->assertStringContainsString('details_included=false', $output);
+        $this->assertStringContainsString('raw_identifiers_included=false', $output);
+        $this->assertStringContainsString('tokens_included=false', $output);
+        $this->assertStringContainsString('locators_included=false', $output);
+        $this->assertSourceBackedPacketCommandOutputIsRedacted($output);
     }
 
     public function test_focus_option_requires_next_target(): void
@@ -482,7 +602,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
             'high_priority_threshold' => 8,
             'captured_at' => '2026-05-02T13:52:00Z',
             'next_target' => [
-                'unified_id' => 'system_alert:abc',
+                'target_ref' => 'system_alert:target-abc123abc123',
                 'review_type' => 'system_alert',
                 'finding_type' => null,
                 'classification' => 'high_priority_pending_review',
@@ -506,5 +626,87 @@ class OpsReviewBacklogReportCommandTest extends TestCase
                 ],
             ],
         ], $overrides);
+    }
+
+    private function sourceBackedPacketNextTargetPayload(): array
+    {
+        return [
+            'version' => 1,
+            'mode' => 'observe',
+            'status' => 'review_required',
+            'dry_run' => false,
+            'queries_executed' => true,
+            'query_state' => 'next_target_selected',
+            'stale_days' => 7,
+            'high_priority_threshold' => 8,
+            'captured_at' => '2026-05-02T13:52:00Z',
+            'focus' => 'source-backed-packet',
+            'next_target' => [
+                'target_ref' => 'genealogy_review_packet:target-f4f6d3699424',
+                'review_type' => 'genealogy_review_packet',
+                'finding_type' => null,
+                'classification' => 'source_backed_packet_review',
+                'underlying_classification' => 'source_backed_packet_needed',
+                'created_at' => '2037-05-01 10:00:00',
+                'priority' => 1,
+                'age_days' => 1,
+                'age_bucket' => 'under_7d',
+                'next_action' => 'Open source-backed packet in Review Hub and decide one packet at a time.',
+                'review_pass' => [
+                    'schema' => 'genealogy_review_packet_review_pass.v1',
+                    'mode' => 'display_only',
+                    'state' => 'ready',
+                    'source_backed' => true,
+                    'preview_only' => true,
+                    'canonical_mutation' => false,
+                    'posture' => [
+                        'canonical_write_allowed' => false,
+                        'batch_review_allowed' => false,
+                        'automation_allowed' => false,
+                        'details_included' => false,
+                        'raw_identifiers_included' => false,
+                        'tokens_included' => false,
+                        'locators_included' => false,
+                    ],
+                ],
+                'evidence_flags' => [
+                    'stale' => false,
+                    'high_priority' => false,
+                    'source_backed_context' => true,
+                    'preview_only' => true,
+                    'canonical_mutation' => false,
+                    'malformed_details' => false,
+                ],
+            ],
+        ];
+    }
+
+    private function assertSourceBackedPacketCommandOutputIsRedacted(string $output): void
+    {
+        foreach ([
+            'COMMAND SECRET GLOBAL TITLE',
+            'COMMAND SECRET GLOBAL SUMMARY',
+            'COMMAND SECRET GLOBAL DETAILS',
+            'COMMAND SECRET PACKET TITLE',
+            'COMMAND SECRET PACKET SUMMARY',
+            'COMMAND SECRET PACKET CLAIM',
+            'COMMAND SECRET SOURCE LABEL',
+            'COMMAND SECRET BOUNDARY LABEL',
+            'COMMAND SECRET PACKET DETAILS',
+            'https://example.test/command-sensitive-source',
+            'command-source-backed-global-token',
+            'command-source-backed-packet-token',
+            'RAW-PERSON-ID-COMMAND-268711',
+            'RAW-SOURCE-ID-COMMAND-991122',
+            'RAW-FAMILY-ID-COMMAND-773355',
+            'source_locator',
+            'source_locators',
+            'person_id',
+            'source_id',
+            'family_id',
+            'raw_secret_marker',
+        ] as $needle) {
+            $this->assertStringNotContainsString($needle, $output);
+        }
     }
 }
