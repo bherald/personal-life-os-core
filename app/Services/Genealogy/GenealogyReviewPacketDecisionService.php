@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\DB;
 class GenealogyReviewPacketDecisionService
 {
     private const DECISION_REASON_CODES = [
+        'source_verified',
         'missing_source_locator',
         'source_needs_review',
         'identity_unclear',
@@ -20,7 +21,7 @@ class GenealogyReviewPacketDecisionService
         private readonly GenealogyReviewPacketDecisionLogService $decisionLog = new GenealogyReviewPacketDecisionLogService,
     ) {}
 
-    public function markReviewed(string $token, ?string $notes = null): array
+    public function markReviewed(string $token, ?string $notes = null, ?string $reasonCode = null): array
     {
         return $this->transition(
             $token,
@@ -28,18 +29,18 @@ class GenealogyReviewPacketDecisionService
             'reviewed_preview_only',
             'packet_reviewed_preview_only',
             $notes,
-            [
+            $this->withReasonCode([
                 'accepted_fact_mutations' => false,
                 'proposal_materialization' => 'not_implemented',
-            ],
+            ], $reasonCode),
             'Packet marked reviewed; proposal materialization remains preview-only.',
             requirePreviewOnly: true
         );
     }
 
-    public function approve(string $token, ?string $notes = null): array
+    public function approve(string $token, ?string $notes = null, ?string $reasonCode = null): array
     {
-        return $this->markReviewed($token, $notes);
+        return $this->markReviewed($token, $notes, $reasonCode);
     }
 
     public function reject(string $token, ?string $notes = null, ?string $reasonCode = null): array

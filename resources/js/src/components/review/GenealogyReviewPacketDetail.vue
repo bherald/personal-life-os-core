@@ -662,6 +662,7 @@ const STATUS_CLASS_BY_STATUS = {
 }
 
 const reasonCodeOptions = [
+  { value: 'source_verified', label: 'Source verified' },
   { value: 'missing_source_locator', label: 'Missing source locator' },
   { value: 'source_needs_review', label: 'Source needs review' },
   { value: 'identity_unclear', label: 'Identity unclear' },
@@ -1615,7 +1616,7 @@ function submitDecision(action) {
     unifiedId: item.value.unified_id,
     notes,
   }
-  if (action !== 'approve' && reasonCode) {
+  if (reasonCode) {
     payload.reasonCode = reasonCode
   }
   emit(action, payload)

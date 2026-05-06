@@ -209,7 +209,11 @@ class ResearchHubController extends Controller
     public function approve(Request $request, string $unifiedId): JsonResponse
     {
         $notes = $request->input('notes');
-        $result = $this->registry->approveItem($unifiedId, $notes);
+        $result = $this->registry->approveItem(
+            $unifiedId,
+            is_string($notes) ? $notes : null,
+            $this->optionalRequestString($request, 'reason_code')
+        );
         $status = $result['success']
             ? 200
             : (($result['requires_materialization'] ?? false) ? 422 : 400);

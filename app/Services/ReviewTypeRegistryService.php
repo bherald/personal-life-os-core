@@ -230,7 +230,7 @@ class ReviewTypeRegistryService
     /**
      * Approve an item by unified ID
      */
-    public function approveItem(string $unifiedId, ?string $notes = null): array
+    public function approveItem(string $unifiedId, ?string $notes = null, ?string $reasonCode = null): array
     {
         [$typeName, $id] = $this->parseUnifiedId($unifiedId);
         $type = $this->getType($typeName);
@@ -245,7 +245,8 @@ class ReviewTypeRegistryService
                 $type['service_class'],
                 $type['approve_method'],
                 $id,
-                $notes
+                $notes,
+                $this->decisionMeta($reasonCode)
             );
         }
 
