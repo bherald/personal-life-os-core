@@ -188,6 +188,7 @@ includes=(
     storage/logs/.gitignore
     tailwind.config.js
     tests/Feature/Console/SetupDoctorCommandTest.php
+    tests/Feature/Console/AgentMemoryStatsCommandTest.php
     tests/Feature/Console/AwoReplayCommandTest.php
     tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php
     tests/Feature/Console/OpsMcpHealthCommandTest.php
@@ -333,7 +334,7 @@ docker compose --env-file .env.example config --quiet
 bash -n scripts/public-export.sh scripts/public-smoke.sh scripts/guards/production-fix-commit-message-check.sh scripts/guards/public-github-monitor.sh scripts/guards/github-auth-storage-audit.sh scripts/guards/public-workflow-push-preflight.sh
 php artisan setup:doctor --profile=core --skip-services --json
 php artisan setup:doctor --profile=media --skip-services --only=assets,browser,docker --json
-php artisan test tests/Unit/Setup tests/Unit/Commands/RagRetrievalEvidenceCommandTest.php tests/Unit/Commands/RagScaleReviewCommandTest.php tests/Unit/Nodes/PushoverNotifyTest.php tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/AwoReplayCommandTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php tests/Feature/Console/OpsMcpHealthCommandTest.php tests/Feature/Console/OpsReviewBacklogReportCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicGithubMonitorScriptTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
+php artisan test tests/Unit/Setup tests/Unit/Commands/RagRetrievalEvidenceCommandTest.php tests/Unit/Commands/RagScaleReviewCommandTest.php tests/Unit/Nodes/PushoverNotifyTest.php tests/Unit/Services/MetadataWritebackSafetyTest.php tests/Feature/Console/AgentMemoryStatsCommandTest.php tests/Feature/Console/AwoReplayCommandTest.php tests/Feature/Console/SetupDoctorCommandTest.php tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php tests/Feature/Console/OpsMcpHealthCommandTest.php tests/Feature/Console/OpsReviewBacklogReportCommandTest.php tests/Feature/Quality/FixturesProvenanceTest.php tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php tests/Feature/Quality/PublicExportPackagingTest.php tests/Feature/Quality/PublicGithubMonitorScriptTest.php tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php tests/Feature/Quality/RepositoryGovernanceTest.php
 \`\`\`
 EOF
 

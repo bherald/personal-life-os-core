@@ -98,6 +98,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'rag:scale-review --json --compact',
     'graph:audit-provenance --json',
     'graph:quality-metrics --stats --json',
+    'agent:procedures --stats --json --compact',
+    'episodic:memory --stats --json --compact',
   ]) {
     assert.ok(ALLOWED_COMMANDS[command], `${command} should be allowlisted`);
   }
@@ -169,6 +171,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan awo:replay --compare-scheduled --window=7d --limit=500 --json/);
   assert.match(listing, /php artisan graph:audit-provenance --json/);
   assert.match(listing, /php artisan graph:quality-metrics --stats --json/);
+  assert.match(listing, /php artisan agent:procedures --stats --json --compact/);
+  assert.match(listing, /php artisan episodic:memory --stats --json --compact/);
 });
 
 test('near-miss write commands remain blocked by exact allowlist matching', async () => {
@@ -227,6 +231,30 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(sourceRegistryReorderedResult, /Blocked:/);
   assert.match(sourceRegistryReorderedResult, /Use command "list"/);
+
+  const episodicArchiveResult = await plosArtisan({
+    command: 'episodic:memory --archive --json --compact',
+    on_prod: false,
+  });
+
+  assert.match(episodicArchiveResult, /Blocked:/);
+  assert.match(episodicArchiveResult, /Use command "list"/);
+
+  const proceduralConsolidateResult = await plosArtisan({
+    command: 'agent:procedures --consolidate --json --compact',
+    on_prod: false,
+  });
+
+  assert.match(proceduralConsolidateResult, /Blocked:/);
+  assert.match(proceduralConsolidateResult, /Use command "list"/);
+
+  const memoryReorderedResult = await plosArtisan({
+    command: 'episodic:memory --json --compact --stats',
+    on_prod: false,
+  });
+
+  assert.match(memoryReorderedResult, /Blocked:/);
+  assert.match(memoryReorderedResult, /Use command "list"/);
 
   const traceTailWiderWindowResult = await plosArtisan({
     command: 'plos:agent-trace-tail --limit=20 --since=168 --json',

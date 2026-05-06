@@ -14,12 +14,20 @@ class EpisodicMemoryCommand extends Command
         {--archive : Archive old low-importance episodes}
         {--backfill : Generate summaries from existing agent_episodes}
         {--days=30 : Days to look back for backfill}
-        {--agent= : Filter by agent ID}';
+        {--agent= : Filter by agent ID}
+        {--json : Emit JSON output for read-only stats}
+        {--compact : Emit compact JSON for read-only stats}';
 
     protected $description = 'Manage agent episodic memory — stats, archival, backfill from existing episodes';
 
     public function handle(AgentEpisodicMemoryService $service): int
     {
+        if (($this->option('json') || $this->option('compact')) && ($this->option('archive') || $this->option('backfill'))) {
+            $this->error('The --json/--compact options are only supported for read-only stats.');
+
+            return 1;
+        }
+
         if ($this->option('archive')) {
             return $this->runArchive($service);
         }
@@ -38,8 +46,29 @@ class EpisodicMemoryCommand extends Command
         $stats = $service->getStats($agentId);
 
         if (isset($stats['error'])) {
+            if ($this->option('json')) {
+                $this->line($this->encodeJson([
+                    'generated_at' => now()->toIso8601String(),
+                    'command' => 'episodic:memory',
+                    'mode' => 'stats',
+                    'compact' => (bool) $this->option('compact'),
+                    'status' => 'error',
+                    'agent_id' => $agentId,
+                    'error' => $stats['error'],
+                ]));
+
+                return 1;
+            }
+
             $this->error("Error: {$stats['error']}");
+
             return 1;
+        }
+
+        if ($this->option('json')) {
+            $this->line($this->encodeJson($this->statsPayload($stats, $agentId)));
+
+            return 0;
         }
 
         $this->info("=== Episodic Memory Statistics ===\n");
@@ -53,12 +82,12 @@ class EpisodicMemoryCommand extends Command
                 ['Embeddings', $stats['embeddings']],
                 ['Avg importance', $stats['avg_importance']],
                 ['Avg tools/run', $stats['avg_tools']],
-                ['Avg duration', number_format($stats['avg_duration_ms']) . 'ms'],
+                ['Avg duration', number_format($stats['avg_duration_ms']).'ms'],
                 ['Avg tokens', number_format($stats['avg_tokens'])],
             ]
         );
 
-        if (!empty($stats['outcomes'])) {
+        if (! empty($stats['outcomes'])) {
             $this->newLine();
             $this->info('Outcome Distribution:');
             $outcomeRows = [];
@@ -68,7 +97,7 @@ class EpisodicMemoryCommand extends Command
             $this->table(['Outcome', 'Count'], $outcomeRows);
         }
 
-        if (!empty($stats['per_agent'])) {
+        if (! empty($stats['per_agent'])) {
             $this->newLine();
             $this->info('Per-Agent Breakdown:');
             $agentRows = [];
@@ -88,6 +117,58 @@ class EpisodicMemoryCommand extends Command
         return 0;
     }
 
+    /**
+     * @param  array<string, mixed>  $stats
+     * @return array<string, mixed>
+     */
+    private function statsPayload(array $stats, ?string $agentId): array
+    {
+        $payload = [
+            'generated_at' => now()->toIso8601String(),
+            'command' => 'episodic:memory',
+            'mode' => 'stats',
+            'compact' => (bool) $this->option('compact'),
+            'status' => 'pass',
+            'agent_id' => $agentId,
+            'summary' => [
+                'total' => (int) ($stats['total'] ?? 0),
+                'active' => (int) ($stats['active'] ?? 0),
+                'archived' => (int) ($stats['archived'] ?? 0),
+                'embeddings' => (int) ($stats['embeddings'] ?? 0),
+                'avg_importance' => (float) ($stats['avg_importance'] ?? 0),
+                'avg_tools' => (float) ($stats['avg_tools'] ?? 0),
+                'avg_duration_ms' => (int) ($stats['avg_duration_ms'] ?? 0),
+                'avg_tokens' => (int) ($stats['avg_tokens'] ?? 0),
+                'outcome_count' => count((array) ($stats['outcomes'] ?? [])),
+                'agent_count' => count((array) ($stats['per_agent'] ?? [])),
+            ],
+        ];
+
+        if (! $this->option('compact')) {
+            $payload['outcomes'] = (array) ($stats['outcomes'] ?? []);
+            $payload['per_agent'] = array_values((array) ($stats['per_agent'] ?? []));
+
+            return $payload;
+        }
+
+        $payload['top_agents'] = array_slice(array_values((array) ($stats['per_agent'] ?? [])), 0, 10);
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function encodeJson(array $payload): string
+    {
+        $flags = JSON_UNESCAPED_SLASHES;
+        if (! $this->option('compact')) {
+            $flags |= JSON_PRETTY_PRINT;
+        }
+
+        return json_encode($payload, $flags) ?: '{}';
+    }
+
     private function runArchive(AgentEpisodicMemoryService $service): int
     {
         $this->info('Running episodic memory archival...');
@@ -95,6 +176,7 @@ class EpisodicMemoryCommand extends Command
 
         if (isset($result['error'])) {
             $this->error("Error: {$result['error']}");
+
             return 1;
         }
 
@@ -110,6 +192,7 @@ class EpisodicMemoryCommand extends Command
         );
 
         $this->info('Archival complete.');
+
         return 0;
     }
 
@@ -122,7 +205,7 @@ class EpisodicMemoryCommand extends Command
         $this->info("Backfilling episodic summaries from agent_episodes (last {$days} days)...");
 
         // Get distinct sessions from agent_episodes that don't have summaries yet
-        $whereAgent = $agentFilter ? "AND ae.agent_id = ?" : "";
+        $whereAgent = $agentFilter ? 'AND ae.agent_id = ?' : '';
         $bindings = [$cutoff];
         if ($agentFilter) {
             $bindings[] = $agentFilter;
@@ -150,6 +233,7 @@ class EpisodicMemoryCommand extends Command
 
         if ($total === 0) {
             $this->info('Nothing to backfill.');
+
             return 0;
         }
 
@@ -167,7 +251,7 @@ class EpisodicMemoryCommand extends Command
                     LIMIT 1
                 ", [$sess->agent_id, $sess->session_id]);
 
-                $task = !empty($taskEpisode) ? $taskEpisode[0]->summary : 'Unknown task';
+                $task = ! empty($taskEpisode) ? $taskEpisode[0]->summary : 'Unknown task';
 
                 // Determine outcome from episodes
                 $hasError = str_contains($sess->event_types ?? '', 'error');
@@ -183,7 +267,7 @@ class EpisodicMemoryCommand extends Command
                 $toolsUsed = [];
                 foreach ($toolEpisodes as $te) {
                     $details = json_decode($te->details, true);
-                    if (!empty($details['tool'])) {
+                    if (! empty($details['tool'])) {
                         $toolsUsed[] = $details['tool'];
                     }
                 }
@@ -191,10 +275,10 @@ class EpisodicMemoryCommand extends Command
 
                 // Generate mechanical summary (no LLM for backfill to save resources)
                 $durationMs = (int) ($sess->total_duration ?? 0);
-                $toolList = !empty($toolsUsed) ? implode(', ', array_slice($toolsUsed, 0, 5)) : 'none';
-                $summary = "Executed {$task}. Used " . count($toolsUsed) . " tools ({$toolList}). "
-                    . "Outcome: {$outcome}. Duration: {$durationMs}ms. "
-                    . "Recorded {$sess->episode_count} events.";
+                $toolList = ! empty($toolsUsed) ? implode(', ', array_slice($toolsUsed, 0, 5)) : 'none';
+                $summary = "Executed {$task}. Used ".count($toolsUsed)." tools ({$toolList}). "
+                    ."Outcome: {$outcome}. Duration: {$durationMs}ms. "
+                    ."Recorded {$sess->episode_count} events.";
 
                 // Importance: backfill gets base 0.40 (lower than live)
                 $importance = 0.40;
@@ -202,12 +286,12 @@ class EpisodicMemoryCommand extends Command
                     $importance += 0.20;
                 }
 
-                DB::insert("
+                DB::insert('
                     INSERT INTO agent_episode_summaries
                         (agent_id, session_id, task, summary, outcome, importance, tools_used,
                          tool_count, tokens_used, duration_ms, episode_count, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ", [
+                ', [
                     $sess->agent_id,
                     $sess->session_id,
                     substr($task, 0, 500),
@@ -228,13 +312,13 @@ class EpisodicMemoryCommand extends Command
                 try {
                     $aiService = app(AIService::class);
                     $embResult = $aiService->generateEmbedding($summary);
-                    if (($embResult['success'] ?? false) && !empty($embResult['embedding'])) {
-                        $embeddingStr = '[' . implode(',', $embResult['embedding']) . ']';
-                        DB::connection('pgsql_rag')->statement("
+                    if (($embResult['success'] ?? false) && ! empty($embResult['embedding'])) {
+                        $embeddingStr = '['.implode(',', $embResult['embedding']).']';
+                        DB::connection('pgsql_rag')->statement('
                             INSERT INTO agent_episode_embeddings (summary_id, agent_id, embedding, created_at, updated_at)
                             VALUES (?, ?, ?::vector, NOW(), NOW())
                             ON CONFLICT (summary_id) DO UPDATE SET embedding = EXCLUDED.embedding, updated_at = NOW()
-                        ", [$summaryId, $sess->agent_id, $embeddingStr]);
+                        ', [$summaryId, $sess->agent_id, $embeddingStr]);
                     }
                 } catch (\Throwable $e) {
                     // Non-fatal: embedding will be missing but summary is stored

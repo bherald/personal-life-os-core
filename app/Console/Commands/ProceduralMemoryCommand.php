@@ -16,12 +16,20 @@ class ProceduralMemoryCommand extends Command
         {--list : List active procedures}
         {--retired : Include retired procedures in list}
         {--backfill-embeddings : Generate embeddings for procedures missing them}
-        {--limit=100 : Max procedures to backfill per run}';
+        {--limit=100 : Max procedures to backfill per run}
+        {--json : Emit JSON output for read-only stats}
+        {--compact : Emit compact JSON for read-only stats}';
 
     protected $description = 'Manage agent procedural memory — stats, consolidation, listing, embedding backfill';
 
     public function handle(AgentProceduralMemoryService $service): int
     {
+        if (($this->option('json') || $this->option('compact')) && ($this->option('backfill-embeddings') || $this->option('consolidate') || $this->option('list'))) {
+            $this->error('The --json/--compact options are only supported for read-only stats.');
+
+            return 1;
+        }
+
         if ($this->option('backfill-embeddings')) {
             return $this->backfillEmbeddings($service);
         }
@@ -43,13 +51,88 @@ class ProceduralMemoryCommand extends Command
         $agentId = $this->option('agent');
         $result = $service->procedureStats(['agent_id' => $agentId]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
+            if ($this->option('json')) {
+                $this->line($this->encodeJson([
+                    'generated_at' => now()->toIso8601String(),
+                    'command' => 'agent:procedures',
+                    'mode' => 'stats',
+                    'compact' => (bool) $this->option('compact'),
+                    'status' => 'error',
+                    'agent_id' => $agentId,
+                    'error' => $result['error'] ?? 'Failed to get stats',
+                ]));
+
+                return 1;
+            }
+
             $this->error($result['error'] ?? 'Failed to get stats');
+
             return 1;
         }
 
+        if ($this->option('json')) {
+            $this->line($this->encodeJson($this->statsPayload($result, $agentId)));
+
+            return 0;
+        }
+
         $this->info($result['result_text']);
+
         return 0;
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    private function statsPayload(array $result, ?string $agentId): array
+    {
+        $stats = (array) ($result['stats'] ?? []);
+        $perAgent = array_values((array) ($result['per_agent'] ?? []));
+
+        $payload = [
+            'generated_at' => now()->toIso8601String(),
+            'command' => 'agent:procedures',
+            'mode' => 'stats',
+            'compact' => (bool) $this->option('compact'),
+            'status' => 'pass',
+            'agent_id' => $agentId,
+            'summary' => [
+                'total' => (int) ($stats['total'] ?? 0),
+                'active' => (int) ($stats['active'] ?? 0),
+                'retired' => (int) ($stats['retired'] ?? 0),
+                'canonical' => (int) ($stats['canonical'] ?? 0),
+                'failure_memories' => (int) ($stats['failure_memories'] ?? 0),
+                'avg_success_rate' => (float) ($stats['avg_success_rate'] ?? 0),
+                'total_uses' => (int) ($stats['total_uses'] ?? 0),
+                'agents_with_memory' => (int) ($stats['agents_with_memory'] ?? 0),
+                'agent_count' => count($perAgent),
+            ],
+        ];
+
+        if (! $this->option('compact')) {
+            $payload['per_agent'] = $perAgent;
+
+            return $payload;
+        }
+
+        $payload['top_agents'] = array_slice($perAgent, 0, 10);
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function encodeJson(array $payload): string
+    {
+        $flags = JSON_UNESCAPED_SLASHES;
+        if (! $this->option('compact')) {
+            $flags |= JSON_PRETTY_PRINT;
+        }
+
+        return json_encode($payload, $flags) ?: '{}';
     }
 
     private function runConsolidation(AgentProceduralMemoryService $service): int
@@ -70,10 +153,12 @@ class ProceduralMemoryCommand extends Command
 
         if (isset($stats['error'])) {
             $this->error("Error: {$stats['error']}");
+
             return 1;
         }
 
         $this->info('Consolidation complete.');
+
         return 0;
     }
 
@@ -85,7 +170,7 @@ class ProceduralMemoryCommand extends Command
             $filters['agent_id'] = $agentId;
         }
 
-        if (!$this->option('retired')) {
+        if (! $this->option('retired')) {
             $filters['is_retired'] = 0;
         }
 
@@ -93,6 +178,7 @@ class ProceduralMemoryCommand extends Command
 
         if (empty($procedures)) {
             $this->info('No procedures found.');
+
             return 0;
         }
 
@@ -104,11 +190,11 @@ class ProceduralMemoryCommand extends Command
                 $proc['agent_id'],
                 substr($proc['name'], 0, 40),
                 $proc['procedure_type'],
-                round(($proc['success_rate'] ?? 0) * 100) . '%',
+                round(($proc['success_rate'] ?? 0) * 100).'%',
                 $proc['times_used'],
                 $proc['is_canonical'] ? 'Y' : '',
                 $proc['is_retired'] ? 'Y' : '',
-                implode(' → ', array_slice($tools, 0, 4)) . (count($tools) > 4 ? '...' : ''),
+                implode(' → ', array_slice($tools, 0, 4)).(count($tools) > 4 ? '...' : ''),
             ];
         }
 
@@ -128,16 +214,16 @@ class ProceduralMemoryCommand extends Command
         // Get existing embeddings from PostgreSQL
         $existingIds = [];
         try {
-            $existing = DB::connection('pgsql_rag')->select("
+            $existing = DB::connection('pgsql_rag')->select('
                 SELECT procedure_id FROM agent_procedure_embeddings
-            ");
-            $existingIds = array_column(array_map(fn($r) => (array) $r, $existing), 'procedure_id');
+            ');
+            $existingIds = array_column(array_map(fn ($r) => (array) $r, $existing), 'procedure_id');
         } catch (\Throwable $e) {
             $this->warn("Could not query existing embeddings: {$e->getMessage()}");
         }
 
         // Get all active procedures from MySQL
-        $whereAgent = $agentId ? "AND agent_id = ?" : "";
+        $whereAgent = $agentId ? 'AND agent_id = ?' : '';
         $mysqlBindings = $agentId ? [$agentId] : [];
 
         $allProcedures = DB::select("
@@ -149,7 +235,7 @@ class ProceduralMemoryCommand extends Command
         ", $mysqlBindings);
 
         // Filter to those without embeddings
-        $toBackfill = array_filter($allProcedures, fn($p) => !in_array($p->id, $existingIds));
+        $toBackfill = array_filter($allProcedures, fn ($p) => ! in_array($p->id, $existingIds));
         $toBackfill = array_values(array_slice($toBackfill, 0, $limit));
 
         $total = count($toBackfill);
@@ -160,6 +246,7 @@ class ProceduralMemoryCommand extends Command
 
         if ($total === 0) {
             $this->info('All active procedures already have embeddings.');
+
             return 0;
         }
 
@@ -174,23 +261,23 @@ class ProceduralMemoryCommand extends Command
             try {
                 $result = $aiService->generateEmbedding($proc->trigger_pattern);
 
-                if (($result['success'] ?? false) && !empty($result['embedding'])) {
-                    $embeddingStr = '[' . implode(',', $result['embedding']) . ']';
+                if (($result['success'] ?? false) && ! empty($result['embedding'])) {
+                    $embeddingStr = '['.implode(',', $result['embedding']).']';
 
-                    DB::connection('pgsql_rag')->statement("
+                    DB::connection('pgsql_rag')->statement('
                         INSERT INTO agent_procedure_embeddings
                             (procedure_id, agent_id, embedding, created_at, updated_at)
                         VALUES (?, ?, ?::vector, NOW(), NOW())
                         ON CONFLICT (procedure_id) DO UPDATE SET
                             embedding = EXCLUDED.embedding,
                             updated_at = NOW()
-                    ", [$proc->id, $proc->agent_id, $embeddingStr]);
+                    ', [$proc->id, $proc->agent_id, $embeddingStr]);
 
                     $success++;
                 } else {
                     $failed++;
                     $this->newLine();
-                    $this->warn("  Failed #{$proc->id}: " . ($result['error'] ?? 'no embedding'));
+                    $this->warn("  Failed #{$proc->id}: ".($result['error'] ?? 'no embedding'));
                 }
             } catch (\Throwable $e) {
                 $failed++;
