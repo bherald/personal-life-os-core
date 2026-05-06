@@ -419,6 +419,63 @@ class RagScaleReviewCommandTest extends TestCase
         $this->assertStringNotContainsString('Private result preview', $output);
     }
 
+    public function test_compact_markdown_reports_redacted_saved_retrieval_metadata(): void
+    {
+        $retrievalFile = $this->writeRetrievalEvidence([
+            'status' => 'observe_ok',
+            'query_set_hash' => 'compact-markdown-hash',
+            'query_count' => 1,
+            'successful_count' => 1,
+            'empty_count' => 0,
+            'failed_count' => 0,
+            'limit' => 4,
+            'default_type' => 'genealogy',
+            'include_results' => false,
+            'latency_summary' => ['p95_ms' => 654],
+            'score_summary' => ['top_similarity_avg' => 0.77],
+            'evidence_contract' => [
+                'version' => 1,
+                'mode' => 'observe_only',
+                'query_set_hash_basis' => 'ordered_query_hashes_and_type_filters',
+                'query_text' => 'redacted_by_default',
+                'results' => 'redacted_by_default',
+            ],
+            'queries' => [
+                [
+                    'query_hash' => 'compact-markdown-private-query',
+                    'query' => 'Private compact markdown raw query text',
+                    'results' => [
+                        ['title' => 'Private compact markdown title'],
+                    ],
+                ],
+            ],
+        ]);
+        $this->mockRagService();
+
+        $exit = Artisan::call('rag:scale-review', [
+            '--retrieval-file' => $retrievalFile,
+            '--compact' => true,
+            '--markdown' => true,
+        ]);
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('# RAG Scale Review Compact', $output);
+        $this->assertStringContainsString('- Retrieval status: `observe_ok`', $output);
+        $this->assertStringContainsString('- Query set hash: `compact-markdown-hash`', $output);
+        $this->assertStringContainsString('- Query set hash basis: `ordered_query_hashes_and_type_filters`', $output);
+        $this->assertStringContainsString('- Query count: `1`', $output);
+        $this->assertStringContainsString('- Result limit: `4`', $output);
+        $this->assertStringContainsString('- Default type: `genealogy`', $output);
+        $this->assertStringContainsString('- Evidence contract mode: `observe_only`', $output);
+        $this->assertStringContainsString('- Query text policy: `redacted_by_default`', $output);
+        $this->assertStringContainsString('- Results policy: `redacted_by_default`', $output);
+        $this->assertStringContainsString('- Result content redacted: `true`', $output);
+        $this->assertStringContainsString('- Retrieval p95 ms: `654`', $output);
+        $this->assertStringNotContainsString('Private compact markdown raw query text', $output);
+        $this->assertStringNotContainsString('Private compact markdown title', $output);
+    }
+
     public function test_markdown_output_reports_redacted_review_summary(): void
     {
         $retrievalFile = $this->writeRetrievalEvidence([

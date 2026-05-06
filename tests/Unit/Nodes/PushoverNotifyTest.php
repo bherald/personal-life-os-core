@@ -144,6 +144,44 @@ class PushoverNotifyTest extends TestCase
         ], $result['data']['part_timestamps']);
     }
 
+    public function test_multipart_payloads_can_include_part_headers_in_message_body(): void
+    {
+        $payloads = [];
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')
+            ->times(3)
+            ->with('pushover', Mockery::on(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return true;
+            }))
+            ->andReturn(['success' => true]);
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", [
+                'First packet '.str_repeat('A', 980),
+                'Second packet '.str_repeat('B', 980),
+                'Third packet '.str_repeat('C', 980),
+            ]),
+            'part_headers_enabled' => true,
+            'inter_chunk_delay_seconds' => 0,
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertTrue($result['data']['part_headers_enabled']);
+        $this->assertSame('message_prefix', $result['data']['part_header_strategy']);
+        $this->assertCount(3, $payloads);
+        $this->assertStringStartsWith("[Part 3/3]\nThird packet", $payloads[0]['message']);
+        $this->assertStringStartsWith("[Part 2/3]\nSecond packet", $payloads[1]['message']);
+        $this->assertStringStartsWith("[Part 1/3]\nFirst packet", $payloads[2]['message']);
+        $this->assertSame(strlen($payloads[0]['message']), $result['data']['part_message_lengths'][3]);
+        $this->assertSame(hash('sha256', $payloads[0]['message']), $result['data']['part_message_hashes'][3]);
+    }
+
     public function test_multipart_http_posts_are_distinct_and_sent_in_reverse_order(): void
     {
         config([

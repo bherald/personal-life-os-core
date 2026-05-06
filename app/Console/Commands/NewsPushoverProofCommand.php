@@ -63,6 +63,10 @@ class NewsPushoverProofCommand extends Command
             $report['pushover'],
             $report['current_pushover_config']
         );
+        $report['part_header_proof'] = $this->summarizePartHeaderProof(
+            $report['pushover'],
+            $report['current_pushover_config']
+        );
         $report['part_content_proof'] = $this->summarizePartContentProof($report['pushover']);
 
         if ((string) $run->workflow_name !== $workflow) {
@@ -91,6 +95,7 @@ class NewsPushoverProofCommand extends Command
             ],
             'current_pushover_config' => null,
             'pacing_config' => null,
+            'part_header_proof' => null,
             'status_reasons' => [
                 'fail' => $status === 'fail' ? $reasons : [],
                 'inconclusive' => $status === 'inconclusive' ? $reasons : [],
@@ -262,6 +267,8 @@ class NewsPushoverProofCommand extends Command
             'part_timestamps_enabled' => $this->boolOrNull($data['part_timestamps_enabled'] ?? null),
             'part_timestamp_strategy' => $this->stringOrNull($data['part_timestamp_strategy'] ?? null),
             'part_timestamps' => $this->intMap($data['part_timestamps'] ?? null),
+            'part_headers_enabled' => $this->boolOrNull($data['part_headers_enabled'] ?? null),
+            'part_header_strategy' => $this->stringOrNull($data['part_header_strategy'] ?? null),
             'part_message_lengths' => $this->intMap($data['part_message_lengths'] ?? null),
             'part_message_hashes' => $this->stringMap($data['part_message_hashes'] ?? null),
             'part_response_requests' => $this->stringMap($data['part_response_requests'] ?? null),
@@ -283,11 +290,12 @@ class NewsPushoverProofCommand extends Command
                 wn.node_order,
                 wn.node_type,
                 MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS inter_chunk_delay_seconds,
-                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS part_timestamps_enabled
+                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS part_timestamps_enabled,
+                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS part_headers_enabled
              FROM workflow_nodes wn
              LEFT JOIN workflow_node_configs wnc
                 ON wnc.workflow_node_id = wn.id
-               AND wnc.config_key IN (?, ?)
+               AND wnc.config_key IN (?, ?, ?)
              WHERE wn.workflow_id = ?
                AND (wn.node_type = ? OR wn.node_type LIKE ?)
              GROUP BY wn.id, wn.node_order, wn.node_type
@@ -295,8 +303,10 @@ class NewsPushoverProofCommand extends Command
             [
                 'inter_chunk_delay_seconds',
                 'part_timestamps_enabled',
+                'part_headers_enabled',
                 'inter_chunk_delay_seconds',
                 'part_timestamps_enabled',
+                'part_headers_enabled',
                 $workflowId,
                 'PushoverNotify',
                 '%\\PushoverNotify',
@@ -318,6 +328,8 @@ class NewsPushoverProofCommand extends Command
             'effective_inter_chunk_delay_seconds' => $configuredDelay ?? 2,
             'configured_part_timestamps_enabled' => $this->boolOrNull($last->part_timestamps_enabled),
             'effective_part_timestamps_enabled' => $this->boolOrNull($last->part_timestamps_enabled) ?? false,
+            'configured_part_headers_enabled' => $this->boolOrNull($last->part_headers_enabled),
+            'effective_part_headers_enabled' => $this->boolOrNull($last->part_headers_enabled) ?? false,
         ];
     }
 
@@ -549,6 +561,63 @@ class NewsPushoverProofCommand extends Command
         ];
     }
 
+    private function summarizePartHeaderProof(array $pushover, ?array $currentConfig): array
+    {
+        if (($pushover['present'] ?? false) !== true) {
+            return [
+                'state' => 'pushover_absent',
+                'reason' => 'Pushover node was not found in the inspected run.',
+                'required' => false,
+                'complete' => false,
+            ];
+        }
+
+        $totalParts = $this->intOrNull($pushover['total_parts'] ?? null);
+        if ($totalParts === null || $totalParts <= 1) {
+            return [
+                'state' => 'not_required',
+                'reason' => 'Single-part or unknown-part notification; part header proof is not required.',
+                'required' => false,
+                'complete' => true,
+            ];
+        }
+
+        $required = ($currentConfig['effective_part_headers_enabled'] ?? false) === true;
+        if (! $required) {
+            return [
+                'state' => 'not_required',
+                'reason' => 'Current workflow config does not require multipart message headers.',
+                'required' => false,
+                'complete' => true,
+            ];
+        }
+
+        if (($pushover['part_headers_enabled'] ?? null) !== true) {
+            return [
+                'state' => 'metadata_missing',
+                'reason' => 'Current workflow config requires multipart message headers, but the inspected run did not record them.',
+                'required' => true,
+                'complete' => false,
+            ];
+        }
+
+        if (($pushover['part_header_strategy'] ?? null) !== 'message_prefix') {
+            return [
+                'state' => 'strategy_inconsistent',
+                'reason' => 'Multipart message header strategy is missing or not the expected message_prefix strategy.',
+                'required' => true,
+                'complete' => false,
+            ];
+        }
+
+        return [
+            'state' => 'recorded',
+            'reason' => 'Multipart message headers were recorded as per-part message prefixes.',
+            'required' => true,
+            'complete' => true,
+        ];
+    }
+
     private function summarizePartContentProof(array $pushover): array
     {
         if (($pushover['present'] ?? false) !== true) {
@@ -696,6 +765,11 @@ class NewsPushoverProofCommand extends Command
             $partTimestampProof = $report['part_timestamp_proof'] ?? [];
             if (($partTimestampProof['required'] ?? false) === true && ($partTimestampProof['state'] ?? null) !== 'recorded') {
                 $inconclusive[] = (string) ($partTimestampProof['reason'] ?? 'Multipart part timestamp proof is inconclusive.');
+            }
+
+            $partHeaderProof = $report['part_header_proof'] ?? [];
+            if (($partHeaderProof['required'] ?? false) === true && ($partHeaderProof['state'] ?? null) !== 'recorded') {
+                $inconclusive[] = (string) ($partHeaderProof['reason'] ?? 'Multipart part header proof is inconclusive.');
             }
 
             $partContentProof = $report['part_content_proof'] ?? [];
@@ -857,6 +931,8 @@ class NewsPushoverProofCommand extends Command
                 'part_timestamps_enabled' => $report['pushover']['part_timestamps_enabled'] ?? null,
                 'part_timestamp_strategy' => $report['pushover']['part_timestamp_strategy'] ?? null,
                 'part_timestamps' => $report['pushover']['part_timestamps'] ?? [],
+                'part_headers_enabled' => $report['pushover']['part_headers_enabled'] ?? null,
+                'part_header_strategy' => $report['pushover']['part_header_strategy'] ?? null,
                 'part_message_lengths' => $report['pushover']['part_message_lengths'] ?? [],
                 'part_message_hashes' => $report['pushover']['part_message_hashes'] ?? [],
                 'part_response_requests' => $report['pushover']['part_response_requests'] ?? [],
@@ -868,6 +944,7 @@ class NewsPushoverProofCommand extends Command
             'pacing_config' => $report['pacing_config'] ?? null,
             'part_number_proof' => $report['part_number_proof'] ?? null,
             'part_timestamp_proof' => $report['part_timestamp_proof'] ?? null,
+            'part_header_proof' => $report['part_header_proof'] ?? null,
             'part_content_proof' => $report['part_content_proof'] ?? null,
             'status_reasons' => $report['status_reasons'] ?? [
                 'fail' => [],
@@ -923,6 +1000,14 @@ class NewsPushoverProofCommand extends Command
                 .' required='.var_export($timestampProof['required'] ?? null, true)
                 .' complete='.var_export($timestampProof['complete'] ?? null, true)
                 .' reason='.$timestampProof['reason']);
+        }
+
+        if (! empty($report['part_header_proof'])) {
+            $headerProof = $report['part_header_proof'];
+            $this->line('Part headers: state='.$headerProof['state']
+                .' required='.var_export($headerProof['required'] ?? null, true)
+                .' complete='.var_export($headerProof['complete'] ?? null, true)
+                .' reason='.$headerProof['reason']);
         }
 
         if (! empty($report['part_content_proof'])) {
@@ -991,6 +1076,14 @@ class NewsPushoverProofCommand extends Command
                 .' required='.var_export($timestampProof['required'] ?? null, true)
                 .' complete='.var_export($timestampProof['complete'] ?? null, true)
                 .' reason='.$timestampProof['reason']);
+        }
+
+        if (! empty($report['part_header_proof'])) {
+            $headerProof = $report['part_header_proof'];
+            $this->line('Part headers: state='.$headerProof['state']
+                .' required='.var_export($headerProof['required'] ?? null, true)
+                .' complete='.var_export($headerProof['complete'] ?? null, true)
+                .' reason='.$headerProof['reason']);
         }
 
         if (! empty($report['part_content_proof'])) {

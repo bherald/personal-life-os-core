@@ -22,6 +22,10 @@ class PushoverNotify extends BaseNode
                 $this->getConfigValue('part_timestamps_enabled', false),
                 FILTER_VALIDATE_BOOLEAN
             );
+            $partHeadersEnabled = filter_var(
+                $this->getConfigValue('part_headers_enabled', false),
+                FILTER_VALIDATE_BOOLEAN
+            );
             $nodeStartedAt = microtime(true);
 
             // Enhanced formatting options
@@ -55,8 +59,10 @@ class PushoverNotify extends BaseNode
             //     $message = $this->applyConsoleFormatting($message, $title);
             // }
 
-            // Pushover limit: 1024 characters per message
-            $maxLength = 1024;
+            // Pushover limit: 1024 characters per message. Reserve a little
+            // room when multipart headers are enabled so the sent payload still
+            // fits after the per-part prefix is added.
+            $maxLength = $partHeadersEnabled ? 1000 : 1024;
             $chunks = $this->splitMessageIntoChunks($message, $maxLength);
 
             $controller = new NotificationController;
@@ -84,11 +90,15 @@ class PushoverNotify extends BaseNode
                 $chunkTitle = $totalChunks > 1
                     ? "$title (Part $partNumber/$totalChunks)"
                     : $title;
+                $chunkMessage = $chunk;
+                if ($totalChunks > 1 && $partHeadersEnabled) {
+                    $chunkMessage = "[Part {$partNumber}/{$totalChunks}]\n".$chunk;
+                }
 
                 // Build payload with enhanced formatting options
                 $payload = [
                     'title' => $chunkTitle,
-                    'message' => $chunk,
+                    'message' => $chunkMessage,
                     'priority' => $priority,
                     'format_type' => $formatType,
                     'source_group' => $sourceGroup,
@@ -138,8 +148,8 @@ class PushoverNotify extends BaseNode
                     if (! empty($result['success']) && empty($result['suppressed'])) {
                         $sentCount++;
                         $sentParts[] = $partNumber;
-                        $partMessageLengths[$partNumber] = strlen($chunk);
-                        $partMessageHashes[$partNumber] = hash('sha256', $chunk);
+                        $partMessageLengths[$partNumber] = strlen($chunkMessage);
+                        $partMessageHashes[$partNumber] = hash('sha256', $chunkMessage);
                         if (isset($result['request']) && is_scalar($result['request']) && trim((string) $result['request']) !== '') {
                             $partResponseRequests[$partNumber] = (string) $result['request'];
                         }
@@ -182,6 +192,8 @@ class PushoverNotify extends BaseNode
                 'part_timestamps_enabled' => $totalChunks > 1 && $partTimestampsEnabled,
                 'part_timestamp_strategy' => $totalChunks > 1 && $partTimestampsEnabled ? 'ascending_display_order' : null,
                 'part_timestamps' => $partTimestamps,
+                'part_headers_enabled' => $totalChunks > 1 && $partHeadersEnabled,
+                'part_header_strategy' => $totalChunks > 1 && $partHeadersEnabled ? 'message_prefix' : null,
                 'part_message_lengths' => $partMessageLengths,
                 'part_message_hashes' => $partMessageHashes,
                 'part_response_requests' => $partResponseRequests,

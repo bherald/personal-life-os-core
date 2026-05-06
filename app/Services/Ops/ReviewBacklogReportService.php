@@ -216,6 +216,7 @@ class ReviewBacklogReportService
             );
         }
 
+        $reviewPass = $this->nextTargetReviewPassText($target);
         $materialization = $this->nextTargetMaterializationText($target);
 
         return sprintf(
@@ -233,7 +234,7 @@ class ReviewBacklogReportService
             $target['stale_days_over_threshold'] ?? 'unknown',
             $target['created_at'] ?? 'unknown',
             $target['next_action'] ?? 'Review one at a time.',
-        ).$underlying.$materialization."\n";
+        ).$underlying.$reviewPass.$materialization."\n";
     }
 
     /**
@@ -278,11 +279,74 @@ class ReviewBacklogReportService
             $lines[] = '- Underlying next action: '.($target['underlying_next_action'] ?? 'Review one at a time.');
         }
 
+        $this->appendNextTargetReviewPassMarkdown($lines, $target);
         $this->appendNextTargetMaterializationMarkdown($lines, $target);
 
         $lines[] = '';
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * @param  array<string, mixed>  $target
+     */
+    private function nextTargetReviewPassText(array $target): string
+    {
+        $reviewPass = is_array($target['review_pass'] ?? null) ? $target['review_pass'] : null;
+        if ($reviewPass === null) {
+            return '';
+        }
+
+        $signals = is_array($reviewPass['signals'] ?? null) ? $reviewPass['signals'] : [];
+        $posture = is_array($reviewPass['posture'] ?? null) ? $reviewPass['posture'] : [];
+
+        return sprintf(
+            ' review_pass=%s source_backed=%s preview_only=%s canonical_mutation=%s canonical_write_allowed=%s batch_review_allowed=%s automation_allowed=%s details_included=%s raw_identifiers_included=%s tokens_included=%s locators_included=%s',
+            (string) ($reviewPass['state'] ?? 'unknown'),
+            ($signals['source_backed'] ?? false) ? 'true' : 'false',
+            ($signals['preview_only'] ?? false) ? 'true' : 'false',
+            ($signals['canonical_mutation'] ?? false) ? 'true' : 'false',
+            ($posture['canonical_write_allowed'] ?? false) ? 'true' : 'false',
+            ($posture['batch_review_allowed'] ?? false) ? 'true' : 'false',
+            ($posture['automation_allowed'] ?? false) ? 'true' : 'false',
+            ($posture['details_included'] ?? false) ? 'true' : 'false',
+            ($posture['raw_identifiers_included'] ?? false) ? 'true' : 'false',
+            ($posture['tokens_included'] ?? false) ? 'true' : 'false',
+            ($posture['locators_included'] ?? false) ? 'true' : 'false',
+        );
+    }
+
+    /**
+     * @param  list<string>  $lines
+     * @param  array<string, mixed>  $target
+     */
+    private function appendNextTargetReviewPassMarkdown(array &$lines, array $target): void
+    {
+        $reviewPass = is_array($target['review_pass'] ?? null) ? $target['review_pass'] : null;
+        if ($reviewPass === null) {
+            return;
+        }
+
+        $signals = is_array($reviewPass['signals'] ?? null) ? $reviewPass['signals'] : [];
+        $posture = is_array($reviewPass['posture'] ?? null) ? $reviewPass['posture'] : [];
+
+        $lines[] = sprintf(
+            '- Review pass: `state=%s`, `source_backed=%s`, `preview_only=%s`, `canonical_mutation=%s`',
+            (string) ($reviewPass['state'] ?? 'unknown'),
+            ($signals['source_backed'] ?? false) ? 'true' : 'false',
+            ($signals['preview_only'] ?? false) ? 'true' : 'false',
+            ($signals['canonical_mutation'] ?? false) ? 'true' : 'false',
+        );
+        $lines[] = sprintf(
+            '- Review pass posture: `canonical_write_allowed=%s`, `batch_review_allowed=%s`, `automation_allowed=%s`, `details_included=%s`, `raw_identifiers_included=%s`, `tokens_included=%s`, `locators_included=%s`',
+            ($posture['canonical_write_allowed'] ?? false) ? 'true' : 'false',
+            ($posture['batch_review_allowed'] ?? false) ? 'true' : 'false',
+            ($posture['automation_allowed'] ?? false) ? 'true' : 'false',
+            ($posture['details_included'] ?? false) ? 'true' : 'false',
+            ($posture['raw_identifiers_included'] ?? false) ? 'true' : 'false',
+            ($posture['tokens_included'] ?? false) ? 'true' : 'false',
+            ($posture['locators_included'] ?? false) ? 'true' : 'false',
+        );
     }
 
     /**

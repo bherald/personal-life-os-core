@@ -830,7 +830,11 @@ const reviewPassRows = computed(() => {
     reviewPassRow('validation', 'Validation', signals.validation_state, signals.validation_state === 'valid' ? 'ok' : 'warning'),
     reviewPassRow('preview_only', 'Preview only', displayBoolean(signals.preview_only), signals.preview_only === true ? 'ok' : 'blocked'),
     reviewPassRow('canonical_mutation', 'Canonical mutation', displayBoolean(signals.canonical_mutation), signals.canonical_mutation === true ? 'blocked' : 'ok'),
+    reviewPassRow('canonical_write', 'Canonical write', displayBoolean(posture.canonical_write_allowed), posture.canonical_write_allowed === true ? 'blocked' : 'ok'),
+    reviewPassRow('batch_review', 'Batch review', displayBoolean(posture.batch_review_allowed), posture.batch_review_allowed === true ? 'blocked' : 'ok'),
+    reviewPassRow('automation', 'Automation', displayBoolean(posture.automation_allowed), posture.automation_allowed === true ? 'blocked' : 'ok'),
     reviewPassRow('details', 'Details included', displayBoolean(posture.details_included), posture.details_included === true ? 'blocked' : 'ok'),
+    reviewPassRow('raw_identifiers', 'Raw identifiers', displayBoolean(posture.raw_identifiers_included), posture.raw_identifiers_included === true ? 'blocked' : 'ok'),
     reviewPassRow('tokens', 'Tokens included', displayBoolean(posture.tokens_included), posture.tokens_included === true ? 'blocked' : 'ok'),
     reviewPassRow('locators', 'Locators included', displayBoolean(posture.locators_included), posture.locators_included === true ? 'blocked' : 'ok'),
   ].filter(Boolean)
