@@ -317,6 +317,7 @@ Use the AWO replay surface when checking whether agent output has enough
 operator-reviewed evidence to support later autonomy decisions:
 
 ```bash
+php artisan awo:replay --window=7d --json --compact
 php artisan awo:replay --window=7d --limit=500 --json
 php artisan awo:replay --window=7d --limit=500 --markdown
 php artisan awo:replay --compare-scheduled --window=7d --limit=500 --json

@@ -1,7 +1,7 @@
 # PLOS Public Export Manifest
 
-Generated: 2026-05-06T11:24:23Z
-Source commit: b8e3509a1e805bdfebb533046bfa92a9f0c4561f
+Generated: 2026-05-06T11:43:06Z
+Source commit: 8f126b11da480fcf07ec96f72f23645887354c69
 Source tree status: reviewed tracked worktree contents copied from the source tree
 Tracked files copied: 1655
 

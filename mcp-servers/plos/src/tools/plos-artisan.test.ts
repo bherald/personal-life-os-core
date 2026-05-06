@@ -58,6 +58,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:agent-triage --json --compact',
     'genealogy:source-registry --validate',
     'awo:replay --window=7d --json',
+    'awo:replay --window=7d --compact',
+    'awo:replay --window=7d --json --compact',
+    'awo:replay --window=7d --markdown --compact',
     'awo:replay --window=7d --limit=500 --json',
     'awo:replay --window=7d --limit=500 --compact',
     'awo:replay --window=7d --limit=500 --json --compact',
@@ -141,6 +144,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --json --compact/);
   assert.match(listing, /php artisan rag:backlog-report --compact/);
   assert.match(listing, /php artisan rag:backlog-report --json --compact/);
+  assert.match(listing, /php artisan awo:replay --window=7d --compact/);
+  assert.match(listing, /php artisan awo:replay --window=7d --json --compact/);
+  assert.match(listing, /php artisan awo:replay --window=7d --markdown --compact/);
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --json/);
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --compact/);
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --json --compact/);
