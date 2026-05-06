@@ -48,10 +48,13 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:audit-privacy-routing --json',
     'genealogy:reject-codes --json',
     'genealogy:reject-codes --json --days=30',
+    'genealogy:reject-codes --compact',
     'genealogy:reject-codes --json --compact',
     'genealogy:review-feedback --days=30 --json',
+    'genealogy:review-feedback --compact',
     'genealogy:review-feedback --json --compact',
     'genealogy:packet-reason-codes --days=30 --json',
+    'genealogy:packet-reason-codes --compact',
     'genealogy:packet-reason-codes --json --compact',
     'genealogy:evidence-sprint-report --json',
     'genealogy:evidence-sprint-report --json --compact',
@@ -140,8 +143,11 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:agent-triage --json --compact/);
   assert.match(listing, /php artisan genealogy:source-registry --validate/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --days=30 --json/);
+  assert.match(listing, /php artisan genealogy:packet-reason-codes --compact/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --json --compact/);
+  assert.match(listing, /php artisan genealogy:review-feedback --compact/);
   assert.match(listing, /php artisan genealogy:review-feedback --json --compact/);
+  assert.match(listing, /php artisan genealogy:reject-codes --compact/);
   assert.match(listing, /php artisan genealogy:reject-codes --json --compact/);
   assert.match(listing, /php artisan news:source-inventory --workflow=news_brief --days=7 --strict --json/);
   assert.match(listing, /php artisan scheduler:optimize-report --compact/);
@@ -419,6 +425,30 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(materializeExecuteResult, /Blocked:/);
   assert.match(materializeExecuteResult, /Use command "list"/);
+
+  const packetReasonReorderedCompactResult = await plosArtisan({
+    command: 'genealogy:packet-reason-codes --compact --json',
+    on_prod: false,
+  });
+
+  assert.match(packetReasonReorderedCompactResult, /Blocked:/);
+  assert.match(packetReasonReorderedCompactResult, /Use command "list"/);
+
+  const rejectCodesDetailResult = await plosArtisan({
+    command: 'genealogy:reject-codes --compact --daily',
+    on_prod: false,
+  });
+
+  assert.match(rejectCodesDetailResult, /Blocked:/);
+  assert.match(rejectCodesDetailResult, /Use command "list"/);
+
+  const reviewFeedbackWindowResult = await plosArtisan({
+    command: 'genealogy:review-feedback --compact --days=365',
+    on_prod: false,
+  });
+
+  assert.match(reviewFeedbackWindowResult, /Blocked:/);
+  assert.match(reviewFeedbackWindowResult, /Use command "list"/);
 
   const ragScaleReviewFileResult = await plosArtisan({
     command: 'rag:scale-review --json --retrieval-file=/tmp/evidence.json',
