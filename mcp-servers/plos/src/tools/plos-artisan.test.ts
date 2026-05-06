@@ -18,6 +18,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:review-backlog-report --json --next-target',
     'ops:review-backlog-report --next-target --focus=typed-remediation --json',
     'ops:review-backlog-report --next-target --focus=materializable-remediation --json',
+    'ops:review-backlog-report --next-target --focus=source-backed-packet --json',
     'ops:offline-status --json',
     'ops:offline-smoke --json',
     'ops:agent-doctor --json --since=24',
@@ -108,6 +109,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:review-backlog-report --json --next-target/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=typed-remediation --json/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=materializable-remediation --json/);
+  assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json/);
   assert.match(listing, /php artisan ops:offline-smoke --json/);
   assert.match(listing, /php artisan ops:agent-doctor --json --since=24/);
   assert.match(listing, /php artisan ops:agent-doctor --compact/);
@@ -293,6 +295,22 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(reorderedMaterializableFocusResult, /Blocked:/);
   assert.match(reorderedMaterializableFocusResult, /Use command "list"/);
+
+  const sourceBackedPacketOldOrderResult = await plosArtisan({
+    command: 'ops:review-backlog-report --json --next-target --focus=source-backed-packet',
+    on_prod: false,
+  });
+
+  assert.match(sourceBackedPacketOldOrderResult, /Blocked:/);
+  assert.match(sourceBackedPacketOldOrderResult, /Use command "list"/);
+
+  const reorderedSourceBackedPacketFocusResult = await plosArtisan({
+    command: 'ops:review-backlog-report --next-target --json --focus=source-backed-packet',
+    on_prod: false,
+  });
+
+  assert.match(reorderedSourceBackedPacketFocusResult, /Blocked:/);
+  assert.match(reorderedSourceBackedPacketFocusResult, /Use command "list"/);
 
   const canonicalNextTargetFocusExtraOptionResult = await plosArtisan({
     command: 'ops:review-backlog-report --next-target --focus=typed-remediation --json --include-details',

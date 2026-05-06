@@ -250,6 +250,28 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $this->assertSame('materializable-remediation', json_decode((string) Artisan::output(), true)['focus']);
     }
 
+    public function test_next_target_source_backed_packet_focus_option_is_forwarded(): void
+    {
+        $payload = $this->nextTargetPayload(['focus' => 'source-backed-packet']);
+
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, 'source-backed-packet')
+            ->andReturn($payload);
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--json' => true,
+            '--next-target' => true,
+            '--focus' => 'source-backed-packet',
+        ]);
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('source-backed-packet', json_decode((string) Artisan::output(), true)['focus']);
+    }
+
     public function test_focus_option_requires_next_target(): void
     {
         $service = Mockery::mock(ReviewBacklogReportService::class);
@@ -278,7 +300,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         ]);
 
         $this->assertSame(1, $exit);
-        $this->assertStringContainsString('Unsupported --focus value. Supported values: typed-remediation, materializable-remediation.', (string) Artisan::output());
+        $this->assertStringContainsString('Unsupported --focus value. Supported values: typed-remediation, materializable-remediation, source-backed-packet.', (string) Artisan::output());
     }
 
     public function test_json_and_markdown_options_are_mutually_exclusive(): void

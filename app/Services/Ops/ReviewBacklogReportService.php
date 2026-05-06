@@ -15,6 +15,7 @@ class ReviewBacklogReportService
     public const NEXT_TARGET_FOCI = [
         'typed-remediation',
         'materializable-remediation',
+        'source-backed-packet',
     ];
 
     /**
@@ -1621,15 +1622,23 @@ class ReviewBacklogReportService
         $underlyingClassification = $classification;
         $underlyingNextAction = $nextAction;
 
-        if ($isHighPriority) {
-            $classification = 'high_priority_pending_review';
-            $nextAction = 'Review one high-priority pending row first; classify only, and do not bulk approve or reject.';
-        }
-
         $details = json_decode((string) ($row->details ?? ''), true);
         $malformedDetails = ! is_array($details);
         $details = is_array($details) ? $details : [];
         $details = $this->withFindingTypeContext($details, $findingType);
+        $packetTarget = $reviewType === 'genealogy_review_packet'
+            ? $this->packetTargetSummary($details, $malformedDetails)
+            : null;
+        if ($packetTarget !== null) {
+            $classification = 'source_backed_packet_review';
+            $nextAction = 'Open the source-backed packet in Review Hub and decide one packet at a time; do not batch review or mutate canonical genealogy facts.';
+            $underlyingClassification = $classification;
+            $underlyingNextAction = $nextAction;
+        }
+        if ($isHighPriority) {
+            $classification = 'high_priority_pending_review';
+            $nextAction = 'Review one high-priority pending row first; classify only, and do not bulk approve or reject.';
+        }
         $hasApplyPreview = is_array($details['apply_preview'] ?? null);
         $familySignals = $this->familyContextSignals($details);
         $hasFamilyContext = in_array(true, $familySignals, true);
@@ -1680,7 +1689,14 @@ class ReviewBacklogReportService
                 'typed_remediation' => $isTypedRemediation,
                 'source_backed_context' => $reviewType === 'genealogy_finding'
                     || $reviewType === 'source_add'
-                    || ($findingType !== null && str_contains($findingType, 'genealogy')),
+                    || ($findingType !== null && str_contains($findingType, 'genealogy'))
+                    || (($packetTarget['source_backed'] ?? false) === true),
+                'genealogy_review_packet' => $reviewType === 'genealogy_review_packet',
+                'packet_source_backed' => ($packetTarget['source_backed'] ?? false) === true,
+                'packet_review_ready' => ($packetTarget['review_ready'] ?? false) === true,
+                'packet_preview_only' => ($packetTarget['preview_only'] ?? false) === true,
+                'packet_boundary_labeled' => ($packetTarget['boundary_labeled'] ?? false) === true,
+                'packet_canonical_mutation' => ($packetTarget['canonical_mutation'] ?? false) === true,
                 'has_apply_preview' => $hasApplyPreview,
                 'preview_only' => $this->isPreviewOnly($details),
                 'supported_preview_operation' => $supportedPreviewOperations !== [],
@@ -1694,6 +1710,10 @@ class ReviewBacklogReportService
             '_sort_created_ts' => $createdAt !== null ? strtotime($createdAt) ?: PHP_INT_MAX : PHP_INT_MAX,
             '_sort_priority' => $priority,
         ];
+
+        if ($packetTarget !== null) {
+            $candidate['packet_review'] = $packetTarget;
+        }
 
         if ($isTypedRemediation && $reviewType === 'genealogy_finding') {
             $candidate['remediation_materialization'] = $this->remediationMaterializationHint(
@@ -1719,6 +1739,61 @@ class ReviewBacklogReportService
         }
 
         return $candidate;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @return array<string, mixed>|null
+     */
+    private function packetTargetSummary(array $details, bool $malformedDetails): ?array
+    {
+        if ($malformedDetails) {
+            return [
+                'schema' => 'review_backlog_packet_target.v1',
+                'source_backed' => false,
+                'review_ready' => false,
+                'readiness_state' => 'blocked',
+                'readiness_reason_code' => 'malformed_details',
+                'approval_blocker_count' => 1,
+                'preview_only' => false,
+                'boundary_labeled' => false,
+                'claim_count' => 0,
+                'source_count' => 0,
+                'media_resolved_count' => 0,
+                'media_missing_count' => 0,
+                'canonical_mutation' => false,
+                'canonical_write_allowed' => false,
+                'batch_review_allowed' => false,
+                'details_included' => false,
+            ];
+        }
+
+        $focus = (new GenealogyReviewPacketFocusService)->fromPersistedDetails($details);
+        $readiness = is_array($focus['review_readiness'] ?? null) ? $focus['review_readiness'] : [];
+        $sourceCount = (int) ($focus['source_count'] ?? 0);
+        if ($sourceCount <= 0) {
+            $sources = $details['source_locators'] ?? $details['sources'] ?? [];
+            $sourceCount = is_array($sources) ? count($sources) : 0;
+        }
+
+        return [
+            'schema' => 'review_backlog_packet_target.v1',
+            'source_backed' => ($focus['source_backed'] ?? null) === true,
+            'review_ready' => ($readiness['state'] ?? null) === 'ready',
+            'readiness_state' => $this->nullableString($readiness['state'] ?? null) ?? 'unknown',
+            'readiness_reason_code' => $this->nullableString($readiness['reason_code'] ?? null),
+            'approval_blocker_count' => (int) ($readiness['blocker_count'] ?? 0),
+            'preview_only' => ($focus['preview_only'] ?? null) === true,
+            'boundary_labeled' => $this->nullableString($focus['boundary_label'] ?? null) !== null,
+            'claim_count' => (int) ($focus['claim_count'] ?? 0),
+            'source_count' => $sourceCount,
+            'media_resolved_count' => (int) ($focus['media_resolved_count'] ?? 0),
+            'media_missing_count' => (int) ($focus['media_missing_count'] ?? 0),
+            'canonical_mutation' => ($focus['canonical_mutation'] ?? null) === true,
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'details_included' => false,
+        ];
     }
 
     /**
@@ -1940,6 +2015,18 @@ class ReviewBacklogReportService
             }));
         }
 
+        if ($focus === 'source-backed-packet') {
+            return array_values(array_filter($candidates, function (array $candidate): bool {
+                $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
+
+                return ($candidate['review_type'] ?? null) === 'genealogy_review_packet'
+                    && ($flags['packet_source_backed'] ?? false) === true
+                    && ($flags['packet_review_ready'] ?? false) === true
+                    && ($flags['packet_preview_only'] ?? false) === true
+                    && ($flags['packet_canonical_mutation'] ?? true) === false;
+            }));
+        }
+
         return [];
     }
 
@@ -1956,6 +2043,7 @@ class ReviewBacklogReportService
         return match ($classification) {
             'stale_infrastructure_relevance_check' => 1,
             'typed_preview_needed' => 2,
+            'source_backed_packet_review',
             'source_backed_packet_needed' => 3,
             'actionable_or_obsolete_triage' => 4,
             'routine_stale_review' => 5,
@@ -1979,6 +2067,10 @@ class ReviewBacklogReportService
 
         if ($classification === 'typed_preview_needed' || $underlyingClassification === 'typed_preview_needed') {
             return 'typed_preview_needed';
+        }
+
+        if ($classification === 'source_backed_packet_review') {
+            return 'source_backed_packet_review';
         }
 
         if ($isStale) {

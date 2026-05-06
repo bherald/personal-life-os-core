@@ -26,6 +26,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:review-backlog-report --json --next-target': { description: 'Read-only sanitized next review target JSON', timeout: 30_000 },
   'ops:review-backlog-report --next-target --focus=typed-remediation --json': { description: 'Read-only sanitized typed-remediation review target JSON', timeout: 30_000 },
   'ops:review-backlog-report --next-target --focus=materializable-remediation --json': { description: 'Read-only sanitized materializable remediation review target JSON', timeout: 30_000 },
+  'ops:review-backlog-report --next-target --focus=source-backed-packet --json': { description: 'Read-only sanitized source-backed review packet target JSON', timeout: 30_000 },
   'ops:offline-status --json':   { description: 'Offline/degraded runtime status', timeout: 15_000 },
   'ops:offline-smoke --json':    { description: 'Manual read-only offline smoke report', timeout: 30_000 },
   'ops:agent-doctor --json --since=24': { description: 'Observe-only agent health diagnostics', timeout: 30_000 },
