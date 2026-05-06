@@ -164,6 +164,15 @@
           {{ targetRefMatchCount }} match{{ targetRefMatchCount === 1 ? '' : 'es' }}
         </span>
         <button
+          v-if="targetRefLinkAvailable"
+          type="button"
+          class="ops-btn ops-btn-sky text-xs"
+          title="Copy target review link"
+          @click="copyTargetRefLink"
+        >
+          Copy link
+        </button>
+        <button
           v-if="targetRefActive"
           type="button"
           class="ops-btn ops-btn-plum text-xs"
@@ -731,9 +740,34 @@ const targetRefMatchCount = computed(() => {
   if (!targetRef.value) return 0
   return items.value.filter(item => itemTargetRef(item) === targetRef.value).length
 })
+const targetRefLinkAvailable = computed(() => Boolean(targetRef.value))
+const targetRefShareUrl = computed(() => {
+  if (!targetRef.value || typeof window === 'undefined') return ''
+  const url = new URL(window.location.href)
+  url.searchParams.set('target_ref', targetRef.value)
+  return url.toString()
+})
 
 const clearTargetRefFilter = () => {
   targetRefQuery.value = ''
+}
+
+const copyTargetRefLink = async () => {
+  if (!targetRefShareUrl.value) {
+    showToast('Enter a valid target ref first', 'error')
+    return
+  }
+  if (!navigator?.clipboard?.writeText) {
+    showToast('Clipboard unavailable', 'error')
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(targetRefShareUrl.value)
+    showToast('Target link copied')
+  } catch (error) {
+    showToast('Failed to copy target link', 'error')
+  }
 }
 
 const syncTargetRefQueryParam = () => {
