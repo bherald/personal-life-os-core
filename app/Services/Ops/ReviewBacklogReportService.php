@@ -158,6 +158,7 @@ class ReviewBacklogReportService
             ->select(['id', 'token', 'review_type', 'finding_type', 'priority', 'status', 'created_at', 'details'])
             ->where('status', 'pending')
             ->orderBy('created_at')
+            ->orderBy('id')
             ->limit(500)
             ->get();
 
@@ -180,6 +181,7 @@ class ReviewBacklogReportService
         $target = $candidates[0];
 
         unset($target['_sort_rank'], $target['_sort_created_ts'], $target['_sort_priority']);
+        unset($target['_sort_id']);
 
         $payload['status'] = 'review_required';
         $payload['query_state'] = 'next_target_selected';
@@ -1740,6 +1742,7 @@ class ReviewBacklogReportService
             '_sort_rank' => $this->nextTargetRank($classification, $isHighPriority, $isStale),
             '_sort_created_ts' => $createdAt !== null ? strtotime($createdAt) ?: PHP_INT_MAX : PHP_INT_MAX,
             '_sort_priority' => $priority,
+            '_sort_id' => $this->rowId($row),
         ];
 
         if ($packetTarget !== null) {
@@ -2182,7 +2185,12 @@ class ReviewBacklogReportService
             }
         }
 
-        return ((int) ($right['_sort_priority'] ?? 0)) <=> ((int) ($left['_sort_priority'] ?? 0));
+        $priority = ((int) ($right['_sort_priority'] ?? 0)) <=> ((int) ($left['_sort_priority'] ?? 0));
+        if ($priority !== 0) {
+            return $priority;
+        }
+
+        return ((int) ($left['_sort_id'] ?? PHP_INT_MAX)) <=> ((int) ($right['_sort_id'] ?? PHP_INT_MAX));
     }
 
     private function normalizeNextTargetFocus(?string $focus): ?string
@@ -2317,6 +2325,13 @@ class ReviewBacklogReportService
     private function targetReference(object $row, string $reviewType, ?string $findingType): string
     {
         return app(ReviewTargetReferenceService::class)->forReviewRow($row, $reviewType, $findingType);
+    }
+
+    private function rowId(object $row): int
+    {
+        $id = (int) ($row->id ?? 0);
+
+        return $id > 0 ? $id : PHP_INT_MAX;
     }
 
     private function isStaleCreatedAt(?string $createdAt, int $staleDays): bool

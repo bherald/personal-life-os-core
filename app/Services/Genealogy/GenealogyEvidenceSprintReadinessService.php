@@ -43,6 +43,7 @@ class GenealogyEvidenceSprintReadinessService
             ->where('review_type', self::REVIEW_TYPE)
             ->where('created_at', '>=', $cutoff->toDateTimeString())
             ->orderByDesc('created_at')
+            ->orderBy('id')
             ->limit($limit + 1)
             ->get();
 
@@ -640,7 +641,16 @@ class GenealogyEvidenceSprintReadinessService
 
                 return $this->isReviewReadyPendingPacket($details);
             })
-            ->sortBy(fn (object $row): int => $this->createdAtTimestamp($row->created_at ?? null))
+            ->sort(function (object $left, object $right): int {
+                $createdAt = $this->createdAtTimestamp($left->created_at ?? null)
+                    <=> $this->createdAtTimestamp($right->created_at ?? null);
+
+                if ($createdAt !== 0) {
+                    return $createdAt;
+                }
+
+                return $this->rowId($left) <=> $this->rowId($right);
+            })
             ->first();
 
         if ($targetRow === null) {
@@ -1060,6 +1070,13 @@ class GenealogyEvidenceSprintReadinessService
         $timestamp = strtotime((string) $value);
 
         return $timestamp === false ? PHP_INT_MAX : $timestamp;
+    }
+
+    private function rowId(object $row): int
+    {
+        $id = (int) ($row->id ?? 0);
+
+        return $id > 0 ? $id : PHP_INT_MAX;
     }
 
     private function safeCount(mixed $value): int
