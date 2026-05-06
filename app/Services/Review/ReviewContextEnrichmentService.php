@@ -212,10 +212,9 @@ class ReviewContextEnrichmentService
                 $details,
                 $person,
                 $mediaRefs,
-                isset($row->status) && is_scalar($row->status) ? (string) $row->status : null
+                isset($row->status) && is_scalar($row->status) ? (string) $row->status : null,
+                $targetRef
             );
-            $packetContext['target_ref'] = $targetRef;
-            $packetContext['review_focus']['target_ref'] = $targetRef;
             $context = array_merge($context, $packetContext);
         }
 
@@ -340,12 +339,21 @@ class ReviewContextEnrichmentService
         array $details,
         ?array $person = null,
         array $mediaRefs = [],
-        ?string $rowStatus = null
+        ?string $rowStatus = null,
+        ?string $targetRef = null
     ): array {
         [$applyPreview, $applyPreviewMeta] = $this->packetApplyPreviewContext($details);
         $validation = $this->detailArray($details, 'validation');
+        $packetOutcome = $this->reviewPacketOutcome->fromDetails(
+            $details,
+            $rowStatus
+        );
+        $claimContexts = $this->reviewPacketClaimContexts($details, $person, $mediaRefs);
+        $reviewFocus = $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person, $mediaRefs);
+        $reviewFocus['target_ref'] = $targetRef;
 
         return [
+            'target_ref' => $targetRef,
             'packet' => $this->detailArray($details, 'packet'),
             'packet_status' => isset($details['packet_status']) && is_scalar($details['packet_status'])
                 ? (string) $details['packet_status']
@@ -362,13 +370,209 @@ class ReviewContextEnrichmentService
             'apply_preview' => $applyPreview,
             'apply_preview_meta' => $applyPreviewMeta,
             'decision_log' => $this->detailArray($details, 'decision_log'),
-            'packet_outcome' => $this->reviewPacketOutcome->fromDetails(
-                $details,
-                $rowStatus
-            ),
-            'claim_contexts' => $this->reviewPacketClaimContexts($details, $person, $mediaRefs),
-            'review_focus' => $this->reviewPacketFocus->fromContext($details, $applyPreview, $applyPreviewMeta, $validation, $person, $mediaRefs),
+            'packet_outcome' => $packetOutcome,
+            'claim_contexts' => $claimContexts,
+            'review_focus' => $reviewFocus,
+            'review_checklist' => $this->reviewPacketChecklist($details, $reviewFocus, $packetOutcome, $claimContexts),
         ];
+    }
+
+    /**
+     * Display-only review checklist for a packet detail pane. The checklist is
+     * derived from already-projected packet context and never persisted back
+     * to agent_review_queue.details.
+     *
+     * @param  array<string, mixed>  $details
+     * @param  array<string, mixed>  $reviewFocus
+     * @param  array<string, mixed>  $packetOutcome
+     * @param  list<array<string, mixed>>  $claimContexts
+     * @return array<string, mixed>
+     */
+    private function reviewPacketChecklist(
+        array $details,
+        array $reviewFocus,
+        array $packetOutcome,
+        array $claimContexts
+    ): array {
+        $identity = $this->detailArray($details, 'identity');
+        $privacy = $this->detailArray($details, 'privacy');
+        $rows = [
+            $this->checklistRow(
+                'target_ref',
+                'Target ref',
+                $this->firstScalarText($reviewFocus, ['target_ref']),
+                $this->firstScalarText($reviewFocus, ['target_ref']) !== null ? 'ok' : 'missing'
+            ),
+            $this->checklistRow(
+                'review_mode',
+                'Review mode',
+                'single packet',
+                ($reviewFocus['review_mode'] ?? null) === 'single_packet' ? 'ok' : 'warning'
+            ),
+            $this->checklistRow(
+                'source_backed',
+                'Source-backed',
+                ($reviewFocus['source_backed'] ?? null) === true ? 'yes' : 'no',
+                ($reviewFocus['source_backed'] ?? null) === true ? 'ok' : 'blocked'
+            ),
+            $this->checklistRow(
+                'boundary',
+                'Boundary',
+                $this->firstScalarText($reviewFocus, ['boundary_label']),
+                $this->firstScalarText($reviewFocus, ['boundary_label']) !== null ? 'ok' : 'warning'
+            ),
+            $this->checklistRow(
+                'identity',
+                'Identity',
+                $this->identityChecklistValue($identity, $reviewFocus),
+                $this->positiveInt($reviewFocus['person_id'] ?? null) !== null ? 'ok' : 'warning'
+            ),
+            $this->checklistRow(
+                'privacy',
+                'Privacy',
+                $this->privacyChecklistValue($privacy),
+                ($privacy['cleared'] ?? null) === true && ($privacy['living_person_risk'] ?? null) !== true ? 'ok' : 'warning'
+            ),
+            $this->checklistRow(
+                'claims',
+                'Claims',
+                count($claimContexts).' claim context'.(count($claimContexts) === 1 ? '' : 's'),
+                count($claimContexts) > 0 ? 'ok' : 'blocked'
+            ),
+            $this->checklistRow(
+                'sources',
+                'Sources',
+                $this->checklistCountLabel($reviewFocus['source_count'] ?? null, 'source'),
+                $this->positiveInt($reviewFocus['source_count'] ?? null) !== null ? 'ok' : 'warning'
+            ),
+            $this->checklistRow(
+                'preview_only',
+                'Preview-only',
+                ($reviewFocus['preview_only'] ?? null) === true ? 'yes' : 'no',
+                ($reviewFocus['preview_only'] ?? null) === true ? 'ok' : 'blocked'
+            ),
+            $this->checklistRow(
+                'canonical_mutation',
+                'Canonical mutation',
+                ($reviewFocus['canonical_mutation'] ?? null) === true ? 'possible' : 'none',
+                ($reviewFocus['canonical_mutation'] ?? null) === true ? 'blocked' : 'ok'
+            ),
+            $this->checklistRow(
+                'approval_readiness',
+                'Approval readiness',
+                $this->reviewReadinessLabel($reviewFocus),
+                ($reviewFocus['approval_ready'] ?? null) === true ? 'ok' : 'blocked'
+            ),
+            $this->checklistRow(
+                'outcome_state',
+                'Outcome state',
+                $this->packetOutcomeLabel($packetOutcome),
+                $this->packetOutcomeChecklistState($packetOutcome)
+            ),
+        ];
+
+        return [
+            'schema' => 'genealogy_review_packet_checklist.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'row_count' => count($rows),
+            'rows' => $rows,
+            'state_counts' => array_count_values(array_map(
+                fn (array $row): string => (string) ($row['state'] ?? 'unknown'),
+                $rows
+            )),
+        ];
+    }
+
+    /**
+     * @return array{key: string, label: string, value: string, state: string}
+     */
+    private function checklistRow(string $key, string $label, mixed $value, string $state): array
+    {
+        $allowedStates = ['ok' => true, 'warning' => true, 'blocked' => true, 'missing' => true];
+
+        return [
+            'key' => $key,
+            'label' => $label,
+            'value' => is_scalar($value) && trim((string) $value) !== '' ? trim((string) $value) : '-',
+            'state' => isset($allowedStates[$state]) ? $state : 'warning',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $identity
+     * @param  array<string, mixed>  $reviewFocus
+     */
+    private function identityChecklistValue(array $identity, array $reviewFocus): string
+    {
+        return $this->firstScalarText($reviewFocus, ['person_label'])
+            ?: $this->firstScalarText($identity, ['status'])
+            ?: ($this->positiveInt($reviewFocus['person_id'] ?? null) !== null
+                ? 'Person #'.$this->positiveInt($reviewFocus['person_id'] ?? null)
+                : 'unknown');
+    }
+
+    /**
+     * @param  array<string, mixed>  $privacy
+     */
+    private function privacyChecklistValue(array $privacy): string
+    {
+        if (($privacy['cleared'] ?? null) === true && ($privacy['living_person_risk'] ?? null) !== true) {
+            return 'cleared';
+        }
+
+        if (($privacy['living_person_risk'] ?? null) === true) {
+            return 'living-person risk';
+        }
+
+        return $this->firstScalarText($privacy, ['status', 'manual_source_gate']) ?: 'unknown';
+    }
+
+    private function checklistCountLabel(mixed $value, string $singular): string
+    {
+        $count = $this->nonNegativeInt($value);
+        if ($count === null) {
+            return 'unknown';
+        }
+
+        return $count.' '.$singular.($count === 1 ? '' : 's');
+    }
+
+    /**
+     * @param  array<string, mixed>  $reviewFocus
+     */
+    private function reviewReadinessLabel(array $reviewFocus): string
+    {
+        $readiness = is_array($reviewFocus['review_readiness'] ?? null) ? $reviewFocus['review_readiness'] : [];
+
+        return $this->firstScalarText($readiness, ['label'])
+            ?: (($reviewFocus['approval_ready'] ?? null) === true ? 'Ready for review' : 'Not approval-ready');
+    }
+
+    /**
+     * @param  array<string, mixed>  $packetOutcome
+     */
+    private function packetOutcomeLabel(array $packetOutcome): string
+    {
+        return $this->firstScalarText($packetOutcome, ['progress_label', 'outcome_label', 'outcome_state']) ?: 'awaiting first decision';
+    }
+
+    /**
+     * @param  array<string, mixed>  $packetOutcome
+     */
+    private function packetOutcomeChecklistState(array $packetOutcome): string
+    {
+        $state = $this->firstScalarText($packetOutcome, ['outcome_state']);
+        if ($state === 'terminal') {
+            return 'ok';
+        }
+        if ($state === 'follow_up' || $state === 'touched') {
+            return 'warning';
+        }
+
+        return 'missing';
     }
 
     /**

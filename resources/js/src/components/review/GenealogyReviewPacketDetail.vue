@@ -39,6 +39,25 @@
       </div>
     </section>
 
+    <section v-if="packetChecklistRows.length" class="packet-section review-checklist-section">
+      <div class="section-heading">
+        <span>Review checklist</span>
+        <span class="section-status preview">display only</span>
+      </div>
+      <div class="checklist-grid">
+        <div
+          v-for="row in packetChecklistRows"
+          :key="row.key"
+          class="checklist-row"
+          :class="checklistStateClass(row.state)"
+        >
+          <span class="checklist-state">{{ checklistStateLabel(row.state) }}</span>
+          <span class="checklist-label">{{ row.label }}</span>
+          <span class="checklist-value" :title="row.value">{{ row.value }}</span>
+        </div>
+      </div>
+    </section>
+
     <section v-if="hasRemediationOrigin" class="packet-section remediation-origin-section">
       <div class="section-heading">
         <span>Remediation origin</span>
@@ -686,6 +705,7 @@ const mediaRefs = computed(() => arrayValue(props.context?.media_refs).filter(is
 const claimContexts = computed(() => arrayValue(props.context?.claim_contexts).filter(isPlainObject))
 const reviewFocus = computed(() => objectValue(props.context?.review_focus))
 const packetOutcome = computed(() => objectValue(props.context?.packet_outcome))
+const packetChecklist = computed(() => objectValue(props.context?.review_checklist))
 const remediationOrigin = computed(() => objectValue(reviewFocus.value.remediation_origin))
 const personSnapshot = computed(() => {
   const person = props.context?.person
@@ -718,6 +738,15 @@ const packetOutcomeRows = computed(() => [
   outcomeRow('actor', 'Actor', packetOutcome.value.latest_actor),
   outcomeRow('time', 'Time', packetOutcome.value.latest_at ? formatDate(packetOutcome.value.latest_at) : null),
 ].filter(Boolean))
+
+const packetChecklistRows = computed(() => arrayValue(packetChecklist.value.rows)
+  .filter(isPlainObject)
+  .map((row) => ({
+    key: stringOrNull(row.key) || compactJson(row),
+    label: stringOrNull(row.label) || labelize(row.key || 'check'),
+    value: displayValue(row.value),
+    state: stringOrNull(row.state) || 'warning',
+  })))
 
 const outcomeStateClass = computed(() => {
   const state = stringOrNull(packetOutcome.value.outcome_state)
@@ -1044,6 +1073,22 @@ function originRow(key, label, value) {
 function outcomeRow(key, label, value) {
   if (value === null || value === undefined || value === '') return null
   return { key, label, raw: value, value: displayValue(value) }
+}
+
+function checklistStateClass(state) {
+  const value = String(state || '').toLowerCase()
+  if (value === 'ok') return 'check-ok'
+  if (value === 'blocked') return 'check-blocked'
+  if (value === 'missing') return 'check-missing'
+  return 'check-warning'
+}
+
+function checklistStateLabel(state) {
+  const value = String(state || '').toLowerCase()
+  if (value === 'ok') return 'ok'
+  if (value === 'blocked') return 'block'
+  if (value === 'missing') return 'wait'
+  return 'check'
 }
 
 function objectValue(...candidates) {
@@ -1764,6 +1809,75 @@ function objectKeys(value) {
 
 .review-focus-section {
   border-color: rgba(255, 204, 102, 0.26);
+}
+
+.review-checklist-section {
+  border-color: rgba(99, 179, 237, 0.24);
+}
+
+.checklist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.checklist-row {
+  display: grid;
+  grid-template-columns: auto minmax(5rem, 0.6fr) minmax(0, 1fr);
+  gap: 0.4rem;
+  align-items: baseline;
+  min-width: 0;
+  border: 1px solid rgba(99, 179, 237, 0.18);
+  border-radius: 0.35rem;
+  background: rgba(99, 179, 237, 0.06);
+  padding: 0.42rem 0.5rem;
+}
+
+.checklist-row.check-ok {
+  border-color: rgba(47, 158, 68, 0.35);
+  background: rgba(47, 158, 68, 0.08);
+}
+
+.checklist-row.check-warning,
+.checklist-row.check-missing {
+  border-color: rgba(204, 136, 0, 0.32);
+  background: rgba(204, 136, 0, 0.08);
+}
+
+.checklist-row.check-blocked {
+  border-color: rgba(204, 68, 68, 0.45);
+  background: rgba(204, 68, 68, 0.12);
+}
+
+.checklist-state {
+  min-width: 2.65rem;
+  border-radius: 0.25rem;
+  background: rgba(0, 0, 0, 0.18);
+  color: #bfe1ff;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 0.12rem 0.28rem;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.checklist-label {
+  color: #b39ddb;
+  font-size: 0.67rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.checklist-value {
+  min-width: 0;
+  color: #f0e6ff;
+  font-size: 0.76rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .focus-grid {
