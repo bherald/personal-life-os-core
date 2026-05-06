@@ -47,8 +47,13 @@ docker compose exec app php artisan setup:doctor --profile=core
 ```
 
 The core doctor checks application configuration, database access, Redis,
-runtime directories, Passport keys, and the public baseline. Fix failures
-before starting optional profiles.
+runtime directories, and Passport keys. Fix failures before starting optional
+profiles.
+
+In Docker, zero failures is the first-boot target. Warnings for host-owned
+tools such as Node/npm or the Docker binary can be normal inside the PHP app
+container because frontend builds run in the `vite` service and Docker runs on
+the host.
 
 Setup doctor profiles are additive health gates:
 
@@ -121,5 +126,7 @@ scripts/public-smoke.sh --force "$HOME/tmp/personal-life-os-core-smoke"
 ```
 
 The smoke script exports a clean tree, installs public dependencies, generates
-keys, runs setup doctor slices, runs public audit/license checks, checks staged
-diff whitespace, and executes the focused public test set.
+keys, runs setup doctor slices (`core --skip-services` and
+`media --skip-services --only=assets,browser,docker`), runs public
+audit/license checks, checks staged diff whitespace, and executes the focused
+public test set.

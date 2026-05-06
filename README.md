@@ -38,6 +38,7 @@ Docker is the preferred public proof path for the core stack.
 ```bash
 cp .env.example .env
 # Edit .env now: set WEB_UI_MASTER_PASSWORD to a real local value.
+# The placeholder WEB_UI_MASTER_PASSWORD=change-me intentionally fails setup doctor.
 docker compose build app
 docker compose run --rm app php artisan key:generate
 docker compose run --rm app php artisan passport:keys --force --no-interaction
@@ -51,6 +52,11 @@ docker compose up -d worker scheduler vite
 
 Open `http://localhost:8000`. Change placeholder passwords in `.env` before
 exposing the stack outside a private development machine.
+
+In the Docker core path, `setup:doctor --profile=core` should have zero
+failures. Warnings for host-owned tools such as Node/npm or the Docker binary
+can be normal inside the PHP app container; use `docker/README.md` for the
+profile-specific interpretation.
 
 Run normal `php artisan migrate` afterward only when applying migrations beyond
 the shipped schema dumps. See [docker/README.md](docker/README.md) for host-port
@@ -95,10 +101,10 @@ cp .env.example .env
 sed -i 's#^PYTHON_BINARY=.*#PYTHON_BINARY=.venv/bin/python#' .env
 php artisan key:generate
 php artisan passport:keys --force --no-interaction
-php artisan setup:doctor --profile=core
 php artisan migrate --schema-path=database/schema/mysql-schema.sql
 PGPASSWORD="${RAG_DB_PASSWORD}" psql -U "${RAG_DB_USERNAME:-plos_rag}" -h "${RAG_DB_HOST:-127.0.0.1}" "${RAG_DB_DATABASE:-plos_rag}" < database/schema/pgsql-schema.sql
 php artisan db:seed --class=PublicBaselineSeeder --force
+php artisan setup:doctor --profile=core
 npm run build
 ```
 

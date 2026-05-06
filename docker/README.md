@@ -6,6 +6,7 @@ This compose stack is for public-safe local development and evaluation. It is no
 
 ```bash
 cp .env.example .env
+# Edit .env and replace WEB_UI_MASTER_PASSWORD=change-me; setup doctor treats the placeholder as a failure.
 docker compose build app
 docker compose run --rm app php artisan key:generate
 docker compose run --rm app php artisan passport:keys --force --no-interaction
@@ -68,7 +69,8 @@ belongs in the `vite` container or on the host, and schema dump loading should
 use the `mysql` and `postgres` containers as shown above. It is normal for
 `setup:doctor --profile=core` inside the app container to report warnings for
 Node/npm, non-localhost Docker service probes, and the Docker host binary while
-still reporting zero failures.
+still reporting zero failures. Treat failures as blockers; treat warnings as
+profile evidence to review before enabling optional tiers.
 
 ## Full Profile
 

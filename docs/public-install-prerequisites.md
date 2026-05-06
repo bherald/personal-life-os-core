@@ -55,6 +55,11 @@ docker compose exec app php artisan db:seed --class=PublicBaselineSeeder --force
 docker compose exec app php artisan setup:doctor --profile=core
 ```
 
+For the Docker core path, treat failures as blockers. Warnings for host-owned
+tools such as Node/npm or the Docker binary can be expected inside the PHP app
+container because frontend builds run in the `vite` service and Docker runs on
+the host.
+
 ## Install Tiers
 
 Use public install tiers plus one private/operator profile for this working tree:
