@@ -197,6 +197,7 @@ const packetContextItems = computed(() => {
   }
 
   return [
+    packetContextEntry('target', 'Target', compactTargetRef(packetFieldValue('target_ref'))),
     packetContextEntry('person', 'Person', formatPersonId(packetFieldValue('person_id'))),
     packetContextEntry('status', 'Status', formatPacketStatus(packetFieldValue('packet_status'))),
     packetContextEntry(
@@ -509,6 +510,15 @@ const compactText = (value) => {
   return str.length <= 88 ? str : `${str.slice(0, 85)}...`
 }
 
+const compactTargetRef = (value) => {
+  const str = stringOrNull(value)
+  if (!str) {
+    return null
+  }
+
+  return str.replace(/^genealogy_review_packet:/, '')
+}
+
 const getImageUrl = (source) => {
   const url = getValue(source)
   if (!url) return null
@@ -662,6 +672,10 @@ const getImageUrl = (source) => {
 
 .packet-context-chip.is-source {
   max-width: min(100%, 34rem);
+}
+
+.packet-context-chip.is-target {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .packet-context-chip.is-access,

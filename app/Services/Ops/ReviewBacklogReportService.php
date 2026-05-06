@@ -4,6 +4,7 @@ namespace App\Services\Ops;
 
 use App\Services\Genealogy\GenealogyReviewPacketFocusService;
 use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
+use App\Services\Review\ReviewTargetReferenceService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -2110,19 +2111,7 @@ class ReviewBacklogReportService
 
     private function targetReference(object $row, string $reviewType, ?string $findingType): string
     {
-        $basis = implode('|', [
-            $reviewType,
-            $findingType ?? 'none',
-            (string) ($row->id ?? ''),
-            (string) ($row->token ?? ''),
-            (string) ($row->created_at ?? ''),
-        ]);
-        $key = (string) config('app.key', '');
-        $digest = $key !== ''
-            ? hash_hmac('sha256', $basis, $key)
-            : hash('sha256', $basis);
-
-        return $reviewType.':target-'.substr($digest, 0, 12);
+        return app(ReviewTargetReferenceService::class)->forReviewRow($row, $reviewType, $findingType);
     }
 
     private function isStaleCreatedAt(?string $createdAt, int $staleDays): bool

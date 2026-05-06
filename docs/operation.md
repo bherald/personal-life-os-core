@@ -93,8 +93,10 @@ php artisan ops:review-backlog-report --next-target --focus=source-backed-packet
 
 The packet target output is count-only. It must not contain row ids, tokens,
 source locators, claim text, person ids, raw packet details, repair selectors,
-or materializer commands. Open the selected packet in Review Hub and decide it
-one at a time; do not use batch review or canonical writeback.
+or materializer commands. Review Hub packet cards and the packet detail pane
+show the same display-only `target_ref`, so match that value to the command
+output, open the selected packet, and decide it one at a time; do not use batch
+review or canonical writeback.
 
 Typed remediation materialization has a separate, dry-run-first operator
 handoff. Use it only when the next backlog target is a pending

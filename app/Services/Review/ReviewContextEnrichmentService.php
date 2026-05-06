@@ -160,6 +160,13 @@ class ReviewContextEnrichmentService
             ? $this->buildMergeContext($details)
             : null;
         $mediaRefs = $this->resolveMediaReferences($details);
+        $targetRef = $type === 'genealogy_review_packet'
+            ? app(ReviewTargetReferenceService::class)->forReviewRow(
+                $row,
+                (string) $row->review_type,
+                isset($row->finding_type) && is_scalar($row->finding_type) ? (string) $row->finding_type : null
+            )
+            : null;
 
         $context = [
             'item' => [
@@ -196,14 +203,20 @@ class ReviewContextEnrichmentService
             // bare "media #13986" string.
             'media_refs' => $mediaRefs,
         ];
+        if ($targetRef !== null) {
+            $context['item']['target_ref'] = $targetRef;
+        }
 
         if ($type === 'genealogy_review_packet') {
-            $context = array_merge($context, $this->buildGenealogyReviewPacketContext(
+            $packetContext = $this->buildGenealogyReviewPacketContext(
                 $details,
                 $person,
                 $mediaRefs,
                 isset($row->status) && is_scalar($row->status) ? (string) $row->status : null
-            ));
+            );
+            $packetContext['target_ref'] = $targetRef;
+            $packetContext['review_focus']['target_ref'] = $targetRef;
+            $context = array_merge($context, $packetContext);
         }
 
         if ($type === 'genealogy_finding') {

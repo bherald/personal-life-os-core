@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Services\Genealogy\GenealogyReviewPacketFocusService;
 use App\Services\Genealogy\GenealogyReviewPacketOutcomeService;
+use App\Services\Review\ReviewTargetReferenceService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -717,7 +718,7 @@ class ReviewTypeRegistryService
             }
 
             if ($type['name'] === 'genealogy_review_packet') {
-                $item = $this->decorateGenealogyReviewPacketItem($item);
+                $item = $this->decorateGenealogyReviewPacketItem($item, $rowArray);
             }
 
             // Add image URL if applicable
@@ -736,12 +737,19 @@ class ReviewTypeRegistryService
         return $items;
     }
 
-    private function decorateGenealogyReviewPacketItem(array $item): array
+    private function decorateGenealogyReviewPacketItem(array $item, array $row = []): array
     {
         $details = $item['details'] ?? null;
         if (! is_array($details)) {
             return $item;
         }
+
+        $targetRef = app(ReviewTargetReferenceService::class)->forReviewRow(
+            $row !== [] ? $row : $item,
+            'genealogy_review_packet',
+            isset($row['finding_type']) && is_scalar($row['finding_type']) ? (string) $row['finding_type'] : null
+        );
+        $item['target_ref'] = $targetRef;
 
         $personId = $this->extractGenealogyReviewPacketPersonId($details);
         if ($personId !== null) {
@@ -759,6 +767,7 @@ class ReviewTypeRegistryService
         $sources = is_array($details['sources'] ?? null) ? $details['sources'] : [];
         $item['source_count'] = count($sourceLocators !== [] ? $sourceLocators : $sources);
         $item['review_focus'] = $this->genealogyReviewPacketFocus()->fromPersistedDetails($details);
+        $item['review_focus']['target_ref'] = $targetRef;
         $item['packet_outcome'] = $this->genealogyReviewPacketOutcome()->fromDetails(
             $details,
             isset($item['status']) && is_scalar($item['status']) ? (string) $item['status'] : null

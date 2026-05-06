@@ -767,6 +767,7 @@ const approvalBlockers = computed(() => {
 })
 
 const reviewFocusRows = computed(() => [
+  focusRow('target', 'Target ref', targetRefLabel.value, 'mono', targetRef.value),
   focusRow('person', 'Person', reviewFocusPersonLabel.value),
   focusRow('status', 'Packet status', packetStatusLabel.value),
   focusRow('boundary', 'Boundary', reviewFocusBoundaryLabel.value, null, reviewFocusBoundaryLabel.value),
@@ -805,6 +806,16 @@ const reviewFocusPersonLabel = computed(() => {
 
   const personId = reviewFocus.value.person_id ?? identity.value.person_id ?? claims.value.find((claim) => claim?.person_id)?.person_id
   return formatPersonId(personId)
+})
+
+const targetRef = computed(() => {
+  return stringOrNull(props.context?.target_ref)
+    || stringOrNull(item.value.target_ref)
+    || stringOrNull(reviewFocus.value.target_ref)
+})
+
+const targetRefLabel = computed(() => {
+  return targetRef.value ? targetRef.value.replace(/^genealogy_review_packet:/, '') : null
 })
 
 const reviewFocusClaim = computed(() => {
