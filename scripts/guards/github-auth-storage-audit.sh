@@ -25,8 +25,17 @@ validate_host() {
 print_redacted_status() {
     local prefix="$1"
     local file="$2"
+    local text
 
-    sed -E 's/(Token: ).*/\1[redacted]/; s/^/'"$prefix"': /' "$file"
+    text="$(cat "$file")"
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+        text="${text//"$GH_TOKEN"/[redacted]}"
+    fi
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+        text="${text//"$GITHUB_TOKEN"/[redacted]}"
+    fi
+
+    printf '%s\n' "$text" | sed -E 's/(Token: ).*/\1[redacted]/; s/^/'"$prefix"': /'
 }
 
 check_scope() {

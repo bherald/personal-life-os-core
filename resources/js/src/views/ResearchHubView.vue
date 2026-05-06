@@ -947,6 +947,12 @@ const finishDecision = (unifiedId) => {
 }
 
 const handleApprove = async (item) => {
+  if (isReviewPacket(item)) {
+    selectItem(item)
+    showToast('Open packet detail to review source, claim, and preview context before marking reviewed', 'info')
+    return
+  }
+
   const blockedReason = packetApprovalBlockReason(item)
   if (blockedReason) {
     showToast(blockedReason, 'error')
@@ -989,7 +995,7 @@ function isBatchSelectable(item) {
 }
 
 function approvalLabel(item) {
-  return isReviewPacket(item) ? 'Mark reviewed' : 'Approve'
+  return isReviewPacket(item) ? 'Open packet' : 'Approve'
 }
 
 function updatePacketStatus(item, packetStatus) {
@@ -1035,6 +1041,12 @@ function packetApprovalBlockReason(item) {
 }
 
 const handleReject = async (item) => {
+  if (isReviewPacket(item)) {
+    selectItem(item)
+    showToast('Open packet detail to reject or request clarification with packet context visible', 'info')
+    return
+  }
+
   const unifiedId = beginDecision(item)
   if (!unifiedId) return
 

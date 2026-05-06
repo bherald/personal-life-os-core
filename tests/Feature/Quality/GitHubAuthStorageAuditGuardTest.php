@@ -71,6 +71,22 @@ class GitHubAuthStorageAuditGuardTest extends TestCase
         $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
     }
 
+    public function test_session_token_is_redacted_from_nonstandard_gh_status_lines(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $result = $this->runGuard($fixture, ['--require-session-token'], [
+            'GITHUB_TOKEN' => 'session-secret',
+            'FAKE_GH_LEAK_SESSION_TOKEN' => '1',
+        ]);
+
+        $this->assertSame(0, $result->getExitCode());
+        $this->assertStringContainsString('debug-session-token=[redacted]', $result->getOutput());
+        $this->assertStringContainsString('session-gh: debug-session-token=[redacted]', $result->getOutput());
+        $this->assertStringNotContainsString('session-secret', $result->getOutput());
+        $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
+    }
+
     public function test_require_session_token_fails_when_isolated_session_auth_fails(): void
     {
         $fixture = $this->makeFixture();
@@ -300,6 +316,9 @@ if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
     fi
     echo "Logged in to github.com"
     echo "Token: fake-gh-token"
+    if [[ -n "${FAKE_GH_LEAK_SESSION_TOKEN:-}" ]]; then
+        echo "debug-session-token=${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+    fi
     scopes="${FAKE_GH_SCOPES:-}"
     if [[ "${GH_CONFIG_DIR:-}" == *plos-gh-auth-session.* && -n "${FAKE_GH_ISOLATED_SCOPES:-}" ]]; then
         scopes="$FAKE_GH_ISOLATED_SCOPES"

@@ -93,7 +93,17 @@
       </div>
 
       <!-- Actions Row -->
-      <div class="card-actions">
+      <div v-if="isReviewPacket" class="card-actions card-actions-inspection">
+        <button
+          @click.stop="$emit('select', item)"
+          class="btn-custom btn-open-packet"
+          :disabled="inFlight"
+          title="Open packet detail to review source, claim, person, and preview context"
+        >
+          Open packet
+        </button>
+      </div>
+      <div v-else class="card-actions">
         <button
           @click.stop="$emit('approve', item)"
           class="btn-approve"
