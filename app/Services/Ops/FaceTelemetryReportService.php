@@ -51,6 +51,7 @@ class FaceTelemetryReportService
             'face_jobs' => $this->collectFaceJobs($hours),
         ];
         $payload['sections']['named_only_next_action'] = $this->collectNamedOnlyNextAction($payload['sections']);
+        $payload['sections']['named_only_triage_buckets'] = $this->collectNamedOnlyTriageBuckets($hours);
 
         [$breaches, $recommendations] = $this->evaluateThresholds($payload['sections']);
         $payload['threshold_breaches'] = $breaches;
@@ -126,6 +127,27 @@ class FaceTelemetryReportService
             $lines[] = '- Targeting scope: `'.($namedOnlyNextAction['targeting_scope'] ?? 'aggregate_only').'`';
             $lines[] = '- Automation allowed: `'.(($namedOnlyNextAction['automation_allowed'] ?? false) ? 'yes' : 'no').'`';
             $lines[] = '- Create-person allowed: `'.(($namedOnlyNextAction['create_person_allowed'] ?? false) ? 'yes' : 'no').'`';
+        }
+
+        $namedOnlyTriage = $payload['sections']['named_only_triage_buckets']['summary'] ?? null;
+        if (is_array($namedOnlyTriage)) {
+            $ageBuckets = is_array($namedOnlyTriage['open_age_buckets'] ?? null) ? $namedOnlyTriage['open_age_buckets'] : [];
+            $terminalBuckets = is_array($namedOnlyTriage['terminal_action_buckets'] ?? null) ? $namedOnlyTriage['terminal_action_buckets'] : [];
+
+            $lines[] = '';
+            $lines[] = '## Named-Only Triage Buckets';
+            $lines[] = '';
+            $lines[] = '- Targeting scope: `'.($namedOnlyTriage['targeting_scope'] ?? 'aggregate_only').'`';
+            $lines[] = '- Row identifiers: `'.(($namedOnlyTriage['uses_row_identifiers'] ?? false) ? 'yes' : 'no').'`';
+            $lines[] = '- Automation allowed: `'.(($namedOnlyTriage['automation_allowed'] ?? false) ? 'yes' : 'no').'`';
+            $lines[] = '- Named-only faces: `'.($namedOnlyTriage['named_only_faces'] ?? 0).'`';
+            $lines[] = '- Open faces: `'.($namedOnlyTriage['open_faces'] ?? 0).'`';
+            $lines[] = '- Open without candidate decision: `'.($namedOnlyTriage['open_without_candidate_decision'] ?? 0).'`';
+            $lines[] = '- Open with non-terminal decision: `'.($namedOnlyTriage['open_with_nonterminal_candidate_decision'] ?? 0).'`';
+            $lines[] = '- Pending no-match faces: `'.($namedOnlyTriage['pending_no_match_faces'] ?? 0).'`';
+            $lines[] = '- Stale pending no-match faces: `'.($namedOnlyTriage['stale_pending_no_match_faces'] ?? 0).'`';
+            $lines[] = '- Open age buckets: under_24h=`'.($ageBuckets['under_24h'] ?? 0).'`, one_to_seven_days=`'.($ageBuckets['one_to_seven_days'] ?? 0).'`, seven_to_thirty_days=`'.($ageBuckets['seven_to_thirty_days'] ?? 0).'`, over_thirty_days=`'.($ageBuckets['over_thirty_days'] ?? 0).'`';
+            $lines[] = '- Terminal action buckets: keep_name_only=`'.($terminalBuckets['keep_name_only'] ?? 0).'`, outside_tree=`'.($terminalBuckets['outside_tree'] ?? 0).'`, too_vague=`'.($terminalBuckets['too_vague'] ?? 0).'`, not_this_person=`'.($terminalBuckets['not_this_person'] ?? 0).'`, defer=`'.($terminalBuckets['defer'] ?? 0).'`';
         }
 
         $candidateSummary = $payload['sections']['candidate_decisions']['summary'] ?? null;
@@ -204,6 +226,7 @@ class FaceTelemetryReportService
         $registry = $this->summary($sections, 'mysql_face_registry');
         $queue = $this->summary($sections, 'review_queue');
         $nextAction = $this->summary($sections, 'named_only_next_action');
+        $triage = $this->summary($sections, 'named_only_triage_buckets');
         $decisions = $this->summary($sections, 'candidate_decisions');
         $bridge = $this->summary($sections, 'bridge_alignment');
         $vectors = $this->summary($sections, 'postgres_face_vectors');
@@ -274,6 +297,24 @@ class FaceTelemetryReportService
                     'stale_named_only_no_match_pending' => $this->intValue($nextAction['stale_named_only_no_match_pending'] ?? 0),
                     'oldest_named_only_updated_at' => $this->nullableString($nextAction['oldest_named_only_updated_at'] ?? null),
                     'oldest_named_only_no_match_pending_at' => $this->nullableString($nextAction['oldest_named_only_no_match_pending_at'] ?? null),
+                ],
+                'named_only_triage_buckets' => [
+                    'status' => $this->sectionStatus($sections, 'named_only_triage_buckets'),
+                    'targeting_scope' => $this->nullableString($triage['targeting_scope'] ?? null) ?? 'aggregate_only',
+                    'uses_row_identifiers' => (bool) ($triage['uses_row_identifiers'] ?? false),
+                    'automation_allowed' => (bool) ($triage['automation_allowed'] ?? false),
+                    'create_person_allowed' => (bool) ($triage['create_person_allowed'] ?? false),
+                    'named_only_faces' => $this->intValue($triage['named_only_faces'] ?? 0),
+                    'open_faces' => $this->intValue($triage['open_faces'] ?? 0),
+                    'terminal_faces' => $this->intValue($triage['terminal_faces'] ?? 0),
+                    'open_without_candidate_decision' => $this->intValue($triage['open_without_candidate_decision'] ?? 0),
+                    'open_with_nonterminal_candidate_decision' => $this->intValue($triage['open_with_nonterminal_candidate_decision'] ?? 0),
+                    'pending_no_match_faces' => $this->intValue($triage['pending_no_match_faces'] ?? 0),
+                    'stale_pending_no_match_faces' => $this->intValue($triage['stale_pending_no_match_faces'] ?? 0),
+                    'verified_named_only_faces' => $this->intValue($triage['verified_named_only_faces'] ?? 0),
+                    'unverified_named_only_faces' => $this->intValue($triage['unverified_named_only_faces'] ?? 0),
+                    'open_age_buckets' => $this->integerCountMap($triage['open_age_buckets'] ?? []),
+                    'terminal_action_buckets' => $this->integerCountMap($triage['terminal_action_buckets'] ?? []),
                 ],
                 'candidate_decisions' => [
                     'status' => $this->sectionStatus($sections, 'candidate_decisions'),
@@ -385,6 +426,19 @@ class FaceTelemetryReportService
                 $sections['named_only_next_action']['uses_row_identifiers'] ? 'yes' : 'no'
             ),
             sprintf(
+                '- Named-only triage: `%s`, named=`%s`, open=`%s`, no_decision=`%s`, nonterminal=`%s`, pending_no_match=`%s`, stale_pending_no_match=`%s`, age_7_30d=`%s`, age_30d_plus=`%s`, row_identifiers=`%s`',
+                $sections['named_only_triage_buckets']['status'],
+                $sections['named_only_triage_buckets']['named_only_faces'],
+                $sections['named_only_triage_buckets']['open_faces'],
+                $sections['named_only_triage_buckets']['open_without_candidate_decision'],
+                $sections['named_only_triage_buckets']['open_with_nonterminal_candidate_decision'],
+                $sections['named_only_triage_buckets']['pending_no_match_faces'],
+                $sections['named_only_triage_buckets']['stale_pending_no_match_faces'],
+                $sections['named_only_triage_buckets']['open_age_buckets']['seven_to_thirty_days'] ?? 0,
+                $sections['named_only_triage_buckets']['open_age_buckets']['over_thirty_days'] ?? 0,
+                $sections['named_only_triage_buckets']['uses_row_identifiers'] ? 'yes' : 'no'
+            ),
+            sprintf(
                 '- Candidate decisions: `%s`, rows=`%s`, recent=`%s`, terminal=`%s`, latest=`%s`',
                 $sections['candidate_decisions']['status'],
                 $sections['candidate_decisions']['decision_rows'],
@@ -489,6 +543,22 @@ class FaceTelemetryReportService
                 $sections['named_only_next_action']['uses_row_identifiers'] ? 'yes' : 'no'
             ),
             sprintf(
+                'named-only-triage: %s named=%s open=%s terminal=%s no_decision=%s nonterminal=%s pending_no_match=%s stale_pending_no_match=%s age_under_24h=%s age_1_7d=%s age_7_30d=%s age_30d_plus=%s row_identifiers=%s',
+                $sections['named_only_triage_buckets']['status'],
+                $sections['named_only_triage_buckets']['named_only_faces'],
+                $sections['named_only_triage_buckets']['open_faces'],
+                $sections['named_only_triage_buckets']['terminal_faces'],
+                $sections['named_only_triage_buckets']['open_without_candidate_decision'],
+                $sections['named_only_triage_buckets']['open_with_nonterminal_candidate_decision'],
+                $sections['named_only_triage_buckets']['pending_no_match_faces'],
+                $sections['named_only_triage_buckets']['stale_pending_no_match_faces'],
+                $sections['named_only_triage_buckets']['open_age_buckets']['under_24h'] ?? 0,
+                $sections['named_only_triage_buckets']['open_age_buckets']['one_to_seven_days'] ?? 0,
+                $sections['named_only_triage_buckets']['open_age_buckets']['seven_to_thirty_days'] ?? 0,
+                $sections['named_only_triage_buckets']['open_age_buckets']['over_thirty_days'] ?? 0,
+                $sections['named_only_triage_buckets']['uses_row_identifiers'] ? 'yes' : 'no'
+            ),
+            sprintf(
                 'candidate-decisions: %s rows=%s faces=%s recent=%s latest=%s terminal=%s keep=%s outside=%s vague=%s not-this=%s defer=%s',
                 $sections['candidate_decisions']['status'],
                 $sections['candidate_decisions']['decision_rows'],
@@ -563,14 +633,7 @@ class FaceTelemetryReportService
                     SUM(CASE WHEN frf.hidden = 0 AND (frf.cluster_id IS NULL OR frf.cluster_id = 0) THEN 1 ELSE 0 END) AS unclustered_visible_faces,
                     SUM(CASE WHEN frf.created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS created_recent_faces
                  FROM file_registry_faces frf
-                 LEFT JOIN (
-                    SELECT
-                        file_registry_face_id,
-                        MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.terminal')) = 'true' THEN 1 ELSE 0 END) AS has_terminal_candidate_decision
-                    FROM genealogy_face_match_queue
-                    WHERE file_registry_face_id IS NOT NULL
-                    GROUP BY file_registry_face_id
-                 ) candidate_decisions ON candidate_decisions.file_registry_face_id = frf.id",
+                 ".$this->latestCandidateDecisionJoinSql('frf'),
                 [$hours, $hours, $hours]
             );
 
@@ -715,6 +778,86 @@ class FaceTelemetryReportService
         ];
     }
 
+    private function collectNamedOnlyTriageBuckets(int $hours): array
+    {
+        try {
+            $row = DB::selectOne(
+                "SELECT
+                    COUNT(*) AS named_only_faces,
+                    SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_faces,
+                    SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_faces,
+                    SUM(CASE WHEN candidate_decisions.file_registry_face_id IS NULL THEN 1 ELSE 0 END) AS open_without_candidate_decision,
+                    SUM(CASE WHEN candidate_decisions.file_registry_face_id IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_with_nonterminal_candidate_decision,
+                    SUM(CASE WHEN COALESCE(queue_counts.pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS pending_no_match_faces,
+                    SUM(CASE WHEN COALESCE(queue_counts.stale_pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS stale_pending_no_match_faces,
+                    SUM(CASE WHEN frf.verified = 1 THEN 1 ELSE 0 END) AS verified_named_only_faces,
+                    SUM(CASE WHEN frf.verified = 0 THEN 1 ELSE 0 END) AS unverified_named_only_faces,
+                    SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) < 24 THEN 1 ELSE 0 END) AS open_under_24h,
+                    SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) >= 24 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) < 168 THEN 1 ELSE 0 END) AS open_one_to_seven_days,
+                    SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) >= 168 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) < 720 THEN 1 ELSE 0 END) AS open_seven_to_thirty_days,
+                    SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) >= 720 THEN 1 ELSE 0 END) AS open_over_thirty_days,
+                    SUM(CASE WHEN candidate_decisions.latest_candidate_action = 'keep_name_only' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_keep_name_only,
+                    SUM(CASE WHEN candidate_decisions.latest_candidate_action = 'outside_tree' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_outside_tree,
+                    SUM(CASE WHEN candidate_decisions.latest_candidate_action = 'too_vague' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_too_vague,
+                    SUM(CASE WHEN candidate_decisions.latest_candidate_action = 'not_this_person' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_not_this_person,
+                    SUM(CASE WHEN candidate_decisions.latest_candidate_action = 'defer' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_defer
+                 FROM file_registry_faces frf
+                 ".$this->latestCandidateDecisionJoinSql('frf')."
+                 LEFT JOIN (
+                    SELECT
+                        file_registry_face_id,
+                        SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' THEN 1 ELSE 0 END) AS pending_no_match_count,
+                        SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_pending_no_match_count
+                    FROM genealogy_face_match_queue
+                    WHERE file_registry_face_id IS NOT NULL
+                    GROUP BY file_registry_face_id
+                 ) queue_counts ON queue_counts.file_registry_face_id = frf.id
+                 WHERE frf.hidden = 0
+                   AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL
+                   AND frf.genealogy_person_id IS NULL",
+                [$hours]
+            );
+
+            $open = $this->intValue($row->open_faces ?? 0);
+            $stalePendingNoMatch = $this->intValue($row->stale_pending_no_match_faces ?? 0);
+
+            return [
+                'status' => $open > 0 || $stalePendingNoMatch > 0 ? 'observe_warning' : 'observe_ok',
+                'source' => 'derived.mysql.file_registry_faces+genealogy_face_match_queue',
+                'summary' => [
+                    'targeting_scope' => 'aggregate_only',
+                    'uses_row_identifiers' => false,
+                    'automation_allowed' => false,
+                    'create_person_allowed' => false,
+                    'named_only_faces' => $this->intValue($row->named_only_faces ?? 0),
+                    'open_faces' => $open,
+                    'terminal_faces' => $this->intValue($row->terminal_faces ?? 0),
+                    'open_without_candidate_decision' => $this->intValue($row->open_without_candidate_decision ?? 0),
+                    'open_with_nonterminal_candidate_decision' => $this->intValue($row->open_with_nonterminal_candidate_decision ?? 0),
+                    'pending_no_match_faces' => $this->intValue($row->pending_no_match_faces ?? 0),
+                    'stale_pending_no_match_faces' => $stalePendingNoMatch,
+                    'verified_named_only_faces' => $this->intValue($row->verified_named_only_faces ?? 0),
+                    'unverified_named_only_faces' => $this->intValue($row->unverified_named_only_faces ?? 0),
+                    'open_age_buckets' => [
+                        'under_24h' => $this->intValue($row->open_under_24h ?? 0),
+                        'one_to_seven_days' => $this->intValue($row->open_one_to_seven_days ?? 0),
+                        'seven_to_thirty_days' => $this->intValue($row->open_seven_to_thirty_days ?? 0),
+                        'over_thirty_days' => $this->intValue($row->open_over_thirty_days ?? 0),
+                    ],
+                    'terminal_action_buckets' => [
+                        'keep_name_only' => $this->intValue($row->terminal_keep_name_only ?? 0),
+                        'outside_tree' => $this->intValue($row->terminal_outside_tree ?? 0),
+                        'too_vague' => $this->intValue($row->terminal_too_vague ?? 0),
+                        'not_this_person' => $this->intValue($row->terminal_not_this_person ?? 0),
+                        'defer' => $this->intValue($row->terminal_defer ?? 0),
+                    ],
+                ],
+            ];
+        } catch (Throwable $e) {
+            return $this->failedSection('mysql.named_only_face_triage', $e);
+        }
+    }
+
     private function collectCandidateDecisions(int $hours): array
     {
         try {
@@ -761,6 +904,31 @@ class FaceTelemetryReportService
         } catch (Throwable $e) {
             return $this->failedSection('mysql.face_candidate_decisions', $e);
         }
+    }
+
+    private function latestCandidateDecisionJoinSql(string $faceAlias): string
+    {
+        return "
+                 LEFT JOIN (
+                    SELECT
+                        latest.file_registry_face_id,
+                        JSON_UNQUOTE(JSON_EXTRACT(latest.match_details, '$.latest_candidate_decision.action')) AS latest_candidate_action,
+                        JSON_UNQUOTE(JSON_EXTRACT(latest.match_details, '$.latest_candidate_decision.terminal')) AS latest_candidate_terminal,
+                        CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(latest.match_details, '$.latest_candidate_decision.terminal')) = 'true' THEN 1 ELSE 0 END AS has_terminal_candidate_decision
+                    FROM genealogy_face_match_queue latest
+                    WHERE latest.file_registry_face_id IS NOT NULL
+                      AND JSON_UNQUOTE(JSON_EXTRACT(latest.match_details, '$.latest_candidate_decision.action')) IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM genealogy_face_match_queue newer
+                        WHERE newer.file_registry_face_id = latest.file_registry_face_id
+                          AND JSON_UNQUOTE(JSON_EXTRACT(newer.match_details, '$.latest_candidate_decision.action')) IS NOT NULL
+                          AND (
+                            newer.updated_at > latest.updated_at
+                            OR (newer.updated_at = latest.updated_at AND newer.id > latest.id)
+                          )
+                      )
+                 ) candidate_decisions ON candidate_decisions.file_registry_face_id = {$faceAlias}.id";
     }
 
     private function collectBridgeAlignment(): array
@@ -1249,6 +1417,26 @@ class FaceTelemetryReportService
     private function joinIds(array $ids): string
     {
         return $ids === [] ? 'none' : implode(',', $ids);
+    }
+
+    private function integerCountMap(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $counts = [];
+        foreach ($value as $key => $count) {
+            if (! is_string($key) || $key === '') {
+                continue;
+            }
+
+            $counts[$key] = $this->intValue($count);
+        }
+
+        ksort($counts);
+
+        return $counts;
     }
 
     private function intValue(mixed $value): int

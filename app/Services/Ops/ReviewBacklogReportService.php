@@ -2,6 +2,7 @@
 
 namespace App\Services\Ops;
 
+use App\Services\Genealogy\GenealogyReviewPacketFocusService;
 use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -66,6 +67,7 @@ class ReviewBacklogReportService
             'next_classification_needed' => [],
             'cleanup_sequence' => [],
             'remediation_readiness' => [],
+            'packet_readiness' => [],
             'status_counts' => [],
             'recommendations' => [],
         ];
@@ -108,6 +110,7 @@ class ReviewBacklogReportService
         $payload['triage_buckets'] = $this->triageBuckets($payload['pending_by_type']);
         $payload['next_classification_needed'] = $this->nextClassificationNeeded($staleDays, $highPriorityThreshold);
         $payload['remediation_readiness'] = $this->remediationReadiness();
+        $payload['packet_readiness'] = $this->packetReadiness();
         $payload['cleanup_sequence'] = $this->cleanupSequence($payload);
         $payload['status_counts'] = $this->statusCounts();
         $payload['status'] = $this->status($payload['summary']);
@@ -512,6 +515,39 @@ class ReviewBacklogReportService
             }
         }
 
+        if (($payload['packet_readiness'] ?? []) !== []) {
+            $packetReadiness = $payload['packet_readiness'];
+            $lines[] = '';
+            $lines[] = '## Packet Readiness';
+            $lines[] = '';
+            $lines[] = sprintf(
+                '- `%d` pending packet row(s); `%d` ready; `%d` blocked; `%d` source-backed; `%d` boundary-labeled; `%d` preview-only; `%d` canonical-mutation row(s).',
+                (int) ($packetReadiness['pending_packet_rows'] ?? 0),
+                (int) ($packetReadiness['ready_rows'] ?? 0),
+                (int) ($packetReadiness['blocked_rows'] ?? 0),
+                (int) ($packetReadiness['source_backed_rows'] ?? 0),
+                (int) ($packetReadiness['boundary_labeled_rows'] ?? 0),
+                (int) ($packetReadiness['preview_only_rows'] ?? 0),
+                (int) ($packetReadiness['canonical_mutation_rows'] ?? 0),
+            );
+            $lines[] = sprintf(
+                '- Blocker inputs: `%d` missing preview, `%d` malformed preview, `%d` non-preview-only preview, `%d` missing validation, `%d` invalid validation, `%d` validation-error row(s), `%d` malformed details.',
+                (int) ($packetReadiness['apply_preview_missing_rows'] ?? 0),
+                (int) ($packetReadiness['persisted_apply_preview_not_array_rows'] ?? 0),
+                (int) ($packetReadiness['preview_not_preview_only_rows'] ?? 0),
+                (int) ($packetReadiness['validation_missing_rows'] ?? 0),
+                (int) ($packetReadiness['validation_not_valid_rows'] ?? 0),
+                (int) ($packetReadiness['validation_errors_rows'] ?? 0),
+                (int) ($packetReadiness['malformed_details'] ?? 0),
+            );
+            foreach (($packetReadiness['reason_code_counts'] ?? []) as $reasonCode => $count) {
+                $lines[] = sprintf('- Packet reason `%s`: `%d` row(s).', (string) $reasonCode, (int) $count);
+            }
+            foreach (($packetReadiness['blocker_code_counts'] ?? []) as $blockerCode => $count) {
+                $lines[] = sprintf('- Packet blocker `%s`: `%d` row(s).', (string) $blockerCode, (int) $count);
+            }
+        }
+
         $lines[] = '';
         $lines[] = '## Recommendations';
         $lines[] = '';
@@ -529,6 +565,7 @@ class ReviewBacklogReportService
     {
         $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
         $readiness = is_array($payload['remediation_readiness'] ?? null) ? $payload['remediation_readiness'] : [];
+        $packetReadiness = is_array($payload['packet_readiness'] ?? null) ? $payload['packet_readiness'] : [];
 
         return [
             'version' => 1,
@@ -585,6 +622,26 @@ class ReviewBacklogReportService
                 'malformed_details' => (int) ($readiness['malformed_details'] ?? 0),
                 'possible_change_type_typos' => $readiness['possible_change_type_typos'] ?? [],
             ],
+            'packet_readiness' => [
+                'pending_packet_rows' => (int) ($packetReadiness['pending_packet_rows'] ?? 0),
+                'ready_rows' => (int) ($packetReadiness['ready_rows'] ?? 0),
+                'blocked_rows' => (int) ($packetReadiness['blocked_rows'] ?? 0),
+                'source_backed_rows' => (int) ($packetReadiness['source_backed_rows'] ?? 0),
+                'boundary_labeled_rows' => (int) ($packetReadiness['boundary_labeled_rows'] ?? 0),
+                'source_locator_rows' => (int) ($packetReadiness['source_locator_rows'] ?? 0),
+                'claim_rows' => (int) ($packetReadiness['claim_rows'] ?? 0),
+                'preview_only_rows' => (int) ($packetReadiness['preview_only_rows'] ?? 0),
+                'canonical_mutation_rows' => (int) ($packetReadiness['canonical_mutation_rows'] ?? 0),
+                'apply_preview_missing_rows' => (int) ($packetReadiness['apply_preview_missing_rows'] ?? 0),
+                'persisted_apply_preview_not_array_rows' => (int) ($packetReadiness['persisted_apply_preview_not_array_rows'] ?? 0),
+                'preview_not_preview_only_rows' => (int) ($packetReadiness['preview_not_preview_only_rows'] ?? 0),
+                'validation_missing_rows' => (int) ($packetReadiness['validation_missing_rows'] ?? 0),
+                'validation_not_valid_rows' => (int) ($packetReadiness['validation_not_valid_rows'] ?? 0),
+                'validation_errors_rows' => (int) ($packetReadiness['validation_errors_rows'] ?? 0),
+                'malformed_details' => (int) ($packetReadiness['malformed_details'] ?? 0),
+                'reason_code_counts' => $this->integerCountMap($packetReadiness['reason_code_counts'] ?? []),
+                'blocker_code_counts' => $this->integerCountMap($packetReadiness['blocker_code_counts'] ?? []),
+            ],
             'recommendation_count' => count($payload['recommendations'] ?? []),
             'recommendations' => array_values(array_filter($payload['recommendations'] ?? [], 'is_string')),
         ];
@@ -595,6 +652,7 @@ class ReviewBacklogReportService
         $compact = $this->compactPayload($payload);
         $summary = $compact['summary'];
         $readiness = $compact['remediation_readiness'];
+        $packetReadiness = $compact['packet_readiness'];
         $lines = [
             sprintf(
                 'Review backlog compact: %s captured=%s pending=%s stale=%s high_priority=%s dry_run=%s queries_executed=%s query_state=%s',
@@ -620,6 +678,24 @@ class ReviewBacklogReportService
                 $readiness['family_id_key_context_rows'],
                 $readiness['family_ids_context_rows'],
                 $readiness['family_comparison_context_rows']
+            ),
+            sprintf(
+                'packets: pending=%s ready=%s blocked=%s source_backed=%s boundary=%s locators=%s claims=%s preview_only=%s canonical_mutation=%s missing_preview=%s malformed_preview=%s invalid_preview=%s validation_missing=%s validation_not_valid=%s validation_errors=%s',
+                $packetReadiness['pending_packet_rows'],
+                $packetReadiness['ready_rows'],
+                $packetReadiness['blocked_rows'],
+                $packetReadiness['source_backed_rows'],
+                $packetReadiness['boundary_labeled_rows'],
+                $packetReadiness['source_locator_rows'],
+                $packetReadiness['claim_rows'],
+                $packetReadiness['preview_only_rows'],
+                $packetReadiness['canonical_mutation_rows'],
+                $packetReadiness['apply_preview_missing_rows'],
+                $packetReadiness['persisted_apply_preview_not_array_rows'],
+                $packetReadiness['preview_not_preview_only_rows'],
+                $packetReadiness['validation_missing_rows'],
+                $packetReadiness['validation_not_valid_rows'],
+                $packetReadiness['validation_errors_rows']
             ),
         ];
 
@@ -657,6 +733,14 @@ class ReviewBacklogReportService
             );
         }
 
+        foreach ($packetReadiness['reason_code_counts'] as $reasonCode => $count) {
+            $lines[] = sprintf('packet_reason=%s rows=%s', $reasonCode, $count);
+        }
+
+        foreach ($packetReadiness['blocker_code_counts'] as $blockerCode => $count) {
+            $lines[] = sprintf('packet_blocker=%s rows=%s', $blockerCode, $count);
+        }
+
         return implode("\n", $lines)."\n";
     }
 
@@ -665,6 +749,7 @@ class ReviewBacklogReportService
         $compact = $this->compactPayload($payload);
         $summary = $compact['summary'];
         $readiness = $compact['remediation_readiness'];
+        $packetReadiness = $compact['packet_readiness'];
         $lines = [
             '# Review Backlog Compact Report',
             '',
@@ -681,6 +766,11 @@ class ReviewBacklogReportService
             '- Context-ready rows without preview: `'.$readiness['context_ready_without_preview_rows'].'`',
             '- Family context signals: `'.$readiness['family_id_key_context_rows'].'` id-key / `'.$readiness['family_ids_context_rows'].'` family_ids / `'.$readiness['family_comparison_context_rows'].'` comparison',
             '- Rows without materialized IDs: `'.$readiness['without_materialized_ids'].'`',
+            '- Packet rows: `'.$packetReadiness['pending_packet_rows'].'`',
+            '- Packet ready rows: `'.$packetReadiness['ready_rows'].'`',
+            '- Packet blocked rows: `'.$packetReadiness['blocked_rows'].'`',
+            '- Packet preview-only rows: `'.$packetReadiness['preview_only_rows'].'`',
+            '- Packet canonical-mutation rows: `'.$packetReadiness['canonical_mutation_rows'].'`',
             '',
             '## Triage Buckets',
             '',
@@ -732,6 +822,20 @@ class ReviewBacklogReportService
                     (string) ($typo['suggested_change_type'] ?? 'unknown'),
                     (int) ($typo['rows'] ?? 0)
                 );
+            }
+        }
+
+        if ($packetReadiness['reason_code_counts'] !== [] || $packetReadiness['blocker_code_counts'] !== []) {
+            $lines[] = '';
+            $lines[] = '## Packet Readiness';
+            $lines[] = '';
+
+            foreach ($packetReadiness['reason_code_counts'] as $reasonCode => $count) {
+                $lines[] = sprintf('- Reason `%s`: `%d` row(s)', (string) $reasonCode, (int) $count);
+            }
+
+            foreach ($packetReadiness['blocker_code_counts'] as $blockerCode => $count) {
+                $lines[] = sprintf('- Blocker `%s`: `%d` row(s)', (string) $blockerCode, (int) $count);
             }
         }
 
@@ -1143,6 +1247,133 @@ class ReviewBacklogReportService
 
         ksort($readiness['change_types']);
         ksort($readiness['possible_change_type_typos']);
+
+        return $readiness;
+    }
+
+    private function packetReadiness(): array
+    {
+        $rows = DB::table('agent_review_queue')
+            ->select(['details'])
+            ->where('status', 'pending')
+            ->where('review_type', 'genealogy_review_packet')
+            ->orderBy('created_at')
+            ->limit(500)
+            ->get();
+
+        $readiness = [
+            'sample_limit' => 500,
+            'pending_packet_rows' => $rows->count(),
+            'ready_rows' => 0,
+            'blocked_rows' => 0,
+            'source_backed_rows' => 0,
+            'boundary_labeled_rows' => 0,
+            'source_locator_rows' => 0,
+            'claim_rows' => 0,
+            'preview_only_rows' => 0,
+            'canonical_mutation_rows' => 0,
+            'apply_preview_missing_rows' => 0,
+            'persisted_apply_preview_not_array_rows' => 0,
+            'preview_not_preview_only_rows' => 0,
+            'validation_missing_rows' => 0,
+            'validation_not_valid_rows' => 0,
+            'validation_errors_rows' => 0,
+            'malformed_details' => 0,
+            'reason_code_counts' => [],
+            'blocker_code_counts' => [],
+            'safety' => [
+                'scope' => 'review_packet_readiness_aggregate_only',
+                'canonical_write_allowed' => false,
+                'automation_allowed' => false,
+                'batch_review_allowed' => false,
+                'details_included' => false,
+            ],
+        ];
+
+        $focusService = new GenealogyReviewPacketFocusService;
+
+        foreach ($rows as $row) {
+            $details = json_decode((string) ($row->details ?? ''), true);
+            if (! is_array($details)) {
+                $readiness['malformed_details']++;
+                $readiness['blocked_rows']++;
+                $this->incrementCount($readiness['reason_code_counts'], 'malformed_details');
+                $this->incrementCount($readiness['blocker_code_counts'], 'malformed_details');
+
+                continue;
+            }
+
+            $focus = $focusService->fromPersistedDetails($details);
+            $reviewReadiness = is_array($focus['review_readiness'] ?? null) ? $focus['review_readiness'] : [];
+            $state = $this->nullableString($reviewReadiness['state'] ?? null);
+
+            if ($state === 'ready') {
+                $readiness['ready_rows']++;
+            } else {
+                $readiness['blocked_rows']++;
+                $reasonCode = $this->nullableString($reviewReadiness['reason_code'] ?? null) ?? 'approval_ready_unknown';
+                $this->incrementCount($readiness['reason_code_counts'], $reasonCode);
+            }
+
+            if (($focus['source_backed'] ?? null) === true) {
+                $readiness['source_backed_rows']++;
+            }
+            if ($this->nullableString($focus['boundary_label'] ?? null) !== null) {
+                $readiness['boundary_labeled_rows']++;
+            }
+            if ($this->nullableString($focus['source_locator'] ?? null) !== null) {
+                $readiness['source_locator_rows']++;
+            }
+            if ((int) ($focus['claim_count'] ?? 0) > 0) {
+                $readiness['claim_rows']++;
+            }
+            if (($focus['preview_only'] ?? null) === true) {
+                $readiness['preview_only_rows']++;
+            }
+            if (($focus['canonical_mutation'] ?? null) === true) {
+                $readiness['canonical_mutation_rows']++;
+            }
+
+            if (! array_key_exists('apply_preview', $details)) {
+                $readiness['apply_preview_missing_rows']++;
+            } elseif (! is_array($details['apply_preview'])) {
+                $readiness['persisted_apply_preview_not_array_rows']++;
+            }
+
+            if (array_key_exists('apply_preview', $details)
+                && is_array($details['apply_preview'])
+                && ($focus['preview_only'] ?? null) !== true) {
+                $readiness['preview_not_preview_only_rows']++;
+            }
+
+            $validation = $details['validation'] ?? null;
+            if (! is_array($validation)) {
+                $readiness['validation_missing_rows']++;
+            } else {
+                if (($validation['valid'] ?? null) !== true) {
+                    $readiness['validation_not_valid_rows']++;
+                }
+
+                $validationErrors = $validation['errors'] ?? [];
+                if (is_array($validationErrors) && $validationErrors !== []) {
+                    $readiness['validation_errors_rows']++;
+                }
+            }
+
+            foreach ((array) ($focus['approval_blockers'] ?? []) as $blocker) {
+                if (! is_array($blocker)) {
+                    continue;
+                }
+
+                $code = $this->nullableString($blocker['code'] ?? null);
+                if ($code !== null) {
+                    $this->incrementCount($readiness['blocker_code_counts'], $code);
+                }
+            }
+        }
+
+        ksort($readiness['reason_code_counts']);
+        ksort($readiness['blocker_code_counts']);
 
         return $readiness;
     }
@@ -2127,6 +2358,38 @@ class ReviewBacklogReportService
         }
 
         return strcmp($candidate, $current) > 0 ? $candidate : $current;
+    }
+
+    /**
+     * @param  array<string, int>  $counts
+     */
+    private function incrementCount(array &$counts, string $key): void
+    {
+        $counts[$key] = (int) ($counts[$key] ?? 0) + 1;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function integerCountMap(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $counts = [];
+        foreach ($value as $key => $count) {
+            $label = $this->nullableString($key);
+            if ($label === null) {
+                continue;
+            }
+
+            $counts[$label] = (int) $count;
+        }
+
+        ksort($counts);
+
+        return $counts;
     }
 
     private function nullableString(mixed $value): ?string

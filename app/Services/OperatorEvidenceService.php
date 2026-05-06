@@ -220,6 +220,11 @@ class OperatorEvidenceService
             'typed_remediation_rows' => (int) ($counts['typed_remediation_rows'] ?? 0),
             'preview_only_remediation_rows' => (int) ($counts['preview_only_remediation_rows'] ?? 0),
             'supported_preview_operation_rows' => (int) ($counts['supported_preview_operation_rows'] ?? 0),
+            'packet_rows' => (int) ($counts['packet_rows'] ?? 0),
+            'packet_ready_rows' => (int) ($counts['packet_ready_rows'] ?? 0),
+            'packet_blocked_rows' => (int) ($counts['packet_blocked_rows'] ?? 0),
+            'packet_preview_only_rows' => (int) ($counts['packet_preview_only_rows'] ?? 0),
+            'packet_canonical_mutation_rows' => (int) ($counts['packet_canonical_mutation_rows'] ?? 0),
             'recommendations' => (int) ($counts['recommendations'] ?? 0),
         ];
     }
@@ -240,6 +245,11 @@ class OperatorEvidenceService
             'open_named_only_unlinked' => (int) ($counts['open_named_only_unlinked'] ?? 0),
             'stale_open_named_only_unlinked' => (int) ($counts['stale_open_named_only_unlinked'] ?? 0),
             'terminal_decided_named_only_unlinked' => (int) ($counts['terminal_decided_named_only_unlinked'] ?? 0),
+            'named_only_open_without_candidate_decision' => (int) ($counts['named_only_open_without_candidate_decision'] ?? 0),
+            'named_only_open_with_nonterminal_decision' => (int) ($counts['named_only_open_with_nonterminal_decision'] ?? 0),
+            'named_only_pending_no_match_faces' => (int) ($counts['named_only_pending_no_match_faces'] ?? 0),
+            'named_only_stale_pending_no_match_faces' => (int) ($counts['named_only_stale_pending_no_match_faces'] ?? 0),
+            'named_only_open_over_thirty_days' => (int) ($counts['named_only_open_over_thirty_days'] ?? 0),
             'named_only_verified' => (int) ($counts['named_only_verified'] ?? 0),
             'approved_missing_person_media' => (int) ($counts['approved_missing_person_media'] ?? 0),
             'candidate_decision_rows' => (int) ($counts['candidate_decision_rows'] ?? 0),
@@ -585,6 +595,9 @@ class OperatorEvidenceService
             $remediationReadiness = is_array($payload['remediation_readiness'] ?? null)
                 ? $payload['remediation_readiness']
                 : [];
+            $packetReadiness = is_array($payload['packet_readiness'] ?? null)
+                ? $payload['packet_readiness']
+                : [];
             $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
             $status = $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning'));
 
@@ -620,6 +633,14 @@ class OperatorEvidenceService
                 'remediation_possible_change_type_typo_suggestions' => $this->possibleChangeTypeTypoSuggestions($remediationReadiness['possible_change_type_typos'] ?? []),
                 'remediation_change_types' => $this->integerCountMap($remediationReadiness['change_types'] ?? []),
                 'remediation_supported_operations' => $this->integerCountMap($remediationReadiness['supported_operations'] ?? []),
+                'packet_rows' => (int) ($packetReadiness['pending_packet_rows'] ?? 0),
+                'packet_ready_rows' => (int) ($packetReadiness['ready_rows'] ?? 0),
+                'packet_blocked_rows' => (int) ($packetReadiness['blocked_rows'] ?? 0),
+                'packet_source_backed_rows' => (int) ($packetReadiness['source_backed_rows'] ?? 0),
+                'packet_preview_only_rows' => (int) ($packetReadiness['preview_only_rows'] ?? 0),
+                'packet_canonical_mutation_rows' => (int) ($packetReadiness['canonical_mutation_rows'] ?? 0),
+                'packet_reason_code_counts' => $this->integerCountMap($packetReadiness['reason_code_counts'] ?? []),
+                'packet_blocker_code_counts' => $this->integerCountMap($packetReadiness['blocker_code_counts'] ?? []),
                 'recommendations' => count($recommendations),
             ];
 
@@ -1649,21 +1670,31 @@ class OperatorEvidenceService
                     SUM(CASE WHEN f.hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS linked_faces,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS unlinked_faces,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' THEN 1 ELSE 0 END) AS named_only_unlinked,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_unlinked,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND f.updated_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_open_named_only_unlinked,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_unlinked,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' AND f.verified = 1 THEN 1 ELSE 0 END) AS named_only_verified,
-                    MAX(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND f.person_name != '' THEN TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) END) AS named_only_oldest_age_hours
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL THEN 1 ELSE 0 END) AS named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND f.updated_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_open_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND candidate_decisions.file_registry_face_id IS NULL THEN 1 ELSE 0 END) AS named_only_open_without_candidate_decision,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND candidate_decisions.file_registry_face_id IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS named_only_open_with_nonterminal_decision,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(queue_counts.pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS named_only_pending_no_match_faces,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(queue_counts.stale_pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS named_only_stale_pending_no_match_faces,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 24 THEN 1 ELSE 0 END) AS named_only_open_under_24h,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 24 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 168 THEN 1 ELSE 0 END) AS named_only_open_one_to_seven_days,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 168 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 720 THEN 1 ELSE 0 END) AS named_only_open_seven_to_thirty_days,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 720 THEN 1 ELSE 0 END) AS named_only_open_over_thirty_days,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND f.verified = 1 THEN 1 ELSE 0 END) AS named_only_verified,
+                    MAX(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL THEN TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) END) AS named_only_oldest_age_hours
                  FROM file_registry_faces f
+                 ".$this->latestFaceCandidateDecisionJoinSql('f')."
                  LEFT JOIN (
                     SELECT
                         file_registry_face_id,
-                        MAX(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.latest_candidate_decision.terminal')) = 'true' THEN 1 ELSE 0 END) AS has_terminal_candidate_decision
+                        SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' THEN 1 ELSE 0 END) AS pending_no_match_count,
+                        SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' AND created_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_pending_no_match_count
                     FROM genealogy_face_match_queue
                     WHERE file_registry_face_id IS NOT NULL
                     GROUP BY file_registry_face_id
-                 ) candidate_decisions ON candidate_decisions.file_registry_face_id = f.id"
+                 ) queue_counts ON queue_counts.file_registry_face_id = f.id"
             );
             $bridge = DB::selectOne(
                 "SELECT COUNT(*) AS approved_missing_person_media
@@ -1716,6 +1747,14 @@ class OperatorEvidenceService
                 'open_named_only_unlinked' => (int) ($faces->open_named_only_unlinked ?? 0),
                 'stale_open_named_only_unlinked' => (int) ($faces->stale_open_named_only_unlinked ?? 0),
                 'terminal_decided_named_only_unlinked' => (int) ($faces->terminal_decided_named_only_unlinked ?? 0),
+                'named_only_open_without_candidate_decision' => (int) ($faces->named_only_open_without_candidate_decision ?? 0),
+                'named_only_open_with_nonterminal_decision' => (int) ($faces->named_only_open_with_nonterminal_decision ?? 0),
+                'named_only_pending_no_match_faces' => (int) ($faces->named_only_pending_no_match_faces ?? 0),
+                'named_only_stale_pending_no_match_faces' => (int) ($faces->named_only_stale_pending_no_match_faces ?? 0),
+                'named_only_open_under_24h' => (int) ($faces->named_only_open_under_24h ?? 0),
+                'named_only_open_one_to_seven_days' => (int) ($faces->named_only_open_one_to_seven_days ?? 0),
+                'named_only_open_seven_to_thirty_days' => (int) ($faces->named_only_open_seven_to_thirty_days ?? 0),
+                'named_only_open_over_thirty_days' => (int) ($faces->named_only_open_over_thirty_days ?? 0),
                 'named_only_verified' => (int) ($faces->named_only_verified ?? 0),
                 'named_only_oldest_age_hours' => isset($faces->named_only_oldest_age_hours) ? (int) $faces->named_only_oldest_age_hours : null,
                 'approved_missing_person_media' => (int) ($bridge->approved_missing_person_media ?? 0),
@@ -1758,6 +1797,30 @@ class OperatorEvidenceService
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['genealogy_face_match_queue', 'file_registry_faces'], $e, 'Face backlog query failed.');
         }
+    }
+
+    private function latestFaceCandidateDecisionJoinSql(string $faceAlias): string
+    {
+        return "
+                 LEFT JOIN (
+                    SELECT
+                        latest.file_registry_face_id,
+                        JSON_UNQUOTE(JSON_EXTRACT(latest.match_details, '$.latest_candidate_decision.terminal')) AS latest_candidate_terminal,
+                        CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(latest.match_details, '$.latest_candidate_decision.terminal')) = 'true' THEN 1 ELSE 0 END AS has_terminal_candidate_decision
+                    FROM genealogy_face_match_queue latest
+                    WHERE latest.file_registry_face_id IS NOT NULL
+                      AND JSON_UNQUOTE(JSON_EXTRACT(latest.match_details, '$.latest_candidate_decision.action')) IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM genealogy_face_match_queue newer
+                        WHERE newer.file_registry_face_id = latest.file_registry_face_id
+                          AND JSON_UNQUOTE(JSON_EXTRACT(newer.match_details, '$.latest_candidate_decision.action')) IS NOT NULL
+                          AND (
+                            newer.updated_at > latest.updated_at
+                            OR (newer.updated_at = latest.updated_at AND newer.id > latest.id)
+                          )
+                      )
+                 ) candidate_decisions ON candidate_decisions.file_registry_face_id = {$faceAlias}.id";
     }
 
     /**

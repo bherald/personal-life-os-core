@@ -95,17 +95,20 @@ class OperatorEvidenceCommand extends Command
 
         $review = is_array($headlines['review_backlog'] ?? null) ? $headlines['review_backlog'] : [];
         $this->line(sprintf(
-            'review-backlog: %s pending=%s stale=%s high_priority=%s typed=%s',
+            'review-backlog: %s pending=%s stale=%s high_priority=%s typed=%s packets=%s packet_ready=%s packet_blocked=%s',
             $review['status'] ?? 'unavailable',
             $review['pending_total'] ?? '-',
             $review['stale_pending'] ?? '-',
             $review['high_priority_pending'] ?? '-',
-            $review['typed_remediation_rows'] ?? '-'
+            $review['typed_remediation_rows'] ?? '-',
+            $review['packet_rows'] ?? '-',
+            $review['packet_ready_rows'] ?? '-',
+            $review['packet_blocked_rows'] ?? '-'
         ));
 
         $face = is_array($headlines['face'] ?? null) ? $headlines['face'] : [];
         $this->line(sprintf(
-            'face: %s pending=%s stale=%s no_match=%s stale_no_match=%s named_only=%s open_named_only=%s stale_open_named_only=%s terminal_named_only=%s candidate_decisions=%s',
+            'face: %s pending=%s stale=%s no_match=%s stale_no_match=%s named_only=%s open_named_only=%s stale_open_named_only=%s terminal_named_only=%s no_decision=%s nonterminal=%s age30d=%s candidate_decisions=%s',
             $face['status'] ?? 'unavailable',
             $face['pending_total'] ?? '-',
             $face['stale_pending'] ?? '-',
@@ -115,6 +118,9 @@ class OperatorEvidenceCommand extends Command
             $face['open_named_only_unlinked'] ?? '-',
             $face['stale_open_named_only_unlinked'] ?? '-',
             $face['terminal_decided_named_only_unlinked'] ?? '-',
+            $face['named_only_open_without_candidate_decision'] ?? '-',
+            $face['named_only_open_with_nonterminal_decision'] ?? '-',
+            $face['named_only_open_over_thirty_days'] ?? '-',
             $face['candidate_decision_rows'] ?? '-'
         ));
 

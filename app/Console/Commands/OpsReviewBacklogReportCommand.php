@@ -205,6 +205,38 @@ class OpsReviewBacklogReportCommand extends Command
             }
         }
 
+        $packetReadiness = $payload['packet_readiness'] ?? [];
+        if ($packetReadiness !== []) {
+            $this->line(sprintf(
+                'packet_readiness sample_limit=%s pending=%s ready=%s blocked=%s source_backed=%s boundary=%s locators=%s claims=%s preview_only=%s canonical_mutation=%s missing_preview=%s malformed_preview=%s invalid_preview=%s validation_missing=%s validation_not_valid=%s validation_errors=%s malformed_details=%s',
+                $packetReadiness['sample_limit'] ?? 0,
+                $packetReadiness['pending_packet_rows'] ?? 0,
+                $packetReadiness['ready_rows'] ?? 0,
+                $packetReadiness['blocked_rows'] ?? 0,
+                $packetReadiness['source_backed_rows'] ?? 0,
+                $packetReadiness['boundary_labeled_rows'] ?? 0,
+                $packetReadiness['source_locator_rows'] ?? 0,
+                $packetReadiness['claim_rows'] ?? 0,
+                $packetReadiness['preview_only_rows'] ?? 0,
+                $packetReadiness['canonical_mutation_rows'] ?? 0,
+                $packetReadiness['apply_preview_missing_rows'] ?? 0,
+                $packetReadiness['persisted_apply_preview_not_array_rows'] ?? 0,
+                $packetReadiness['preview_not_preview_only_rows'] ?? 0,
+                $packetReadiness['validation_missing_rows'] ?? 0,
+                $packetReadiness['validation_not_valid_rows'] ?? 0,
+                $packetReadiness['validation_errors_rows'] ?? 0,
+                $packetReadiness['malformed_details'] ?? 0,
+            ));
+
+            foreach (($packetReadiness['reason_code_counts'] ?? []) as $reasonCode => $count) {
+                $this->line(sprintf('packet_reason=%s rows=%s', $reasonCode, $count));
+            }
+
+            foreach (($packetReadiness['blocker_code_counts'] ?? []) as $blockerCode => $count) {
+                $this->line(sprintf('packet_blocker=%s rows=%s', $blockerCode, $count));
+            }
+        }
+
         foreach (($payload['recommendations'] ?? []) as $recommendation) {
             $this->warn('review: '.$recommendation);
         }

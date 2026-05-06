@@ -75,9 +75,11 @@ php artisan ops:review-backlog-report --dry-run
 ```
 
 The report groups pending review rows by age, review type, finding type, agent,
-and high-priority status. It is read-only and does not approve, reject, expire,
-archive, notify, or mutate review rows. Use `--compact` for routine operator
-or MCP checks that only need aggregate counts and cleanup guidance.
+high-priority status, typed-remediation readiness, and aggregate
+`genealogy_review_packet` readiness. It is read-only and does not approve,
+reject, expire, archive, notify, or mutate review rows. Use `--compact` for
+routine operator or MCP checks that only need aggregate counts and cleanup
+guidance.
 
 Typed remediation materialization has a separate, dry-run-first operator
 handoff. Use it only when the next backlog target is a pending
