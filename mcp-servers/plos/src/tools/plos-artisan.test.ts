@@ -28,6 +28,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'plos:agent-doctor --json --compact',
     'ops:agent-doctor-snapshot --dry-run --json',
     'ops:agent-doctor-history --json --days=7',
+    'plos:agent-trace-tail --limit=20 --since=24 --json',
     'ops:mcp-health --compact',
     'ops:mcp-health --json --compact',
     'ops:capacity-report --json',
@@ -118,6 +119,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan plos:agent-doctor --json --compact/);
   assert.match(listing, /php artisan ops:agent-doctor-snapshot --dry-run --json/);
   assert.match(listing, /php artisan ops:agent-doctor-history --json --days=7/);
+  assert.match(listing, /php artisan plos:agent-trace-tail --limit=20 --since=24 --json/);
   assert.match(listing, /php artisan ops:mcp-health --compact/);
   assert.match(listing, /php artisan ops:mcp-health --json --compact/);
   assert.match(listing, /php artisan ops:arc-retention --json/);
@@ -183,6 +185,38 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(historyWindowResult, /Blocked:/);
   assert.match(historyWindowResult, /Use command "list"/);
+
+  const traceTailWiderWindowResult = await plosArtisan({
+    command: 'plos:agent-trace-tail --limit=20 --since=168 --json',
+    on_prod: false,
+  });
+
+  assert.match(traceTailWiderWindowResult, /Blocked:/);
+  assert.match(traceTailWiderWindowResult, /Use command "list"/);
+
+  const traceTailReorderedResult = await plosArtisan({
+    command: 'plos:agent-trace-tail --since=24 --limit=20 --json',
+    on_prod: false,
+  });
+
+  assert.match(traceTailReorderedResult, /Blocked:/);
+  assert.match(traceTailReorderedResult, /Use command "list"/);
+
+  const traceTailSpecificTraceResult = await plosArtisan({
+    command: 'plos:agent-trace-tail --limit=20 --since=24 --trace=trc_example --json',
+    on_prod: false,
+  });
+
+  assert.match(traceTailSpecificTraceResult, /Blocked:/);
+  assert.match(traceTailSpecificTraceResult, /Use command "list"/);
+
+  const traceReadResult = await plosArtisan({
+    command: 'plos:agent-trace-read trc_example --since=24 --json',
+    on_prod: false,
+  });
+
+  assert.match(traceReadResult, /Blocked:/);
+  assert.match(traceReadResult, /Use command "list"/);
 
   const compareMarkdownResult = await plosArtisan({
     command: 'awo:replay --compare-scheduled --window=7d --limit=500 --markdown',

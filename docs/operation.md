@@ -284,6 +284,11 @@ The trace commands read sanitized append-only NDJSON envelopes under local
 storage. They do not grant tool access, execute remediation, delete trace files,
 or promote dev-agent autonomy.
 
+The PLOS MCP `plos_artisan` allowlist exposes only the exact redacted recent
+trace-tail form shown above. Trace reads, trace-specific tail filters, wider
+windows, higher limits, reordered flags, and non-JSON trace commands stay
+blocked through MCP until separately reviewed.
+
 `offline:dev-assist` is local opt-in, not part of routine observation. For
 status work, prefer `/doctor --json` with the default `read-only` approval mode.
 One-shot model requests return `trace_id` and `trace_written`; their trace
