@@ -68,6 +68,13 @@ class NewsPushoverProofCommand extends Command
             $report['current_pushover_config']
         );
         $report['part_content_proof'] = $this->summarizePartContentProof($report['pushover']);
+        $report['client_display_proof'] = $this->summarizeClientDisplayProof(
+            $report['pushover'],
+            $report['part_number_proof'],
+            $report['part_timestamp_proof'],
+            $report['part_header_proof'],
+            $report['part_content_proof']
+        );
 
         if ((string) $run->workflow_name !== $workflow) {
             $report['status_reasons']['fail'][] = "workflow_runs.id {$run->id} belongs to workflow '{$run->workflow_name}', not '{$workflow}'.";
@@ -96,6 +103,7 @@ class NewsPushoverProofCommand extends Command
             'current_pushover_config' => null,
             'pacing_config' => null,
             'part_header_proof' => null,
+            'client_display_proof' => null,
             'status_reasons' => [
                 'fail' => $status === 'fail' ? $reasons : [],
                 'inconclusive' => $status === 'inconclusive' ? $reasons : [],
@@ -729,6 +737,64 @@ class NewsPushoverProofCommand extends Command
         ];
     }
 
+    private function summarizeClientDisplayProof(
+        array $pushover,
+        array $partNumberProof,
+        array $partTimestampProof,
+        array $partHeaderProof,
+        array $partContentProof
+    ): array {
+        if (($pushover['present'] ?? false) !== true) {
+            return [
+                'state' => 'pushover_absent',
+                'reason' => 'Pushover node was not found in the inspected run.',
+                'api_delivery_confirmed' => false,
+                'device_display_verified' => false,
+                'operator_device_check_required' => false,
+            ];
+        }
+
+        $totalParts = $this->intOrNull($pushover['total_parts'] ?? null);
+        if ($totalParts === null || $totalParts <= 1) {
+            return [
+                'state' => 'not_required',
+                'reason' => 'Single-part notification; multipart client-display proof is not required.',
+                'api_delivery_confirmed' => ($pushover['proof_state'] ?? null) === 'delivery_confirmed',
+                'device_display_verified' => false,
+                'operator_device_check_required' => false,
+            ];
+        }
+
+        $timestampProofOk = ($partTimestampProof['required'] ?? false) !== true
+            || ($partTimestampProof['state'] ?? null) === 'recorded';
+        $headerProofOk = ($partHeaderProof['required'] ?? false) !== true
+            || ($partHeaderProof['state'] ?? null) === 'recorded';
+        $contentProofOk = in_array(($partContentProof['state'] ?? null), ['recorded', 'metadata_missing'], true);
+        $apiDeliveryConfirmed = ($pushover['proof_state'] ?? null) === 'delivery_confirmed'
+            && ($partNumberProof['state'] ?? null) === 'exact_reverse_sequence'
+            && $timestampProofOk
+            && $headerProofOk
+            && $contentProofOk;
+
+        if (! $apiDeliveryConfirmed) {
+            return [
+                'state' => 'api_delivery_not_confirmed',
+                'reason' => 'Server-side Pushover API delivery proof is not complete enough to evaluate device display.',
+                'api_delivery_confirmed' => false,
+                'device_display_verified' => false,
+                'operator_device_check_required' => false,
+            ];
+        }
+
+        return [
+            'state' => 'api_delivery_confirmed_device_unverified',
+            'reason' => 'Server-side proof confirms Pushover accepted every multipart packet, but this command cannot prove what the mobile or desktop client displayed after delivery.',
+            'api_delivery_confirmed' => true,
+            'device_display_verified' => false,
+            'operator_device_check_required' => true,
+        ];
+    }
+
     private function determineStatus(array $report): array
     {
         $fail = $report['status_reasons']['fail'] ?? [];
@@ -954,6 +1020,7 @@ class NewsPushoverProofCommand extends Command
             'part_timestamp_proof' => $report['part_timestamp_proof'] ?? null,
             'part_header_proof' => $report['part_header_proof'] ?? null,
             'part_content_proof' => $report['part_content_proof'] ?? null,
+            'client_display_proof' => $report['client_display_proof'] ?? null,
             'status_reasons' => $report['status_reasons'] ?? [
                 'fail' => [],
                 'inconclusive' => [],
@@ -1027,6 +1094,15 @@ class NewsPushoverProofCommand extends Command
                 .' requests='.var_export($contentProof['request_ids_available'] ?? null, true)
                 .' distinct_hashes='.($contentProof['distinct_hashes'] ?? 'n/a')
                 .' reason='.$contentProof['reason']);
+        }
+
+        if (! empty($report['client_display_proof'])) {
+            $displayProof = $report['client_display_proof'];
+            $this->line('Client display: state='.$displayProof['state']
+                .' api_delivery='.var_export($displayProof['api_delivery_confirmed'] ?? null, true)
+                .' device_display='.var_export($displayProof['device_display_verified'] ?? null, true)
+                .' operator_check='.var_export($displayProof['operator_device_check_required'] ?? null, true)
+                .' reason='.$displayProof['reason']);
         }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
@@ -1103,6 +1179,15 @@ class NewsPushoverProofCommand extends Command
                 .' requests='.var_export($contentProof['request_ids_available'] ?? null, true)
                 .' distinct_hashes='.($contentProof['distinct_hashes'] ?? 'n/a')
                 .' reason='.$contentProof['reason']);
+        }
+
+        if (! empty($report['client_display_proof'])) {
+            $displayProof = $report['client_display_proof'];
+            $this->line('Client display: state='.$displayProof['state']
+                .' api_delivery='.var_export($displayProof['api_delivery_confirmed'] ?? null, true)
+                .' device_display='.var_export($displayProof['device_display_verified'] ?? null, true)
+                .' operator_check='.var_export($displayProof['operator_device_check_required'] ?? null, true)
+                .' reason='.$displayProof['reason']);
         }
 
         foreach (($report['status_reasons']['fail'] ?? []) as $reason) {
