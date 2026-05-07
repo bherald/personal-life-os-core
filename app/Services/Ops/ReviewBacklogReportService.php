@@ -3,6 +3,7 @@
 namespace App\Services\Ops;
 
 use App\Services\Genealogy\GenealogyReviewPacketFocusService;
+use App\Services\Genealogy\GenealogyReviewPacketValidatorService;
 use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
 use App\Services\Review\ReviewTargetReferenceService;
 use Illuminate\Support\Facades\DB;
@@ -312,11 +313,20 @@ class ReviewBacklogReportService
         $posture = is_array($reviewPass['posture'] ?? null) ? $reviewPass['posture'] : [];
 
         return sprintf(
-            ' review_pass=%s source_backed=%s preview_only=%s canonical_mutation=%s canonical_write_allowed=%s batch_review_allowed=%s automation_allowed=%s details_included=%s raw_identifiers_included=%s tokens_included=%s locators_included=%s',
+            ' review_pass=%s source_backed=%s preview_only=%s canonical_mutation=%s identity_present=%s privacy_present=%s privacy_cleared=%s validation_present=%s validation_valid=%s conflict_evidence_present=%s negative_evidence_present=%s locator_present=%s extracted_claim_present=%s canonical_write_allowed=%s batch_review_allowed=%s automation_allowed=%s details_included=%s raw_identifiers_included=%s tokens_included=%s locators_included=%s',
             (string) ($reviewPass['state'] ?? 'unknown'),
             ($signals['source_backed'] ?? false) ? 'true' : 'false',
             ($signals['preview_only'] ?? false) ? 'true' : 'false',
             ($signals['canonical_mutation'] ?? false) ? 'true' : 'false',
+            ($signals['identity_present'] ?? false) ? 'true' : 'false',
+            ($signals['privacy_present'] ?? false) ? 'true' : 'false',
+            ($signals['privacy_cleared'] ?? false) ? 'true' : 'false',
+            ($signals['validation_present'] ?? false) ? 'true' : 'false',
+            ($signals['validation_valid'] ?? false) ? 'true' : 'false',
+            ($signals['conflict_evidence_present'] ?? false) ? 'true' : 'false',
+            ($signals['negative_evidence_present'] ?? false) ? 'true' : 'false',
+            ($signals['locator_present'] ?? false) ? 'true' : 'false',
+            ($signals['extracted_claim_present'] ?? false) ? 'true' : 'false',
             ($posture['canonical_write_allowed'] ?? false) ? 'true' : 'false',
             ($posture['batch_review_allowed'] ?? false) ? 'true' : 'false',
             ($posture['automation_allowed'] ?? false) ? 'true' : 'false',
@@ -347,6 +357,18 @@ class ReviewBacklogReportService
             ($signals['source_backed'] ?? false) ? 'true' : 'false',
             ($signals['preview_only'] ?? false) ? 'true' : 'false',
             ($signals['canonical_mutation'] ?? false) ? 'true' : 'false',
+        );
+        $lines[] = sprintf(
+            '- Review pass signals: `identity_present=%s`, `privacy_present=%s`, `privacy_cleared=%s`, `validation_present=%s`, `validation_valid=%s`, `conflict_evidence_present=%s`, `negative_evidence_present=%s`, `locator_present=%s`, `extracted_claim_present=%s`',
+            ($signals['identity_present'] ?? false) ? 'true' : 'false',
+            ($signals['privacy_present'] ?? false) ? 'true' : 'false',
+            ($signals['privacy_cleared'] ?? false) ? 'true' : 'false',
+            ($signals['validation_present'] ?? false) ? 'true' : 'false',
+            ($signals['validation_valid'] ?? false) ? 'true' : 'false',
+            ($signals['conflict_evidence_present'] ?? false) ? 'true' : 'false',
+            ($signals['negative_evidence_present'] ?? false) ? 'true' : 'false',
+            ($signals['locator_present'] ?? false) ? 'true' : 'false',
+            ($signals['extracted_claim_present'] ?? false) ? 'true' : 'false',
         );
         $lines[] = sprintf(
             '- Review pass posture: `canonical_write_allowed=%s`, `batch_review_allowed=%s`, `automation_allowed=%s`, `details_included=%s`, `raw_identifiers_included=%s`, `tokens_included=%s`, `locators_included=%s`',
@@ -1887,7 +1909,10 @@ class ReviewBacklogReportService
         }
 
         $focus = (new GenealogyReviewPacketFocusService)->fromPersistedDetails($details);
+        $validator = new GenealogyReviewPacketValidatorService;
         $readiness = is_array($focus['review_readiness'] ?? null) ? $focus['review_readiness'] : [];
+        $validation = is_array($details['validation'] ?? null) ? $details['validation'] : null;
+        $sourceLocatorCount = count($validator->collectSourceLocators($details));
         $sourceCount = (int) ($focus['source_count'] ?? 0);
         if ($sourceCount <= 0) {
             $sources = $details['source_locators'] ?? $details['sources'] ?? [];
@@ -1908,6 +1933,15 @@ class ReviewBacklogReportService
             'media_resolved_count' => (int) ($focus['media_resolved_count'] ?? 0),
             'media_missing_count' => (int) ($focus['media_missing_count'] ?? 0),
             'canonical_mutation' => ($focus['canonical_mutation'] ?? null) === true,
+            'identity_present' => $this->packetIdentityPresent($details),
+            'privacy_present' => is_array($details['privacy'] ?? null) && $details['privacy'] !== [],
+            'privacy_cleared' => $this->packetPrivacyCleared($details),
+            'validation_present' => $validation !== null,
+            'validation_valid' => $this->packetValidationValid($validation),
+            'conflict_evidence_present' => $this->packetConflictEvidencePresent($details),
+            'negative_evidence_present' => $this->packetNegativeEvidencePresent($details),
+            'locator_present' => $sourceLocatorCount > 0,
+            'extracted_claim_present' => $this->packetExtractedClaimPresent($validator->collectClaims($details)),
             'canonical_write_allowed' => false,
             'batch_review_allowed' => false,
             'details_included' => false,
@@ -1944,16 +1978,198 @@ class ReviewBacklogReportService
                 'review_ready' => ($packetTarget['review_ready'] ?? null) === true,
                 'source_backed' => ($packetTarget['source_backed'] ?? null) === true,
                 'boundary_present' => ($packetTarget['boundary_labeled'] ?? null) === true,
-                'identity_present' => null,
-                'privacy_cleared' => null,
+                'identity_present' => ($packetTarget['identity_present'] ?? null) === true,
+                'privacy_present' => ($packetTarget['privacy_present'] ?? null) === true,
+                'privacy_cleared' => ($packetTarget['privacy_cleared'] ?? null) === true,
                 'preview_only' => ($packetTarget['preview_only'] ?? null) === true,
                 'canonical_mutation' => ($packetTarget['canonical_mutation'] ?? null) === true,
+                'validation_present' => ($packetTarget['validation_present'] ?? null) === true,
+                'validation_valid' => ($packetTarget['validation_valid'] ?? null) === true,
+                'conflict_evidence_present' => ($packetTarget['conflict_evidence_present'] ?? null) === true,
+                'negative_evidence_present' => ($packetTarget['negative_evidence_present'] ?? null) === true,
+                'extracted_claim_present' => ($packetTarget['extracted_claim_present'] ?? null) === true,
                 'validation_state' => null,
                 'outcome_state' => null,
-                'locator_present' => (int) ($packetTarget['source_count'] ?? 0) > 0,
+                'locator_present' => ($packetTarget['locator_present'] ?? null) === true,
             ],
             'posture' => $this->reviewPassPosture(),
         ];
+    }
+
+    private function packetIdentityPresent(array $details): bool
+    {
+        if ($this->firstPositiveInt($details, ['person_id', 'target_person_id']) !== null) {
+            return true;
+        }
+
+        $identity = is_array($details['identity'] ?? null)
+            ? $details['identity']
+            : (is_array($details['target_identity'] ?? null) ? $details['target_identity'] : []);
+
+        if ($identity === []) {
+            return false;
+        }
+
+        if ($this->firstPositiveInt($identity, ['person_id', 'target_person_id']) !== null) {
+            return true;
+        }
+
+        if (($identity['resolved'] ?? null) === true || ($identity['is_resolved'] ?? null) === true) {
+            return true;
+        }
+
+        $status = strtolower((string) ($this->nullableString($identity['status'] ?? $identity['resolution_status'] ?? null) ?? ''));
+
+        return in_array($status, ['resolved', 'matched', 'confirmed', 'accepted'], true);
+    }
+
+    private function packetPrivacyCleared(array $details): bool
+    {
+        $privacy = is_array($details['privacy'] ?? null) ? $details['privacy'] : [];
+        if ($privacy === []) {
+            return false;
+        }
+
+        $status = strtolower((string) ($this->nullableString($privacy['status'] ?? $privacy['review_status'] ?? null) ?? ''));
+
+        return $this->packetTruthy($privacy['cleared'] ?? null)
+            || $this->packetTruthy($privacy['privacy_cleared'] ?? null)
+            || in_array($status, ['cleared', 'approved', 'public', 'not_private', 'no_risk'], true);
+    }
+
+    private function packetValidationValid(?array $validation): bool
+    {
+        if ($validation === null || ($validation['valid'] ?? null) !== true) {
+            return false;
+        }
+
+        $errors = $validation['errors'] ?? [];
+
+        return ! is_array($errors) || $errors === [];
+    }
+
+    private function packetConflictEvidencePresent(array $details): bool
+    {
+        return $this->packetDetailSignalPresent($details, [
+            'conflict',
+            'conflicts',
+            'conflict_found',
+            'conflicts_found',
+            'conflict_present',
+            'has_conflict',
+            'conflicting_evidence',
+            'conflicting_evidence_present',
+            'source_conflicts',
+        ], ['conflict', 'conflicts', 'conflicting']);
+    }
+
+    private function packetNegativeEvidencePresent(array $details): bool
+    {
+        return $this->packetDetailSignalPresent($details, [
+            'negative_evidence',
+            'negative_evidence_present',
+            'negative_result',
+            'negative_results',
+            'negative_search',
+            'negative_searches',
+            'negative_finding',
+            'negative_findings',
+            'no_records_found',
+        ], ['negative', 'no_records', 'no_results']);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $claims
+     */
+    private function packetExtractedClaimPresent(array $claims): bool
+    {
+        foreach ($claims as $claim) {
+            if ($this->firstNonEmptyString($claim, [
+                'claim',
+                'claim_text',
+                'statement',
+                'extracted_claim',
+                'extracted_text',
+                'text',
+                'value',
+                'proposed_value',
+                'proposed_name',
+            ]) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<string>  $keys
+     * @param  list<string>  $stateValues
+     */
+    private function packetDetailSignalPresent(array $details, array $keys, array $stateValues): bool
+    {
+        $found = false;
+
+        $this->walkArrays($details, function (array $payload) use (&$found, $keys, $stateValues): void {
+            if ($found) {
+                return;
+            }
+
+            foreach ($keys as $key) {
+                if (! array_key_exists($key, $payload)) {
+                    continue;
+                }
+
+                $value = $payload[$key];
+                if (is_bool($value)) {
+                    $found = $value;
+                } elseif (is_array($value)) {
+                    $found = $value !== [];
+                } elseif (is_numeric($value)) {
+                    $found = (int) $value > 0;
+                } else {
+                    $found = $this->packetSignalStringPresent($value);
+                }
+
+                if ($found) {
+                    return;
+                }
+            }
+
+            foreach (['outcome_state', 'outcome_reason', 'status', 'state'] as $stateKey) {
+                $state = strtolower((string) ($this->nullableString($payload[$stateKey] ?? null) ?? ''));
+                if ($state !== '' && in_array($state, $stateValues, true)) {
+                    $found = true;
+
+                    return;
+                }
+            }
+        });
+
+        return $found;
+    }
+
+    private function packetTruthy(mixed $value): bool
+    {
+        if ($value === true || $value === 1) {
+            return true;
+        }
+
+        if (is_string($value)) {
+            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on', 'cleared', 'approved'], true);
+        }
+
+        return false;
+    }
+
+    private function packetSignalStringPresent(mixed $value): bool
+    {
+        $string = $this->nullableString($value);
+        if ($string === null) {
+            return false;
+        }
+
+        return ! in_array(strtolower($string), ['0', 'false', 'no', 'off', 'none', 'null', 'absent'], true);
     }
 
     /**

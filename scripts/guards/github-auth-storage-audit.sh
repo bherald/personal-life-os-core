@@ -20,6 +20,29 @@ validate_host() {
         usage >&2
         exit 2
     fi
+
+    if [[ "$host" == *"://"* || "$host" == */* || "$host" == *[[:space:]]* || "$host" == *..* ]]; then
+        printf 'FAIL: GitHub host must be a bare hostname, not a URL, path, or spaced value.\n' >&2
+        usage >&2
+        exit 2
+    fi
+
+    if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]]; then
+        printf 'FAIL: GitHub host must be a hostname with only letters, numbers, dots, and hyphens.\n' >&2
+        usage >&2
+        exit 2
+    fi
+
+    local label
+    local -a host_labels
+    IFS='.' read -r -a host_labels <<< "$host"
+    for label in "${host_labels[@]}"; do
+        if [[ -z "$label" || "$label" == -* || "$label" == *- ]]; then
+            printf 'FAIL: GitHub host labels must not be empty or start/end with hyphens.\n' >&2
+            usage >&2
+            exit 2
+        fi
+    done
 }
 
 print_redacted_status() {

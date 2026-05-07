@@ -22,6 +22,8 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('Read-only public GitHub release monitor', $process->getOutput());
         $this->assertStringContainsString('--strict-latest-workflows', $process->getOutput());
         $this->assertStringContainsString('--require-workflow', $process->getOutput());
+        $this->assertStringContainsString('--require-default-branch', $process->getOutput());
+        $this->assertStringContainsString('--require-topic', $process->getOutput());
     }
 
     public function test_monitor_uses_read_only_github_surfaces_without_printing_tokens(): void
@@ -116,6 +118,36 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('Strict public-core check: pass', $process->getOutput());
     }
 
+    public function test_strict_public_core_passes_with_required_default_branch_and_topics(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--require-default-branch',
+                'main',
+                '--require-topic',
+                'laravel',
+                '--require-topic',
+                'rag',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('Strict public-core check: pass', $process->getOutput());
+    }
+
     public function test_repo_view_failure_does_not_print_gh_stderr_or_tokens(): void
     {
         $fixture = $this->makeFixture();
@@ -173,6 +205,68 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertSame(1, $process->getExitCode());
         $this->assertStringContainsString(
             'STRICT FAIL: GitHub Discussions expected has_discussions=false',
+            $process->getOutput()
+        );
+    }
+
+    public function test_strict_public_core_fails_when_required_default_branch_drifts(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--require-default-branch',
+                'main',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_DEFAULT_BRANCH' => 'develop',
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString(
+            'STRICT FAIL: repository default branch expected default_branch=main',
+            $process->getOutput()
+        );
+    }
+
+    public function test_strict_public_core_fails_when_required_topic_is_missing(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--require-topic',
+                'laravel',
+                '--require-topic',
+                'vue',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_TOPICS' => 'laravel,local-first,rag',
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString(
+            'STRICT FAIL: repository topic expected vue',
             $process->getOutput()
         );
     }
@@ -463,12 +557,12 @@ if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
     printf 'url=https://github.com/example/personal-life-os-core\n'
     printf 'visibility=PUBLIC\n'
     printf 'private=false\n'
-    printf 'default_branch=main\n'
+    printf 'default_branch=%s\n' "${PUBLIC_GITHUB_MONITOR_FAKE_DEFAULT_BRANCH:-main}"
     printf 'release=v0.1.0\n'
     printf 'stars=0\n'
     printf 'forks=0\n'
     printf 'watchers=0\n'
-    printf 'topics=laravel,local-first,rag\n'
+    printf 'topics=%s\n' "${PUBLIC_GITHUB_MONITOR_FAKE_TOPICS:-laravel,local-first,rag}"
     exit 0
 fi
 

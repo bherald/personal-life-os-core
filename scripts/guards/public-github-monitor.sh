@@ -6,13 +6,17 @@ run_limit=6
 strict_public_core=false
 strict_latest_workflows=false
 required_workflows=()
+required_topics=()
+required_default_branch=""
 
 usage() {
-    printf 'Usage: %s --repo owner/name [--run-limit N] [--strict-public-core] [--strict-latest-workflows] [--require-workflow NAME]\n' "$0"
+    printf 'Usage: %s --repo owner/name [--run-limit N] [--strict-public-core] [--require-default-branch NAME] [--require-topic TOPIC] [--strict-latest-workflows] [--require-workflow NAME]\n' "$0"
     printf '\n'
     printf 'Read-only public GitHub release monitor using gh. Prints aggregate repo,\n'
     printf 'workflow, issue/PR, and traffic posture without printing credential values.\n'
     printf 'Use --strict-public-core to fail on public-core settings drift.\n'
+    printf 'Use --require-default-branch with strict public-core checks to fail when the default branch changes.\n'
+    printf 'Use --require-topic with strict public-core checks to fail when a required topic is absent.\n'
     printf 'Use --strict-latest-workflows to fail when latest workflow runs are not green.\n'
     printf 'Use --require-workflow with strict latest checks to fail when a named workflow is absent from the latest-run window.\n'
 }
@@ -42,6 +46,24 @@ while [[ $# -gt 0 ]]; do
         --strict-public-core)
             strict_public_core=true
             shift
+            ;;
+        --require-default-branch)
+            if [[ -z "${2:-}" ]]; then
+                usage >&2
+                exit 2
+            fi
+            strict_public_core=true
+            required_default_branch="$2"
+            shift 2
+            ;;
+        --require-topic)
+            if [[ -z "${2:-}" ]]; then
+                usage >&2
+                exit 2
+            fi
+            strict_public_core=true
+            required_topics+=("$2")
+            shift 2
             ;;
         --strict-latest-workflows)
             strict_latest_workflows=true
@@ -103,6 +125,27 @@ strict_expect_line() {
     if ! grep -qxF "$expected" <<< "$haystack"; then
         strict_failures+=("$label expected $expected")
     fi
+}
+
+repo_output_value() {
+    local key="$1"
+    local line
+
+    line="$(grep -E "^${key}=" <<< "$repo_output" | head -1 || true)"
+    if [[ -z "$line" ]]; then
+        printf ''
+        return
+    fi
+
+    printf '%s' "${line#*=}"
+}
+
+repo_has_topic() {
+    local topic="$1"
+    local topics
+
+    topics="$(repo_output_value topics)"
+    tr ',' '\n' <<< "$topics" | grep -qxF "$topic"
 }
 
 traffic_line() {
@@ -222,6 +265,16 @@ if [[ "$strict_public_core" == "true" ]]; then
     print_header "Strict Public Core Check"
     strict_expect_line "$repo_output" "visibility=PUBLIC" "repository visibility"
     strict_expect_line "$repo_output" "private=false" "repository private flag"
+
+    if [[ -n "$required_default_branch" ]]; then
+        strict_expect_line "$repo_output" "default_branch=$required_default_branch" "repository default branch"
+    fi
+
+    for required_topic in "${required_topics[@]}"; do
+        if ! repo_has_topic "$required_topic"; then
+            strict_failures+=("repository topic expected $required_topic")
+        fi
+    done
 
     if grep -qxF "release=none" <<< "$repo_output"; then
         strict_failures+=("latest release expected not release=none")

@@ -198,6 +198,38 @@ class GitHubAuthStorageAuditGuardTest extends TestCase
         $this->assertStringNotContainsString('Token:', $result->getOutput().$result->getErrorOutput());
     }
 
+    public function test_url_shaped_env_host_fails_before_invoking_gh(): void
+    {
+        $fixture = $this->makeFixture();
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runGuard($fixture, [], [
+            'GH_AUTH_AUDIT_HOST' => 'https://github.example.invalid/example/repo',
+            'FAKE_GH_CALL_LOG' => $callLog,
+        ]);
+
+        $this->assertSame(2, $result->getExitCode());
+        $this->assertStringContainsString('GitHub host must be a bare hostname', $result->getErrorOutput());
+        $this->assertFileDoesNotExist($callLog);
+        $this->assertStringNotContainsString('Token:', $result->getOutput().$result->getErrorOutput());
+    }
+
+    public function test_malformed_cli_host_fails_before_invoking_gh(): void
+    {
+        $fixture = $this->makeFixture();
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runGuard($fixture, ['--host', 'github..com'], [
+            'FAKE_GH_CALL_LOG' => $callLog,
+            'GH_TOKEN' => 'session-secret',
+        ]);
+
+        $this->assertSame(2, $result->getExitCode());
+        $this->assertStringContainsString('GitHub host must be a bare hostname', $result->getErrorOutput());
+        $this->assertFileDoesNotExist($callLog);
+        $this->assertStringNotContainsString('session-secret', $result->getOutput().$result->getErrorOutput());
+    }
+
     public function test_option_like_cli_host_fails_before_invoking_gh(): void
     {
         $fixture = $this->makeFixture();
