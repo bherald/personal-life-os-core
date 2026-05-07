@@ -460,6 +460,10 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $this->assertStringContainsString('query_state=no_focus_candidates', $output);
         $this->assertStringContainsString('focus=materializable-remediation', $output);
         $this->assertStringContainsString('target=none', $output);
+        $this->assertStringContainsString('focus_candidates=2', $output);
+        $this->assertStringContainsString('validation_blocked=1', $output);
+        $this->assertStringContainsString('unsupported_operation=1', $output);
+        $this->assertStringContainsString('missing_inputs=privacy_clearance_required:1,source_locator_required:1', $output);
 
         foreach ([
             'target_ref=',
@@ -817,6 +821,35 @@ class OpsReviewBacklogReportCommandTest extends TestCase
             'captured_at' => '2026-05-02T13:52:00Z',
             'focus' => $focus,
             'next_target' => null,
+            'focus_summary' => [
+                'schema' => 'review_backlog_focus_summary.v1',
+                'scope' => 'aggregate_only',
+                'focus' => $focus,
+                'candidate_rows' => 2,
+                'typed_remediation_rows' => 2,
+                'materializable_rows' => 0,
+                'dry_run_available_rows' => 1,
+                'validation_blocked_rows' => 1,
+                'unsupported_operation_rows' => 1,
+                'without_materialized_ids_rows' => 2,
+                'context_ready_without_preview_rows' => 1,
+                'malformed_details_rows' => 0,
+                'possible_change_type_typo_rows' => 0,
+                'missing_materialization_input_counts' => [
+                    'source_locator_required' => 1,
+                    'privacy_clearance_required' => 1,
+                ],
+                'validation_blocker_code_counts' => [
+                    'source_locator_required' => 1,
+                    'privacy_clearance_required' => 1,
+                ],
+                'row_pointers_included' => false,
+                'auth_markers_included' => false,
+                'raw_ids_included' => false,
+                'source_refs_included' => false,
+                'commands_included' => false,
+                'apply_controls_included' => false,
+            ],
         ];
     }
 

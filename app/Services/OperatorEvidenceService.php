@@ -252,6 +252,14 @@ class OperatorEvidenceService
             'materializable_remediation_dry_run_available' => (bool) ($materializableHandoff['dry_run_available'] ?? false),
             'materializable_remediation_apply_enabled' => (bool) ($materializableHandoff['apply_enabled'] ?? false),
             'materializable_remediation_apply_held' => (bool) ($materializableHandoff['apply_held'] ?? false),
+            'materializable_remediation_candidate_rows' => (int) ($materializableHandoff['focus_summary']['candidate_rows'] ?? 0),
+            'materializable_remediation_materializable_rows' => (int) ($materializableHandoff['focus_summary']['materializable_rows'] ?? 0),
+            'materializable_remediation_validation_blocked_rows' => (int) ($materializableHandoff['focus_summary']['validation_blocked_rows'] ?? 0),
+            'materializable_remediation_unsupported_operation_rows' => (int) ($materializableHandoff['focus_summary']['unsupported_operation_rows'] ?? 0),
+            'materializable_remediation_without_ids_rows' => (int) ($materializableHandoff['focus_summary']['without_materialized_ids_rows'] ?? 0),
+            'materializable_remediation_context_without_preview_rows' => (int) ($materializableHandoff['focus_summary']['context_ready_without_preview_rows'] ?? 0),
+            'materializable_remediation_missing_input_counts' => $this->safeOperatorEvidenceCodeCountMap($materializableHandoff['focus_summary']['missing_materialization_input_counts'] ?? []),
+            'materializable_remediation_validation_blocker_code_counts' => $this->safeOperatorEvidenceCodeCountMap($materializableHandoff['focus_summary']['validation_blocker_code_counts'] ?? []),
             'typed_remediation_handoff_available' => (bool) ($typedRemediationHandoff['available'] ?? false),
             'typed_remediation_handoff_state' => $this->safeOperatorEvidenceCode($typedRemediationHandoff['query_state'] ?? null),
             'typed_remediation_status' => $this->safeOperatorEvidenceCode($typedRemediationHandoff['materialization_status'] ?? null),
@@ -966,12 +974,14 @@ class OperatorEvidenceService
         }
         $normalizedFocus = str_replace('-', '_', $focus);
         $available = $target !== null && ($payload['query_state'] ?? null) === 'next_target_selected';
+        $focusSummary = $this->sanitizeReviewBacklogFocusSummary($payload['focus_summary'] ?? null);
 
         return [
             'focus' => $normalizedFocus,
             'status' => $this->safeOperatorEvidenceCode($payload['status'] ?? null),
             'query_state' => $this->safeOperatorEvidenceCode($payload['query_state'] ?? null),
             'available' => $available,
+            'focus_summary' => $focusSummary,
             'operator_action' => match (true) {
                 ! $available => 'none',
                 $focus === 'source-backed-packet' => 'review_one_source_backed_packet',
@@ -1020,6 +1030,60 @@ class OperatorEvidenceService
             'no_canonical_write' => (bool) ($safety['no_canonical_write'] ?? false),
             'apply_enabled' => (bool) ($safety['apply_enabled'] ?? false),
             'apply_held' => (bool) ($safety['apply_held'] ?? false),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sanitizeReviewBacklogFocusSummary(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [
+                'schema' => 'review_backlog_focus_summary.v1',
+                'scope' => 'aggregate_only',
+                'candidate_rows' => 0,
+                'row_pointers_included' => false,
+                'auth_markers_included' => false,
+                'raw_ids_included' => false,
+                'source_refs_included' => false,
+                'commands_included' => false,
+                'apply_controls_included' => false,
+            ];
+        }
+
+        return [
+            'schema' => 'review_backlog_focus_summary.v1',
+            'scope' => 'aggregate_only',
+            'focus' => $this->safeOperatorEvidenceCode(
+                isset($value['focus']) ? str_replace('-', '_', (string) $value['focus']) : null
+            ),
+            'candidate_rows' => (int) ($value['candidate_rows'] ?? 0),
+            'typed_remediation_rows' => (int) ($value['typed_remediation_rows'] ?? 0),
+            'materializable_rows' => (int) ($value['materializable_rows'] ?? 0),
+            'dry_run_available_rows' => (int) ($value['dry_run_available_rows'] ?? 0),
+            'validation_blocked_rows' => (int) ($value['validation_blocked_rows'] ?? 0),
+            'unsupported_operation_rows' => (int) ($value['unsupported_operation_rows'] ?? 0),
+            'without_materialized_ids_rows' => (int) ($value['without_materialized_ids_rows'] ?? 0),
+            'context_ready_without_preview_rows' => (int) ($value['context_ready_without_preview_rows'] ?? 0),
+            'malformed_details_rows' => (int) ($value['malformed_details_rows'] ?? 0),
+            'possible_change_type_typo_rows' => (int) ($value['possible_change_type_typo_rows'] ?? 0),
+            'source_backed_rows' => (int) ($value['source_backed_rows'] ?? 0),
+            'review_ready_rows' => (int) ($value['review_ready_rows'] ?? 0),
+            'preview_only_rows' => (int) ($value['preview_only_rows'] ?? 0),
+            'canonical_mutation_rows' => (int) ($value['canonical_mutation_rows'] ?? 0),
+            'materialization_status_counts' => $this->safeOperatorEvidenceCodeCountMap($value['materialization_status_counts'] ?? []),
+            'materialization_reason_counts' => $this->safeOperatorEvidenceCodeCountMap($value['materialization_reason_counts'] ?? []),
+            'missing_materialization_input_counts' => $this->safeOperatorEvidenceCodeCountMap($value['missing_materialization_input_counts'] ?? []),
+            'validation_blocker_code_counts' => $this->safeOperatorEvidenceCodeCountMap($value['validation_blocker_code_counts'] ?? []),
+            'packet_pass_state_counts' => $this->safeOperatorEvidenceCodeCountMap($value['packet_pass_state_counts'] ?? []),
+            'packet_pass_blocker_code_counts' => $this->safeOperatorEvidenceCodeCountMap($value['packet_pass_blocker_code_counts'] ?? []),
+            'row_pointers_included' => (bool) ($value['row_pointers_included'] ?? false),
+            'auth_markers_included' => (bool) ($value['auth_markers_included'] ?? false),
+            'raw_ids_included' => (bool) ($value['raw_ids_included'] ?? false),
+            'source_refs_included' => (bool) ($value['source_refs_included'] ?? false),
+            'commands_included' => (bool) ($value['commands_included'] ?? false),
+            'apply_controls_included' => (bool) ($value['apply_controls_included'] ?? false),
         ];
     }
 
@@ -3229,6 +3293,33 @@ class OperatorEvidenceService
         }
 
         return $codes;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function safeOperatorEvidenceCodeCountMap(mixed $value, int $limit = 8): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $counts = [];
+        foreach ($value as $key => $count) {
+            $code = $this->safeOperatorEvidenceCode($key);
+            if ($code === null) {
+                continue;
+            }
+
+            $counts[$code] = (int) $count;
+            if (count($counts) >= $limit) {
+                break;
+            }
+        }
+
+        ksort($counts);
+
+        return $counts;
     }
 
     private function nonEmptyString(mixed $value, string $fallback): string

@@ -179,6 +179,9 @@ class ReviewBacklogReportService
             $candidates[] = $this->nextTargetCandidate($row, $staleDays, $highPriorityThreshold);
         }
         $candidates = array_values(array_filter($candidates));
+        if ($focus !== null) {
+            $payload['focus_summary'] = $this->nextTargetFocusSummary($candidates, $focus);
+        }
         $candidates = $this->filterNextTargetCandidates($candidates, $focus);
 
         if ($candidates === []) {
@@ -209,13 +212,15 @@ class ReviewBacklogReportService
     {
         $target = is_array($payload['next_target'] ?? null) ? $payload['next_target'] : null;
         if ($target === null) {
+            $focusSummary = $this->nextTargetFocusSummaryText($payload);
+
             return sprintf(
                 'Review backlog next target: %s query_state=%s focus=%s target=none captured=%s',
                 $payload['status'] ?? 'unknown',
                 $payload['query_state'] ?? 'unknown',
                 $payload['focus'] ?? 'global',
                 $payload['captured_at'] ?? '-',
-            )."\n";
+            ).$focusSummary."\n";
         }
 
         $underlying = '';
@@ -256,15 +261,19 @@ class ReviewBacklogReportService
     {
         $target = is_array($payload['next_target'] ?? null) ? $payload['next_target'] : null;
         if ($target === null) {
-            return implode("\n", [
+            $lines = [
                 '# Review Backlog Next Target',
                 '',
                 '- Status: `'.($payload['status'] ?? 'unknown').'`',
                 '- Query state: `'.($payload['query_state'] ?? 'unknown').'`',
                 '- Focus: `'.($payload['focus'] ?? 'global').'`',
                 '- Target: `none`',
-                '',
-            ]);
+            ];
+
+            $this->appendNoTargetFocusSummaryMarkdown($lines, $payload);
+            $lines[] = '';
+
+            return implode("\n", $lines);
         }
 
         $lines = [
@@ -473,6 +482,330 @@ class ReviewBacklogReportService
         $missing = array_values(array_filter($missing, 'is_string'));
 
         return implode(',', $missing);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $candidates
+     * @return array<string, mixed>
+     */
+    private function nextTargetFocusSummary(array $candidates, string $focus): array
+    {
+        $summary = [
+            'schema' => 'review_backlog_focus_summary.v1',
+            'scope' => 'aggregate_only',
+            'focus' => $focus,
+            'candidate_rows' => count($candidates),
+            'row_pointers_included' => false,
+            'auth_markers_included' => false,
+            'raw_ids_included' => false,
+            'source_refs_included' => false,
+            'commands_included' => false,
+            'apply_controls_included' => false,
+        ];
+
+        if ($focus === 'source-backed-packet') {
+            return array_merge($summary, $this->sourcePacketFocusSummary($candidates));
+        }
+
+        if ($focus === 'typed-remediation' || $focus === 'materializable-remediation') {
+            return array_merge($summary, $this->typedRemediationFocusSummary($candidates));
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $candidates
+     * @return array<string, mixed>
+     */
+    private function sourcePacketFocusSummary(array $candidates): array
+    {
+        $summary = [
+            'source_backed_rows' => 0,
+            'review_ready_rows' => 0,
+            'preview_only_rows' => 0,
+            'canonical_mutation_rows' => 0,
+            'packet_pass_state_counts' => [],
+            'packet_pass_blocker_code_counts' => [],
+        ];
+
+        foreach ($candidates as $candidate) {
+            $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
+            $reviewPass = is_array($candidate['review_pass'] ?? null) ? $candidate['review_pass'] : [];
+
+            if (($flags['packet_source_backed'] ?? false) === true) {
+                $summary['source_backed_rows']++;
+            }
+            if (($flags['packet_review_ready'] ?? false) === true) {
+                $summary['review_ready_rows']++;
+            }
+            if (($flags['packet_preview_only'] ?? false) === true) {
+                $summary['preview_only_rows']++;
+            }
+            if (($flags['packet_canonical_mutation'] ?? false) === true) {
+                $summary['canonical_mutation_rows']++;
+            }
+
+            $state = $this->safeReviewPassCode($reviewPass['state'] ?? null) ?? 'unknown';
+            $this->incrementCount($summary['packet_pass_state_counts'], $state);
+
+            foreach ($this->reviewPassBlockerCodes($reviewPass) as $code) {
+                $this->incrementCount($summary['packet_pass_blocker_code_counts'], $code);
+            }
+        }
+
+        ksort($summary['packet_pass_state_counts']);
+        ksort($summary['packet_pass_blocker_code_counts']);
+
+        return $summary;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $candidates
+     * @return array<string, mixed>
+     */
+    private function typedRemediationFocusSummary(array $candidates): array
+    {
+        $summary = [
+            'typed_remediation_rows' => 0,
+            'materializable_rows' => 0,
+            'dry_run_available_rows' => 0,
+            'validation_blocked_rows' => 0,
+            'unsupported_operation_rows' => 0,
+            'without_materialized_ids_rows' => 0,
+            'context_ready_without_preview_rows' => 0,
+            'malformed_details_rows' => 0,
+            'possible_change_type_typo_rows' => 0,
+            'materialization_status_counts' => [],
+            'materialization_reason_counts' => [],
+            'missing_materialization_input_counts' => [],
+            'validation_blocker_code_counts' => [],
+        ];
+
+        foreach ($candidates as $candidate) {
+            $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
+            if (($candidate['review_type'] ?? null) !== 'genealogy_finding'
+                || ($flags['typed_remediation'] ?? false) !== true) {
+                continue;
+            }
+
+            $summary['typed_remediation_rows']++;
+            if (($flags['materializable_remediation'] ?? false) === true) {
+                $summary['materializable_rows']++;
+            }
+            if (($flags['without_materialized_ids'] ?? false) === true) {
+                $summary['without_materialized_ids_rows']++;
+            }
+            if (($flags['context_ready_without_preview'] ?? false) === true) {
+                $summary['context_ready_without_preview_rows']++;
+            }
+            if (($flags['malformed_details'] ?? false) === true) {
+                $summary['malformed_details_rows']++;
+            }
+            if (($flags['possible_change_type_typo'] ?? false) === true) {
+                $summary['possible_change_type_typo_rows']++;
+            }
+
+            $materialization = is_array($candidate['remediation_materialization'] ?? null)
+                ? $candidate['remediation_materialization']
+                : [];
+            $status = $this->safeReviewPassCode($materialization['status'] ?? null) ?? 'unknown';
+            $reason = $this->safeReviewPassCode($materialization['reason'] ?? null) ?? null;
+            $this->incrementCount($summary['materialization_status_counts'], $status);
+            if ($reason !== null) {
+                $this->incrementCount($summary['materialization_reason_counts'], $reason);
+            }
+
+            if (($materialization['dry_run_available'] ?? false) === true) {
+                $summary['dry_run_available_rows']++;
+            }
+            if ($status === 'validation_blocked') {
+                $summary['validation_blocked_rows']++;
+            }
+            if ($status === 'unavailable'
+                && (($materialization['dry_run_available'] ?? false) !== true
+                    || $reason === 'no_supported_remediation_operation')) {
+                $summary['unsupported_operation_rows']++;
+            }
+
+            $candidateBlockerCodes = [];
+            foreach ($this->materializationMissingInputCodes($materialization) as $code) {
+                $this->incrementCount($summary['missing_materialization_input_counts'], $code);
+                $candidateBlockerCodes[] = $code;
+            }
+
+            $readiness = is_array($materialization['readiness_flags'] ?? null)
+                ? $materialization['readiness_flags']
+                : [];
+            foreach ($this->materializationPacketValidationErrorCodes($readiness) as $code) {
+                $candidateBlockerCodes[] = $code;
+            }
+            foreach (array_values(array_unique($candidateBlockerCodes)) as $code) {
+                $this->incrementCount($summary['validation_blocker_code_counts'], $code);
+            }
+        }
+
+        foreach ([
+            'materialization_status_counts',
+            'materialization_reason_counts',
+            'missing_materialization_input_counts',
+            'validation_blocker_code_counts',
+        ] as $key) {
+            ksort($summary[$key]);
+        }
+
+        return $summary;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function nextTargetFocusSummaryText(array $payload): string
+    {
+        $summary = is_array($payload['focus_summary'] ?? null) ? $payload['focus_summary'] : null;
+        if ($summary === null) {
+            return '';
+        }
+
+        $text = sprintf(' focus_candidates=%d', (int) ($summary['candidate_rows'] ?? 0));
+        if (($summary['typed_remediation_rows'] ?? null) !== null) {
+            $text .= sprintf(
+                ' typed_rows=%d materializable_rows=%d validation_blocked=%d unsupported_operation=%d without_ids=%d context_without_preview=%d malformed=%d typo_signals=%d missing_inputs=%s validation_blockers=%s',
+                (int) ($summary['typed_remediation_rows'] ?? 0),
+                (int) ($summary['materializable_rows'] ?? 0),
+                (int) ($summary['validation_blocked_rows'] ?? 0),
+                (int) ($summary['unsupported_operation_rows'] ?? 0),
+                (int) ($summary['without_materialized_ids_rows'] ?? 0),
+                (int) ($summary['context_ready_without_preview_rows'] ?? 0),
+                (int) ($summary['malformed_details_rows'] ?? 0),
+                (int) ($summary['possible_change_type_typo_rows'] ?? 0),
+                $this->inlineCountMap($summary['missing_materialization_input_counts'] ?? []),
+                $this->inlineCountMap($summary['validation_blocker_code_counts'] ?? []),
+            );
+        } elseif (($summary['source_backed_rows'] ?? null) !== null) {
+            $text .= sprintf(
+                ' source_backed=%d review_ready=%d preview_only=%d canonical_mutation=%d packet_pass=%s blockers=%s',
+                (int) ($summary['source_backed_rows'] ?? 0),
+                (int) ($summary['review_ready_rows'] ?? 0),
+                (int) ($summary['preview_only_rows'] ?? 0),
+                (int) ($summary['canonical_mutation_rows'] ?? 0),
+                $this->inlineCountMap($summary['packet_pass_state_counts'] ?? []),
+                $this->inlineCountMap($summary['packet_pass_blocker_code_counts'] ?? []),
+            );
+        }
+
+        return $text;
+    }
+
+    /**
+     * @param  list<string>  $lines
+     * @param  array<string, mixed>  $payload
+     */
+    private function appendNoTargetFocusSummaryMarkdown(array &$lines, array $payload): void
+    {
+        $summary = is_array($payload['focus_summary'] ?? null) ? $payload['focus_summary'] : null;
+        if ($summary === null) {
+            return;
+        }
+
+        $lines[] = '';
+        $lines[] = '## Focus Summary';
+        $lines[] = '';
+        $lines[] = '- Scope: `aggregate_only`';
+        $lines[] = '- Candidate rows: `'.((int) ($summary['candidate_rows'] ?? 0)).'`';
+
+        if (($summary['typed_remediation_rows'] ?? null) !== null) {
+            $lines[] = '- Typed remediation rows: `'.((int) ($summary['typed_remediation_rows'] ?? 0)).'`';
+            $lines[] = '- Materializable rows: `'.((int) ($summary['materializable_rows'] ?? 0)).'`';
+            $lines[] = '- Validation-blocked rows: `'.((int) ($summary['validation_blocked_rows'] ?? 0)).'`';
+            $lines[] = '- Unsupported-operation rows: `'.((int) ($summary['unsupported_operation_rows'] ?? 0)).'`';
+            $lines[] = '- Rows without materialized IDs: `'.((int) ($summary['without_materialized_ids_rows'] ?? 0)).'`';
+            $lines[] = '- Context-ready without preview rows: `'.((int) ($summary['context_ready_without_preview_rows'] ?? 0)).'`';
+            $lines[] = '- Missing materialization inputs: `'.$this->inlineCountMap($summary['missing_materialization_input_counts'] ?? []).'`';
+            $lines[] = '- Validation blocker codes: `'.$this->inlineCountMap($summary['validation_blocker_code_counts'] ?? []).'`';
+        } elseif (($summary['source_backed_rows'] ?? null) !== null) {
+            $lines[] = '- Source-backed rows: `'.((int) ($summary['source_backed_rows'] ?? 0)).'`';
+            $lines[] = '- Review-ready rows: `'.((int) ($summary['review_ready_rows'] ?? 0)).'`';
+            $lines[] = '- Preview-only rows: `'.((int) ($summary['preview_only_rows'] ?? 0)).'`';
+            $lines[] = '- Canonical-mutation rows: `'.((int) ($summary['canonical_mutation_rows'] ?? 0)).'`';
+            $lines[] = '- Packet pass states: `'.$this->inlineCountMap($summary['packet_pass_state_counts'] ?? []).'`';
+            $lines[] = '- Packet blockers: `'.$this->inlineCountMap($summary['packet_pass_blocker_code_counts'] ?? []).'`';
+        }
+    }
+
+    private function inlineCountMap(mixed $counts): string
+    {
+        $safe = $this->safeReviewPassCountMap($counts);
+        if ($safe === []) {
+            return 'none';
+        }
+
+        $parts = [];
+        foreach ($safe as $key => $count) {
+            $parts[] = $key.':'.$count;
+        }
+
+        return implode(',', $parts);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function reviewPassBlockerCodes(array $reviewPass): array
+    {
+        $codes = [];
+        foreach (['reason_code_counts', 'blocker_code_counts'] as $key) {
+            foreach ($this->safeReviewPassCountMap($reviewPass[$key] ?? []) as $code => $count) {
+                if ($count > 0 && ! in_array($code, $codes, true)) {
+                    $codes[] = $code;
+                }
+            }
+        }
+
+        sort($codes);
+
+        return $codes;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function materializationMissingInputCodes(array $materialization): array
+    {
+        $codes = [];
+        foreach ((array) ($materialization['missing_materialization_inputs'] ?? []) as $input) {
+            $code = $this->safeReviewPassCode($input);
+            if ($code !== null && ! in_array($code, $codes, true)) {
+                $codes[] = $code;
+            }
+        }
+
+        sort($codes);
+
+        return $codes;
+    }
+
+    /**
+     * @param  array<string, mixed>  $readiness
+     * @return list<string>
+     */
+    private function materializationPacketValidationErrorCodes(array $readiness): array
+    {
+        $codes = [];
+        foreach ((array) ($readiness['packet_validation_errors'] ?? []) as $error) {
+            if (! is_array($error)) {
+                continue;
+            }
+
+            $code = $this->safeReviewPassCode($error['code'] ?? null);
+            if ($code !== null && ! in_array($code, $codes, true)) {
+                $codes[] = $code;
+            }
+        }
+
+        sort($codes);
+
+        return $codes;
     }
 
     public function toMarkdown(array $payload): string

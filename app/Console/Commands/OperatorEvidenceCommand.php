@@ -95,7 +95,7 @@ class OperatorEvidenceCommand extends Command
 
         $review = is_array($headlines['review_backlog'] ?? null) ? $headlines['review_backlog'] : [];
         $this->line(sprintf(
-            'review-backlog: %s pending=%s stale=%s high_priority=%s typed=%s typed_blocked=%s typed_blockers=%s packets=%s packet_ready=%s packet_blocked=%s',
+            'review-backlog: %s pending=%s stale=%s high_priority=%s typed=%s typed_blocked=%s typed_blockers=%s rem_candidates=%s rem_ready=%s rem_validation_blocked=%s rem_unsupported=%s packets=%s packet_ready=%s packet_blocked=%s',
             $review['status'] ?? 'unavailable',
             $review['pending_total'] ?? '-',
             $review['stale_pending'] ?? '-',
@@ -103,6 +103,10 @@ class OperatorEvidenceCommand extends Command
             $review['typed_remediation_rows'] ?? '-',
             $this->yesNo($review['typed_remediation_validation_blocked'] ?? null),
             $review['typed_remediation_validation_blocker_count'] ?? '-',
+            $review['materializable_remediation_candidate_rows'] ?? '-',
+            $review['materializable_remediation_materializable_rows'] ?? '-',
+            $review['materializable_remediation_validation_blocked_rows'] ?? '-',
+            $review['materializable_remediation_unsupported_operation_rows'] ?? '-',
             $review['packet_rows'] ?? '-',
             $review['packet_ready_rows'] ?? '-',
             $review['packet_blocked_rows'] ?? '-'
