@@ -12,19 +12,6 @@
           {{ confidencePercent }}%
         </span>
       </div>
-    </div>
-
-    <section class="packet-section review-focus-section">
-      <div class="section-heading">
-        <span>Review focus</span>
-        <span class="section-status preview">one packet</span>
-      </div>
-      <div class="focus-grid">
-        <div v-for="row in reviewFocusRows" :key="row.key" class="focus-tile" :class="row.className">
-          <span class="focus-label">{{ row.label }}</span>
-          <span class="focus-value" :title="row.title || row.value">{{ row.value }}</span>
-        </div>
-      </div>
       <div v-if="targetRef" class="target-ref-actions">
         <button
           type="button"
@@ -40,8 +27,21 @@
           title="Copy target link"
           @click="copyTargetLink"
         >
-          {{ targetLinkCopied ? 'Link copied' : 'Copy link' }}
+          {{ targetLinkCopied ? 'Copied' : 'Copy link' }}
         </button>
+      </div>
+    </div>
+
+    <section class="packet-section review-focus-section">
+      <div class="section-heading">
+        <span>Review focus</span>
+        <span class="section-status preview">one packet</span>
+      </div>
+      <div class="focus-grid">
+        <div v-for="row in reviewFocusRows" :key="row.key" class="focus-tile" :class="row.className">
+          <span class="focus-label">{{ row.label }}</span>
+          <span class="focus-value" :title="row.title || row.value">{{ row.value }}</span>
+        </div>
       </div>
       <div v-if="reviewFocusClaim" class="focus-line">
         <span class="focus-label">Claim</span>
@@ -1003,6 +1003,13 @@ const targetRef = computed(() => {
 
 const targetRefLabel = computed(() => {
   return targetRef.value ? targetRef.value.replace(/^genealogy_review_packet:/, '') : null
+})
+
+const targetRefShareUrl = computed(() => {
+  if (!targetRef.value || typeof window === 'undefined') return ''
+  const url = new URL(window.location.pathname, window.location.origin)
+  url.searchParams.set('target_ref', targetRef.value)
+  return url.toString()
 })
 
 const reviewFocusClaim = computed(() => {
@@ -2025,15 +2032,12 @@ async function copyTargetRef() {
 
 async function copyTargetLink() {
   if (
-    !targetRef.value
-    || typeof window === 'undefined'
+    !targetRefShareUrl.value
     || typeof navigator === 'undefined'
     || !navigator.clipboard
   ) return
   try {
-    const url = new URL(window.location.href)
-    url.searchParams.set('target_ref', targetRef.value)
-    await navigator.clipboard.writeText(url.toString())
+    await navigator.clipboard.writeText(targetRefShareUrl.value)
   } catch (e) {
     return
   }
@@ -2347,9 +2351,10 @@ function objectKeys(value) {
 
 .target-ref-actions {
   display: flex;
+  align-items: center;
   gap: 0.4rem;
   justify-content: flex-end;
-  margin-top: 0.45rem;
+  margin-top: 0;
 }
 
 .target-ref-copy {
