@@ -368,6 +368,10 @@
                 </template>
               </span>
             </div>
+            <div v-if="row.mediaStatusLabel" class="claim-source-ref-line">
+              <span class="claim-source-label">media status</span>
+              <span class="claim-source-value">{{ row.mediaStatusLabel }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -911,6 +915,8 @@ const canMarkReviewed = computed(() => canAct.value && reviewFocusApprovalReady.
 
 const markReviewedDisabledTitle = computed(() => {
   if (!canAct.value) return 'Packet is not pending.'
+  const blockerLabels = approvalBlockerLabels()
+  if (blockerLabels.length) return `Approval blockers: ${blockerLabels.slice(0, 3).join(', ')}.`
   if (validationMissing.value) return 'Review packet validation is missing.'
   if (validationErrors.value.length) return 'Resolve validation errors before marking reviewed.'
   if (reviewFocusApprovalReady.value === false) return 'Preview metadata is not approval-ready.'
@@ -1438,11 +1444,13 @@ function claimEvidenceRow(claim, idx) {
     sourceHref: sourceLocator ? locatorHref(sourceLocator) : null,
     sourceAccessClass: null,
     mediaRefs: [],
+    mediaStatusLabel: null,
   }
 }
 
 function claimEvidenceRowFromContext(context, idx) {
   const sourceLocator = stringOrNull(context.source_locator)
+  const mediaRefs = arrayValue(context.media_refs).filter(isPlainObject)
   const sourceLabel = stringOrNull(context.source_label)
     || sourceRefDisplayLabel(context.source_ref)
     || (sourceLocator ? sourcePointerLabel(sourceLocator, idx) : null)
@@ -1461,8 +1469,32 @@ function claimEvidenceRowFromContext(context, idx) {
     sourceLabel,
     sourceHref: sourceLocator ? locatorHref(sourceLocator) : null,
     sourceAccessClass: formatPacketStatus(context.source_access_class),
-    mediaRefs: arrayValue(context.media_refs).filter(isPlainObject),
+    mediaRefs,
+    mediaStatusLabel: claimMediaStatusLabel(context, mediaRefs),
   }
+}
+
+function approvalBlockerLabels() {
+  return approvalBlockers.value
+    .map((blocker) => stringOrNull(blocker?.label) || stringOrNull(blocker?.code) || stringOrNull(blocker))
+    .filter(Boolean)
+}
+
+function claimMediaStatusLabel(context, mediaRefs) {
+  const total = numberOrNull(context.media_ref_count)
+  const resolved = numberOrNull(context.resolved_media_count)
+  const missing = numberOrNull(context.missing_media_count)
+  const inferredTotal = total ?? mediaRefs.length
+
+  if (inferredTotal <= 0 && (resolved === null || resolved <= 0) && (missing === null || missing <= 0)) {
+    return null
+  }
+
+  const parts = [`${inferredTotal} media ref${inferredTotal === 1 ? '' : 's'}`]
+  if (resolved !== null) parts.push(`${resolved} resolved`)
+  if (missing !== null && missing > 0) parts.push(`${missing} missing`)
+
+  return parts.join(', ')
 }
 
 function matchClaimSource(sourceRef, idx) {

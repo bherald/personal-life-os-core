@@ -1323,7 +1323,7 @@ class ReviewContextEnrichmentService
             'person_id' => $personId,
             'person_label' => $this->personContextLabel($person, $personId),
             'source_ref' => $sourceRef,
-            'source_label' => $source['label'] ?? $sourceRef,
+            'source_label' => $this->reviewPacketClaimSourceLabel($source, $sourceRef, $idx),
             'source_locator' => $source['locator'] ?? $this->sourceLocatorFromRef($sourceRef),
             'source_access_class' => $source['access_class'] ?? null,
             'media_refs' => $claimMediaRefs,
@@ -1337,6 +1337,21 @@ class ReviewContextEnrichmentService
                 fn (array $media): bool => ($media['file_exists'] ?? null) === false
             )),
         ];
+    }
+
+    /**
+     * @param  array{label?: ?string}|null  $source
+     */
+    private function reviewPacketClaimSourceLabel(?array $source, ?string $sourceRef, int $idx): ?string
+    {
+        $label = $this->firstScalarText($source ?? [], ['label']);
+        if ($label !== null) {
+            return $label;
+        }
+
+        return $sourceRef !== null && trim($sourceRef) !== ''
+            ? 'Source '.($idx + 1)
+            : null;
     }
 
     /**
