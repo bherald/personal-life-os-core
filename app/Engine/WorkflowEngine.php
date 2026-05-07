@@ -347,6 +347,8 @@ class WorkflowEngine
             ?? $finalConfig['timeout_seconds']
             ?? $this->workflowDefaults['timeout_seconds']
             ?? 300; // 5 minute default
+        $finalConfig['timeout_seconds'] = $timeoutSeconds;
+        $finalConfig['effective_timeout_seconds'] = $this->peekEffectiveTimeoutSeconds((int) $timeoutSeconds);
 
         // Check "only_if" condition
         if (isset($finalConfig['only_if']) && ! $this->evaluateCondition($finalConfig['only_if'], $input)) {
@@ -663,6 +665,22 @@ class WorkflowEngine
     {
         return str_contains($message, 'Node timeout:')
             || preg_match("/\\bNode '.+' execution timed out after \\d+s \\(limit: \\d+s\\)/", $message) === 1;
+    }
+
+    private function peekEffectiveTimeoutSeconds(int $timeoutSeconds): int
+    {
+        if (! function_exists('pcntl_alarm')) {
+            return $timeoutSeconds;
+        }
+
+        $remainingParentAlarm = pcntl_alarm(0);
+        if ($remainingParentAlarm <= 0) {
+            return $timeoutSeconds;
+        }
+
+        pcntl_alarm($remainingParentAlarm);
+
+        return min($timeoutSeconds, $remainingParentAlarm);
     }
 
     /**

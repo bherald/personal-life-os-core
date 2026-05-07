@@ -182,6 +182,55 @@ class PushoverNotifyTest extends TestCase
         $this->assertSame(hash('sha256', $payloads[0]['message']), $result['data']['part_message_hashes'][3]);
     }
 
+    public function test_refuses_multipart_when_delivery_budget_is_too_small_before_first_send(): void
+    {
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')->never();
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", [
+                'First packet '.str_repeat('A', 980),
+                'Second packet '.str_repeat('B', 980),
+                'Third packet '.str_repeat('C', 980),
+            ]),
+            'timeout_seconds' => 10,
+            'inter_chunk_delay_seconds' => 3,
+            'multipart_send_budget_seconds' => 2,
+            'multipart_delivery_safety_margin_seconds' => 0,
+        ]);
+
+        $this->expectException(NodeTimeoutException::class);
+        $this->expectExceptionMessage('insufficient multipart delivery budget');
+
+        $node->execute([]);
+    }
+
+    public function test_multipart_delivery_budget_uses_effective_timeout_hint(): void
+    {
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')->never();
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", [
+                'First packet '.str_repeat('A', 980),
+                'Second packet '.str_repeat('B', 980),
+                'Third packet '.str_repeat('C', 980),
+            ]),
+            'timeout_seconds' => 300,
+            'effective_timeout_seconds' => 5,
+            'inter_chunk_delay_seconds' => 1,
+            'multipart_send_budget_seconds' => 1,
+            'multipart_delivery_safety_margin_seconds' => 1,
+        ]);
+
+        $this->expectException(NodeTimeoutException::class);
+        $this->expectExceptionMessage('insufficient multipart delivery budget');
+
+        $node->execute([]);
+    }
+
     public function test_multipart_http_posts_are_distinct_and_sent_in_reverse_order(): void
     {
         config([

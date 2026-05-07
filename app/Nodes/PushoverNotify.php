@@ -18,6 +18,7 @@ class PushoverNotify extends BaseNode
             $retryDelaySeconds = max(0, (int) $this->getConfigValue('retry_delay_seconds', 1));
             $interChunkDelaySeconds = max(0, (int) $this->getConfigValue('inter_chunk_delay_seconds', 2));
             $timeoutSeconds = max(1, (int) $this->getConfigValue('timeout_seconds', 300));
+            $effectiveTimeoutSeconds = max(1, (int) $this->getConfigValue('effective_timeout_seconds', $timeoutSeconds));
             $partTimestampsEnabled = filter_var(
                 $this->getConfigValue('part_timestamps_enabled', false),
                 FILTER_VALIDATE_BOOLEAN
@@ -78,6 +79,14 @@ class PushoverNotify extends BaseNode
             $partResponseRequests = [];
             $partTimestampBase = time();
             $sourceGroup = (string) $this->getConfigValue('source_group', 'workflow_node_notifications');
+
+            $this->assertMultipartDeliveryBudget(
+                $totalChunks,
+                $interChunkDelaySeconds,
+                $effectiveTimeoutSeconds,
+                $timeoutSeconds,
+                $nodeStartedAt
+            );
 
             // Send chunks in REVERSE order so they appear in correct reading order on Pushover
             // (Pushover shows newest messages first, so send Part 3, then 2, then 1)
@@ -310,6 +319,37 @@ class PushoverNotify extends BaseNode
 
         return str_contains($message, 'Node timeout:')
             || preg_match("/\\bNode '.+' execution timed out after \\d+s \\(limit: \\d+s\\)/", $message) === 1;
+    }
+
+    private function assertMultipartDeliveryBudget(
+        int $totalChunks,
+        int $interChunkDelaySeconds,
+        int $effectiveTimeoutSeconds,
+        int $configuredTimeoutSeconds,
+        float $nodeStartedAt
+    ): void {
+        if ($totalChunks <= 1) {
+            return;
+        }
+
+        $sendBudgetSeconds = max(1, (int) $this->getConfigValue('multipart_send_budget_seconds', 2));
+        $safetyMarginSeconds = max(0, (int) $this->getConfigValue('multipart_delivery_safety_margin_seconds', 5));
+        $requiredSeconds = ($totalChunks * $sendBudgetSeconds)
+            + (($totalChunks - 1) * $interChunkDelaySeconds)
+            + $safetyMarginSeconds;
+        $elapsedSeconds = max(0, (int) ceil(microtime(true) - $nodeStartedAt));
+        $remainingSeconds = $effectiveTimeoutSeconds - $elapsedSeconds;
+
+        if ($remainingSeconds >= $requiredSeconds) {
+            return;
+        }
+
+        throw new NodeTimeoutException(
+            'PushoverNotify',
+            $configuredTimeoutSeconds,
+            max(1, $elapsedSeconds),
+            "Node timeout: PushoverNotify insufficient multipart delivery budget; needs {$requiredSeconds}s to send {$totalChunks} parts but only ".max(0, $remainingSeconds).'s remain.'
+        );
     }
 
     /**
