@@ -177,6 +177,28 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan episodic:memory --stats --json --compact/);
 });
 
+test('next-target focus variants stay blocked unless they are canonical allowlist entries', async () => {
+  for (const command of [
+    'ops:review-backlog-report --next-target --focus=source-backed-packet --markdown',
+    'ops:review-backlog-report --next-target --focus=source-backed-packet --markdown --compact',
+    'ops:review-backlog-report --next-target --focus=source-backed-packet --json --compact',
+    'ops:review-backlog-report --next-target --focus=source-backed-packet --json --include-details',
+    'ops:review-backlog-report --next-target --focus=source-backed-packet --markdown --include-details',
+    'ops:review-backlog-report --next-target --focus=source-backed-packet --json --details',
+    'ops:review-backlog-report --next-target --focus=typed-remediation --compact',
+    'ops:review-backlog-report --next-target --focus=typed-remediation --compact --json',
+    'ops:review-backlog-report --next-target --focus=typed-remediation --json --compact',
+    'ops:review-backlog-report --next-target --focus=typed-remediation --markdown --compact',
+  ]) {
+    assert.equal(ALLOWED_COMMANDS[command], undefined, `${command} should not be allowlisted`);
+
+    const result = await plosArtisan({ command, on_prod: false });
+
+    assert.match(result, /Blocked:/, `${command} should be blocked`);
+    assert.match(result, /Use command "list"/, `${command} should show allowlist guidance`);
+  }
+});
+
 test('near-miss write commands remain blocked by exact allowlist matching', async () => {
   const notifyResult = await plosArtisan({
     command: 'ops:face-telemetry-report --markdown --hours=168 --notify',
