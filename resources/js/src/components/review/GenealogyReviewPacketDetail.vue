@@ -1779,6 +1779,23 @@ function dataQualityTodoRows(operation) {
     family_id: 'family reference',
     source_id: 'source reference',
   })
+  const targetContextTypes = dataQualityTargetContextTypes(context)
+
+  if (targetContextTypes.length) {
+    rows.unshift({
+      key: 'target_context_types',
+      label: 'target context',
+      value: targetContextTypes.join(', '),
+    })
+  }
+
+  rows.push({
+    key: 'person_context',
+    label: 'person context',
+    value: context.person_id !== null && context.person_id !== undefined && context.person_id !== ''
+      ? 'present'
+      : 'not required for this preview',
+  })
 
   for (const key of ['task_type', 'priority', 'question_present']) {
     if (state[key] !== null && state[key] !== undefined && state[key] !== '') {
@@ -1794,6 +1811,22 @@ function dataQualityTodoRows(operation) {
   rows.push({ key: 'canonical_genealogy', label: 'canonical genealogy', value: 'no mutation' })
 
   return rows
+}
+
+function dataQualityTargetContextTypes(context) {
+  const value = objectValue(context)
+  const labels = []
+  for (const [key, label] of [
+    ['tree_id', 'tree'],
+    ['person_id', 'person'],
+    ['family_id', 'family'],
+    ['source_id', 'source'],
+  ]) {
+    if (value[key] !== null && value[key] !== undefined && value[key] !== '') {
+      labels.push(label)
+    }
+  }
+  return labels
 }
 
 function sourceLocatorGroups(operation) {
