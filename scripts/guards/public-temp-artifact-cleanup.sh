@@ -24,6 +24,7 @@ Options:
   -h, --help         Show this help text.
 
 The public sync clone and first-push repo names are intentionally not matched.
+Symlinked candidates are reported and never deleted.
 USAGE
 }
 
@@ -97,6 +98,23 @@ delete_paths=()
 candidate_count=0
 delete_count=0
 delete_kib=0
+symlink_count=0
+
+while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+
+    target="$(readlink "$path" 2>/dev/null || printf 'unreadable')"
+    printf 'symlink_refused path=%s target=%s\n' "$path" "$target"
+    symlink_count=$((symlink_count + 1))
+done < <(
+    find "$temp_root" \
+        -mindepth 1 \
+        -maxdepth 1 \
+        -type l \
+        \( -name 'personal-life-os-core-export-*' -o -name 'personal-life-os-core-smoke-*' \) \
+        -print \
+        | sort
+)
 
 while IFS= read -r entry; do
     [[ -n "$entry" ]] || continue
@@ -147,9 +165,10 @@ if [[ "$execute" == true ]]; then
     done
 fi
 
-printf 'Summary: candidates=%s delete_candidates=%s reclaimable_kib=%s\n' \
+printf 'Summary: candidates=%s delete_candidates=%s symlink_refused=%s reclaimable_kib=%s\n' \
     "$candidate_count" \
     "$delete_count" \
+    "$symlink_count" \
     "$delete_kib"
 
 if [[ "$execute" != true && "$delete_count" -gt 0 ]]; then

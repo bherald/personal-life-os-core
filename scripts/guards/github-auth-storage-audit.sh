@@ -189,6 +189,11 @@ else
     printf 'INFO: no session-scoped GH_TOKEN/GITHUB_TOKEN is present; current persistent gh auth should be treated as a temporary release-management bridge.\n'
 fi
 
+if [[ -L "$hosts_file" ]]; then
+    printf 'FAIL: GitHub CLI hosts.yml is a symlink at %s; refusing to inspect redirected auth storage.\n' "$hosts_file"
+    exit 1
+fi
+
 if [[ ! -f "$hosts_file" ]]; then
     printf 'OK: no GitHub CLI hosts.yml file found at %s; no persistent gh auth file to inspect.\n' "$hosts_file"
     exit "$exit_code"

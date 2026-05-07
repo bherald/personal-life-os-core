@@ -204,6 +204,11 @@ class GenealogyEvidenceSprintReadinessService
             'target_packets' => (int) ($payload['target_packets'] ?? self::TARGET_PACKETS),
             'truncated' => (bool) ($payload['truncated'] ?? false),
             'next_review_target' => $this->compactNextReviewTarget($payload['next_review_target'] ?? null),
+            'operator_pass_gaps' => $this->operatorPassGapCounters(
+                $summary,
+                $readiness,
+                (int) ($payload['target_packets'] ?? self::TARGET_PACKETS)
+            ),
             'summary' => [
                 'packet_rows_total' => (int) ($summary['packet_rows_total'] ?? 0),
                 'packet_rows_window' => (int) ($summary['packet_rows_window'] ?? 0),
@@ -261,6 +266,7 @@ class GenealogyEvidenceSprintReadinessService
         $compact = $this->compactPayload($payload);
         $summary = $compact['summary'];
         $readiness = $compact['readiness'];
+        $operatorPassGaps = $compact['operator_pass_gaps'];
         $target = is_array($compact['next_review_target'] ?? null) ? $compact['next_review_target'] : null;
 
         return implode(PHP_EOL, [
@@ -322,6 +328,22 @@ class GenealogyEvidenceSprintReadinessService
                 $this->boolValue($readiness['operator_pass_recorded'])
             ),
             sprintf(
+                'operator_pass_gaps: target=%s outcome_packets=%s terminal=%s followup=%s reviewed=%s rejected=%s deferred=%s clarify=%s remaining_outcomes=%s remaining_touched_preview_only=%s remaining_boundary=%s remaining_to_five_packet_pass=%s pass_recorded=%s',
+                $operatorPassGaps['target_packet_count'],
+                $operatorPassGaps['operator_outcome_packets'],
+                $operatorPassGaps['terminal_outcome_packets'],
+                $operatorPassGaps['followup_outcome_packets'],
+                $operatorPassGaps['reviewed_preview_only'],
+                $operatorPassGaps['rejected_packets'],
+                $operatorPassGaps['deferred_packets'],
+                $operatorPassGaps['clarification_requested'],
+                $operatorPassGaps['remaining_outcome_packets_to_pass'],
+                $operatorPassGaps['remaining_touched_preview_only_to_pass'],
+                $operatorPassGaps['remaining_boundary_packets_to_pass'],
+                $operatorPassGaps['remaining_to_five_packet_pass'],
+                $this->boolValue($operatorPassGaps['operator_pass_recorded'])
+            ),
+            sprintf(
                 'boundary: has=%s consistent=%s missing=%s label_count=%s mismatch=%s needs_operator_boundary=%s',
                 $this->boolValue($readiness['has_operator_boundary']),
                 $this->boolValue($readiness['boundary_consistent']),
@@ -345,6 +367,7 @@ class GenealogyEvidenceSprintReadinessService
         $compact = $this->compactPayload($payload);
         $summary = $compact['summary'];
         $readiness = $compact['readiness'];
+        $operatorPassGaps = $compact['operator_pass_gaps'];
         $target = is_array($compact['next_review_target'] ?? null) ? $compact['next_review_target'] : null;
         $lines = [
             '# Genealogy Evidence Sprint Compact Readiness',
@@ -392,6 +415,21 @@ class GenealogyEvidenceSprintReadinessService
                 'rejected='.$summary['rejected_packets'],
                 'deferred='.$summary['deferred_packets'],
                 'clarify='.$summary['clarification_requested'],
+            ]).'`',
+            '- Operator pass gaps: `'.implode(', ', [
+                'target='.$operatorPassGaps['target_packet_count'],
+                'outcome_packets='.$operatorPassGaps['operator_outcome_packets'],
+                'terminal='.$operatorPassGaps['terminal_outcome_packets'],
+                'followup='.$operatorPassGaps['followup_outcome_packets'],
+                'reviewed='.$operatorPassGaps['reviewed_preview_only'],
+                'rejected='.$operatorPassGaps['rejected_packets'],
+                'deferred='.$operatorPassGaps['deferred_packets'],
+                'clarify='.$operatorPassGaps['clarification_requested'],
+                'remaining_outcomes='.$operatorPassGaps['remaining_outcome_packets_to_pass'],
+                'remaining_touched_preview_only='.$operatorPassGaps['remaining_touched_preview_only_to_pass'],
+                'remaining_boundary='.$operatorPassGaps['remaining_boundary_packets_to_pass'],
+                'remaining_to_five_packet_pass='.$operatorPassGaps['remaining_to_five_packet_pass'],
+                'pass_recorded='.$this->boolValue($operatorPassGaps['operator_pass_recorded']),
             ]).'`',
             '- Needs reviewable packet details: `'.$this->boolValue($readiness['needs_reviewable_packet_details']).'`',
             '- Boundary consistent: `'.$this->boolValue($readiness['boundary_consistent']).'`',
@@ -783,6 +821,47 @@ class GenealogyEvidenceSprintReadinessService
             '_packet_status_counts' => [],
             '_top_agents' => [],
             '_top_reason_codes' => [],
+        ];
+    }
+
+    private function operatorPassGapCounters(array $summary, array $readiness, int $targetPackets): array
+    {
+        $targetPackets = max(1, $targetPackets);
+        $terminalOutcomePackets = (int) ($summary['terminal_outcome_packets'] ?? 0);
+        $followupOutcomePackets = (int) ($summary['followup_outcome_packets'] ?? 0);
+        $operatorOutcomePackets = $terminalOutcomePackets + $followupOutcomePackets;
+        $touchedPreviewOnlyPackets = (int) ($summary['operator_touched_preview_only_packets'] ?? 0);
+        $operatorBoundaryPackets = (int) ($summary['operator_boundary_packets'] ?? 0);
+        $remainingOutcomePackets = max(0, $targetPackets - $operatorOutcomePackets);
+        $remainingTouchedPreviewOnlyPackets = max(0, $targetPackets - $touchedPreviewOnlyPackets);
+        $remainingBoundaryPackets = max(0, $targetPackets - $operatorBoundaryPackets);
+
+        return [
+            'target_packet_count' => $targetPackets,
+            'operator_pass_recorded' => (bool) ($readiness['operator_pass_recorded'] ?? false),
+            'operator_touched_packets' => (int) ($summary['operator_touched_packets'] ?? 0),
+            'operator_touched_preview_only_packets' => $touchedPreviewOnlyPackets,
+            'operator_outcome_packets' => $operatorOutcomePackets,
+            'terminal_outcome_packets' => $terminalOutcomePackets,
+            'followup_outcome_packets' => $followupOutcomePackets,
+            'reviewed_preview_only' => (int) ($summary['reviewed_preview_only'] ?? 0),
+            'rejected_packets' => (int) ($summary['rejected_packets'] ?? 0),
+            'deferred_packets' => (int) ($summary['deferred_packets'] ?? 0),
+            'clarification_requested' => (int) ($summary['clarification_requested'] ?? 0),
+            'operator_boundary_packets' => $operatorBoundaryPackets,
+            'packets_missing_boundary' => (int) ($summary['packets_missing_boundary'] ?? 0),
+            'boundary_label_count' => (int) ($summary['boundary_label_count'] ?? 0),
+            'boundary_mismatch_packets' => (int) ($summary['boundary_mismatch_packets'] ?? 0),
+            'mutating_preview_packets' => (int) ($summary['mutating_preview_packets'] ?? 0),
+            'malformed_details' => (int) ($summary['malformed_details'] ?? 0),
+            'remaining_outcome_packets_to_pass' => $remainingOutcomePackets,
+            'remaining_touched_preview_only_to_pass' => $remainingTouchedPreviewOnlyPackets,
+            'remaining_boundary_packets_to_pass' => $remainingBoundaryPackets,
+            'remaining_to_five_packet_pass' => max(
+                $remainingOutcomePackets,
+                $remainingTouchedPreviewOnlyPackets,
+                $remainingBoundaryPackets
+            ),
         ];
     }
 

@@ -20,6 +20,7 @@ class PublicTempArtifactCleanupScriptTest extends TestCase
         $this->assertStringContainsString('Usage:', $process->getOutput());
         $this->assertStringContainsString('Dry-run-first cleanup', $process->getOutput());
         $this->assertStringContainsString('personal-life-os-core-smoke-*', $process->getOutput());
+        $this->assertStringContainsString('Symlinked candidates are reported and never deleted.', $process->getOutput());
     }
 
     public function test_dry_run_keeps_filesystem_unchanged_and_ignores_protected_names(): void
@@ -51,7 +52,7 @@ class PublicTempArtifactCleanupScriptTest extends TestCase
 
         $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
         $this->assertStringContainsString('Mode: execute', $process->getOutput());
-        $this->assertStringContainsString('Summary: candidates=4 delete_candidates=2', $process->getOutput());
+        $this->assertStringContainsString('Summary: candidates=4 delete_candidates=2 symlink_refused=0', $process->getOutput());
 
         $this->assertDirectoryDoesNotExist($fixture['paths']['old_export']);
         $this->assertDirectoryDoesNotExist($fixture['paths']['old_smoke']);
@@ -82,6 +83,24 @@ class PublicTempArtifactCleanupScriptTest extends TestCase
 
         $this->assertSame(2, $process->getExitCode());
         $this->assertStringContainsString('Usage:', $process->getErrorOutput());
+    }
+
+    public function test_symlinked_generated_artifact_names_are_reported_and_never_deleted(): void
+    {
+        $fixture = $this->makeFixture();
+        $target = $fixture['root'].'/redirected-export';
+        mkdir($target, 0700, true);
+        file_put_contents($target.'/README.txt', 'redirected');
+        $symlink = $fixture['root'].'/personal-life-os-core-export-symlink';
+        symlink($target, $symlink);
+
+        $process = $this->runCleanup($fixture['root'], ['--keep-latest', '1', '--execute']);
+
+        $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringContainsString('symlink_refused path='.$symlink, $process->getOutput());
+        $this->assertStringContainsString('symlink_refused=1', $process->getOutput());
+        $this->assertTrue(is_link($symlink));
+        $this->assertDirectoryExists($target);
     }
 
     private function runCleanup(string $root, array $arguments): Process

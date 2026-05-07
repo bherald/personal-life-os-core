@@ -312,6 +312,26 @@ class GitHubAuthStorageAuditGuardTest extends TestCase
         $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
     }
 
+    public function test_symlinked_hosts_file_fails_even_when_plaintext_is_allowed(): void
+    {
+        $fixture = $this->makeFixture();
+        $hostsDir = $fixture['config'].'/gh';
+        $redirectedHosts = $fixture['root'].'/redirected-hosts.yml';
+        mkdir($hostsDir, 0700, true);
+        file_put_contents($redirectedHosts, "github.com:\n    oauth_token: stored-secret\n");
+        symlink($redirectedHosts, $hostsDir.'/hosts.yml');
+
+        $result = $this->runGuard($fixture, ['--allow-plaintext'], [
+            'GH_TOKEN' => 'session-secret',
+        ]);
+
+        $this->assertSame(1, $result->getExitCode());
+        $this->assertStringContainsString('GitHub CLI hosts.yml is a symlink', $result->getOutput());
+        $this->assertStringNotContainsString('stored-secret', $result->getOutput());
+        $this->assertStringNotContainsString('session-secret', $result->getOutput());
+        $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
+    }
+
     public function test_public_workflow_preflight_passes_without_workflow_changes_or_session_token(): void
     {
         $fixture = $this->makeFixture();

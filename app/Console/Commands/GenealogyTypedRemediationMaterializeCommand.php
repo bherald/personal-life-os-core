@@ -435,8 +435,14 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             $packetSummary = is_array($emitPayload['packet_summary'] ?? null)
                 ? $emitPayload['packet_summary']
                 : [];
+            $validation = is_array($emitPayload['validation'] ?? null)
+                ? $emitPayload['validation']
+                : [];
+            $blockerCodes = is_array($validation['blocker_codes'] ?? null)
+                ? implode(',', array_filter($validation['blocker_codes'], 'is_string'))
+                : '';
             $this->line(sprintf(
-                'Genealogy typed remediation materialization compact: status=%s mode=%s action=%s success=%s operation_types=%s source_locators=%s claims=%s validation_errors=%s preview_only=%s operation_statuses=%s guards=%s failed_guards=%s row_touches=%s no_canonical_write=%s apply_held=%s',
+                'Genealogy typed remediation materialization compact: status=%s mode=%s action=%s success=%s operation_types=%s source_locators=%s claims=%s validation_blockers=%s blocker_codes=%s preview_only=%s operation_statuses=%s guards=%s failed_guards=%s row_touches=%s no_canonical_write=%s apply_held=%s',
                 (string) ($emitPayload['status'] ?? 'unknown'),
                 (string) ($emitPayload['mode'] ?? 'unknown'),
                 (string) ($emitPayload['action'] ?? 'unknown'),
@@ -444,7 +450,8 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                 $operationTypes !== '' ? $operationTypes : 'none',
                 (string) ($packetSummary['source_locator_count'] ?? 0),
                 (string) ($packetSummary['claim_count'] ?? 0),
-                (string) ($packetSummary['validation_error_count'] ?? 0),
+                (string) ($validation['blocker_count'] ?? 0),
+                $blockerCodes !== '' ? $blockerCodes : 'none',
                 ($packetSummary['preview_only'] ?? false) ? 'yes' : 'no',
                 $this->countMapText($preview['operation_status_counts'] ?? []),
                 $this->countMapText($preview['guard_status_counts'] ?? []),
@@ -468,6 +475,15 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
         ));
 
         if (($payload['success'] ?? false) !== true) {
+            $blockerSummary = $this->validationBlockerSummary($payload['validation'] ?? null);
+            if (($payload['status'] ?? null) === 'blocked' && $blockerSummary['blocker_count'] > 0) {
+                $this->line(sprintf(
+                    'Validation blockers: count=%s codes=%s',
+                    (string) $blockerSummary['blocker_count'],
+                    $blockerSummary['blocker_codes'] !== [] ? implode(',', $blockerSummary['blocker_codes']) : 'none',
+                ));
+            }
+
             $this->error((string) ($payload['message'] ?? $payload['error'] ?? 'Materialization failed.'));
         } elseif (($payload['execute'] ?? false) !== true) {
             $this->warn('dry-run only; add --execute to create or reuse a pending genealogy_review_packet row.');
@@ -547,26 +563,42 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             return null;
         }
 
-        $errors = [];
+        $blockerSummary = $this->validationBlockerSummary($validation);
+
+        return [
+            'valid' => (bool) ($validation['valid'] ?? false),
+            'blocker_count' => $blockerSummary['blocker_count'],
+            'blocker_codes' => $blockerSummary['blocker_codes'],
+        ];
+    }
+
+    /**
+     * @return array{blocker_count: int, blocker_codes: list<string>}
+     */
+    private function validationBlockerSummary(mixed $validation): array
+    {
+        if (! is_array($validation)) {
+            return [
+                'blocker_count' => 0,
+                'blocker_codes' => [],
+            ];
+        }
+
+        $codes = [];
         foreach ((array) ($validation['errors'] ?? []) as $error) {
             if (! is_array($error)) {
                 continue;
             }
 
-            $gate = $this->safeValidationCode($error['gate'] ?? null);
             $code = $this->safeValidationCode($error['code'] ?? null);
-            if ($gate !== null && $code !== null) {
-                $errors[] = [
-                    'gate' => $gate,
-                    'code' => $code,
-                ];
+            if ($code !== null && ! in_array($code, $codes, true)) {
+                $codes[] = $code;
             }
         }
 
         return [
-            'valid' => (bool) ($validation['valid'] ?? false),
-            'error_count' => count($errors),
-            'errors' => $errors,
+            'blocker_count' => count($codes),
+            'blocker_codes' => $codes,
         ];
     }
 

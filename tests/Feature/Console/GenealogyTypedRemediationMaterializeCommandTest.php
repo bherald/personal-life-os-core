@@ -203,18 +203,72 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertTrue($payload['safety']['no_canonical_write']);
         $this->assertTrue($payload['safety']['apply_held']);
         $this->assertFalse($payload['validation']['valid']);
-        $this->assertSame(1, $payload['validation']['error_count']);
-        $this->assertSame([
-            [
-                'gate' => 'manual_source',
-                'code' => 'manual_source_as_evidence_blocked',
-            ],
-        ], $payload['validation']['errors']);
+        $this->assertSame(1, $payload['validation']['blocker_count']);
+        $this->assertSame(['manual_source_as_evidence_blocked'], $payload['validation']['blocker_codes']);
+        $this->assertArrayNotHasKey('errors', $payload['validation']);
+        $this->assertArrayNotHasKey('gate', $payload['validation']);
         $this->assertSame(0, $this->packetCount());
 
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
-        $this->assertStringNotContainsString('manual-only-source-token', $encoded);
-        $this->assertStringNotContainsString('https://www.ancestry.com/genealogy/records/manual-only', $encoded);
+        foreach ([
+            'manual-only-source-token',
+            'source-cleanup:smith-1',
+            'https://www.ancestry.com/genealogy/records/manual-only',
+            'Two source records describe the same Smith family record.',
+            'Manual sources cannot be used as evidence',
+            'genealogy:materialize-typed-remediation',
+            'execute_options',
+            'dry_run_options',
+            'approved apply path exists',
+        ] as $sensitive) {
+            $this->assertStringNotContainsString($sensitive, $encoded);
+        }
+    }
+
+    public function test_compact_validation_blocked_json_reports_aggregate_blocker_codes_only(): void
+    {
+        $details = $this->typedRemediationDetails();
+        unset($details['privacy'], $details['source_locators']);
+        $sourceId = $this->insertFinding($details, token: 'validation-summary-source-token');
+
+        $payload = $this->callJson([
+            '--id' => $sourceId,
+            '--json' => true,
+            '--compact' => true,
+        ], 1);
+
+        $this->assertFalse($payload['success']);
+        $this->assertSame('blocked', $payload['status']);
+        $this->assertSame('packet_validation_failed', $payload['error']);
+        $this->assertSame([
+            'valid' => false,
+            'blocker_count' => 2,
+            'blocker_codes' => [
+                'source_locator_required',
+                'privacy_clearance_required',
+            ],
+        ], $payload['validation']);
+        $this->assertSame(0, $this->packetCount());
+
+        $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
+        foreach ([
+            'validation-summary-source-token',
+            'source-cleanup:smith-1',
+            'Two source records describe the same Smith family record.',
+            'errors',
+            'gate',
+            'message',
+            'details',
+            'claim_text',
+            'evidence_summary',
+            'genealogy:materialize-typed-remediation',
+            'execute_options',
+            'dry_run_options',
+            'rows_that_would_be_touched',
+            'approved apply path exists',
+        ] as $sensitive) {
+            $this->assertStringNotContainsString($sensitive, $encoded);
+        }
     }
 
     public function test_compact_dry_run_reuse_existing_packet_omits_packet_identifiers(): void
@@ -315,7 +369,8 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertStringContainsString('operation_types=source_duplicate_mark', $output);
         $this->assertStringContainsString('source_locators=1', $output);
         $this->assertStringContainsString('claims=1', $output);
-        $this->assertStringContainsString('validation_errors=0', $output);
+        $this->assertStringContainsString('validation_blockers=0', $output);
+        $this->assertStringContainsString('blocker_codes=none', $output);
         $this->assertStringContainsString('preview_only=yes', $output);
         $this->assertStringContainsString('operation_statuses=blocked:1', $output);
         $this->assertStringContainsString('guards=fail:3', $output);
@@ -329,6 +384,77 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertStringNotContainsString('Two source records describe', $output);
         $this->assertStringNotContainsString('current_state', $output);
         $this->assertStringNotContainsString('review_queue_id', $output);
+    }
+
+    public function test_validation_blocked_compact_text_reports_sanitized_blocker_codes_only(): void
+    {
+        config()->set('scraping.manual_only_domains', ['ancestry.com']);
+        $details = $this->typedRemediationDetails();
+        $details['source_locators'] = ['https://www.ancestry.com/genealogy/records/manual-only-text'];
+        $sourceId = $this->insertFinding($details, token: 'manual-only-text-source-token');
+
+        $output = $this->callText([
+            '--id' => $sourceId,
+            '--compact' => true,
+        ], 1);
+
+        $this->assertStringContainsString('status=blocked', $output);
+        $this->assertStringContainsString('action=none', $output);
+        $this->assertStringContainsString('validation_blockers=1', $output);
+        $this->assertStringContainsString('blocker_codes=manual_source_as_evidence_blocked', $output);
+        $this->assertStringContainsString('no_canonical_write=yes', $output);
+        $this->assertStringContainsString('apply_held=yes', $output);
+        $this->assertSame(0, $this->packetCount());
+
+        foreach ([
+            'manual-only-text-source-token',
+            'source-cleanup:smith-1',
+            'https://www.ancestry.com/genealogy/records/manual-only-text',
+            'Two source records describe',
+            'Manual sources cannot be used as evidence',
+            'genealogy:materialize-typed-remediation',
+            '--execute',
+            'execute_options',
+            'dry_run_options',
+            'approved apply path exists',
+            'review_queue_id',
+        ] as $sensitive) {
+            $this->assertStringNotContainsString($sensitive, $output);
+        }
+    }
+
+    public function test_validation_blocked_default_text_reports_sanitized_blocker_summary(): void
+    {
+        config()->set('scraping.manual_only_domains', ['ancestry.com']);
+        $details = $this->typedRemediationDetails();
+        $details['source_locators'] = ['https://www.ancestry.com/genealogy/records/manual-only-default-text'];
+        $sourceId = $this->insertFinding($details, token: 'manual-only-default-text-source-token');
+
+        $output = $this->callText([
+            '--id' => $sourceId,
+        ], 1);
+
+        $this->assertStringContainsString('Genealogy typed remediation materialization: status=blocked mode=dry_run action=none', $output);
+        $this->assertStringContainsString('Validation blockers: count=1 codes=manual_source_as_evidence_blocked', $output);
+        $this->assertStringContainsString('no_canonical_write=yes', $output);
+        $this->assertStringContainsString('apply_held=yes', $output);
+        $this->assertSame(0, $this->packetCount());
+
+        foreach ([
+            'manual-only-default-text-source-token',
+            'source-cleanup:smith-1',
+            'https://www.ancestry.com/genealogy/records/manual-only-default-text',
+            'Two source records describe',
+            'Manual sources cannot be used as evidence',
+            'genealogy:materialize-typed-remediation',
+            '--execute',
+            'execute_options',
+            'dry_run_options',
+            'approved apply path exists',
+            'review_queue_id',
+        ] as $sensitive) {
+            $this->assertStringNotContainsString($sensitive, $output);
+        }
     }
 
     public function test_execute_materializes_then_reuses_one_pending_packet(): void
