@@ -26,7 +26,7 @@ class PublicTempArtifactCleanupScriptTest extends TestCase
     {
         $fixture = $this->makeFixture();
 
-        $process = $this->runCleanup($fixture['root'], ['--keep-latest', '1']);
+        $process = $this->runCleanup($fixture['root'], ['--keep-latest', '1', '--dry-run']);
 
         $this->assertSame(0, $process->getExitCode(), $process->getErrorOutput());
         $this->assertStringContainsString('Mode: dry-run', $process->getOutput());

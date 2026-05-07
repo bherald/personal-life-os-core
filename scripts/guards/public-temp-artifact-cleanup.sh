@@ -19,6 +19,7 @@ Targets only top-level directories matching:
 Options:
   --root DIR          Temp root to scan. Default: $PLOS_PUBLIC_TEMP_ROOT or ~/tmp.
   --keep-latest N    Keep newest N directories per artifact kind. Default: 1.
+  --dry-run           Scan and report only. This is also the default mode.
   --execute          Delete selected generated temp trees.
   -h, --help         Show this help text.
 
@@ -46,6 +47,10 @@ while (($#)); do
             ;;
         --execute)
             execute=true
+            shift
+            ;;
+        --dry-run)
+            execute=false
             shift
             ;;
         -h|--help)
