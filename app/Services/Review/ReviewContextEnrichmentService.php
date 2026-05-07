@@ -1483,12 +1483,12 @@ class ReviewContextEnrichmentService
                 }
             }
 
-            foreach ($sourceLocators as $locator) {
+            foreach ($sourceLocators as $locatorIdx => $locator) {
                 if (is_scalar($locator) && $this->sourceContextMatches($ref, (string) $locator)) {
                     $trimmed = trim((string) $locator);
 
                     return [
-                        'label' => $trimmed,
+                        'label' => 'Source '.((int) $locatorIdx + 1),
                         'locator' => $trimmed,
                         'access_class' => null,
                     ];
@@ -1512,7 +1512,7 @@ class ReviewContextEnrichmentService
             $locator = trim((string) $sourceLocators[$idx]);
 
             return [
-                'label' => $locator,
+                'label' => 'Source '.($idx + 1),
                 'locator' => $locator,
                 'access_class' => null,
             ];
@@ -1587,10 +1587,7 @@ class ReviewContextEnrichmentService
     private function sourceContextLabel(array $source, int $idx): string
     {
         return $this->firstScalarText($source, ['title', 'name', 'label'])
-            ?: $this->sourceContextLocator($source)
-            ?: ($this->firstScalarText($source, ['id', 'source_id']) !== null
-                ? 'Source #'.$this->firstScalarText($source, ['id', 'source_id'])
-                : 'Source '.($idx + 1));
+            ?: 'Source '.($idx + 1);
     }
 
     private function sourceLocatorFromRef(?string $sourceRef): ?string

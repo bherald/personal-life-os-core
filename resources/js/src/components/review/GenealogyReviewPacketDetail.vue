@@ -25,6 +25,16 @@
           <span class="focus-value" :title="row.title || row.value">{{ row.value }}</span>
         </div>
       </div>
+      <div v-if="targetRef" class="target-ref-actions">
+        <button
+          type="button"
+          class="target-ref-copy"
+          title="Copy target ref"
+          @click="copyTargetRef"
+        >
+          {{ targetRefCopied ? 'Copied' : 'Copy ref' }}
+        </button>
+      </div>
       <div v-if="reviewFocusClaim" class="focus-line">
         <span class="focus-label">Claim</span>
         <span class="focus-line-value">{{ reviewFocusClaim }}</span>
@@ -716,6 +726,7 @@ const emit = defineEmits(['approve', 'reject', 'clarify', 'defer', 'close'])
 
 const decisionNotes = ref('')
 const decisionReasonCode = ref('')
+const targetRefCopied = ref(false)
 
 const STATUS_CLASS_BY_STATUS = {
   accepted: 'status-ok',
@@ -1170,6 +1181,9 @@ const applyPreviewIsPreviewOnly = computed(() => {
 
 watch(() => props.context?.item?.unified_id, () => resetDecisionInputs())
 watch(() => props.decisionResetToken, () => resetDecisionInputs())
+watch(targetRef, () => {
+  targetRefCopied.value = false
+})
 
 const applyPreviewSummaryRows = computed(() => {
   const rows = []
@@ -1398,7 +1412,7 @@ function claimEvidenceRow(claim, idx) {
   ])
   const matched = matchClaimSource(sourceRef, idx)
   const sourceLocator = matched?.locator || locatorFromRef(sourceRef) || sourceLocators.value[idx] || sourceLocators.value[0] || null
-  const sourceLabel = matched?.label || sourceRef || sourceLocator || 'No source supplied'
+  const sourceLabel = claimSourceDisplayLabel(matched, sourceRef, sourceLocator, idx)
 
   return {
     key: `claim-source-${claimKey(claim, idx)}`,
@@ -1420,8 +1434,8 @@ function claimEvidenceRow(claim, idx) {
 function claimEvidenceRowFromContext(context, idx) {
   const sourceLocator = stringOrNull(context.source_locator)
   const sourceLabel = stringOrNull(context.source_label)
-    || stringOrNull(context.source_ref)
-    || sourceLocator
+    || sourceRefDisplayLabel(context.source_ref)
+    || (sourceLocator ? sourcePointerLabel(sourceLocator, idx) : null)
     || 'No source supplied'
 
   return {
@@ -1479,6 +1493,18 @@ function matchClaimSource(sourceRef, idx) {
   }
 
   return null
+}
+
+function claimSourceDisplayLabel(matched, sourceRef, sourceLocator, idx) {
+  if (matched?.label) return matched.label
+  const refLabel = sourceRefDisplayLabel(sourceRef)
+  if (refLabel) return refLabel
+  if (sourceLocator) return sourcePointerLabel(sourceLocator, idx)
+  return 'No source supplied'
+}
+
+function sourceRefDisplayLabel(sourceRef) {
+  return stringOrNull(sourceRef) ? 'source reference present' : null
 }
 
 function sourceMatchCandidates(source) {
@@ -1906,9 +1932,26 @@ function submitDecision(action) {
   emit(action, payload)
 }
 
+async function copyTargetRef() {
+  if (!targetRef.value || typeof navigator === 'undefined' || !navigator.clipboard) return
+  try {
+    await navigator.clipboard.writeText(targetRef.value)
+  } catch (e) {
+    return
+  }
+  targetRefCopied.value = true
+  const timer = typeof window === 'undefined' ? null : window.setTimeout(() => {
+    targetRefCopied.value = false
+  }, 1600)
+  if (timer === null) {
+    targetRefCopied.value = false
+  }
+}
+
 function resetDecisionInputs() {
   decisionNotes.value = ''
   decisionReasonCode.value = ''
+  targetRefCopied.value = false
 }
 
 function formatDate(value) {
@@ -2201,6 +2244,28 @@ function objectKeys(value) {
   gap: 0.5rem;
   align-items: baseline;
   margin-top: 0.45rem;
+}
+
+.target-ref-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.45rem;
+}
+
+.target-ref-copy {
+  border: 1px solid rgba(99, 179, 237, 0.30);
+  border-radius: 0.3rem;
+  background: rgba(99, 179, 237, 0.12);
+  color: #bfe1ff;
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.28rem 0.5rem;
+  text-transform: uppercase;
+}
+
+.target-ref-copy:hover {
+  background: rgba(99, 179, 237, 0.22);
 }
 
 .section-heading {

@@ -2252,6 +2252,45 @@ class PersonService
             ];
         }
 
+        $acceptedProposals = [];
+        foreach ($accepted as $idx) {
+            if (is_array($proposals[$idx] ?? null)) {
+                $acceptedProposals[] = $proposals[$idx];
+            }
+        }
+
+        $acceptedRemediationProposals = array_values(array_filter(
+            $acceptedProposals,
+            fn (array $proposal): bool => in_array(
+                (string) ($proposal['change_type'] ?? ''),
+                self::GENEALOGY_FINDING_REMEDIATION_REQUIRED_CHANGE_TYPES,
+                true
+            )
+        ));
+
+        $materializationGate = $this->genealogyFindingMaterializationGate($acceptedRemediationProposals);
+        if ($materializationGate !== null) {
+            DB::update(
+                'UPDATE agent_review_queue SET reviewer_notes = ?, updated_at = NOW() WHERE id = ?',
+                [$this->appendReviewNote($notes, $materializationGate['message']), $reviewId]
+            );
+
+            return [
+                'success' => false,
+                'message' => $materializationGate['message'],
+                'error' => $materializationGate['message'],
+                'applied' => 0,
+                'kept_on_file' => 0,
+                'rejected' => count($rejected),
+                'failed' => 0,
+                'undecided' => max(0, count($proposals) - count($accepted) - count($rejected)),
+                'errors' => $materializationGate['errors'],
+                'final_status' => 'pending',
+                'requires_materialization' => true,
+                'unsupported_change_types' => $materializationGate['unsupported_change_types'],
+            ];
+        }
+
         // Normalize conflict resolutions once so the apply loop and the
         // audit blob share the same allowlisted values.
         $normalizedResolutions = $this->normalizeConflictResolutions($conflictResolutions);
