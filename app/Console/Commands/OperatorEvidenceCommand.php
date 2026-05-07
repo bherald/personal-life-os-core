@@ -180,12 +180,17 @@ class OperatorEvidenceCommand extends Command
             ? $headlines['genealogy_no_decision_gates']
             : [];
         $this->line(sprintf(
-            'genealogy-gates: %s state=%s mode=%s review_ready=%s pass=%s packet_ready=%s packet_blocked=%s named_only_open=%s no_decision=%s triage_review=%s guarded=%s next=%s automation_allowed=%s writeback_allowed=%s canonical_allowed=%s',
+            'genealogy-gates: %s state=%s mode=%s review_ready=%s pass=%s awo_recording=%s pass_remaining=%s outcome_gap=%s preview_gap=%s boundary_gap=%s packet_ready=%s packet_blocked=%s named_only_open=%s no_decision=%s triage_review=%s guarded=%s next=%s automation_allowed=%s writeback_allowed=%s canonical_allowed=%s',
             $genealogyGates['status'] ?? 'unavailable',
             $genealogyGates['state'] ?? '-',
             $genealogyGates['mode'] ?? '-',
             $this->yesNo($genealogyGates['packet_review_ready'] ?? null),
             $this->yesNo($genealogyGates['packet_operator_pass_recorded'] ?? null),
+            $this->yesNo($genealogyGates['awo_recording_enabled'] ?? null),
+            $genealogyGates['operator_pass_remaining_to_target'] ?? '-',
+            $genealogyGates['operator_pass_remaining_outcomes'] ?? '-',
+            $genealogyGates['operator_pass_remaining_touched_preview_only'] ?? '-',
+            $genealogyGates['operator_pass_remaining_boundary'] ?? '-',
             $genealogyGates['packet_ready_rows'] ?? '-',
             $genealogyGates['packet_blocked_rows'] ?? '-',
             $genealogyGates['open_named_only_unlinked'] ?? '-',

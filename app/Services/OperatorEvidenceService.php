@@ -133,6 +133,7 @@ class OperatorEvidenceService
             'scheduler' => $this->compactSchedulerHeadline($sections),
             'dba_arc' => $this->compactDbaArcHeadline($sections),
             'genealogy_evidence_sprint' => $this->compactGenealogyEvidenceSprintHeadline($sections),
+            'awo_replay' => $this->compactAwoReplayHeadline($sections),
             'genealogy_agent_triage' => $this->compactGenealogyAgentTriageHeadline($sections),
         ];
 
@@ -233,6 +234,16 @@ class OperatorEvidenceService
             'source_backed_packet_handoff_available' => (bool) ($sourcePacketHandoff['available'] ?? false),
             'source_backed_packet_handoff_state' => $this->safeOperatorEvidenceCode($sourcePacketHandoff['query_state'] ?? null),
             'source_backed_packet_review_pass_state' => $this->safeOperatorEvidenceCode($sourcePacketHandoff['review_pass_state'] ?? null),
+            'source_backed_packet_boundary_present' => (bool) ($sourcePacketHandoff['packet_boundary_present'] ?? false),
+            'source_backed_packet_identity_present' => (bool) ($sourcePacketHandoff['packet_identity_present'] ?? false),
+            'source_backed_packet_privacy_present' => (bool) ($sourcePacketHandoff['packet_privacy_present'] ?? false),
+            'source_backed_packet_privacy_cleared' => (bool) ($sourcePacketHandoff['packet_privacy_cleared'] ?? false),
+            'source_backed_packet_validation_present' => (bool) ($sourcePacketHandoff['packet_validation_present'] ?? false),
+            'source_backed_packet_validation_valid' => (bool) ($sourcePacketHandoff['packet_validation_valid'] ?? false),
+            'source_backed_packet_conflict_evidence_present' => (bool) ($sourcePacketHandoff['packet_conflict_evidence_present'] ?? false),
+            'source_backed_packet_negative_evidence_present' => (bool) ($sourcePacketHandoff['packet_negative_evidence_present'] ?? false),
+            'source_backed_packet_locator_present' => (bool) ($sourcePacketHandoff['packet_locator_present'] ?? false),
+            'source_backed_packet_extracted_claim_present' => (bool) ($sourcePacketHandoff['packet_extracted_claim_present'] ?? false),
             'source_backed_packet_preview_only' => (bool) ($sourcePacketHandoff['packet_preview_only'] ?? false),
             'source_backed_packet_canonical_mutation' => (bool) ($sourcePacketHandoff['packet_canonical_mutation'] ?? false),
             'materializable_remediation_handoff_available' => (bool) ($materializableHandoff['available'] ?? false),
@@ -393,6 +404,16 @@ class OperatorEvidenceService
             'mutation_guard_ok' => (bool) ($counts['mutation_guard_ok'] ?? true),
             'ready_for_five_packet_review' => (bool) ($counts['ready_for_five_packet_review'] ?? false),
             'operator_pass_recorded' => (bool) ($counts['operator_pass_recorded'] ?? false),
+            'operator_pass_gap_target_packet_count' => (int) ($counts['operator_pass_gap_target_packet_count'] ?? 0),
+            'operator_pass_gap_remaining_to_pass' => (int) ($counts['operator_pass_gap_remaining_to_pass'] ?? 0),
+            'operator_pass_gap_remaining_outcomes' => (int) ($counts['operator_pass_gap_remaining_outcomes'] ?? 0),
+            'operator_pass_gap_remaining_touched_preview_only' => (int) ($counts['operator_pass_gap_remaining_touched_preview_only'] ?? 0),
+            'operator_pass_gap_remaining_boundary' => (int) ($counts['operator_pass_gap_remaining_boundary'] ?? 0),
+            'operator_pass_gap_operator_touched' => (int) ($counts['operator_pass_gap_operator_touched'] ?? 0),
+            'operator_pass_gap_operator_outcomes' => (int) ($counts['operator_pass_gap_operator_outcomes'] ?? 0),
+            'operator_pass_gap_reviewed_preview_only' => (int) ($counts['operator_pass_gap_reviewed_preview_only'] ?? 0),
+            'operator_pass_gap_mutating_preview_packets' => (int) ($counts['operator_pass_gap_mutating_preview_packets'] ?? 0),
+            'operator_pass_gap_malformed_details' => (int) ($counts['operator_pass_gap_malformed_details'] ?? 0),
             'recommendations' => (int) ($counts['recommendations'] ?? 0),
             'evidence_errors' => (int) ($counts['evidence_errors'] ?? 0),
         ];
@@ -437,11 +458,30 @@ class OperatorEvidenceService
         ];
     }
 
+    private function compactAwoReplayHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'awo_replay');
+        $counts = $this->compactCounts($section);
+        $recordingEnabled = (bool) ($counts['recording_enabled'] ?? false);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'recording_enabled' => $recordingEnabled,
+            'recording_gate_ok' => ! $recordingEnabled,
+            'completed_reviews' => (int) ($counts['completed_reviews'] ?? 0),
+            'approval_worthy_reviews' => (int) ($counts['approval_worthy_reviews'] ?? 0),
+            'approval_worthy_rate' => $counts['approval_worthy_rate'] ?? null,
+            'scheduled_comparison_status' => $this->safeOperatorEvidenceCode($counts['scheduled_comparison_status'] ?? null),
+            'scheduled_comparison_available' => (bool) ($counts['scheduled_comparison_available'] ?? false),
+        ];
+    }
+
     private function compactGenealogyNoDecisionGatesHeadline(array $headlines): array
     {
         $review = is_array($headlines['review_backlog'] ?? null) ? $headlines['review_backlog'] : [];
         $face = is_array($headlines['face'] ?? null) ? $headlines['face'] : [];
         $sprint = is_array($headlines['genealogy_evidence_sprint'] ?? null) ? $headlines['genealogy_evidence_sprint'] : [];
+        $awo = is_array($headlines['awo_replay'] ?? null) ? $headlines['awo_replay'] : [];
         $triage = is_array($headlines['genealogy_agent_triage'] ?? null) ? $headlines['genealogy_agent_triage'] : [];
         $doctor = is_array($headlines['agent_doctor'] ?? null) ? $headlines['agent_doctor'] : [];
 
@@ -454,6 +494,11 @@ class OperatorEvidenceService
         }
 
         $operatorPassRecorded = (bool) ($sprint['operator_pass_recorded'] ?? false);
+        $operatorPassRemaining = max(0, (int) ($sprint['operator_pass_gap_remaining_to_pass'] ?? ($operatorPassRecorded ? 0 : $packetTarget)));
+        $operatorPassOutcomeGap = max(0, (int) ($sprint['operator_pass_gap_remaining_outcomes'] ?? $operatorPassRemaining));
+        $operatorPassPreviewGap = max(0, (int) ($sprint['operator_pass_gap_remaining_touched_preview_only'] ?? $operatorPassRemaining));
+        $operatorPassBoundaryGap = max(0, (int) ($sprint['operator_pass_gap_remaining_boundary'] ?? 0));
+        $awoRecordingEnabled = (bool) ($awo['recording_enabled'] ?? false);
         $packetReadyRows = max(0, (int) ($review['packet_ready_rows'] ?? 0));
         $packetBlockedRows = max(0, (int) ($review['packet_blocked_rows'] ?? 0));
         $packetPreviewOnlyRows = max(0, (int) ($review['packet_preview_only_rows'] ?? 0));
@@ -473,7 +518,8 @@ class OperatorEvidenceService
             || $packetCanonicalMutationRows > 0
             || $schedulerAllowedTargets > 0
             || $productionWritebackAllowedTargets > 0
-            || $canonicalWritebackAllowedTargets > 0;
+            || $canonicalWritebackAllowedTargets > 0
+            || $awoRecordingEnabled;
 
         $blockingCategories = [];
         if ($guardViolation) {
@@ -523,9 +569,15 @@ class OperatorEvidenceService
             'canonical_writeback_allowed' => $canonicalWritebackAllowedTargets > 0,
             'packet_review_ready' => $packetReviewReady,
             'packet_operator_pass_recorded' => $operatorPassRecorded,
+            'awo_recording_enabled' => $awoRecordingEnabled,
+            'awo_recording_gate_ok' => ! $awoRecordingEnabled,
             'packet_review_target' => $packetTarget,
             'reviewable_pending_packets' => $reviewablePackets,
             'remaining_reviewable_to_target' => $remainingReviewable,
+            'operator_pass_remaining_to_target' => $operatorPassRemaining,
+            'operator_pass_remaining_outcomes' => $operatorPassOutcomeGap,
+            'operator_pass_remaining_touched_preview_only' => $operatorPassPreviewGap,
+            'operator_pass_remaining_boundary' => $operatorPassBoundaryGap,
             'packet_ready_rows' => $packetReadyRows,
             'packet_blocked_rows' => $packetBlockedRows,
             'packet_preview_only_rows' => $packetPreviewOnlyRows,
@@ -938,6 +990,16 @@ class OperatorEvidenceService
             'review_pass_blocker_count' => (int) ($reviewPass['blocker_count'] ?? 0),
             'packet_source_backed' => (bool) ($signals['source_backed'] ?? false),
             'packet_review_ready' => (bool) ($signals['review_ready'] ?? false),
+            'packet_boundary_present' => (bool) ($signals['boundary_present'] ?? false),
+            'packet_identity_present' => (bool) ($signals['identity_present'] ?? false),
+            'packet_privacy_present' => (bool) ($signals['privacy_present'] ?? false),
+            'packet_privacy_cleared' => (bool) ($signals['privacy_cleared'] ?? false),
+            'packet_validation_present' => (bool) ($signals['validation_present'] ?? false),
+            'packet_validation_valid' => (bool) ($signals['validation_valid'] ?? false),
+            'packet_conflict_evidence_present' => (bool) ($signals['conflict_evidence_present'] ?? false),
+            'packet_negative_evidence_present' => (bool) ($signals['negative_evidence_present'] ?? false),
+            'packet_locator_present' => (bool) ($signals['locator_present'] ?? false),
+            'packet_extracted_claim_present' => (bool) ($signals['extracted_claim_present'] ?? false),
             'packet_preview_only' => (bool) ($signals['preview_only'] ?? false),
             'packet_canonical_mutation' => (bool) ($signals['canonical_mutation'] ?? false),
             'details_included' => (bool) ($posture['details_included'] ?? false),
@@ -1859,6 +1921,7 @@ class OperatorEvidenceService
             );
             $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
             $readiness = is_array($payload['readiness'] ?? null) ? $payload['readiness'] : [];
+            $operatorPassGaps = is_array($payload['operator_pass_gaps'] ?? null) ? $payload['operator_pass_gaps'] : [];
             $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
             $errors = array_values(array_filter((array) ($payload['evidence_errors'] ?? []), 'is_string'));
             $sourceStatus = (string) ($payload['status'] ?? 'needs_source_backed_packets');
@@ -1911,6 +1974,16 @@ class OperatorEvidenceService
                 'mutation_guard_ok' => (bool) ($readiness['mutation_guard_ok'] ?? false),
                 'ready_for_five_packet_review' => (bool) ($readiness['ready_for_five_packet_review'] ?? false),
                 'operator_pass_recorded' => (bool) ($readiness['operator_pass_recorded'] ?? false),
+                'operator_pass_gap_target_packet_count' => (int) ($operatorPassGaps['target_packet_count'] ?? ($payload['target_packets'] ?? 5)),
+                'operator_pass_gap_remaining_to_pass' => (int) ($operatorPassGaps['remaining_to_five_packet_pass'] ?? 5),
+                'operator_pass_gap_remaining_outcomes' => (int) ($operatorPassGaps['remaining_outcome_packets_to_pass'] ?? 5),
+                'operator_pass_gap_remaining_touched_preview_only' => (int) ($operatorPassGaps['remaining_touched_preview_only_to_pass'] ?? 5),
+                'operator_pass_gap_remaining_boundary' => (int) ($operatorPassGaps['remaining_boundary_packets_to_pass'] ?? 5),
+                'operator_pass_gap_operator_touched' => (int) ($operatorPassGaps['operator_touched_packets'] ?? 0),
+                'operator_pass_gap_operator_outcomes' => (int) ($operatorPassGaps['operator_outcome_packets'] ?? 0),
+                'operator_pass_gap_reviewed_preview_only' => (int) ($operatorPassGaps['reviewed_preview_only'] ?? 0),
+                'operator_pass_gap_mutating_preview_packets' => (int) ($operatorPassGaps['mutating_preview_packets'] ?? 0),
+                'operator_pass_gap_malformed_details' => (int) ($operatorPassGaps['malformed_details'] ?? 0),
                 'top_reason_codes' => array_slice((array) ($payload['top_reason_codes'] ?? []), 0, 5, true),
                 'recommendations' => count($recommendations),
                 'evidence_errors' => count($errors),
