@@ -34,6 +34,14 @@
         >
           {{ targetRefCopied ? 'Copied' : 'Copy ref' }}
         </button>
+        <button
+          type="button"
+          class="target-ref-copy"
+          title="Copy target link"
+          @click="copyTargetLink"
+        >
+          {{ targetLinkCopied ? 'Link copied' : 'Copy link' }}
+        </button>
       </div>
       <div v-if="reviewFocusClaim" class="focus-line">
         <span class="focus-label">Claim</span>
@@ -727,6 +735,7 @@ const emit = defineEmits(['approve', 'reject', 'clarify', 'defer', 'close'])
 const decisionNotes = ref('')
 const decisionReasonCode = ref('')
 const targetRefCopied = ref(false)
+const targetLinkCopied = ref(false)
 
 const STATUS_CLASS_BY_STATUS = {
   accepted: 'status-ok',
@@ -1183,6 +1192,7 @@ watch(() => props.context?.item?.unified_id, () => resetDecisionInputs())
 watch(() => props.decisionResetToken, () => resetDecisionInputs())
 watch(targetRef, () => {
   targetRefCopied.value = false
+  targetLinkCopied.value = false
 })
 
 const applyPreviewSummaryRows = computed(() => {
@@ -1948,10 +1958,34 @@ async function copyTargetRef() {
   }
 }
 
+async function copyTargetLink() {
+  if (
+    !targetRef.value
+    || typeof window === 'undefined'
+    || typeof navigator === 'undefined'
+    || !navigator.clipboard
+  ) return
+  try {
+    const url = new URL(window.location.href)
+    url.searchParams.set('target_ref', targetRef.value)
+    await navigator.clipboard.writeText(url.toString())
+  } catch (e) {
+    return
+  }
+  targetLinkCopied.value = true
+  const timer = window.setTimeout(() => {
+    targetLinkCopied.value = false
+  }, 1600)
+  if (timer === null) {
+    targetLinkCopied.value = false
+  }
+}
+
 function resetDecisionInputs() {
   decisionNotes.value = ''
   decisionReasonCode.value = ''
   targetRefCopied.value = false
+  targetLinkCopied.value = false
 }
 
 function formatDate(value) {
@@ -2248,6 +2282,7 @@ function objectKeys(value) {
 
 .target-ref-actions {
   display: flex;
+  gap: 0.4rem;
   justify-content: flex-end;
   margin-top: 0.45rem;
 }

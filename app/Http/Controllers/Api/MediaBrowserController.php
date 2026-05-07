@@ -3703,6 +3703,7 @@ class MediaBrowserController extends Controller
         $faces = array_map(function (object $face): object {
             $face->backlog_age_hours = (int) ($face->backlog_age_hours ?? 0);
             $face->is_stale_named_only = (bool) ($face->is_stale_named_only ?? false);
+            $face->face_genealogy_posture = $this->namedOnlyFaceGenealogyPosture();
 
             return $face;
         }, $faces);
@@ -3726,6 +3727,25 @@ class MediaBrowserController extends Controller
             'limit' => $limit,
             'offset' => $offset,
         ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function namedOnlyFaceGenealogyPosture(): array
+    {
+        return [
+            'schema' => 'face_genealogy_named_only_posture.v1',
+            'projection_only' => true,
+            'operator_review_required' => true,
+            'operator_link_available' => true,
+            'operator_decision_available' => true,
+            'automation_allowed' => false,
+            'automatic_link_allowed' => false,
+            'create_person_allowed' => false,
+            'metadata_writeback_allowed' => false,
+            'posture_reason' => 'named_only_face_review',
+        ];
     }
 
     /**

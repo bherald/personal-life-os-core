@@ -156,11 +156,15 @@ class GenealogyTypedRemediationMaterializationService
 
     private function packetSummary(array $packet, array $validation, array $preview, string $sourceDedupKey): array
     {
+        $targetContextTypes = $this->targetContextTypes($packet, $preview);
+
         return [
             'target_review_type' => self::TARGET_REVIEW_TYPE,
             'source_locator_count' => count($this->validator->collectSourceLocators($packet)),
             'claim_count' => count(array_values(array_filter((array) ($packet['claims'] ?? []), 'is_array'))),
             'identity_present' => is_array($packet['identity'] ?? null) && $packet['identity'] !== [],
+            'target_context_present' => $targetContextTypes !== [],
+            'target_context_types' => $targetContextTypes,
             'privacy_present' => is_array($packet['privacy'] ?? null) && $packet['privacy'] !== [],
             'validation_valid' => (bool) ($validation['valid'] ?? false),
             'validation_error_count' => is_array($validation['errors'] ?? null) ? count($validation['errors']) : 0,
@@ -170,6 +174,60 @@ class GenealogyTypedRemediationMaterializationService
             'mutates_accepted_facts' => (bool) ($preview['mutates_accepted_facts'] ?? false),
             'dedup_key_present' => $sourceDedupKey !== '',
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function targetContextTypes(array $packet, array $preview): array
+    {
+        $types = [];
+        foreach ([
+            'tree' => ['tree_id', 'target_tree_id'],
+            'person' => ['person_id', 'target_person_id'],
+            'family' => ['family_id', 'target_family_id', 'suspect_family_id'],
+            'source' => ['source_id', 'target_source_id'],
+        ] as $type => $keys) {
+            if ($this->hasTargetContext($packet, $preview, $keys)) {
+                $types[] = $type;
+            }
+        }
+
+        return $types;
+    }
+
+    /**
+     * @param  list<string>  $keys
+     */
+    private function hasTargetContext(array $packet, array $preview, array $keys): bool
+    {
+        foreach ($keys as $key) {
+            if ($this->positiveInt($packet[$key] ?? null) !== null) {
+                return true;
+            }
+        }
+
+        foreach ((array) ($preview['operations'] ?? []) as $operation) {
+            if (! is_array($operation)) {
+                continue;
+            }
+
+            foreach ($keys as $key) {
+                if ($this->positiveInt($operation[$key] ?? null) !== null) {
+                    return true;
+                }
+            }
+
+            $currentState = is_array($operation['current_state'] ?? null) ? $operation['current_state'] : [];
+            $targetContext = is_array($currentState['target_context'] ?? null) ? $currentState['target_context'] : [];
+            foreach ($keys as $key) {
+                if ($this->positiveInt($targetContext[$key] ?? null) !== null) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private function buildPacket(object $row, array $details, array $preview, array $operationTypes, string $sourceDedupKey): array

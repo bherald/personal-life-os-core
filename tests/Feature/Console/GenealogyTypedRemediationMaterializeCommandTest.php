@@ -118,6 +118,8 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
             'source_locator_count' => 1,
             'claim_count' => 1,
             'identity_present' => true,
+            'target_context_present' => true,
+            'target_context_types' => ['person'],
             'privacy_present' => true,
             'validation_valid' => true,
             'validation_error_count' => 0,
@@ -647,6 +649,52 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertStringNotContainsString('data-quality-source-token', $encoded);
         $this->assertStringNotContainsString('Family 610 appears', $encoded);
         $this->assertStringNotContainsString('https://archive.org/details/data-quality-review', $encoded);
+    }
+
+    public function test_family_scoped_data_quality_advisory_compact_dry_run_does_not_require_person_identity(): void
+    {
+        $sourceId = $this->insertFinding(
+            [
+                'dedup_key' => 'data-quality:family-610-no-person-command',
+                'tree_id' => 4,
+                'family_id' => 610,
+                'privacy' => ['cleared' => true, 'status' => 'cleared'],
+                'source_locators' => ['https://archive.org/details/data-quality-family-command'],
+                'evidence_summary' => 'Family 610 appears to duplicate family 602 and needs research before repair.',
+            ],
+            token: 'data-quality-family-command-token',
+            findingType: 'genealogy_data_quality',
+        );
+
+        $payload = $this->callJson([
+            '--id' => $sourceId,
+            '--json' => true,
+            '--compact' => true,
+        ], 0);
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('dry_run', $payload['mode']);
+        $this->assertSame('would_create_packet', $payload['action']);
+        $this->assertSame(['genealogy_todo_create'], $payload['operation_types']);
+        $this->assertFalse($payload['packet_summary']['identity_present']);
+        $this->assertTrue($payload['packet_summary']['target_context_present']);
+        $this->assertSame(['tree', 'family'], $payload['packet_summary']['target_context_types']);
+        $this->assertTrue($payload['packet_summary']['validation_valid']);
+        $this->assertSame(0, $payload['validation']['blocker_count']);
+        $this->assertSame(['pass' => 2], $payload['typed_remediation_preview']['guard_status_counts']);
+        $this->assertSame(0, $payload['typed_remediation_preview']['proposed_effect_row_touch_count']);
+        $this->assertSame(0, $this->packetCount());
+
+        $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
+        foreach ([
+            'data-quality-family-command-token',
+            'data-quality:family-610-no-person-command',
+            'Family 610 appears',
+            'https://archive.org/details/data-quality-family-command',
+            '610',
+        ] as $sensitive) {
+            $this->assertStringNotContainsString($sensitive, $encoded);
+        }
     }
 
     public function test_data_quality_advisory_compact_dry_run_accepts_target_ref_without_selector_leakage_or_insert(): void

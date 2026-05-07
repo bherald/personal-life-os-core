@@ -85,6 +85,7 @@ class FaceCandidateService
             'candidates' => $candidates,
             'candidate_state' => $this->candidateState($tokens, $candidates),
             'suggested_action' => $this->suggestedAction($candidates),
+            'candidate_review_posture' => $this->candidateReviewPosture(),
             'suppressed_rejected_candidates' => count($rejectedCandidateIds),
             'limit' => $limit,
         ];
@@ -564,6 +565,25 @@ class FaceCandidateService
             'privacy_state' => $privacyState,
             'requires_elevated_review' => $requiresElevatedReview,
             'badges' => $badges,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function candidateReviewPosture(): array
+    {
+        return [
+            'schema' => 'face_genealogy_candidate_review_posture.v1',
+            'projection_only' => true,
+            'operator_review_required' => true,
+            'operator_link_available' => true,
+            'operator_decision_available' => true,
+            'automation_allowed' => false,
+            'automatic_link_allowed' => false,
+            'create_person_allowed' => false,
+            'metadata_writeback_allowed' => false,
+            'posture_reason' => 'named_only_candidate_projection',
         ];
     }
 

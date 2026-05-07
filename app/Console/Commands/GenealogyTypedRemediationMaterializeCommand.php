@@ -547,6 +547,8 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             'source_locator_count' => (int) ($summary['source_locator_count'] ?? 0),
             'claim_count' => (int) ($summary['claim_count'] ?? 0),
             'identity_present' => (bool) ($summary['identity_present'] ?? false),
+            'target_context_present' => (bool) ($summary['target_context_present'] ?? false),
+            'target_context_types' => $this->safeTargetContextTypes($summary['target_context_types'] ?? []),
             'privacy_present' => (bool) ($summary['privacy_present'] ?? false),
             'validation_valid' => (bool) ($summary['validation_valid'] ?? false),
             'validation_error_count' => (int) ($summary['validation_error_count'] ?? 0),
@@ -686,6 +688,26 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
         $safe = [];
         foreach ($types as $type) {
             $safe[] = $this->safeOperationType($type);
+        }
+
+        return array_values(array_unique($safe));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function safeTargetContextTypes(mixed $types): array
+    {
+        if (! is_array($types)) {
+            return [];
+        }
+
+        $safe = [];
+        foreach ($types as $type) {
+            $type = $this->text($type);
+            $safe[] = $type !== null && in_array($type, ['tree', 'person', 'family', 'source'], true)
+                ? $type
+                : 'other';
         }
 
         return array_values(array_unique($safe));

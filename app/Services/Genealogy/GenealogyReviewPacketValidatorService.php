@@ -145,10 +145,168 @@ class GenealogyReviewPacketValidatorService
             return $this->pass();
         }
 
+        if ($this->allowsNonPersonTypedRemediationIdentity($packet)) {
+            return $this->pass();
+        }
+
         return $this->fail(
             'identity_resolution_required',
             'The packet must identify a resolved genealogy person before review.'
         );
+    }
+
+    private function allowsNonPersonTypedRemediationIdentity(array $packet): bool
+    {
+        $materialization = $this->materializationPayload($packet);
+        if ($materialization === []) {
+            return false;
+        }
+
+        if (($materialization['source_review_type'] ?? null) !== 'genealogy_finding'
+            || ($materialization['target_review_type'] ?? null) !== 'genealogy_review_packet'
+            || ($materialization['apply_enabled'] ?? null) !== false
+            || ($materialization['writeback'] ?? null) !== false) {
+            return false;
+        }
+
+        $operationTypes = $this->operationTypes($materialization['operation_types'] ?? null);
+        if ($operationTypes !== ['genealogy_todo_create']) {
+            return false;
+        }
+
+        $preview = $this->typedRemediationPreviewPayload($packet);
+        if (! $this->isPreviewOnlyGenealogyTodoCreate($preview)) {
+            return false;
+        }
+
+        return $this->nonPersonTargetContextTypes($packet, $preview) !== [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function materializationPayload(array $packet): array
+    {
+        if (is_array($packet['materialization'] ?? null)) {
+            return $packet['materialization'];
+        }
+
+        if (is_array($packet['packet']['materialization'] ?? null)) {
+            return $packet['packet']['materialization'];
+        }
+
+        return [];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function operationTypes(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $types = [];
+        foreach ($value as $type) {
+            if (is_scalar($type) && trim((string) $type) !== '') {
+                $types[] = trim((string) $type);
+            }
+        }
+
+        sort($types);
+
+        return array_values(array_unique($types));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function typedRemediationPreviewPayload(array $packet): array
+    {
+        if (is_array($packet['typed_remediation_preview'] ?? null)) {
+            return $packet['typed_remediation_preview'];
+        }
+
+        if (is_array($packet['apply_preview'] ?? null)) {
+            return $packet['apply_preview'];
+        }
+
+        return [];
+    }
+
+    private function isPreviewOnlyGenealogyTodoCreate(array $preview): bool
+    {
+        if (($preview['status'] ?? null) !== 'preview_only'
+            || ($preview['mutates_accepted_facts'] ?? null) !== false
+            || (is_array($preview['accepted_fact_mutations'] ?? null) && $preview['accepted_fact_mutations'] !== [])) {
+            return false;
+        }
+
+        $operations = $this->listOfArrays($preview['operations'] ?? []);
+        if ($operations === []) {
+            return false;
+        }
+
+        foreach ($operations as $operation) {
+            if (($operation['operation_type'] ?? null) !== 'genealogy_todo_create'
+                || ($operation['status'] ?? null) !== 'preview_only'
+                || ($operation['apply_enabled'] ?? null) !== false
+                || ($operation['mutates_accepted_facts'] ?? null) !== false) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function nonPersonTargetContextTypes(array $packet, array $preview): array
+    {
+        $types = [];
+        foreach ([
+            'tree' => ['tree_id', 'target_tree_id'],
+            'family' => ['family_id', 'target_family_id', 'suspect_family_id'],
+            'source' => ['source_id', 'target_source_id'],
+        ] as $type => $keys) {
+            if ($this->containsPositiveTargetContext($packet, $preview, $keys)) {
+                $types[] = $type;
+            }
+        }
+
+        return $types;
+    }
+
+    /**
+     * @param  list<string>  $keys
+     */
+    private function containsPositiveTargetContext(array $packet, array $preview, array $keys): bool
+    {
+        foreach ($keys as $key) {
+            if ($this->positiveInt($packet[$key] ?? null)) {
+                return true;
+            }
+        }
+
+        foreach ($this->listOfArrays($preview['operations'] ?? []) as $operation) {
+            foreach ($keys as $key) {
+                if ($this->positiveInt($operation[$key] ?? null)) {
+                    return true;
+                }
+            }
+
+            $currentState = is_array($operation['current_state'] ?? null) ? $operation['current_state'] : [];
+            $targetContext = is_array($currentState['target_context'] ?? null) ? $currentState['target_context'] : [];
+            foreach ($keys as $key) {
+                if ($this->positiveInt($targetContext[$key] ?? null)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private function validatePrivacy(array $packet): array
