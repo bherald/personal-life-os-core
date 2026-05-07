@@ -392,6 +392,91 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $this->assertSourceBackedPacketCommandOutputIsRedacted($output);
     }
 
+    public function test_validation_blocked_typed_remediation_next_target_text_output_is_no_execute_and_redacted(): void
+    {
+        $payload = $this->validationBlockedTypedRemediationNextTargetPayload();
+        $expectedRef = $payload['next_target']['target_ref'];
+        $this->bindPartialNextTargetService($payload, 'typed-remediation');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'typed-remediation',
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Review backlog next target: review_required', $output);
+        $this->assertStringContainsString('focus=typed-remediation', $output);
+        $this->assertStringContainsString('target_ref='.$expectedRef, $output);
+        $this->assertStringContainsString('materialization=validation_blocked available=false reason=packet_validation_failed', $output);
+        $this->assertStringContainsString('dry_run_available=true', $output);
+        $this->assertStringContainsString('no_canonical_write=true', $output);
+        $this->assertStringContainsString('apply_enabled=false', $output);
+        $this->assertStringContainsString('apply_held=true', $output);
+        $this->assertStringContainsString('missing_inputs=source_locator_required,privacy_clearance_required', $output);
+        $this->assertTypedRemediationCommandOutputIsRedacted($output);
+    }
+
+    public function test_validation_blocked_typed_remediation_next_target_markdown_output_is_no_execute_and_redacted(): void
+    {
+        $payload = $this->validationBlockedTypedRemediationNextTargetPayload();
+        $expectedRef = $payload['next_target']['target_ref'];
+        $this->bindPartialNextTargetService($payload, 'typed-remediation');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'typed-remediation',
+            '--markdown' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('# Review Backlog Next Target', $output);
+        $this->assertStringContainsString('- Focus: `typed-remediation`', $output);
+        $this->assertStringContainsString('- Target ref: `'.$expectedRef.'`', $output);
+        $this->assertStringContainsString('- Materialization available: `false`', $output);
+        $this->assertStringContainsString('- Materialization reason: `packet_validation_failed`', $output);
+        $this->assertStringContainsString('- Missing materialization inputs: `source_locator_required,privacy_clearance_required`', $output);
+        $this->assertStringContainsString('`no_canonical_write=true`', $output);
+        $this->assertStringContainsString('`canonical_write_allowed=false`', $output);
+        $this->assertStringContainsString('`apply_enabled=false`', $output);
+        $this->assertStringContainsString('`apply_held=true`', $output);
+        $this->assertTypedRemediationCommandOutputIsRedacted($output);
+    }
+
+    public function test_no_focus_candidates_next_target_output_stays_empty_and_no_execute(): void
+    {
+        $payload = $this->noFocusCandidatesNextTargetPayload('materializable-remediation');
+        $this->bindPartialNextTargetService($payload, 'materializable-remediation');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'materializable-remediation',
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Review backlog next target: observe_ok', $output);
+        $this->assertStringContainsString('query_state=no_focus_candidates', $output);
+        $this->assertStringContainsString('focus=materializable-remediation', $output);
+        $this->assertStringContainsString('target=none', $output);
+
+        foreach ([
+            'target_ref=',
+            'materialization=',
+            'operator_action=',
+            'genealogy:materialize-typed-remediation',
+            '--token',
+            '--id',
+            'execute_options',
+            'dry_run_options',
+            'apply_enabled=true',
+            'canonical_write_allowed=true',
+        ] as $needle) {
+            $this->assertStringNotContainsString($needle, $output);
+        }
+    }
+
     public function test_focus_option_requires_next_target(): void
     {
         $service = Mockery::mock(ReviewBacklogReportService::class);
@@ -628,6 +713,113 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         ], $overrides);
     }
 
+    private function bindPartialNextTargetService(array $payload, ?string $focus): void
+    {
+        $service = Mockery::mock(ReviewBacklogReportService::class)->makePartial();
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, $focus)
+            ->andReturn($payload);
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+    }
+
+    private function validationBlockedTypedRemediationNextTargetPayload(): array
+    {
+        return [
+            'version' => 1,
+            'mode' => 'observe',
+            'status' => 'review_required',
+            'dry_run' => false,
+            'queries_executed' => true,
+            'query_state' => 'next_target_selected',
+            'stale_days' => 7,
+            'high_priority_threshold' => 8,
+            'captured_at' => '2026-05-02T13:52:00Z',
+            'focus' => 'typed-remediation',
+            'next_target' => [
+                'target_ref' => 'genealogy_finding:target-a1b2c3d4e5f6',
+                'review_type' => 'genealogy_finding',
+                'finding_type' => 'source_duplicate_cleanup',
+                'classification' => 'typed_preview_needed',
+                'underlying_classification' => 'typed_preview_needed',
+                'selection_reason' => 'focused_oldest_typed_remediation',
+                'created_at' => '2037-04-20 12:00:00',
+                'priority' => 9,
+                'age_days' => 12,
+                'age_bucket' => '8_30d',
+                'stale_days_over_threshold' => 5,
+                'next_action' => 'Review typed remediation readiness; materialization remains dry-run only when validation passes.',
+                'title' => 'COMMAND SECRET VALIDATION TITLE',
+                'summary' => 'COMMAND SECRET VALIDATION SUMMARY',
+                'details' => [
+                    'evidence_summary' => 'COMMAND SECRET VALIDATION DETAILS',
+                    'source_locators' => ['https://example.test/command-validation-sensitive-source'],
+                    'suspect_source_id' => 71001,
+                    'retained_source_id' => 71002,
+                    'raw_marker' => 'COMMAND-VALIDATION-RAW-MARKER',
+                ],
+                'token' => 'command-validation-blocked-token',
+                'selector' => 'raw-selector-should-not-render',
+                'remediation_materialization' => [
+                    'available' => false,
+                    'status' => 'validation_blocked',
+                    'reason' => 'packet_validation_failed',
+                    'missing_materialization_inputs' => [
+                        'source_locator_required',
+                        'privacy_clearance_required',
+                    ],
+                    'readiness_flags' => [
+                        'packet_validation_ready' => false,
+                        'packet_validation_error_count' => 2,
+                        'materializable_remediation' => false,
+                    ],
+                    'source' => 'agent_review_queue',
+                    'source_review_type' => 'genealogy_finding',
+                    'target_review_type' => 'genealogy_review_packet',
+                    'default_mode' => 'dry_run',
+                    'dry_run_available' => true,
+                    'dry_run_first' => true,
+                    'operator_action' => 'materialize_typed_remediation_dry_run',
+                    'selector_required' => true,
+                    'selector_redacted' => true,
+                    'execute_effect' => 'create_or_reuse_pending_genealogy_review_packet_only',
+                    'operation_types' => ['source_duplicate_mark'],
+                    'command' => 'genealogy:materialize-typed-remediation --token command-validation-blocked-token',
+                    'dry_run_options' => ['--token' => 'command-validation-blocked-token'],
+                    'execute_options' => ['--id' => 71001],
+                    'safety' => [
+                        'scope' => 'review_packet_materialization_only',
+                        'preview_only' => true,
+                        'canonical_write_allowed' => false,
+                        'canonical_writes_performed' => false,
+                        'no_canonical_write' => true,
+                        'apply_held' => true,
+                        'apply_enabled' => false,
+                        'apply_performed' => false,
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    private function noFocusCandidatesNextTargetPayload(string $focus): array
+    {
+        return [
+            'version' => 1,
+            'mode' => 'observe',
+            'status' => 'observe_ok',
+            'dry_run' => false,
+            'queries_executed' => true,
+            'query_state' => 'no_focus_candidates',
+            'stale_days' => 7,
+            'high_priority_threshold' => 8,
+            'captured_at' => '2026-05-02T13:52:00Z',
+            'focus' => $focus,
+            'next_target' => null,
+        ];
+    }
+
     private function sourceBackedPacketNextTargetPayload(): array
     {
         return [
@@ -705,6 +897,37 @@ class OpsReviewBacklogReportCommandTest extends TestCase
             'source_id',
             'family_id',
             'raw_secret_marker',
+        ] as $needle) {
+            $this->assertStringNotContainsString($needle, $output);
+        }
+    }
+
+    private function assertTypedRemediationCommandOutputIsRedacted(string $output): void
+    {
+        foreach ([
+            'COMMAND SECRET VALIDATION TITLE',
+            'COMMAND SECRET VALIDATION SUMMARY',
+            'COMMAND SECRET VALIDATION DETAILS',
+            'COMMAND-VALIDATION-RAW-MARKER',
+            'https://example.test/command-validation-sensitive-source',
+            'command-validation-blocked-token',
+            'raw-selector-should-not-render',
+            '71001',
+            '71002',
+            'genealogy:materialize-typed-remediation',
+            '--token',
+            '--id',
+            'execute_options',
+            'dry_run_options',
+            'selector=',
+            'source_locators',
+            'source_id',
+            'retained_source_id',
+            'suspect_source_id',
+            'canonical_write_allowed=true',
+            'apply_enabled=true',
+            'apply_held=false',
+            'create_or_reuse_pending_genealogy_review_packet_only',
         ] as $needle) {
             $this->assertStringNotContainsString($needle, $output);
         }

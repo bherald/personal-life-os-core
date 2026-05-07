@@ -364,11 +364,16 @@ class ReviewBacklogReportService
 
         if (($materialization['available'] ?? false) !== true) {
             $missing = $this->missingMaterializationInputsText($materialization);
+            $safety = is_array($materialization['safety'] ?? null) ? $materialization['safety'] : [];
 
             return sprintf(
-                ' materialization=%s reason=%s%s',
+                ' materialization=%s available=false reason=%s dry_run_available=%s no_canonical_write=%s apply_enabled=%s apply_held=%s%s',
                 (string) ($materialization['status'] ?? 'unavailable'),
                 (string) ($materialization['reason'] ?? 'not_materializable'),
+                ($materialization['dry_run_available'] ?? false) ? 'true' : 'false',
+                ($safety['no_canonical_write'] ?? false) ? 'true' : 'false',
+                ($safety['apply_enabled'] ?? true) ? 'true' : 'false',
+                ($safety['apply_held'] ?? false) ? 'true' : 'false',
                 $missing !== '' ? ' missing_inputs='.$missing : ''
             );
         }
