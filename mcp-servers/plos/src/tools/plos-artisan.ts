@@ -5,7 +5,7 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-07-compact-evidence';
+export const ALLOWLIST_REVISION = '2026-05-07-news-source-inventory-compact';
 
 export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: number }> = {
   'ops:validate-sql':            { description: 'Static SQL validation (pre-deploy)', timeout: 60_000 },
@@ -43,6 +43,9 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:mcp-health --compact': { description: 'Compact observe-only MCP configuration and process health scorecard', timeout: 30_000 },
   'ops:mcp-health --json --compact': { description: 'Compact observe-only MCP configuration and process health JSON', timeout: 30_000 },
   'ops:capacity-report --json':   { description: 'Observe-only capacity evidence report', timeout: 30_000 },
+  'ops:capacity-checkpoint --json': { description: 'Observe-only no-decision capacity checkpoint JSON', timeout: 60_000 },
+  'ops:capacity-checkpoint --markdown': { description: 'Observe-only no-decision capacity checkpoint markdown', timeout: 60_000 },
+  'ops:capacity-checkpoint --dry-run --json': { description: 'Dry-run capacity checkpoint wiring and shape JSON', timeout: 30_000 },
   'ops:runtime-diagnostics --window=60m --focus=all --json': { description: 'Read-only runtime recovery diagnostics', timeout: 30_000 },
   'ops:face-telemetry-report --json': { description: 'Face/genealogy telemetry report', timeout: 30_000 },
   'ops:face-telemetry-report --markdown --hours=168': { description: 'Weekly face/genealogy telemetry markdown', timeout: 30_000 },
@@ -101,6 +104,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --compact': { description: 'Compact Pushover proof for the latest natural Press Enterprise run', timeout: 30_000 },
   'news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --json --compact': { description: 'Compact Pushover proof JSON for the latest natural Press Enterprise run', timeout: 30_000 },
   'news:source-inventory --workflow=news_brief --days=7 --strict --json': { description: 'Read-only news source inventory and bias coverage', timeout: 30_000 },
+  'news:source-inventory --workflow=news_brief --days=7 --strict --json --compact': { description: 'Compact read-only news source inventory and bias coverage', timeout: 30_000 },
   'bias:aliases --unmatched --limit=50 --json': { description: 'Read-only unmatched news-bias source aliases', timeout: 30_000 },
   'rag:raptor-build --stats':    { description: 'RAPTOR pipeline stats', timeout: 15_000 },
   'rag:build-sentences --stats': { description: 'Sentence embedding stats', timeout: 15_000 },

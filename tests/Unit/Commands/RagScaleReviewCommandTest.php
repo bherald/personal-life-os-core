@@ -550,6 +550,53 @@ class RagScaleReviewCommandTest extends TestCase
         }
     }
 
+    public function test_wrong_shape_retrieval_file_fails_without_collecting_evidence_or_leaking_content(): void
+    {
+        $service = Mockery::mock(RagBacklogService::class);
+        $service->shouldNotReceive('getScaleBaseline');
+        $service->shouldNotReceive('getDigestMetrics');
+        $service->shouldNotReceive('getNetBurn');
+        $this->app->instance(RagBacklogService::class, $service);
+
+        $cases = [
+            'previous review artifact' => $this->writeRetrievalEvidence([
+                'version' => 1,
+                'status' => 'observe_ok',
+                'scale' => ['documents' => 100],
+                'backlog' => ['kg_pending' => 10],
+                'net_burn' => ['kg_net_burn_per_day' => 1],
+                'retrieval' => [
+                    'query_set_hash' => 'wrong-nested-query-set',
+                    'queries' => [
+                        ['query' => 'TODO-018 private nested previous query in retrieval slot'],
+                    ],
+                ],
+            ]),
+            'wrapped retrieval artifact' => $this->writeRetrievalEvidence([
+                'artifact' => [
+                    'status' => 'observe_ok',
+                    'query_set_hash' => 'wrapped-query-set',
+                    'queries' => [
+                        ['query' => 'TODO-018 private wrapped retrieval query'],
+                    ],
+                ],
+            ]),
+        ];
+
+        foreach ($cases as $label => $path) {
+            $exit = Artisan::call('rag:scale-review', [
+                '--retrieval-file' => $path,
+                '--json' => true,
+            ]);
+            $output = Artisan::output();
+
+            $this->assertSame(1, $exit, $label);
+            $this->assertStringContainsString('Retrieval evidence file must be rag:retrieval-evidence JSON.', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 private nested previous query in retrieval slot', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 private wrapped retrieval query', $output, $label);
+        }
+    }
+
     public function test_malformed_previous_file_fails_without_collecting_evidence_or_leaking_content(): void
     {
         $service = Mockery::mock(RagBacklogService::class);
@@ -577,6 +624,55 @@ class RagScaleReviewCommandTest extends TestCase
             $this->assertStringContainsString('Previous scale review file must contain a JSON object.', $output, $label);
             $this->assertStringNotContainsString('TODO-018 private malformed previous query', $output, $label);
             $this->assertStringNotContainsString('TODO-018 private list-shaped previous query', $output, $label);
+        }
+    }
+
+    public function test_wrong_shape_previous_file_fails_without_collecting_evidence_or_leaking_content(): void
+    {
+        $service = Mockery::mock(RagBacklogService::class);
+        $service->shouldNotReceive('getScaleBaseline');
+        $service->shouldNotReceive('getDigestMetrics');
+        $service->shouldNotReceive('getNetBurn');
+        $this->app->instance(RagBacklogService::class, $service);
+
+        $cases = [
+            'retrieval evidence artifact' => $this->writeRetrievalEvidence([
+                'status' => 'observe_ok',
+                'evidence_contract' => ['version' => 1],
+                'query_set_hash' => 'wrong-previous-query-set',
+                'query_count' => 1,
+                'successful_count' => 1,
+                'empty_count' => 0,
+                'failed_count' => 0,
+                'queries' => [
+                    ['query' => 'TODO-018 private retrieval query in previous slot'],
+                ],
+            ]),
+            'wrapped previous artifact' => $this->writeRetrievalEvidence([
+                'review' => [
+                    'version' => 1,
+                    'status' => 'observe_ok',
+                    'retrieval' => [
+                        'query_set_hash' => 'wrapped-previous-query-set',
+                        'queries' => [
+                            ['query' => 'TODO-018 private wrapped previous query'],
+                        ],
+                    ],
+                ],
+            ]),
+        ];
+
+        foreach ($cases as $label => $path) {
+            $exit = Artisan::call('rag:scale-review', [
+                '--previous-file' => $path,
+                '--json' => true,
+            ]);
+            $output = Artisan::output();
+
+            $this->assertSame(1, $exit, $label);
+            $this->assertStringContainsString('Previous scale review file must be rag:scale-review JSON.', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 private retrieval query in previous slot', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 private wrapped previous query', $output, $label);
         }
     }
 

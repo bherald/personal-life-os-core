@@ -33,6 +33,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:mcp-health --compact',
     'ops:mcp-health --json --compact',
     'ops:capacity-report --json',
+    'ops:capacity-checkpoint --json',
+    'ops:capacity-checkpoint --markdown',
+    'ops:capacity-checkpoint --dry-run --json',
     'ops:runtime-diagnostics --window=60m --focus=all --json',
     'ops:face-telemetry-report --json',
     'ops:face-telemetry-report --markdown --hours=168',
@@ -87,6 +90,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --compact',
     'news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --json --compact',
     'news:source-inventory --workflow=news_brief --days=7 --strict --json',
+    'news:source-inventory --workflow=news_brief --days=7 --strict --json --compact',
     'bias:aliases --unmatched --limit=50 --json',
     'rag:backlog-report --json',
     'rag:backlog-report --compact',
@@ -133,6 +137,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan plos:agent-trace-tail --limit=20 --since=24 --json/);
   assert.match(listing, /php artisan ops:mcp-health --compact/);
   assert.match(listing, /php artisan ops:mcp-health --json --compact/);
+  assert.match(listing, /php artisan ops:capacity-checkpoint --json/);
+  assert.match(listing, /php artisan ops:capacity-checkpoint --markdown/);
+  assert.match(listing, /php artisan ops:capacity-checkpoint --dry-run --json/);
   assert.match(listing, /php artisan ops:arc-retention --json/);
   assert.match(listing, /php artisan ops:face-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --compact/);
@@ -158,6 +165,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:reject-codes --compact/);
   assert.match(listing, /php artisan genealogy:reject-codes --json --compact/);
   assert.match(listing, /php artisan news:source-inventory --workflow=news_brief --days=7 --strict --json/);
+  assert.match(listing, /php artisan news:source-inventory --workflow=news_brief --days=7 --strict --json --compact/);
   assert.match(listing, /php artisan scheduler:optimize-report --compact/);
   assert.match(listing, /php artisan news:bias-tags-audit --compact/);
   assert.match(listing, /php artisan news:pushover-proof --workflow=news_brief --compact/);
@@ -237,6 +245,22 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(agentDoctorReorderedSinceResult, /Blocked:/);
   assert.match(agentDoctorReorderedSinceResult, /Use command "list"/);
+
+  const capacityWriteResult = await plosArtisan({
+    command: 'ops:capacity-checkpoint --write --json',
+    on_prod: false,
+  });
+
+  assert.match(capacityWriteResult, /Blocked:/);
+  assert.match(capacityWriteResult, /Use command "list"/);
+
+  const capacityReorderedDryRunResult = await plosArtisan({
+    command: 'ops:capacity-checkpoint --json --dry-run',
+    on_prod: false,
+  });
+
+  assert.match(capacityReorderedDryRunResult, /Blocked:/);
+  assert.match(capacityReorderedDryRunResult, /Use command "list"/);
 
   const agentDoctorWideWindowResult = await plosArtisan({
     command: 'ops:agent-doctor --json --compact --since=168',

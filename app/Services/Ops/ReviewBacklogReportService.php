@@ -154,9 +154,20 @@ class ReviewBacklogReportService
 
         $payload['queries_executed'] = true;
 
-        $rows = DB::table('agent_review_queue')
+        $query = DB::table('agent_review_queue')
             ->select(['id', 'token', 'review_type', 'finding_type', 'priority', 'status', 'created_at', 'details'])
-            ->where('status', 'pending')
+            ->where('status', 'pending');
+
+        if ($focus === 'source-backed-packet') {
+            $query->where('review_type', 'genealogy_review_packet');
+        } elseif ($focus === 'typed-remediation' || $focus === 'materializable-remediation') {
+            $query
+                ->where('review_type', 'genealogy_finding')
+                ->whereIn('finding_type', self::REMEDIATION_FINDING_TYPES);
+        }
+
+        $rows = $query
+            ->orderByRaw('CASE WHEN priority >= ? THEN 0 ELSE 1 END', [$highPriorityThreshold])
             ->orderBy('created_at')
             ->orderBy('id')
             ->limit(500)

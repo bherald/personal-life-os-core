@@ -10,6 +10,7 @@ use App\Services\OfflinePolicyService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 class OfflineDevAssistCommand extends Command
 {
@@ -380,7 +381,7 @@ class OfflineDevAssistCommand extends Command
         }
 
         $traceId = 'trc_'.\Illuminate\Support\Str::uuid()->toString();
-        $profile = (string) ($result['profile'] ?? $policy->activeProfile());
+        $profile = $this->redactSensitiveSlashText((string) ($result['profile'] ?? $policy->activeProfile()));
         $status = ($result['type'] ?? null) === 'error' ? 'failed' : 'success';
 
         try {
@@ -660,6 +661,7 @@ class OfflineDevAssistCommand extends Command
      */
     private function approvalPayload(array &$session, string $profile, string $tail): array
     {
+        $profile = $this->redactSensitiveSlashText($profile);
         $requested = $this->normalizeApprovalMode($tail);
         if (trim($tail) === '') {
             return [
@@ -931,12 +933,13 @@ class OfflineDevAssistCommand extends Command
     private function preflightPayload(string $tail): array
     {
         $strict = in_array(trim(strtolower($tail)), ['strict', '--strict'], true);
-        $exit = Artisan::call('ollama:offline-preflight', [
+        $output = new BufferedOutput;
+        $exit = $this->runCommand('ollama:offline-preflight', [
             '--json' => true,
             '--strict' => $strict,
-        ]);
+        ], $output);
 
-        $payload = $this->decodeJsonOutput((string) Artisan::output());
+        $payload = $this->sanitizeSlashOutputPayload($this->decodeJsonOutput($output->fetch()));
 
         return [
             'command' => '/preflight',
@@ -944,6 +947,71 @@ class OfflineDevAssistCommand extends Command
             'strict' => $strict,
             'result' => $payload,
         ];
+    }
+
+    private function sanitizeSlashOutputPayload(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            $sanitized = [];
+            foreach ($value as $key => $item) {
+                if (is_string($key) && $this->isSensitiveSlashKey($key)) {
+                    $sanitized[$key] = '[REDACTED]';
+
+                    continue;
+                }
+
+                $sanitized[$key] = $this->sanitizeSlashOutputPayload($item);
+            }
+
+            return $sanitized;
+        }
+
+        if (is_string($value)) {
+            return $this->redactSensitiveSlashText($value);
+        }
+
+        return is_scalar($value) || $value === null ? $value : '[non-scalar]';
+    }
+
+    private function redactSensitiveSlashText(string $value): string
+    {
+        $roots = array_filter([
+            base_path(),
+            storage_path(),
+            (string) getenv('HOME'),
+        ], static fn (string $path): bool => $path !== '' && $path !== '/');
+
+        usort($roots, static fn (string $a, string $b): int => strlen($b) <=> strlen($a));
+
+        foreach (array_unique($roots) as $root) {
+            $value = preg_replace(
+                '#'.preg_quote(rtrim($root, '/'), '#').'(?=/|$)[^\s,"\')\]}]*#',
+                '[REDACTED_PATH]',
+                $value
+            ) ?? $value;
+        }
+
+        $replacements = [
+            '/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/i' => '[REDACTED_SECRET]',
+            '/\bBearer\s+[A-Za-z0-9._~+\/=-]+/i' => 'Bearer [REDACTED]',
+            '/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@\/\s]+):([^@\/\s]+)@/i' => '$1[REDACTED]@',
+            '/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/i' => '[REDACTED_TOKEN]',
+            '#/(?:home|Users|root)/[^\s,"\')\]}]+#' => '[REDACTED_PATH]',
+        ];
+
+        foreach ($replacements as $pattern => $replacement) {
+            $value = preg_replace($pattern, $replacement, $value) ?? $value;
+        }
+
+        return $value;
+    }
+
+    private function isSensitiveSlashKey(string $key): bool
+    {
+        return preg_match(
+            '/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization|bearer)\b/i',
+            $key
+        ) === 1;
     }
 
     /**

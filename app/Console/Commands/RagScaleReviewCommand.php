@@ -365,6 +365,7 @@ class RagScaleReviewCommand extends Command
         }
 
         $decoded = $this->decodeJsonObjectArtifact($path, 'Retrieval evidence file');
+        $this->assertRetrievalEvidenceArtifact($decoded);
 
         $latency = is_array($decoded['latency_summary'] ?? null) ? $decoded['latency_summary'] : [];
         $score = is_array($decoded['score_summary'] ?? null) ? $decoded['score_summary'] : [];
@@ -415,6 +416,7 @@ class RagScaleReviewCommand extends Command
         }
 
         $decoded = $this->decodeJsonObjectArtifact($path, 'Previous scale review file');
+        $this->assertScaleReviewArtifact($decoded);
 
         return $this->normalizeReviewArtifact($decoded);
     }
@@ -433,6 +435,41 @@ class RagScaleReviewCommand extends Command
         $decoded = json_decode($contents, true);
 
         return is_array($decoded) ? $decoded : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function assertRetrievalEvidenceArtifact(array $payload): void
+    {
+        $hasContract = is_array($payload['evidence_contract'] ?? null);
+        $hasQueryEvidence = array_key_exists('query_set_hash', $payload)
+            && array_key_exists('query_count', $payload)
+            && array_key_exists('successful_count', $payload)
+            && array_key_exists('empty_count', $payload)
+            && array_key_exists('failed_count', $payload);
+        $hasFailureEvidence = ($payload['status'] ?? null) === 'failed'
+            && array_key_exists('error', $payload);
+
+        if (! array_key_exists('status', $payload) || ! $hasContract || (! $hasQueryEvidence && ! $hasFailureEvidence)) {
+            throw new \InvalidArgumentException('Retrieval evidence file must be rag:retrieval-evidence JSON.');
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function assertScaleReviewArtifact(array $payload): void
+    {
+        if (! array_key_exists('version', $payload)
+            || ! array_key_exists('status', $payload)
+            || ! is_array($payload['scale'] ?? null)
+            || ! is_array($payload['backlog'] ?? null)
+            || ! is_array($payload['net_burn'] ?? null)
+            || ! is_array($payload['retrieval'] ?? null)
+        ) {
+            throw new \InvalidArgumentException('Previous scale review file must be rag:scale-review JSON.');
+        }
     }
 
     /**

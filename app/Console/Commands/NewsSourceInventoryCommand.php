@@ -14,7 +14,8 @@ class NewsSourceInventoryCommand extends Command
                             {--days=7 : Recent news_articles window}
                             {--limit=100 : Maximum feed rows to show}
                             {--strict : Return failure when warnings are present}
-                            {--json : Output machine-readable JSON}';
+                            {--json : Output machine-readable JSON}
+                            {--compact : Output an aggregate-only operator summary}';
 
     protected $description = 'Read-only inventory of table-backed RSS feeds, health, recent articles, and bias-rating coverage';
 
@@ -412,6 +413,10 @@ class NewsSourceInventoryCommand extends Command
 
     private function finish(array $payload, int $exitCode): int
     {
+        if ($this->option('compact')) {
+            $payload = $this->compactPayload($payload);
+        }
+
         if ($this->option('json')) {
             $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
@@ -438,6 +443,10 @@ class NewsSourceInventoryCommand extends Command
             ['Health', json_encode($summary['health'], JSON_UNESCAPED_SLASHES)],
         ]);
 
+        if ($this->option('compact')) {
+            return $exitCode;
+        }
+
         $this->table(
             ['Workflow', 'Feed', 'Bias', 'Health', 'Recent', 'URL'],
             array_map(fn (array $feed): array => [
@@ -451,6 +460,42 @@ class NewsSourceInventoryCommand extends Command
         );
 
         return $exitCode;
+    }
+
+    private function compactPayload(array $payload): array
+    {
+        $gaps = $payload['coverage_gaps'] ?? [];
+        $missingBias = $gaps['missing_bias_feeds'] ?? [];
+        $failedHealth = $gaps['failed_health_feeds'] ?? [];
+
+        return [
+            'generated_at' => $payload['generated_at'] ?? now()->toIso8601String(),
+            'status' => $payload['status'] ?? 'fail',
+            'warnings' => $payload['warnings'] ?? [],
+            'errors' => $payload['errors'] ?? [],
+            'summary' => $payload['summary'] ?? $this->emptySummary(),
+            'coverage_gaps' => [
+                'missing_bias_feeds' => count($missingBias),
+                'failed_health_feeds' => count($failedHealth),
+                'missing_bias_labels' => $this->gapLabelList($missingBias),
+                'failed_health_labels' => $this->gapLabelList($failedHealth),
+            ],
+            'storage' => [
+                'rss_feed_config_table' => $payload['storage']['rss_feed_config_table'] ?? 'workflow_node_configs',
+                'rss_feed_health_table_present' => (bool) ($payload['storage']['rss_feed_health_table_present'] ?? false),
+                'news_articles_table_present' => (bool) ($payload['storage']['news_articles_table_present'] ?? false),
+                'bias_ratings_table_present' => (bool) ($payload['storage']['bias_ratings_table_present'] ?? false),
+                'bias_rating_aliases_table_present' => (bool) ($payload['storage']['bias_rating_aliases_table_present'] ?? false),
+            ],
+        ];
+    }
+
+    private function gapLabelList(array $feeds): array
+    {
+        return array_values(array_map(
+            fn (array $feed): string => $this->shorten((string) ($feed['feed_label'] ?? $feed['lookup_source'] ?? 'unlabeled feed'), 80),
+            array_slice($feeds, 0, 5)
+        ));
     }
 
     private function missingTables(array $tables): array
