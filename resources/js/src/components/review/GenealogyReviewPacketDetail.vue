@@ -818,16 +818,28 @@ const reviewPassRows = computed(() => {
   const counts = objectValue(reviewPass.value.counts)
   const signals = objectValue(reviewPass.value.signals)
   const posture = objectValue(reviewPass.value.posture)
+  const blockerCodes = arrayValue(reviewPass.value.blocker_codes)
+    .map((code) => stringOrNull(code))
+    .filter(Boolean)
 
   return [
     reviewPassRow('state', 'State', reviewPass.value.label || reviewPass.value.state, reviewPassState(reviewPass.value.state)),
     reviewPassRow('reason', 'Reason', reviewPass.value.reason_code ? labelize(reviewPass.value.reason_code) : null, 'warning'),
     reviewPassRow('blockers', 'Blockers', reviewPass.value.blocker_count, Number(reviewPass.value.blocker_count || 0) > 0 ? 'blocked' : 'ok'),
+    reviewPassRow('blocker_codes', 'Blocker codes', blockerCodes.map(labelize).join(', '), blockerCodes.length > 0 ? 'blocked' : 'ok'),
     reviewPassRow('claims', 'Claims', counts.claim_count, 'ok'),
     reviewPassRow('sources', 'Sources', counts.source_count, 'ok'),
     reviewPassRow('media', 'Media', mediaReviewPassLabel(counts), (Number(counts.missing_media_count || 0) > 0) ? 'warning' : 'ok'),
     reviewPassRow('checklist', 'Checklist rows', counts.checklist_row_count, 'ok'),
+    reviewPassRow('source_backed', 'Source-backed', displayBoolean(signals.source_backed), signals.source_backed === true ? 'ok' : 'blocked'),
+    reviewPassRow('boundary', 'Boundary', displayBoolean(signals.boundary_present), signals.boundary_present === true ? 'ok' : 'warning'),
+    reviewPassRow('identity', 'Identity', displayBoolean(signals.identity_present), signals.identity_present === true ? 'ok' : 'warning'),
+    reviewPassRow('privacy', 'Privacy', displayBoolean(signals.privacy_cleared), signals.privacy_cleared === true ? 'ok' : 'warning'),
     reviewPassRow('validation', 'Validation', signals.validation_state, signals.validation_state === 'valid' ? 'ok' : 'warning'),
+    reviewPassRow('conflict_signal', 'Conflict signal', displayBoolean(signals.conflict_signal), signals.conflict_signal === true ? 'warning' : 'ok'),
+    reviewPassRow('negative_evidence', 'Negative evidence', displayBoolean(signals.negative_evidence), signals.negative_evidence === true ? 'warning' : 'ok'),
+    reviewPassRow('locator_present', 'Locator present', displayBoolean(signals.locator_present), signals.locator_present === true ? 'ok' : 'warning'),
+    reviewPassRow('extract_present', 'Extract present', displayBoolean(signals.extract_present), signals.extract_present === true ? 'ok' : 'warning'),
     reviewPassRow('preview_only', 'Preview only', displayBoolean(signals.preview_only), signals.preview_only === true ? 'ok' : 'blocked'),
     reviewPassRow('canonical_mutation', 'Canonical mutation', displayBoolean(signals.canonical_mutation), signals.canonical_mutation === true ? 'blocked' : 'ok'),
     reviewPassRow('canonical_write', 'Canonical write', displayBoolean(posture.canonical_write_allowed), posture.canonical_write_allowed === true ? 'blocked' : 'ok'),

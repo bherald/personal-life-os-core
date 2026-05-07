@@ -520,6 +520,66 @@ class RagScaleReviewCommandTest extends TestCase
         $this->assertStringNotContainsString('Private raw query text', $output);
     }
 
+    public function test_malformed_retrieval_file_fails_without_collecting_evidence_or_leaking_content(): void
+    {
+        $service = Mockery::mock(RagBacklogService::class);
+        $service->shouldNotReceive('getScaleBaseline');
+        $service->shouldNotReceive('getDigestMetrics');
+        $service->shouldNotReceive('getNetBurn');
+        $this->app->instance(RagBacklogService::class, $service);
+
+        $cases = [
+            'invalid json' => $this->writeRawArtifact('{"query": "TODO-018 private malformed retrieval query"'),
+            'empty json list' => $this->writeRawArtifact('[]'),
+            'json list' => $this->writeRawArtifact(json_encode([
+                ['query' => 'TODO-018 private list-shaped retrieval query'],
+            ], JSON_UNESCAPED_SLASHES)),
+        ];
+
+        foreach ($cases as $label => $path) {
+            $exit = Artisan::call('rag:scale-review', [
+                '--retrieval-file' => $path,
+                '--json' => true,
+            ]);
+            $output = Artisan::output();
+
+            $this->assertSame(1, $exit, $label);
+            $this->assertStringContainsString('Retrieval evidence file must contain a JSON object.', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 private malformed retrieval query', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 private list-shaped retrieval query', $output, $label);
+        }
+    }
+
+    public function test_malformed_previous_file_fails_without_collecting_evidence_or_leaking_content(): void
+    {
+        $service = Mockery::mock(RagBacklogService::class);
+        $service->shouldNotReceive('getScaleBaseline');
+        $service->shouldNotReceive('getDigestMetrics');
+        $service->shouldNotReceive('getNetBurn');
+        $this->app->instance(RagBacklogService::class, $service);
+
+        $cases = [
+            'invalid json' => $this->writeRawArtifact('{"retrieval": {"query": "TODO-018 private malformed previous query"}'),
+            'empty json list' => $this->writeRawArtifact('[]'),
+            'json list' => $this->writeRawArtifact(json_encode([
+                ['retrieval' => ['query' => 'TODO-018 private list-shaped previous query']],
+            ], JSON_UNESCAPED_SLASHES)),
+        ];
+
+        foreach ($cases as $label => $path) {
+            $exit = Artisan::call('rag:scale-review', [
+                '--previous-file' => $path,
+                '--json' => true,
+            ]);
+            $output = Artisan::output();
+
+            $this->assertSame(1, $exit, $label);
+            $this->assertStringContainsString('Previous scale review file must contain a JSON object.', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 private malformed previous query', $output, $label);
+            $this->assertStringNotContainsString('TODO-018 private list-shaped previous query', $output, $label);
+        }
+    }
+
     public function test_missing_retrieval_file_fails_without_collecting_evidence(): void
     {
         $service = Mockery::mock(RagBacklogService::class);
@@ -632,6 +692,14 @@ class RagScaleReviewCommandTest extends TestCase
     {
         $path = tempnam(sys_get_temp_dir(), 'rag-review-');
         file_put_contents($path, json_encode($payload, JSON_UNESCAPED_SLASHES));
+
+        return $path;
+    }
+
+    private function writeRawArtifact(string $contents): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'rag-review-');
+        file_put_contents($path, $contents);
 
         return $path;
     }

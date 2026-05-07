@@ -364,10 +364,7 @@ class RagScaleReviewCommand extends Command
             throw new \InvalidArgumentException('Retrieval evidence file not found. Check --retrieval-file path.');
         }
 
-        $decoded = json_decode((string) file_get_contents($path), true);
-        if (! is_array($decoded)) {
-            throw new \InvalidArgumentException('Retrieval evidence file must contain a JSON object.');
-        }
+        $decoded = $this->decodeJsonObjectArtifact($path, 'Retrieval evidence file');
 
         $latency = is_array($decoded['latency_summary'] ?? null) ? $decoded['latency_summary'] : [];
         $score = is_array($decoded['score_summary'] ?? null) ? $decoded['score_summary'] : [];
@@ -417,12 +414,25 @@ class RagScaleReviewCommand extends Command
             throw new \InvalidArgumentException('Previous scale review file not found. Check --previous-file path.');
         }
 
-        $decoded = json_decode((string) file_get_contents($path), true);
-        if (! is_array($decoded)) {
-            throw new \InvalidArgumentException('Previous scale review file must contain a JSON object.');
-        }
+        $decoded = $this->decodeJsonObjectArtifact($path, 'Previous scale review file');
 
         return $this->normalizeReviewArtifact($decoded);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeJsonObjectArtifact(string $path, string $label): array
+    {
+        $contents = (string) file_get_contents($path);
+        $raw = json_decode($contents);
+        if (! $raw instanceof \stdClass) {
+            throw new \InvalidArgumentException("{$label} must contain a JSON object.");
+        }
+
+        $decoded = json_decode($contents, true);
+
+        return is_array($decoded) ? $decoded : [];
     }
 
     /**

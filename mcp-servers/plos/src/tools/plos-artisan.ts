@@ -5,6 +5,8 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
+export const ALLOWLIST_REVISION = '2026-05-07-compact-evidence';
+
 export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: number }> = {
   'ops:validate-sql':            { description: 'Static SQL validation (pre-deploy)', timeout: 60_000 },
   'ops:validate-sql --explain':  { description: 'EXPLAIN SQL validation (remote/post-deploy)', timeout: 120_000 },
@@ -142,7 +144,11 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
 
   // Special: list available commands
   if (command === 'list') {
-    const lines = ['Available artisan commands:\n'];
+    const lines = [
+      'Available artisan commands:\n',
+      `Allowlist revision: ${ALLOWLIST_REVISION}`,
+      `Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}\n`,
+    ];
     for (const [cmd, meta] of Object.entries(ALLOWED_COMMANDS)) {
       lines.push(`  php artisan ${cmd}`);
       lines.push(`    ${meta.description}\n`);
@@ -157,6 +163,8 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
       .filter(k => k.includes(command.split(' ')[0].split(':')[0]))
       .slice(0, 5);
     return `Blocked: "${command}" is not in the allowed command list.\n`
+      + `Allowlist revision: ${ALLOWLIST_REVISION}\n`
+      + `Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}\n`
       + (suggestions.length ? `Did you mean: ${suggestions.join(', ')}?\n` : '')
       + `Use command "list" to see all available commands.`;
   }

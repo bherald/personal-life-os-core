@@ -623,13 +623,13 @@ class FaceTelemetryReportService
                     SUM(CASE WHEN frf.hidden = 1 THEN 1 ELSE 0 END) AS hidden_faces,
                     SUM(CASE WHEN frf.verified = 1 THEN 1 ELSE 0 END) AS verified_faces,
                     SUM(CASE WHEN frf.genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS genealogy_linked_faces,
-                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS named_only_faces,
-                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_named_only_faces,
-                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_faces,
-                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_open_named_only_faces,
-                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_faces,
-                    MIN(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN frf.updated_at ELSE NULL END) AS oldest_named_only_updated_at,
-                    MAX(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN frf.updated_at ELSE NULL END) AS newest_named_only_updated_at,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_open_named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_faces,
+                    MIN(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL THEN frf.updated_at ELSE NULL END) AS oldest_named_only_updated_at,
+                    MAX(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL THEN frf.updated_at ELSE NULL END) AS newest_named_only_updated_at,
                     SUM(CASE WHEN frf.hidden = 0 AND (frf.cluster_id IS NULL OR frf.cluster_id = 0) THEN 1 ELSE 0 END) AS unclustered_visible_faces,
                     SUM(CASE WHEN frf.created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS created_recent_faces
                  FROM file_registry_faces frf
@@ -678,12 +678,12 @@ class FaceTelemetryReportService
                     SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' THEN 1 ELSE 0 END) AS no_match_pending,
                     SUM(CASE WHEN q.status = 'pending' AND q.created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_pending_items,
                     SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND q.created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_no_match_pending,
-                    SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS named_only_no_match_pending,
-                    SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL AND q.created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_named_only_no_match_pending,
+                    SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS named_only_no_match_pending,
+                    SUM(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND q.created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_named_only_no_match_pending,
                     SUM(CASE WHEN q.updated_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS recent_updates,
                     MIN(CASE WHEN q.status = 'pending' THEN q.created_at ELSE NULL END) AS oldest_pending_at,
                     MIN(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' THEN q.created_at ELSE NULL END) AS oldest_no_match_pending_at,
-                    MIN(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND frf.genealogy_person_id IS NULL THEN q.created_at ELSE NULL END) AS oldest_named_only_no_match_pending_at
+                    MIN(CASE WHEN q.status = 'pending' AND q.match_type = 'no_match' AND frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL THEN q.created_at ELSE NULL END) AS oldest_named_only_no_match_pending_at
                  FROM genealogy_face_match_queue q
                  LEFT JOIN file_registry_faces frf ON frf.id = q.file_registry_face_id",
                 [$hours, $hours, $hours, $hours]
@@ -814,6 +814,7 @@ class FaceTelemetryReportService
                  ) queue_counts ON queue_counts.file_registry_face_id = frf.id
                  WHERE frf.hidden = 0
                    AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL
+                   AND LOWER(TRIM(frf.person_name)) != 'unknown'
                    AND frf.genealogy_person_id IS NULL",
                 [$hours]
             );

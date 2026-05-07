@@ -170,7 +170,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         foreach ([
             'source-token-target-ref',
             'source-cleanup:smith-1',
-            'https://example.test/source-cleanup',
+            'https://archive.org/details/source-cleanup',
             'Smith',
         ] as $sensitive) {
             $this->assertStringNotContainsString($sensitive, $encoded);
@@ -277,7 +277,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         ], 0);
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
 
-        $this->assertStringNotContainsString('https://example.test/source-cleanup', $encoded);
+        $this->assertStringNotContainsString('https://archive.org/details/source-cleanup', $encoded);
         $this->assertStringNotContainsString('source-finding-token-1', $encoded);
         $this->assertStringNotContainsString('source-cleanup:smith-1', $encoded);
         $this->assertStringNotContainsString('Smith', $encoded);
@@ -325,7 +325,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertStringContainsString('apply_held=yes', $output);
         $this->assertStringNotContainsString('source-finding-token-1', $output);
         $this->assertStringNotContainsString('source-cleanup:smith-1', $output);
-        $this->assertStringNotContainsString('https://example.test/source-cleanup', $output);
+        $this->assertStringNotContainsString('https://archive.org/details/source-cleanup', $output);
         $this->assertStringNotContainsString('Two source records describe', $output);
         $this->assertStringNotContainsString('current_state', $output);
         $this->assertStringNotContainsString('review_queue_id', $output);
@@ -413,7 +413,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
             (string) $packet->token,
             'source-token-compact-execute',
             'source-cleanup:smith-1',
-            'https://example.test/source-cleanup',
+            'https://archive.org/details/source-cleanup',
             'Two source records describe the same Smith family record.',
             'Smith',
             '321',
@@ -467,7 +467,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
             'source-token-target-ref-execute',
             $targetRef,
             'source-cleanup:smith-1',
-            'https://example.test/source-cleanup',
+            'https://archive.org/details/source-cleanup',
         ] as $sensitive) {
             $this->assertStringNotContainsString($sensitive, $encoded);
         }
@@ -492,7 +492,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
                 'tree_id' => 4,
                 'person_id' => 2766,
                 'privacy' => ['cleared' => true, 'status' => 'cleared'],
-                'source_locators' => ['https://example.test/data-quality-review'],
+                'source_locators' => ['https://archive.org/details/data-quality-review'],
                 'evidence_summary' => 'Family 610 appears to duplicate family 602 and needs research before repair.',
             ],
             token: 'data-quality-source-token',
@@ -520,7 +520,73 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
         $this->assertStringNotContainsString('data-quality-source-token', $encoded);
         $this->assertStringNotContainsString('Family 610 appears', $encoded);
-        $this->assertStringNotContainsString('https://example.test/data-quality-review', $encoded);
+        $this->assertStringNotContainsString('https://archive.org/details/data-quality-review', $encoded);
+    }
+
+    public function test_data_quality_advisory_compact_dry_run_accepts_target_ref_without_selector_leakage_or_insert(): void
+    {
+        $sourceId = $this->insertFinding(
+            [
+                'dedup_key' => 'data-quality:family-610-target-ref',
+                'tree_id' => 4,
+                'person_id' => 2766,
+                'privacy' => ['cleared' => true, 'status' => 'cleared'],
+                'source_locators' => ['https://archive.org/details/data-quality-target-ref'],
+                'evidence_summary' => 'Family 610 appears to duplicate family 602 and needs research before repair.',
+            ],
+            token: 'data-quality-source-token-target-ref',
+            findingType: 'genealogy_data_quality',
+        );
+        $targetRef = $this->targetRefForSourceId($sourceId);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $payload = $this->callJson([
+                '--target-ref' => $targetRef,
+                '--json' => true,
+                '--compact' => true,
+            ], 0);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+        }
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('dry_run', $payload['mode']);
+        $this->assertSame('would_create_packet', $payload['action']);
+        $this->assertSame(['type' => 'target_ref', 'value_present' => true], $payload['selection']);
+        $this->assertSame(['genealogy_todo_create'], $payload['operation_types']);
+        $this->assertSame('genealogy_data_quality', $payload['source']['finding_type']);
+        $this->assertSame('genealogy_review_packet', $payload['packet_summary']['target_review_type']);
+        $this->assertTrue($payload['packet_summary']['validation_valid']);
+        $this->assertTrue($payload['packet_summary']['preview_only']);
+        $this->assertFalse($payload['packet_summary']['mutates_accepted_facts']);
+        $this->assertNull($payload['packet']);
+        $this->assertTrue($payload['safety']['no_canonical_write']);
+        $this->assertFalse($payload['safety']['canonical_write_allowed']);
+        $this->assertTrue($payload['safety']['apply_held']);
+        $this->assertFalse($payload['safety']['apply_enabled']);
+        $this->assertSame(['genealogy_todo_create' => 1], $payload['typed_remediation_preview']['operation_type_counts']);
+        $this->assertSame(['preview_only' => 1], $payload['typed_remediation_preview']['operation_status_counts']);
+        $this->assertSame(['pass' => 2], $payload['typed_remediation_preview']['guard_status_counts']);
+        $this->assertSame(['create_genealogy_research_task_preview_only' => 1], $payload['typed_remediation_preview']['proposed_effect_type_counts']);
+        $this->assertSame(0, $payload['typed_remediation_preview']['proposed_effect_row_touch_count']);
+        $this->assertSame(0, $this->packetCount());
+        $this->assertSame([], $this->mutationTargets($queries));
+        $this->assertNoCanonicalGenealogyMutationQueries($queries);
+
+        $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
+        foreach ([
+            'data-quality-source-token-target-ref',
+            $targetRef,
+            'data-quality:family-610-target-ref',
+            'Family 610 appears',
+            'https://archive.org/details/data-quality-target-ref',
+            '2766',
+        ] as $sensitive) {
+            $this->assertStringNotContainsString($sensitive, $encoded);
+        }
     }
 
     public function test_missing_and_invalid_selection_fails_without_insert(): void
@@ -610,7 +676,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
             'dedup_key' => 'unsupported-remediation',
             'person_id' => 321,
             'privacy' => ['cleared' => true],
-            'source_locators' => ['https://example.test/no-remediation'],
+            'source_locators' => ['https://archive.org/details/no-remediation'],
             'claim_text' => 'This row has no supported remediation operation.',
         ]);
 
@@ -690,7 +756,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
             'dedup_key' => 'source-cleanup:smith-1',
             'person_id' => 321,
             'privacy' => ['cleared' => true, 'status' => 'cleared'],
-            'source_locators' => ['https://example.test/source-cleanup'],
+            'source_locators' => ['https://archive.org/details/source-cleanup'],
             'operation_type' => 'source_duplicate_mark',
             'evidence_summary' => 'Two source records describe the same Smith family record.',
         ];

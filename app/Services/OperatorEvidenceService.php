@@ -212,6 +212,7 @@ class OperatorEvidenceService
         $safeHandoffs = $this->compactReviewBacklogSafeHandoffs($counts['next_safe_handoffs'] ?? []);
         $sourcePacketHandoff = $safeHandoffs['source_backed_packet'] ?? [];
         $materializableHandoff = $safeHandoffs['materializable_remediation'] ?? [];
+        $typedRemediationHandoff = $safeHandoffs['typed_remediation'] ?? [];
 
         return [
             'status' => $this->compactStatus($section),
@@ -240,6 +241,16 @@ class OperatorEvidenceService
             'materializable_remediation_dry_run_available' => (bool) ($materializableHandoff['dry_run_available'] ?? false),
             'materializable_remediation_apply_enabled' => (bool) ($materializableHandoff['apply_enabled'] ?? false),
             'materializable_remediation_apply_held' => (bool) ($materializableHandoff['apply_held'] ?? false),
+            'typed_remediation_handoff_available' => (bool) ($typedRemediationHandoff['available'] ?? false),
+            'typed_remediation_handoff_state' => $this->safeOperatorEvidenceCode($typedRemediationHandoff['query_state'] ?? null),
+            'typed_remediation_status' => $this->safeOperatorEvidenceCode($typedRemediationHandoff['materialization_status'] ?? null),
+            'typed_remediation_reason' => $this->safeOperatorEvidenceCode($typedRemediationHandoff['materialization_reason'] ?? null),
+            'typed_remediation_validation_blocked' => (bool) ($typedRemediationHandoff['validation_blocked'] ?? false),
+            'typed_remediation_validation_blocker_count' => (int) ($typedRemediationHandoff['validation_blocker_count'] ?? 0),
+            'typed_remediation_validation_blocker_codes' => $this->safeOperatorEvidenceCodeList($typedRemediationHandoff['validation_blocker_codes'] ?? []),
+            'typed_remediation_dry_run_available' => (bool) ($typedRemediationHandoff['dry_run_available'] ?? false),
+            'typed_remediation_apply_enabled' => (bool) ($typedRemediationHandoff['apply_enabled'] ?? false),
+            'typed_remediation_apply_held' => (bool) ($typedRemediationHandoff['apply_held'] ?? false),
             'recommendations' => (int) ($counts['recommendations'] ?? 0),
         ];
     }
@@ -827,6 +838,12 @@ class OperatorEvidenceService
                 $staleDays,
                 $highPriorityThreshold
             ),
+            'typed_remediation' => $this->reviewBacklogNextSafeHandoff(
+                $service,
+                'typed-remediation',
+                $staleDays,
+                $highPriorityThreshold
+            ),
         ];
     }
 
@@ -873,6 +890,28 @@ class OperatorEvidenceService
             ? $target['remediation_materialization']
             : [];
         $safety = is_array($materialization['safety'] ?? null) ? $materialization['safety'] : [];
+        $readinessFlags = is_array($materialization['readiness_flags'] ?? null)
+            ? $materialization['readiness_flags']
+            : [];
+        $materializationStatus = $this->safeOperatorEvidenceCode($materialization['status'] ?? null);
+        $missingInputs = $this->safeOperatorEvidenceCodeList($materialization['missing_materialization_inputs'] ?? []);
+        $packetValidationErrors = array_values(array_filter(
+            (array) ($readinessFlags['packet_validation_errors'] ?? []),
+            'is_array'
+        ));
+        $packetValidationErrorCodes = [];
+        foreach ($packetValidationErrors as $error) {
+            $code = $this->safeOperatorEvidenceCode($error['code'] ?? null);
+            if ($code !== null && ! in_array($code, $packetValidationErrorCodes, true)) {
+                $packetValidationErrorCodes[] = $code;
+            }
+        }
+        $validationBlockerCodes = [];
+        foreach (array_merge($missingInputs, $packetValidationErrorCodes) as $code) {
+            if (! in_array($code, $validationBlockerCodes, true)) {
+                $validationBlockerCodes[] = $code;
+            }
+        }
         $normalizedFocus = str_replace('-', '_', $focus);
         $available = $target !== null && ($payload['query_state'] ?? null) === 'next_target_selected';
 
@@ -885,6 +924,7 @@ class OperatorEvidenceService
                 ! $available => 'none',
                 $focus === 'source-backed-packet' => 'review_one_source_backed_packet',
                 $focus === 'materializable-remediation' => 'inspect_one_preview_remediation',
+                $focus === 'typed-remediation' && $materializationStatus === 'validation_blocked' => 'explain_validation_blocked_remediation',
                 default => 'review_one_item',
             },
             'review_type' => $this->safeOperatorEvidenceCode($target['review_type'] ?? null),
@@ -904,8 +944,16 @@ class OperatorEvidenceService
             'canonical_write_allowed' => (bool) ($posture['canonical_write_allowed'] ?? false),
             'batch_review_allowed' => (bool) ($posture['batch_review_allowed'] ?? false),
             'automation_allowed' => (bool) ($posture['automation_allowed'] ?? false),
-            'materialization_status' => $this->safeOperatorEvidenceCode($materialization['status'] ?? null),
+            'materialization_status' => $materializationStatus,
+            'materialization_reason' => $this->safeOperatorEvidenceCode($materialization['reason'] ?? null),
             'materialization_available' => (bool) ($materialization['available'] ?? false),
+            'validation_blocked' => $materializationStatus === 'validation_blocked',
+            'missing_materialization_input_count' => count($missingInputs),
+            'missing_materialization_inputs' => $missingInputs,
+            'packet_validation_error_count' => (int) ($readinessFlags['packet_validation_error_count'] ?? count($packetValidationErrorCodes)),
+            'packet_validation_error_codes' => $packetValidationErrorCodes,
+            'validation_blocker_count' => count($validationBlockerCodes),
+            'validation_blocker_codes' => $validationBlockerCodes,
             'dry_run_available' => (bool) ($materialization['dry_run_available'] ?? false),
             'no_canonical_write' => (bool) ($safety['no_canonical_write'] ?? false),
             'apply_enabled' => (bool) ($safety['apply_enabled'] ?? false),
@@ -1926,20 +1974,20 @@ class OperatorEvidenceService
                     SUM(CASE WHEN f.hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) AS linked_faces,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL THEN 1 ELSE 0 END) AS unlinked_faces,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL THEN 1 ELSE 0 END) AS named_only_unlinked,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_unlinked,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND f.updated_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_open_named_only_unlinked,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_unlinked,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND candidate_decisions.file_registry_face_id IS NULL THEN 1 ELSE 0 END) AS named_only_open_without_candidate_decision,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND candidate_decisions.file_registry_face_id IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS named_only_open_with_nonterminal_decision,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(queue_counts.pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS named_only_pending_no_match_faces,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(queue_counts.stale_pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS named_only_stale_pending_no_match_faces,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 24 THEN 1 ELSE 0 END) AS named_only_open_under_24h,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 24 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 168 THEN 1 ELSE 0 END) AS named_only_open_one_to_seven_days,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 168 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 720 THEN 1 ELSE 0 END) AS named_only_open_seven_to_thirty_days,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 720 THEN 1 ELSE 0 END) AS named_only_open_over_thirty_days,
-                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND f.verified = 1 THEN 1 ELSE 0 END) AS named_only_verified,
-                    MAX(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL THEN TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) END) AS named_only_oldest_age_hours
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' THEN 1 ELSE 0 END) AS named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND f.updated_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_open_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND candidate_decisions.file_registry_face_id IS NULL THEN 1 ELSE 0 END) AS named_only_open_without_candidate_decision,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND candidate_decisions.file_registry_face_id IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS named_only_open_with_nonterminal_decision,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(queue_counts.pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS named_only_pending_no_match_faces,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(queue_counts.stale_pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS named_only_stale_pending_no_match_faces,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 24 THEN 1 ELSE 0 END) AS named_only_open_under_24h,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 24 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 168 THEN 1 ELSE 0 END) AS named_only_open_one_to_seven_days,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 168 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) < 720 THEN 1 ELSE 0 END) AS named_only_open_seven_to_thirty_days,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) >= 720 THEN 1 ELSE 0 END) AS named_only_open_over_thirty_days,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND f.verified = 1 THEN 1 ELSE 0 END) AS named_only_verified,
+                    MAX(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' THEN TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) END) AS named_only_oldest_age_hours
                  FROM file_registry_faces f
                  ".$this->latestFaceCandidateDecisionJoinSql('f')."
                  LEFT JOIN (
@@ -2975,7 +3023,7 @@ class OperatorEvidenceService
         }
 
         $handoffs = [];
-        foreach (['source_backed_packet', 'materializable_remediation'] as $key) {
+        foreach (['source_backed_packet', 'materializable_remediation', 'typed_remediation'] as $key) {
             if (is_array($value[$key] ?? null)) {
                 $handoffs[$key] = $value[$key];
             }
@@ -3083,6 +3131,31 @@ class OperatorEvidenceService
         }
 
         return $code;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function safeOperatorEvidenceCodeList(mixed $value, int $limit = 8): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $codes = [];
+        foreach ($value as $item) {
+            $code = $this->safeOperatorEvidenceCode($item);
+            if ($code === null || in_array($code, $codes, true)) {
+                continue;
+            }
+
+            $codes[] = $code;
+            if (count($codes) >= $limit) {
+                break;
+            }
+        }
+
+        return $codes;
     }
 
     private function nonEmptyString(mixed $value, string $fallback): string

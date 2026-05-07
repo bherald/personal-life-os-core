@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ALLOWED_COMMANDS, plosArtisan } from './plos-artisan.js';
+import { ALLOWED_COMMANDS, ALLOWLIST_REVISION, plosArtisan } from './plos-artisan.js';
 
 test('read-only planning evidence commands stay allowlisted', async () => {
   for (const command of [
@@ -107,6 +107,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
 
   const listing = await plosArtisan({ command: 'list', on_prod: false });
 
+  assert.match(listing, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
+  assert.match(listing, new RegExp(`Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}`));
   assert.match(listing, /php artisan ops:operator-evidence --json/);
   assert.match(listing, /php artisan ops:operator-evidence --compact/);
   assert.match(listing, /php artisan ops:operator-evidence --json --compact/);
@@ -195,6 +197,8 @@ test('next-target focus variants stay blocked unless they are canonical allowlis
     const result = await plosArtisan({ command, on_prod: false });
 
     assert.match(result, /Blocked:/, `${command} should be blocked`);
+    assert.match(result, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
+    assert.match(result, new RegExp(`Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}`));
     assert.match(result, /Use command "list"/, `${command} should show allowlist guidance`);
   }
 });
@@ -206,6 +210,7 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   });
 
   assert.match(notifyResult, /Blocked:/);
+  assert.match(notifyResult, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
   assert.match(notifyResult, /Use command "list"/);
 
   const aliasWriteResult = await plosArtisan({
@@ -214,6 +219,7 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   });
 
   assert.match(aliasWriteResult, /Blocked:/);
+  assert.match(aliasWriteResult, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
   assert.match(aliasWriteResult, /Use command "list"/);
 
   const historyWindowResult = await plosArtisan({

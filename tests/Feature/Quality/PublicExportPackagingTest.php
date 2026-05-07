@@ -1022,13 +1022,71 @@ class PublicExportPackagingTest extends TestCase
         $auditScript = file_get_contents(base_path('scripts/guards/public-release-audit.sh'));
         $gitignore = file_get_contents(base_path('.gitignore'));
 
+        $this->assertStringContainsString('Tracked runtime storage payloads requiring public-extraction review', $auditScript);
+        $this->assertStringContainsString('scan_tracked_runtime_storage_payloads', $auditScript);
+        $this->assertStringContainsString('storage/app/dev-agent', $exportScript);
         $this->assertStringContainsString('storage/app/dev-agent/traces', $exportScript);
+        $this->assertStringContainsString('storage/app/testing-offline-dev-assist-traces', $exportScript);
+        $this->assertStringContainsString('storage/claude-work', $exportScript);
         $this->assertStringContainsString('storage/app/dev-agent/traces', $auditScript);
         $this->assertStringContainsString('/storage/app/dev-agent/traces/', $gitignore);
 
+        $allowedStoragePlaceholders = [
+            'storage/app/.gitignore',
+            'storage/app/private/.gitignore',
+            'storage/app/public/.gitignore',
+            'storage/framework/.gitignore',
+            'storage/framework/cache/.gitignore',
+            'storage/framework/cache/data/.gitignore',
+            'storage/framework/sessions/.gitignore',
+            'storage/framework/testing/.gitignore',
+            'storage/framework/views/.gitignore',
+            'storage/logs/.gitignore',
+        ];
+
         foreach ($this->publicExportFiles() as $file) {
+            if (str_starts_with($file, 'storage/')) {
+                $this->assertContains($file, $allowedStoragePlaceholders);
+            }
+
+            $this->assertStringStartsNotWith('storage/app/dev-agent/', $file);
             $this->assertStringStartsNotWith('storage/app/dev-agent/traces/', $file);
+            $this->assertStringStartsNotWith('storage/app/testing-offline-dev-assist-traces/', $file);
+            $this->assertStringStartsNotWith('storage/agent-handoffs/', $file);
+            $this->assertStringStartsNotWith('storage/claude-work/', $file);
+            $this->assertStringStartsNotWith('storage/tools/', $file);
         }
+    }
+
+    #[Test]
+    public function prompt_compressor_mcp_workspace_stays_opt_in_and_out_of_public_export(): void
+    {
+        $workspacePath = base_path('mcp-servers/prompt-compressor');
+        $workspaceGitignorePath = $workspacePath.'/.gitignore';
+        $publicSmoke = file_get_contents(base_path('scripts/public-smoke.sh'));
+        $publicWorkflow = file_get_contents(base_path('.github/workflows/public-readiness.yml'));
+
+        if (is_file($workspaceGitignorePath)) {
+            $workspaceGitignore = file_get_contents($workspaceGitignorePath);
+
+            foreach ([
+                'node_modules/',
+                'dist/',
+                '.env',
+                '.context-store/',
+            ] as $ignoredPath) {
+                $this->assertStringContainsString($ignoredPath, $workspaceGitignore, "prompt-compressor must ignore {$ignoredPath}.");
+            }
+        } else {
+            $this->assertFalse(is_dir($workspacePath), 'Public export must omit the local prompt-compressor workspace.');
+        }
+
+        foreach ($this->publicExportFiles() as $file) {
+            $this->assertStringStartsNotWith('mcp-servers/prompt-compressor/', $file);
+        }
+
+        $this->assertStringNotContainsString('npm ci --prefix mcp-servers/prompt-compressor', $publicSmoke);
+        $this->assertStringNotContainsString('npm audit --prefix mcp-servers/prompt-compressor', $publicWorkflow);
     }
 
     #[Test]

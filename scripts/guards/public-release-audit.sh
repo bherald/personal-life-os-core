@@ -100,6 +100,14 @@ scan_dev_agent_reference_paths() {
         | rg -i '(^|/)(\.cline|\.roo|\.continue|\.aider|\.openhands|\.goose|\.swe-agent|claude-code-source|claude-code-prompts|cline-rules|roo-rules)(/|$|\.|-)'
 }
 
+scan_tracked_runtime_storage_payloads() {
+    # Blocks storage/app/dev-agent/traces, storage/agent-handoffs,
+    # storage/claude-work, storage/tools, and any future tracked runtime
+    # storage payload outside the public placeholder .gitignore files.
+    git ls-files storage \
+        | rg -v '^(storage/app/\.gitignore|storage/app/private/\.gitignore|storage/app/public/\.gitignore|storage/framework/\.gitignore|storage/framework/cache/\.gitignore|storage/framework/cache/data/\.gitignore|storage/framework/sessions/\.gitignore|storage/framework/testing/\.gitignore|storage/framework/views/\.gitignore|storage/logs/\.gitignore)$'
+}
+
 print_header "Public release audit"
 printf 'Scope: tracked public-extraction candidate files only. Private-only docs are excluded by path.\n'
 printf 'This is a blocker finder for public extraction, not a private-prod deploy gate.\n'
@@ -136,8 +144,8 @@ flag_lines "Tracked archives, screenshots, or generated bundles needing review" 
 flag_lines "Vendored dependencies tracked in git" \
     bash -c "git ls-files | rg '(^|/)(node_modules|vendor)/'"
 
-flag_lines "Tracked storage source requiring public-extraction review" \
-    bash -c "git ls-files storage | rg '^(storage/agent-handoffs|storage/app/dev-agent/traces|storage/tools)/'"
+flag_lines "Tracked runtime storage payloads requiring public-extraction review" \
+    scan_tracked_runtime_storage_payloads
 
 flag_lines "Real secret assignments with non-placeholder values" \
     scan_real_secret_assignments

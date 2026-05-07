@@ -219,6 +219,7 @@ class GenealogyEvidenceSprintReadinessService
                 'source_backed_pending_missing_validation' => (int) ($summary['source_backed_pending_missing_validation'] ?? 0),
                 'source_backed_pending_missing_boundary' => (int) ($summary['source_backed_pending_missing_boundary'] ?? 0),
                 'source_locator_required_packets' => (int) ($summary['source_locator_required_packets'] ?? 0),
+                'non_public_source_packets' => (int) ($summary['non_public_source_packets'] ?? 0),
                 'manual_only_source_packets' => (int) ($summary['manual_only_source_packets'] ?? 0),
                 'source_realism_blocked_packets' => (int) ($summary['source_realism_blocked_packets'] ?? 0),
                 'operator_touched_packets' => (int) ($summary['operator_touched_packets'] ?? 0),
@@ -291,8 +292,9 @@ class GenealogyEvidenceSprintReadinessService
                 $this->boolValue($readiness['needs_reviewable_packet_details'])
             ),
             sprintf(
-                'source_realism: missing_locator=%s manual_only=%s blocked=%s',
+                'source_realism: missing_locator=%s non_public=%s manual_only=%s blocked=%s',
                 $summary['source_locator_required_packets'],
+                $summary['non_public_source_packets'],
                 $summary['manual_only_source_packets'],
                 $summary['source_realism_blocked_packets']
             ),
@@ -367,6 +369,7 @@ class GenealogyEvidenceSprintReadinessService
             ]).'`',
             '- Source realism blocks: `'.implode(', ', [
                 'missing_locator='.$summary['source_locator_required_packets'],
+                'non_public='.$summary['non_public_source_packets'],
                 'manual_only='.$summary['manual_only_source_packets'],
                 'blocked='.$summary['source_realism_blocked_packets'],
             ]).'`',
@@ -468,17 +471,22 @@ class GenealogyEvidenceSprintReadinessService
             } else {
                 $validation = $this->packetValidator()->validate($details);
                 $sourceLocatorMissing = $this->validationHasError($validation, 'source_locator_required');
+                $nonPublicSource = $this->validationHasError($validation, 'non_public_source_locator_blocked');
                 $manualOnlySource = $this->validationHasError($validation, 'manual_source_as_evidence_blocked');
 
                 if ($sourceLocatorMissing) {
                     $summary['source_locator_required_packets']++;
                 }
 
+                if ($nonPublicSource) {
+                    $summary['non_public_source_packets']++;
+                }
+
                 if ($manualOnlySource) {
                     $summary['manual_only_source_packets']++;
                 }
 
-                if ($sourceLocatorMissing || $manualOnlySource) {
+                if ($sourceLocatorMissing || $nonPublicSource || $manualOnlySource) {
                     $summary['source_realism_blocked_packets']++;
                 }
             }
@@ -763,6 +771,7 @@ class GenealogyEvidenceSprintReadinessService
             'source_backed_pending_missing_validation' => 0,
             'source_backed_pending_missing_boundary' => 0,
             'source_locator_required_packets' => 0,
+            'non_public_source_packets' => 0,
             'manual_only_source_packets' => 0,
             'source_realism_blocked_packets' => 0,
             'operator_boundary_packets' => 0,
@@ -885,10 +894,10 @@ class GenealogyEvidenceSprintReadinessService
             return false;
         }
 
-        return ! $this->validationHasError(
-            $this->packetValidator()->validate($details),
-            'manual_source_as_evidence_blocked'
-        );
+        $validation = $this->packetValidator()->validate($details);
+
+        return ! $this->validationHasError($validation, 'manual_source_as_evidence_blocked')
+            && ! $this->validationHasError($validation, 'non_public_source_locator_blocked');
     }
 
     private function packetValidator(): GenealogyReviewPacketValidatorService

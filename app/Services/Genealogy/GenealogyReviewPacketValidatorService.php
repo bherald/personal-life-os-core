@@ -44,6 +44,7 @@ class GenealogyReviewPacketValidatorService
     {
         $gates = [
             'source_locator' => $this->validateSourceLocator($packet),
+            'source_realism' => $this->validateSourceRealism($packet),
             'extracted_claim' => $this->validateExtractedClaim($packet),
             'identity' => $this->validateIdentity($packet),
             'privacy' => $this->validatePrivacy($packet),
@@ -89,6 +90,20 @@ class GenealogyReviewPacketValidatorService
             'source_locator_required',
             'At least one source locator, path, citation, media id, or source id is required.'
         );
+    }
+
+    private function validateSourceRealism(array $packet): array
+    {
+        foreach ($this->collectSourceLocators($packet) as $locator) {
+            if ($this->isNonPublicNetworkLocator($locator)) {
+                return $this->fail(
+                    'non_public_source_locator_blocked',
+                    'Source locators using fixture, reserved, local, or private-network hosts cannot be counted as source-backed evidence.'
+                );
+            }
+        }
+
+        return $this->pass();
     }
 
     private function validateExtractedClaim(array $packet): array
@@ -346,6 +361,69 @@ class GenealogyReviewPacketValidatorService
             }
 
             if ($host === $domain || str_ends_with($host, '.'.$domain)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isNonPublicNetworkLocator(string $locator): bool
+    {
+        $locator = trim($locator);
+        if ($locator === '') {
+            return false;
+        }
+
+        if (preg_match('/^(file|ark|doi|urn):/i', $locator) === 1
+            || str_starts_with($locator, '/')
+            || str_starts_with($locator, './')
+            || str_starts_with($locator, '../')
+            || str_starts_with($locator, '~')
+            || preg_match('/^[A-Za-z]:[\/\\\\]/', $locator) === 1
+        ) {
+            return false;
+        }
+
+        $host = parse_url($locator, PHP_URL_HOST);
+        if (! is_string($host) || trim($host) === '') {
+            if (preg_match('/^[a-z0-9.-]+\.[a-z]{2,}(?:[\/?#]|$)/i', $locator) !== 1) {
+                return false;
+            }
+
+            $host = parse_url('https://'.$locator, PHP_URL_HOST);
+        }
+
+        if (! is_string($host) || trim($host) === '') {
+            return false;
+        }
+
+        return $this->isNonPublicHost($host);
+    }
+
+    private function isNonPublicHost(string $host): bool
+    {
+        $host = strtolower(trim($host, "[] \t\n\r\0\x0B."));
+        if ($host === '') {
+            return false;
+        }
+
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            return filter_var(
+                $host,
+                FILTER_VALIDATE_IP,
+                FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+            ) === false;
+        }
+
+        foreach (['localhost', 'test', 'example', 'invalid'] as $reservedTld) {
+            if ($host === $reservedTld || str_ends_with($host, '.'.$reservedTld)) {
+                return true;
+            }
+        }
+
+        foreach (['example.com', 'example.net', 'example.org'] as $reservedDomain) {
+            if ($host === $reservedDomain || str_ends_with($host, '.'.$reservedDomain)) {
                 return true;
             }
         }

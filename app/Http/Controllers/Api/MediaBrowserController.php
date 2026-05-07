@@ -3655,7 +3655,8 @@ class MediaBrowserController extends Controller
         ";
         $namedOnlyFilter = "frf.hidden = 0
               AND frf.genealogy_person_id IS NULL
-              AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL";
+              AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL
+              AND LOWER(TRIM(frf.person_name)) != 'unknown'";
 
         $decisionFilter = '';
         if ($decisionState === 'open') {

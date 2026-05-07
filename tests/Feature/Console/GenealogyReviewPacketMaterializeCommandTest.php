@@ -120,7 +120,7 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
         $this->assertTrue($payload['file']['path_present']);
         $this->assertTrue($payload['file']['readable']);
         $this->assertStringNotContainsString($path, $encoded);
-        $this->assertStringNotContainsString('https://example.test/review-packet-source', $encoded);
+        $this->assertStringNotContainsString('https://archive.org/details/review-packet-source', $encoded);
         $this->assertStringNotContainsString('Review packet command fixture', $encoded);
         $this->assertArrayNotHasKey('path', $payload['file']);
         $this->assertSame(0, $this->packetCount());
@@ -433,7 +433,7 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
         $this->assertStringContainsString('no_canonical_write=yes', $output);
         $this->assertStringContainsString('apply_held=yes', $output);
         $this->assertStringNotContainsString($path, $output);
-        $this->assertStringNotContainsString('https://example.test/review-packet-source', $output);
+        $this->assertStringNotContainsString('https://archive.org/details/review-packet-source', $output);
         $this->assertSame(0, $this->packetCount());
     }
 
@@ -445,7 +445,7 @@ class GenealogyReviewPacketMaterializeCommandTest extends TestCase
             'sprint_boundary' => 'Command materialization fixture boundary',
             'identity' => ['person_id' => 321, 'status' => 'resolved'],
             'privacy' => ['cleared' => true, 'living_person_risk' => false],
-            'sources' => [['locator' => 'https://example.test/review-packet-source']],
+            'sources' => [['locator' => 'https://archive.org/details/review-packet-source']],
             'claims' => [
                 [
                     'claim_text' => 'William Brown lived in Salem in 1880.',

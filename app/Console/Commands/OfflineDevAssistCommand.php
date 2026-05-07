@@ -56,6 +56,7 @@ class OfflineDevAssistCommand extends Command
         '/mcp',
         '/git',
         '/preflight',
+        '/approval',
     ];
 
     public function handle(

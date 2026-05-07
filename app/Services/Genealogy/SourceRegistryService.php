@@ -255,6 +255,12 @@ class SourceRegistryService
             $url = $this->nullableString($row->archive_url ?? null);
             $domain = $this->locatorHost($url ?? '');
 
+            if ($url === null || $domain === null) {
+                $errors[] = $this->postureError($row, $domain, $toolName, 'archive_url_missing_or_invalid');
+
+                continue;
+            }
+
             if ($this->isNonPublicArchiveHost($domain)) {
                 $errors[] = $this->postureError($row, $domain, $toolName, 'non_public_archive_url');
 

@@ -322,6 +322,63 @@ class PushoverNotifyTest extends TestCase
         $this->assertSame('request-20', $result['data']['part_response_requests'][1]);
     }
 
+    public function test_large_news_multipart_http_posts_include_body_part_headers_for_every_part(): void
+    {
+        config([
+            'services.pushover.api_url' => 'https://api.pushover.net/1/messages.json',
+            'services.pushover.token' => 'test-token',
+            'services.pushover.user_key' => 'test-user',
+        ]);
+        Cache::forget('pushover_rate_limit:workflow_routine_updates');
+
+        $sendIndex = 0;
+        Http::fake(function () use (&$sendIndex) {
+            $sendIndex++;
+
+            return Http::response(['status' => 1, 'request' => "request-{$sendIndex}"], 200);
+        });
+
+        $sections = [];
+        for ($part = 1; $part <= 20; $part++) {
+            $sections[$part] = sprintf('Packet %02d ', $part).str_repeat(chr(64 + (($part - 1) % 26) + 1), 980);
+        }
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", $sections),
+            'source_group' => 'workflow_routine_updates',
+            'inter_chunk_delay_seconds' => 0,
+            'part_headers_enabled' => true,
+        ]);
+
+        $result = $node->execute([]);
+        $requests = Http::recorded();
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertTrue($result['data']['part_headers_enabled']);
+        $this->assertSame('message_prefix', $result['data']['part_header_strategy']);
+        $this->assertSame(20, $result['data']['total_parts']);
+        $this->assertSame(20, $result['data']['parts_sent']);
+        $this->assertSame(range(20, 1), $result['data']['part_numbers_sent']);
+        $this->assertCount(20, $requests);
+        $this->assertSame(range(20, 1), array_keys($result['data']['part_message_hashes']));
+        $this->assertSame(range(20, 1), array_keys($result['data']['part_message_lengths']));
+        $this->assertSame(range(20, 1), array_keys($result['data']['part_response_requests']));
+        $this->assertCount(20, array_unique($result['data']['part_message_hashes']));
+
+        foreach (range(20, 1) as $offset => $partNumber) {
+            $payload = $requests[$offset][0];
+
+            $this->assertSame("Daily News (Part {$partNumber}/20)", $payload['title']);
+            $this->assertStringStartsWith("[Part {$partNumber}/20]\nPacket ".sprintf('%02d', $partNumber), $payload['message']);
+            $this->assertLessThanOrEqual(1024, strlen($payload['message']));
+            $this->assertSame(strlen($payload['message']), $result['data']['part_message_lengths'][$partNumber]);
+            $this->assertSame(hash('sha256', $payload['message']), $result['data']['part_message_hashes'][$partNumber]);
+            $this->assertSame('request-'.($offset + 1), $result['data']['part_response_requests'][$partNumber]);
+        }
+    }
+
     public function test_uses_configured_source_group_when_present(): void
     {
         $controller = Mockery::mock('overload:'.NotificationController::class);
