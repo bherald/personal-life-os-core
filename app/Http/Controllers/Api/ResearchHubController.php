@@ -229,6 +229,10 @@ class ResearchHubController extends Controller
         );
 
         foreach ($items as $item) {
+            if (! $this->isCurrentPendingGenealogyPacketItem($item)) {
+                continue;
+            }
+
             if ($this->itemTargetRef($item) === $targetRef) {
                 return response()->json([
                     'success' => true,
@@ -354,6 +358,33 @@ class ResearchHubController extends Controller
         return $this->normalizeGenealogyPacketTargetRef($item['target_ref'] ?? null)
             ?? $this->normalizeGenealogyPacketTargetRef($item['review_focus']['target_ref'] ?? null)
             ?? $this->normalizeGenealogyPacketTargetRef($item['details']['target_ref'] ?? null);
+    }
+
+    /**
+     * Target-ref links are current-pending packet pointers only. Recheck the
+     * mapped item defensively so stale registry SQL or DB/app timezone drift
+     * cannot expose terminal or expired packet details through an exact link.
+     *
+     * @param  array<string, mixed>  $item
+     */
+    private function isCurrentPendingGenealogyPacketItem(array $item): bool
+    {
+        $status = $item['status'] ?? null;
+        if (is_scalar($status) && trim((string) $status) !== '' && strtolower(trim((string) $status)) !== 'pending') {
+            return false;
+        }
+
+        $expiresAt = $item['expires_at'] ?? null;
+        if (! is_scalar($expiresAt) || trim((string) $expiresAt) === '') {
+            return true;
+        }
+
+        $expiresAtTimestamp = strtotime((string) $expiresAt);
+        if ($expiresAtTimestamp === false) {
+            return false;
+        }
+
+        return $expiresAtTimestamp > now()->getTimestamp();
     }
 
     private function directPendingGenealogyPacketItemByTargetRef(string $targetRef): ?array
