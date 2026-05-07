@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\Genealogy\GenealogyReviewPacketApplyPreviewService;
 use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
+use App\Services\Review\ReviewTargetReferenceService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -20,6 +21,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
     protected $signature = 'genealogy:materialize-typed-remediation
                             {--id= : Source agent_review_queue id}
                             {--token= : Source agent_review_queue token}
+                            {--target-ref= : Sanitized genealogy_finding target_ref from ops:review-backlog-report}
                             {--execute : Materialize or reuse a pending genealogy_review_packet row}
                             {--json : Emit machine-readable JSON}
                             {--compact : Emit compact sanitized output}';
@@ -29,13 +31,14 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
     public function handle(
         GenealogyTypedRemediationMaterializationService $materializer,
         GenealogyReviewPacketApplyPreviewService $applyPreview,
+        ReviewTargetReferenceService $targetReferences,
     ): int {
-        $selection = $this->selection();
+        $selection = $this->selection($targetReferences);
         if (! $selection['valid']) {
             return $this->emitFailure($selection['payload'], self::INVALID);
         }
 
-        $row = $this->sourceRow($selection);
+        $row = $this->sourceRow($selection, $targetReferences);
         if ($row === null) {
             return $this->emitFailure($this->basePayload($selection, [
                 'success' => false,
@@ -116,9 +119,15 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             ]));
         }
 
-        $result = ((string) ($selection['type'] ?? '') === 'id')
-            ? $materializer->materializeFromQueueId((int) $selection['id'])
-            : $materializer->materializeFromToken((string) $selection['token']);
+        $result = match ((string) ($selection['type'] ?? '')) {
+            'id' => $materializer->materializeFromQueueId((int) $selection['id']),
+            'token' => $materializer->materializeFromToken((string) $selection['token']),
+            'target_ref' => $materializer->materializeFromQueueRow($row),
+            default => [
+                'success' => false,
+                'error' => 'invalid_selection',
+            ],
+        };
 
         $payload = $this->basePayload($selection, [
             'success' => (bool) ($result['success'] ?? false),
@@ -149,21 +158,25 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
     /**
      * @return array<string, mixed>
      */
-    private function selection(): array
+    private function selection(ReviewTargetReferenceService $targetReferences): array
     {
         $rawId = $this->option('id');
         $token = trim((string) ($this->option('token') ?? ''));
         $hasId = $rawId !== null && trim((string) $rawId) !== '';
         $hasToken = $token !== '';
 
-        if ($hasId === $hasToken) {
+        $targetRef = trim((string) ($this->option('target-ref') ?? ''));
+        $hasTargetRef = $targetRef !== '';
+        $selectorCount = ($hasId ? 1 : 0) + ($hasToken ? 1 : 0) + ($hasTargetRef ? 1 : 0);
+
+        if ($selectorCount !== 1) {
             return [
                 'valid' => false,
-                'payload' => $this->basePayload(['type' => null, 'id' => null, 'token' => null], [
+                'payload' => $this->basePayload(['type' => null, 'id' => null, 'token' => null, 'target_ref' => null], [
                     'success' => false,
                     'status' => 'failed',
                     'error' => 'invalid_selection',
-                    'message' => 'Provide exactly one source selector: --id or --token.',
+                    'message' => 'Provide exactly one source selector: --id, --token, or --target-ref.',
                     'action' => 'none',
                 ]),
             ];
@@ -174,7 +187,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             if (! is_int($id) || $id < 1) {
                 return [
                     'valid' => false,
-                    'payload' => $this->basePayload(['type' => 'id', 'id' => $rawId, 'token' => null], [
+                    'payload' => $this->basePayload(['type' => 'id', 'id' => $rawId, 'token' => null, 'target_ref' => null], [
                         'success' => false,
                         'status' => 'failed',
                         'error' => 'invalid_selection',
@@ -189,6 +202,31 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                 'type' => 'id',
                 'id' => $id,
                 'token' => null,
+                'target_ref' => null,
+            ];
+        }
+
+        if ($hasTargetRef) {
+            $normalized = $targetReferences->normalize($targetRef, ['genealogy_finding']);
+            if ($normalized === null) {
+                return [
+                    'valid' => false,
+                    'payload' => $this->basePayload(['type' => 'target_ref', 'id' => null, 'token' => null, 'target_ref' => $targetRef], [
+                        'success' => false,
+                        'status' => 'failed',
+                        'error' => 'invalid_selection',
+                        'message' => '--target-ref must be a genealogy_finding target ref.',
+                        'action' => 'none',
+                    ]),
+                ];
+            }
+
+            return [
+                'valid' => true,
+                'type' => 'target_ref',
+                'id' => null,
+                'token' => null,
+                'target_ref' => $normalized['target_ref'],
             ];
         }
 
@@ -197,14 +235,22 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             'type' => 'token',
             'id' => null,
             'token' => $token,
+            'target_ref' => null,
         ];
     }
 
     /**
      * @param  array<string, mixed>  $selection
      */
-    private function sourceRow(array $selection): ?object
+    private function sourceRow(array $selection, ReviewTargetReferenceService $targetReferences): ?object
     {
+        if ((string) ($selection['type'] ?? '') === 'target_ref') {
+            return $targetReferences->pendingReviewRowForTargetRef(
+                $selection['target_ref'] ?? null,
+                ['genealogy_finding']
+            );
+        }
+
         $query = DB::table('agent_review_queue');
 
         return ((string) ($selection['type'] ?? '') === 'id')
@@ -231,6 +277,7 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                 'type' => $selection['type'] ?? null,
                 'id' => $selection['id'] ?? null,
                 'token' => $selection['token'] ?? null,
+                'target_ref' => $selection['target_ref'] ?? null,
             ],
             'safety' => $this->safetyPayload(),
         ], $overrides);
@@ -451,7 +498,8 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             'selection' => [
                 'type' => $payload['selection']['type'] ?? null,
                 'value_present' => (($payload['selection']['id'] ?? null) !== null)
-                    || (($payload['selection']['token'] ?? null) !== null),
+                    || (($payload['selection']['token'] ?? null) !== null)
+                    || (($payload['selection']['target_ref'] ?? null) !== null),
             ],
             'source' => $source === [] ? null : [
                 'present' => true,

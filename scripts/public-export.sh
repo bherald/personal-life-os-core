@@ -191,6 +191,7 @@ includes=(
     tests/Feature/Console/AgentMemoryStatsCommandTest.php
     tests/Feature/Console/AwoReplayCommandTest.php
     tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php
+    tests/Feature/Console/GenealogyTypedRemediationMaterializeCommandTest.php
     tests/Feature/Console/OpsMcpHealthCommandTest.php
     tests/Feature/Console/OpsReviewBacklogReportCommandTest.php
     tests/Feature/Quality/FixturesProvenanceTest.php

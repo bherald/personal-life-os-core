@@ -105,6 +105,8 @@ handoff. Use it only when the next backlog target is a pending
 ```bash
 php artisan ops:review-backlog-report --next-target
 php artisan ops:review-backlog-report --json --next-target
+php artisan ops:review-backlog-report --json --next-target --focus=typed-remediation
+php artisan genealogy:materialize-typed-remediation --target-ref=GENEALOGY_FINDING_TARGET_REF --json --compact
 php artisan genealogy:materialize-typed-remediation --id=SOURCE_REVIEW_QUEUE_ID --json --compact
 php artisan genealogy:materialize-typed-remediation --token=SOURCE_REVIEW_QUEUE_TOKEN --json --compact
 ```
@@ -113,18 +115,22 @@ The first command selects one sanitized review target only. If its
 classification is high-priority, check `underlying_classification` and
 `underlying_next_action`; typed remediation work should proceed only when that
 underlying path is `typed_preview_needed` or the target is otherwise confirmed
-as a typed-remediation `genealogy_finding`. Run the materializer in its default
-dry-run mode with exactly one source selector, either `--id` or `--token`. The
-compact dry run must show the planned action, supported operation types,
+as a typed-remediation `genealogy_finding`. Prefer the sanitized
+`target_ref` emitted by the next-target command, then run the materializer in
+its default dry-run mode with exactly one source selector: `--target-ref`,
+`--id`, or `--token`. Raw id/token selectors are fallback operator tools only.
+The compact dry run must show the planned action, supported operation types,
 operation/guard counts, failed guard names, row-touch count,
 `no_canonical_write=true`, and `apply_held=true` without raw source URLs,
-tokens, ids, current-state rows, stale hashes, or evidence text. Use non-compact
-JSON only for direct operator inspection when the compact proof is insufficient.
+tokens, ids, current-state rows, stale hashes, target-ref values, or evidence
+text. Use non-compact JSON only for direct operator inspection when the compact
+proof is insufficient.
 
 Only after an operator reviews that dry-run output should the same selector be
 run with `--execute`:
 
 ```bash
+php artisan genealogy:materialize-typed-remediation --target-ref=GENEALOGY_FINDING_TARGET_REF --execute --json --compact
 php artisan genealogy:materialize-typed-remediation --id=SOURCE_REVIEW_QUEUE_ID --execute --json
 php artisan genealogy:materialize-typed-remediation --token=SOURCE_REVIEW_QUEUE_TOKEN --execute --json
 ```
