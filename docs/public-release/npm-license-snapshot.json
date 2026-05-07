@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-06T20:18:00Z",
+  "generated_at": "2026-05-07T00:11:34Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
@@ -6902,7 +6902,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.15",
+          "version": "4.12.18",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -11511,7 +11511,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.15",
+          "version": "4.12.18",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -12688,7 +12688,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.15",
+          "version": "4.12.18",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",

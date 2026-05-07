@@ -71,6 +71,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:evidence-sprint-report --json': { description: 'Read-only genealogy evidence sprint readiness report', timeout: 30_000 },
   'genealogy:evidence-sprint-report --json --compact': { description: 'Compact genealogy evidence sprint readiness report', timeout: 30_000 },
   'genealogy:evidence-sprint-report --markdown': { description: 'Read-only genealogy evidence sprint readiness markdown', timeout: 30_000 },
+  'genealogy:evidence-sprint-report --markdown --compact': { description: 'Compact genealogy evidence sprint readiness markdown', timeout: 30_000 },
   'genealogy:agent-triage --json': { description: 'Read-only genealogy agent re-enablement triage', timeout: 30_000 },
   'genealogy:agent-triage --compact': { description: 'Compact genealogy agent re-enablement triage text', timeout: 30_000 },
   'genealogy:agent-triage --json --compact': { description: 'Compact genealogy agent re-enablement triage', timeout: 30_000 },

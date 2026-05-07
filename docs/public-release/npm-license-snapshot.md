@@ -1,6 +1,6 @@
 # npm License Snapshot
 
-Generated: 2026-05-06T20:18:00Z
+Generated: 2026-05-07T00:11:34Z
 
 This snapshot is generated from installed `node_modules` package manifests, with package-lock metadata as a fallback. Platform-specific optional package entries prefer package-lock metadata when the lockfile already has a license, so OS/CPU-specific optional installs do not make the snapshot flap. It is release-diligence evidence, not legal advice.
 

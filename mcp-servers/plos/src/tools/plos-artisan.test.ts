@@ -59,6 +59,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:evidence-sprint-report --json',
     'genealogy:evidence-sprint-report --json --compact',
     'genealogy:evidence-sprint-report --markdown',
+    'genealogy:evidence-sprint-report --markdown --compact',
     'genealogy:agent-triage --json',
     'genealogy:agent-triage --compact',
     'genealogy:agent-triage --json --compact',
@@ -141,6 +142,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan rag:scale-review --json --compact/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json --compact/);
+  assert.match(listing, /php artisan genealogy:evidence-sprint-report --markdown --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json/);
   assert.match(listing, /php artisan genealogy:agent-triage --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json --compact/);
@@ -487,6 +489,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(reviewFeedbackWindowResult, /Blocked:/);
   assert.match(reviewFeedbackWindowResult, /Use command "list"/);
+
+  const evidenceSprintReorderedMarkdownCompactResult = await plosArtisan({
+    command: 'genealogy:evidence-sprint-report --compact --markdown',
+    on_prod: false,
+  });
+
+  assert.match(evidenceSprintReorderedMarkdownCompactResult, /Blocked:/);
+  assert.match(evidenceSprintReorderedMarkdownCompactResult, /Use command "list"/);
 
   const ragScaleReviewFileResult = await plosArtisan({
     command: 'rag:scale-review --json --retrieval-file=/tmp/evidence.json',
