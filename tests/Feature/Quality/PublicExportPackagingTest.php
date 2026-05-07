@@ -66,6 +66,29 @@ class PublicExportPackagingTest extends TestCase
     }
 
     #[Test]
+    public function public_export_manifest_short_check_keeps_typed_remediation_smoke_slice(): void
+    {
+        $exportScript = file_get_contents(base_path('scripts/public-export.sh'));
+        $smokeScript = file_get_contents(base_path('scripts/public-smoke.sh'));
+
+        $manifestStart = strpos($exportScript, 'For a shorter local check inside this exported tree');
+        $manifestEnd = strpos($exportScript, 'EOF', $manifestStart);
+
+        $this->assertIsInt($manifestStart);
+        $this->assertIsInt($manifestEnd);
+
+        $manifestBlock = substr($exportScript, $manifestStart, $manifestEnd - $manifestStart);
+
+        foreach ([
+            'tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php',
+            'tests/Feature/Console/GenealogyTypedRemediationMaterializeCommandTest.php',
+        ] as $path) {
+            $this->assertStringContainsString($path, $smokeScript, "{$path} must stay in public smoke.");
+            $this->assertStringContainsString($path, $manifestBlock, "{$path} must stay in PUBLIC_EXPORT_MANIFEST shorter local check.");
+        }
+    }
+
+    #[Test]
     public function public_temp_cleanup_guard_stays_dry_run_first_and_syntax_checked(): void
     {
         $script = file_get_contents(base_path('scripts/guards/public-temp-artifact-cleanup.sh'));

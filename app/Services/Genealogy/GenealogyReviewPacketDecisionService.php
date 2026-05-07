@@ -9,7 +9,9 @@ class GenealogyReviewPacketDecisionService
     private const DECISION_REASON_CODES = [
         'source_verified',
         'missing_source_locator',
+        'locator_mismatch',
         'source_needs_review',
+        'citation_incomplete',
         'identity_unclear',
         'weak_evidence',
         'privacy_review_needed',

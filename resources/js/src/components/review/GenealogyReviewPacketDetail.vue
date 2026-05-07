@@ -757,7 +757,9 @@ const STATUS_CLASS_BY_STATUS = {
 const reasonCodeOptions = [
   { value: 'source_verified', label: 'Source verified' },
   { value: 'missing_source_locator', label: 'Missing source locator' },
+  { value: 'locator_mismatch', label: 'Locator mismatch' },
   { value: 'source_needs_review', label: 'Source needs review' },
+  { value: 'citation_incomplete', label: 'Citation incomplete' },
   { value: 'identity_unclear', label: 'Identity unclear' },
   { value: 'weak_evidence', label: 'Weak evidence' },
   { value: 'privacy_review_needed', label: 'Privacy review needed' },
