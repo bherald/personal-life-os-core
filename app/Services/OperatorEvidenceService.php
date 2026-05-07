@@ -209,6 +209,9 @@ class OperatorEvidenceService
     {
         $section = $this->compactSection($sections, 'review_backlog');
         $counts = $this->compactCounts($section);
+        $safeHandoffs = $this->compactReviewBacklogSafeHandoffs($counts['next_safe_handoffs'] ?? []);
+        $sourcePacketHandoff = $safeHandoffs['source_backed_packet'] ?? [];
+        $materializableHandoff = $safeHandoffs['materializable_remediation'] ?? [];
 
         return [
             'status' => $this->compactStatus($section),
@@ -226,6 +229,17 @@ class OperatorEvidenceService
             'packet_blocked_rows' => (int) ($counts['packet_blocked_rows'] ?? 0),
             'packet_preview_only_rows' => (int) ($counts['packet_preview_only_rows'] ?? 0),
             'packet_canonical_mutation_rows' => (int) ($counts['packet_canonical_mutation_rows'] ?? 0),
+            'source_backed_packet_handoff_available' => (bool) ($sourcePacketHandoff['available'] ?? false),
+            'source_backed_packet_handoff_state' => $this->safeOperatorEvidenceCode($sourcePacketHandoff['query_state'] ?? null),
+            'source_backed_packet_review_pass_state' => $this->safeOperatorEvidenceCode($sourcePacketHandoff['review_pass_state'] ?? null),
+            'source_backed_packet_preview_only' => (bool) ($sourcePacketHandoff['packet_preview_only'] ?? false),
+            'source_backed_packet_canonical_mutation' => (bool) ($sourcePacketHandoff['packet_canonical_mutation'] ?? false),
+            'materializable_remediation_handoff_available' => (bool) ($materializableHandoff['available'] ?? false),
+            'materializable_remediation_handoff_state' => $this->safeOperatorEvidenceCode($materializableHandoff['query_state'] ?? null),
+            'materializable_remediation_status' => $this->safeOperatorEvidenceCode($materializableHandoff['materialization_status'] ?? null),
+            'materializable_remediation_dry_run_available' => (bool) ($materializableHandoff['dry_run_available'] ?? false),
+            'materializable_remediation_apply_enabled' => (bool) ($materializableHandoff['apply_enabled'] ?? false),
+            'materializable_remediation_apply_held' => (bool) ($materializableHandoff['apply_held'] ?? false),
             'recommendations' => (int) ($counts['recommendations'] ?? 0),
         ];
     }
@@ -433,6 +447,8 @@ class OperatorEvidenceService
         $packetBlockedRows = max(0, (int) ($review['packet_blocked_rows'] ?? 0));
         $packetPreviewOnlyRows = max(0, (int) ($review['packet_preview_only_rows'] ?? 0));
         $packetCanonicalMutationRows = max(0, (int) ($review['packet_canonical_mutation_rows'] ?? 0));
+        $sourcePacketHandoffAvailable = (bool) ($review['source_backed_packet_handoff_available'] ?? false);
+        $materializableHandoffAvailable = (bool) ($review['materializable_remediation_handoff_available'] ?? false);
         $openNamedOnly = max(0, (int) ($face['open_named_only_unlinked'] ?? 0));
         $namedOnlyWithoutDecision = max(0, (int) ($face['named_only_open_without_candidate_decision'] ?? 0));
         $candidateDecisionRows = max(0, (int) ($face['candidate_decision_rows'] ?? 0));
@@ -503,6 +519,12 @@ class OperatorEvidenceService
             'packet_blocked_rows' => $packetBlockedRows,
             'packet_preview_only_rows' => $packetPreviewOnlyRows,
             'packet_canonical_mutation_rows' => $packetCanonicalMutationRows,
+            'next_handoff_available' => $sourcePacketHandoffAvailable || $materializableHandoffAvailable,
+            'next_review_focus' => match (true) {
+                $sourcePacketHandoffAvailable => 'source_backed_packet',
+                $materializableHandoffAvailable => 'materializable_remediation',
+                default => 'none',
+            },
             'open_named_only_unlinked' => $openNamedOnly,
             'named_only_without_candidate_decision' => $namedOnlyWithoutDecision,
             'candidate_decision_rows' => $candidateDecisionRows,
@@ -694,10 +716,11 @@ class OperatorEvidenceService
     private function collectReviewBacklog(Carbon $sampledAt): array
     {
         try {
+            $service = $this->reviewBacklog ?? app(ReviewBacklogReportService::class);
             $payload = Cache::remember(
                 self::REVIEW_BACKLOG_CACHE_KEY,
                 now()->addMinutes(15),
-                fn (): array => ($this->reviewBacklog ?? app(ReviewBacklogReportService::class))->collect()
+                fn (): array => $service->collect()
             );
             $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
             $pendingByAge = array_values(array_filter((array) ($payload['pending_by_age'] ?? []), 'is_array'));
@@ -713,12 +736,19 @@ class OperatorEvidenceService
                 : [];
             $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
             $status = $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning'));
+            $staleDays = (int) ($payload['stale_days'] ?? 7);
+            $highPriorityThreshold = (int) ($payload['high_priority_threshold'] ?? 8);
+            $nextSafeHandoffs = $this->reviewBacklogNextSafeHandoffs(
+                $service,
+                $staleDays,
+                $highPriorityThreshold
+            );
 
             $counts = [
                 'mode' => $this->nullableString($payload['mode'] ?? null),
                 'dry_run' => (bool) ($payload['dry_run'] ?? false),
-                'stale_days' => (int) ($payload['stale_days'] ?? 7),
-                'high_priority_threshold' => (int) ($payload['high_priority_threshold'] ?? 8),
+                'stale_days' => $staleDays,
+                'high_priority_threshold' => $highPriorityThreshold,
                 'pending_total' => (int) ($summary['pending_total'] ?? 0),
                 'stale_pending' => (int) ($summary['stale_pending'] ?? 0),
                 'high_priority_pending' => (int) ($summary['high_priority_pending'] ?? 0),
@@ -754,6 +784,7 @@ class OperatorEvidenceService
                 'packet_canonical_mutation_rows' => (int) ($packetReadiness['canonical_mutation_rows'] ?? 0),
                 'packet_reason_code_counts' => $this->integerCountMap($packetReadiness['reason_code_counts'] ?? []),
                 'packet_blocker_code_counts' => $this->integerCountMap($packetReadiness['blocker_code_counts'] ?? []),
+                'next_safe_handoffs' => $nextSafeHandoffs,
                 'recommendations' => count($recommendations),
             ];
 
@@ -773,6 +804,113 @@ class OperatorEvidenceService
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['ReviewBacklogReportService', 'agent_review_queue'], $e, 'Review backlog evidence query failed.');
         }
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function reviewBacklogNextSafeHandoffs(
+        ReviewBacklogReportService $service,
+        int $staleDays,
+        int $highPriorityThreshold
+    ): array {
+        return [
+            'source_backed_packet' => $this->reviewBacklogNextSafeHandoff(
+                $service,
+                'source-backed-packet',
+                $staleDays,
+                $highPriorityThreshold
+            ),
+            'materializable_remediation' => $this->reviewBacklogNextSafeHandoff(
+                $service,
+                'materializable-remediation',
+                $staleDays,
+                $highPriorityThreshold
+            ),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function reviewBacklogNextSafeHandoff(
+        ReviewBacklogReportService $service,
+        string $focus,
+        int $staleDays,
+        int $highPriorityThreshold
+    ): array {
+        try {
+            return $this->sanitizeReviewBacklogNextTarget(
+                $service->nextTarget(
+                    staleDays: max(1, $staleDays),
+                    highPriorityThreshold: max(1, $highPriorityThreshold),
+                    focus: $focus
+                ),
+                $focus
+            );
+        } catch (\Throwable) {
+            return [
+                'focus' => str_replace('-', '_', $focus),
+                'status' => 'blocked',
+                'query_state' => 'handoff_query_failed',
+                'available' => false,
+                'operator_action' => 'none',
+            ];
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function sanitizeReviewBacklogNextTarget(array $payload, string $focus): array
+    {
+        $target = is_array($payload['next_target'] ?? null) ? $payload['next_target'] : null;
+        $reviewPass = is_array($target['review_pass'] ?? null) ? $target['review_pass'] : [];
+        $signals = is_array($reviewPass['signals'] ?? null) ? $reviewPass['signals'] : [];
+        $posture = is_array($reviewPass['posture'] ?? null) ? $reviewPass['posture'] : [];
+        $materialization = is_array($target['remediation_materialization'] ?? null)
+            ? $target['remediation_materialization']
+            : [];
+        $safety = is_array($materialization['safety'] ?? null) ? $materialization['safety'] : [];
+        $normalizedFocus = str_replace('-', '_', $focus);
+        $available = $target !== null && ($payload['query_state'] ?? null) === 'next_target_selected';
+
+        return [
+            'focus' => $normalizedFocus,
+            'status' => $this->safeOperatorEvidenceCode($payload['status'] ?? null),
+            'query_state' => $this->safeOperatorEvidenceCode($payload['query_state'] ?? null),
+            'available' => $available,
+            'operator_action' => match (true) {
+                ! $available => 'none',
+                $focus === 'source-backed-packet' => 'review_one_source_backed_packet',
+                $focus === 'materializable-remediation' => 'inspect_one_preview_remediation',
+                default => 'review_one_item',
+            },
+            'review_type' => $this->safeOperatorEvidenceCode($target['review_type'] ?? null),
+            'finding_type' => $this->safeOperatorEvidenceCode($target['finding_type'] ?? null),
+            'classification' => $this->safeOperatorEvidenceCode($target['classification'] ?? null),
+            'selection_reason' => $this->safeOperatorEvidenceCode($target['selection_reason'] ?? null),
+            'priority' => (int) ($target['priority'] ?? 0),
+            'age_days' => isset($target['age_days']) ? (int) $target['age_days'] : null,
+            'age_bucket' => $this->safeOperatorEvidenceCode($target['age_bucket'] ?? null),
+            'review_pass_state' => $this->safeOperatorEvidenceCode($reviewPass['state'] ?? null),
+            'review_pass_blocker_count' => (int) ($reviewPass['blocker_count'] ?? 0),
+            'packet_source_backed' => (bool) ($signals['source_backed'] ?? false),
+            'packet_review_ready' => (bool) ($signals['review_ready'] ?? false),
+            'packet_preview_only' => (bool) ($signals['preview_only'] ?? false),
+            'packet_canonical_mutation' => (bool) ($signals['canonical_mutation'] ?? false),
+            'details_included' => (bool) ($posture['details_included'] ?? false),
+            'canonical_write_allowed' => (bool) ($posture['canonical_write_allowed'] ?? false),
+            'batch_review_allowed' => (bool) ($posture['batch_review_allowed'] ?? false),
+            'automation_allowed' => (bool) ($posture['automation_allowed'] ?? false),
+            'materialization_status' => $this->safeOperatorEvidenceCode($materialization['status'] ?? null),
+            'materialization_available' => (bool) ($materialization['available'] ?? false),
+            'dry_run_available' => (bool) ($materialization['dry_run_available'] ?? false),
+            'no_canonical_write' => (bool) ($safety['no_canonical_write'] ?? false),
+            'apply_enabled' => (bool) ($safety['apply_enabled'] ?? false),
+            'apply_held' => (bool) ($safety['apply_held'] ?? false),
+        ];
     }
 
     private function collectRagScaleBaseline(Carbon $sampledAt): array
@@ -2827,6 +2965,25 @@ class OperatorEvidenceService
         return $rows;
     }
 
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function compactReviewBacklogSafeHandoffs(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $handoffs = [];
+        foreach (['source_backed_packet', 'materializable_remediation'] as $key) {
+            if (is_array($value[$key] ?? null)) {
+                $handoffs[$key] = $value[$key];
+            }
+        }
+
+        return $handoffs;
+    }
+
     private function compactFreshness(array $section): array
     {
         return is_array($section['freshness'] ?? null) ? $section['freshness'] : [];
@@ -2911,6 +3068,21 @@ class OperatorEvidenceService
     private function nullableString(mixed $value): ?string
     {
         return $value === null ? null : (string) $value;
+    }
+
+    private function safeOperatorEvidenceCode(mixed $value): ?string
+    {
+        $code = $this->nullableString($value);
+        if ($code === null) {
+            return null;
+        }
+
+        $code = trim($code);
+        if ($code === '' || preg_match('/^[a-z][a-z0-9_:-]{0,96}$/', $code) !== 1) {
+            return 'unknown';
+        }
+
+        return $code;
     }
 
     private function nonEmptyString(mixed $value, string $fallback): string
