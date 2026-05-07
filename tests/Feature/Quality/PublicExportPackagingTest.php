@@ -66,6 +66,24 @@ class PublicExportPackagingTest extends TestCase
     }
 
     #[Test]
+    public function public_temp_cleanup_guard_stays_dry_run_first_and_syntax_checked(): void
+    {
+        $script = file_get_contents(base_path('scripts/guards/public-temp-artifact-cleanup.sh'));
+        $smokeScript = file_get_contents(base_path('scripts/public-smoke.sh'));
+        $exportScript = file_get_contents(base_path('scripts/public-export.sh'));
+
+        $this->assertStringContainsString('execute=false', $script);
+        $this->assertStringContainsString('mode="dry-run"', $script);
+        $this->assertStringContainsString('personal-life-os-core-export-*', $script);
+        $this->assertStringContainsString('personal-life-os-core-smoke-*', $script);
+        $this->assertStringNotContainsString('personal-life-os-core-github-sync-*', $script);
+        $this->assertStringContainsString('scripts/guards/public-temp-artifact-cleanup.sh', $smokeScript);
+        $this->assertStringContainsString('scripts/guards/public-temp-artifact-cleanup.sh', $exportScript);
+        $this->assertStringContainsString('tests/Feature/Quality/PublicTempArtifactCleanupScriptTest.php', $smokeScript);
+        $this->assertStringContainsString('tests/Feature/Quality/PublicTempArtifactCleanupScriptTest.php', $exportScript);
+    }
+
+    #[Test]
     public function public_readiness_ci_prepares_passport_keys(): void
     {
         $workflow = file_get_contents(base_path('.github/workflows/public-readiness.yml'));
