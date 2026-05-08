@@ -781,6 +781,72 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         }
     }
 
+    public function test_execute_family_scoped_data_quality_advisory_creates_preview_packet_without_canonical_mutation(): void
+    {
+        $sourceId = $this->insertFinding(
+            [
+                'dedup_key' => 'data-quality:family-610-execute',
+                'tree_id' => 4,
+                'family_id' => 610,
+                'privacy' => ['cleared' => true, 'status' => 'cleared'],
+                'source_locators' => ['https://archive.org/details/data-quality-family-execute'],
+                'evidence_summary' => 'Family 610 appears to duplicate family 602 and needs research before repair.',
+            ],
+            token: 'data-quality-family-execute-token',
+            findingType: 'genealogy_data_quality',
+        );
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $payload = $this->callJson([
+                '--id' => $sourceId,
+                '--execute' => true,
+                '--json' => true,
+            ], 0);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+        }
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('execute', $payload['mode']);
+        $this->assertSame('created_packet', $payload['action']);
+        $this->assertSame(['genealogy_todo_create'], $payload['operation_types']);
+        $this->assertFalse($payload['packet_summary']['identity_present']);
+        $this->assertTrue($payload['packet_summary']['target_context_present']);
+        $this->assertSame(['tree', 'family'], $payload['packet_summary']['target_context_types']);
+        $this->assertTrue($payload['packet_summary']['validation_valid']);
+        $this->assertTrue($payload['packet_summary']['preview_only']);
+        $this->assertFalse($payload['packet_summary']['mutates_accepted_facts']);
+        $this->assertTrue($payload['safety']['no_canonical_write']);
+        $this->assertFalse($payload['safety']['canonical_write_allowed']);
+        $this->assertTrue($payload['safety']['apply_held']);
+        $this->assertFalse($payload['safety']['apply_enabled']);
+        $this->assertSame(['agent_review_queue'], $this->mutationTargets($queries));
+        $this->assertNoCanonicalGenealogyMutationQueries($queries);
+        $this->assertSame(1, $this->packetCount());
+
+        $source = DB::table('agent_review_queue')->where('id', $sourceId)->first();
+        $this->assertNotNull($source);
+        $this->assertSame('pending', $source->status);
+        $this->assertSame('genealogy_finding', $source->review_type);
+
+        $packet = DB::table('agent_review_queue')
+            ->where('review_type', 'genealogy_review_packet')
+            ->first();
+        $this->assertNotNull($packet);
+        $this->assertSame('pending', $packet->status);
+
+        $details = json_decode((string) $packet->details, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame($sourceId, $details['packet']['materialization']['source_review_queue_id']);
+        $this->assertSame(['genealogy_todo_create'], $details['packet']['materialization']['operation_types']);
+        $this->assertFalse($details['packet']['materialization']['writeback']);
+        $this->assertFalse($details['packet']['materialization']['apply_enabled']);
+        $this->assertSame('preview_only', $details['packet']['typed_remediation_preview']['status']);
+        $this->assertFalse($details['apply_preview']['mutates_accepted_facts']);
+    }
+
     public function test_missing_and_invalid_selection_fails_without_insert(): void
     {
         $sourceId = $this->insertFinding($this->typedRemediationDetails(), token: 'source-token-selection');
