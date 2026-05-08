@@ -81,7 +81,7 @@
           <div>
             <div class="font-medium text-[#e0e0e0]">{{ approval.workflow_name || `Run #${approval.run_id}` }}</div>
             <div class="text-sm text-[#95a5a6]">Requested: {{ new Date(approval.requested_at).toLocaleString() }}</div>
-            <div v-if="approval.context" class="text-xs text-[#95a5a6] mt-1">{{ JSON.stringify(approval.context).substring(0, 100) }}</div>
+            <div v-if="approval.context" class="text-xs text-[#95a5a6] mt-1">{{ formatApprovalContext(approval.context) }}</div>
           </div>
           <div class="flex gap-2">
             <button @click="approveGate(approval.id)" class="px-3 py-1 text-sm bg-[#27ae60] text-white rounded hover:bg-[#229954]">Approve</button>
@@ -381,6 +381,33 @@ const rejectGate = async (id) => {
     await axios.post(`/api/workflows/pending-approvals`, { gate_id: id, action: 'reject' });
     loadApprovals();
   } catch (err) { console.error('Failed to reject:', err); }
+};
+
+const formatApprovalContext = (value) => {
+  if (value === null || value === undefined || value === '') return 'No approval context';
+  if (Array.isArray(value)) {
+    return value.length ? `Structured approval context (${value.length} items)` : 'No structured approval context';
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value).filter((key) => !isSensitiveApprovalContextKey(key));
+    return keys.length ? `Structured approval context (${keys.length} fields)` : 'Structured approval context recorded';
+  }
+
+  return redactApprovalContextText(String(value)).slice(0, 100);
+};
+
+const isSensitiveApprovalContextKey = (key) => {
+  return /(?:token|secret|password|authorization|credential|locator|path|url|uri|payload|details|raw)/i.test(String(key || ''));
+};
+
+const redactApprovalContextText = (value) => {
+  return String(value || '')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[redacted]@')
+    .replace(/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/gi, '[redacted token]')
+    .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
+    .replace(/[A-Za-z]:\\[^\s,"')\]}]+/g, '[redacted path]');
 };
 
 onMounted(() => {
