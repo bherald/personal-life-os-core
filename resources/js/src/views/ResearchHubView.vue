@@ -1466,9 +1466,29 @@ const updateStats = async () => {
 }
 
 const formatContextValue = (value) => {
-  if (Array.isArray(value)) return value.join(', ')
-  if (typeof value === 'object') return JSON.stringify(value)
-  return String(value)
+  if (value === null || value === undefined || value === '') return '-'
+  if (Array.isArray(value)) {
+    return value.length ? `Structured context (${value.length} items)` : 'No structured context'
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value).filter((key) => !isSensitiveContextKey(key))
+    return keys.length ? `Structured context (${keys.length} fields)` : 'Structured context recorded'
+  }
+  return redactContextText(String(value))
+}
+
+const isSensitiveContextKey = (key) => {
+  return /(?:token|secret|password|authorization|credential|locator|path|url|uri|payload|details|raw)/i.test(String(key || ''))
+}
+
+const redactContextText = (value) => {
+  return String(value || '')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[redacted]@')
+    .replace(/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/gi, '[redacted token]')
+    .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
+    .replace(/[A-Za-z]:\\[^\s,"')\]}]+/g, '[redacted path]')
 }
 
 const handleImageError = (e) => {

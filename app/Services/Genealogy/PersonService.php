@@ -1339,7 +1339,7 @@ class PersonService
             );
 
             $personName = trim((string) ($person->person_name ?? 'Unknown person'));
-            $personLabel = $personName !== '' ? $personName : "Person #{$personId}";
+            $personLabel = $personName !== '' ? $personName : 'person reference present';
             $baseUrl = rtrim((string) config('app.public_url', config('app.url', 'http://localhost')), '/');
             $quickUrl = "{$baseUrl}/api/reviews/quick/change:{$proposalId}";
             $message = $this->buildChangeProposalNotificationMessage(

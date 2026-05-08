@@ -13800,6 +13800,17 @@ const clearMediaUpload = () => {
   mediaUploadFile.value = null;
 };
 
+const formatMediaUploadError = (value) => {
+  if (!value) return 'Failed to upload media';
+  if (typeof value === 'string') return redactGenealogyDisplayText(value) || 'Failed to upload media';
+  if (typeof value === 'object') {
+    const message = typeof value.message === 'string' ? redactGenealogyDisplayText(value.message) : '';
+    return message || 'Failed to upload media; structured error details were withheld';
+  }
+
+  return redactGenealogyDisplayText(String(value)) || 'Failed to upload media';
+};
+
 const uploadMediaFile = async () => {
   if (!mediaUploadFile.value || !selectedTreeId.value) return;
 
@@ -13837,7 +13848,7 @@ const uploadMediaFile = async () => {
   } catch (error) {
     console.error('Failed to upload media:', error);
     const errMsg = error.response?.data?.error;
-    alert(typeof errMsg === 'object' ? errMsg?.message || JSON.stringify(errMsg) : errMsg || 'Failed to upload media');
+    alert(formatMediaUploadError(errMsg));
   } finally {
     uploadingMediaFile.value = false;
   }

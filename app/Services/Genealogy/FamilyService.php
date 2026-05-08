@@ -828,7 +828,7 @@ class FamilyService
         try {
             $baseUrl = rtrim((string) config('app.public_url', config('app.url', 'http://localhost')), '/');
             $quickUrl = "{$baseUrl}/api/reviews/quick/proposal:{$proposalId}";
-            $personLabel = $personName !== '' ? $personName : "Person #{$personId}";
+            $personLabel = $personName !== '' ? $personName : 'person reference present';
             $summary = trim(mb_substr($evidenceSummary, 0, 280));
             $message = "Proposed {$relationshipType}: {$proposedName} for {$personLabel}";
             if ($summary !== '') {
@@ -869,7 +869,7 @@ class FamilyService
     public function approveAndApplyRelationship(int $proposalId, ?string $notes = null): array
     {
         $row = DB::selectOne(
-            "SELECT id, status FROM genealogy_proposed_relationships WHERE id = ?",
+            'SELECT id, status FROM genealogy_proposed_relationships WHERE id = ?',
             [$proposalId]
         );
         if (! $row) {
