@@ -112,8 +112,8 @@
           <div class="text-sm font-medium text-ops-peach truncate group-hover:text-ops-gold transition-colors">
             {{ item.title || item.filename || 'Untitled' }}
           </div>
-          <div v-if="item.path || item.current_path" class="text-[10px] text-ops-text-muted/60 truncate mt-0.5" :title="item.path || item.current_path">
-            {{ shortenPath(item.path || item.current_path) }}
+          <div v-if="item.path || item.current_path" class="text-[10px] text-ops-text-muted/60 truncate mt-0.5" :title="displayKnowledgePath(item.path || item.current_path)">
+            {{ displayKnowledgePath(item.path || item.current_path) }}
           </div>
           <div v-if="item.snippet" class="text-xs text-ops-text-muted mt-1 line-clamp-2">
             {{ item.snippet }}
@@ -252,13 +252,18 @@ function formatDate(date) {
   } catch { return '' }
 }
 
-function shortenPath(path) {
+function displayKnowledgePath(path) {
   if (!path) return ''
-  // Strip the top-level library folder and filename, show just the directory.
-  let p = path.replace(/^\/?[^/]+\//, '')
+  // Strip machine/user roots and filename, show only nearby library context.
+  let p = String(path).replace(/\\/g, '/').replace(/^\/+/, '')
+  p = p.replace(/^[A-Za-z]:\//, '')
+  p = p.replace(/^(home|users)\/[^/]+\//i, '')
+  p = p.replace(/^mnt\/[^/]+\//i, '')
   const lastSlash = p.lastIndexOf('/')
   if (lastSlash > 0) p = p.substring(0, lastSlash)
-  return p
+  const parts = p.split('/').filter(Boolean)
+  if (parts.length === 0) return 'Configured file location'
+  return parts.slice(Math.max(0, parts.length - 3)).join('/')
 }
 
 function formatSize(bytes) {

@@ -139,6 +139,7 @@ class PublicExportPackagingTest extends TestCase
         $this->assertSame($smokePaths, $exportManifestPaths, 'Public smoke and PUBLIC_EXPORT_MANIFEST focused PHPUnit slices must match exactly.');
         $this->assertWorkflowFocusedPhpunitPathsCompatible($smokePaths, $workflowPaths);
         $this->assertContains('tests/Unit/Services/GedZipExportTest.php', $smokePaths);
+        $this->assertContains('tests/Feature/Quality/KnowledgeFrontendContractTest.php', $smokePaths);
     }
 
     #[Test]

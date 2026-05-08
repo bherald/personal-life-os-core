@@ -86,7 +86,7 @@
               >
                 <span class="text-lg flex-shrink-0">{{ attachmentIcon(att) }}</span>
                 <div class="flex-1 min-w-0">
-                  <div class="text-sm text-ops-peach truncate group-hover:text-ops-gold">{{ att.filename || att.resource_id }}</div>
+                  <div class="text-sm text-ops-peach truncate group-hover:text-ops-gold">{{ displayAttachmentName(att) }}</div>
                   <div v-if="att.file_size" class="text-[10px] text-ops-text-muted/60">{{ formatSize(att.file_size) }}</div>
                 </div>
                 <svg class="w-4 h-4 text-ops-text-muted flex-shrink-0 group-hover:text-ops-sky" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -113,7 +113,7 @@
             </div>
             <div v-if="item.path" class="flex justify-between">
               <span class="text-ops-text-muted uppercase text-xs">Path</span>
-              <span class="text-ops-peach text-xs truncate max-w-[350px]" :title="item.path">{{ item.path }}</span>
+              <span class="text-ops-peach text-xs truncate max-w-[350px]" :title="displayKnowledgePath(item.path)">{{ displayKnowledgePath(item.path) }}</span>
             </div>
             <div v-if="item.people" class="flex justify-between">
               <span class="text-ops-text-muted uppercase text-xs">People</span>
@@ -238,7 +238,7 @@ const renderedMarkdown = computed(() => {
   text = text.replace(/\[([^\]]+)\]\(:\/([a-f0-9]{32})\)/g, (match, filename, resourceId) => {
     const idx = linkPlaceholders.length
     linkPlaceholders.push(
-      `<a href="/api/media/joplin/${resourceId}" target="_blank" class="text-ops-sky hover:text-ops-gold underline transition-colors">📎 ${filename}</a>`
+      `<a href="/api/media/joplin/${resourceId}" target="_blank" class="text-ops-sky hover:text-ops-gold underline transition-colors">📎 ${escapeHtml(filename)}</a>`
     )
     return `%%LINK_${idx}%%`
   })
@@ -303,7 +303,7 @@ watch(() => props.item, async (newItem) => {
         responseType: 'text',
         headers: { 'Accept': 'text/plain' }
       })
-      textContent.value = typeof data === 'string' ? data : JSON.stringify(data, null, 2)
+      textContent.value = typeof data === 'string' ? data : describeStructuredContent(data)
     } catch {
       textContent.value = null
     } finally {
@@ -335,6 +335,33 @@ function cleanSnippet(text) {
   text = text.replace(/&nbsp;/g, ' ')
   text = text.replace(/\s{2,}/g, ' ').trim()
   return text
+}
+
+function escapeHtml(value) {
+  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+function displayAttachmentName(att) {
+  if (att?.filename && String(att.filename).trim() !== '') return att.filename
+  return 'Attachment'
+}
+
+function displayKnowledgePath(path) {
+  if (!path) return ''
+  let value = String(path).replace(/\\/g, '/').replace(/^\/+/, '')
+  value = value.replace(/^[A-Za-z]:\//, '')
+  value = value.replace(/^(home|users)\/[^/]+\//i, '')
+  value = value.replace(/^mnt\/[^/]+\//i, '')
+  const parts = value.split('/').filter(Boolean)
+  if (parts.length === 0) return 'Configured file location'
+  if (parts.length === 1) return parts[0]
+  return parts.slice(Math.max(0, parts.length - 3)).join('/')
+}
+
+function describeStructuredContent(data) {
+  if (Array.isArray(data)) return `Structured response (${data.length} items)`
+  if (data && typeof data === 'object') return `Structured response (${Object.keys(data).length} fields)`
+  return String(data ?? '')
 }
 
 function attachmentIcon(att) {
