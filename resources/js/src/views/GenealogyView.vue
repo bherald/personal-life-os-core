@@ -3213,7 +3213,7 @@
                       </div>
                       <span class="text-xs text-theme-secondary">{{ formatDate(activity.created_at) }}</span>
                     </div>
-                    <div v-if="activity.new_values" class="text-xs text-theme-secondary mt-1">{{ JSON.stringify(activity.new_values).substring(0, 100) }}</div>
+                    <div v-if="activity.new_values" class="text-xs text-theme-secondary mt-1">{{ formatActivityValues(activity.new_values) }}</div>
                   </div>
                 </div>
                 <div v-else class="text-sm text-theme-secondary text-center py-2">No activity recorded</div>
@@ -5555,7 +5555,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                                   </span>
                                 </div>
                                 <div class="text-theme-secondary text-xs mt-1 whitespace-pre-wrap">
-                                  {{ document.sourcePath }}
+                                  {{ document.sourcePathLabel }}
                                 </div>
                               </div>
                               <div class="flex flex-wrap gap-1 justify-end text-xs shrink-0">
@@ -5572,11 +5572,11 @@ Large packets can take time on the first pass while the packet preview is prepar
                           <div class="grid grid-cols-1 lg:grid-cols-2 gap-2 mt-3">
                             <div class="rounded border border-theme p-2">
                               <div class="text-xs text-theme-secondary uppercase tracking-wide">Source Path</div>
-                              <div class="text-theme-primary text-sm break-all whitespace-pre-wrap mt-1">{{ document.sourcePath }}</div>
+                              <div class="text-theme-primary text-sm break-all whitespace-pre-wrap mt-1">{{ document.sourcePathLabel }}</div>
                             </div>
                             <div class="rounded border border-theme p-2">
                               <div class="text-xs text-theme-secondary uppercase tracking-wide">Planned FT Target</div>
-                              <div class="text-theme-primary text-sm break-all whitespace-pre-wrap mt-1">{{ document.referenceCopyPath }}</div>
+                              <div class="text-theme-primary text-sm break-all whitespace-pre-wrap mt-1">{{ document.referenceCopyPathLabel }}</div>
                             </div>
                           </div>
                           <div class="flex flex-wrap gap-2 mt-2 text-xs">
@@ -6430,7 +6430,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <div v-if="selectedIntakeRunPreview.registration?.reference_copy_root" class="mt-3">
                       <div class="text-xs text-theme-secondary uppercase tracking-wide">FT Reference Copy Root</div>
                       <p class="text-theme-primary text-sm break-all whitespace-pre-wrap">
-                        {{ selectedIntakeRunPreview.registration.reference_copy_root }}
+                        {{ formatReferenceCopyRoot(selectedIntakeRunPreview.registration.reference_copy_root) }}
                       </p>
                     </div>
                     <details v-if="selectedIntakeRunPacketPreviewState" class="mt-3 rounded border border-theme p-3">
@@ -6643,12 +6643,12 @@ Large packets can take time on the first pass while the packet preview is prepar
                         class="space-y-2 mt-3"
                       >
                         <div
-                          v-for="result in selectedIntakeRunPacketExecution.execution.results.slice(0, 4)"
-                          :key="`${result.document_id || result.reference_copy_path}-${result.action}`"
+                          v-for="(result, idx) in selectedIntakeRunPacketExecution.execution.results.slice(0, 4)"
+                          :key="`${result.document_id || idx}-${result.action || 'result'}`"
                           class="rounded border border-theme p-2"
                         >
                           <div class="text-theme-primary text-sm">
-                            {{ result.source_name || result.reference_copy_path || 'document' }}
+                            {{ formatCopyExecutionResultLabel(result) }}
                           </div>
                           <div class="text-theme-secondary text-xs mt-1">
                             {{ result.action || 'unknown' }}
@@ -8102,7 +8102,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <span class="text-xs text-theme-secondary">{{ formatDate(activity.created_at) }}</span>
                 </div>
                 <div v-if="activity.new_values" class="text-xs text-theme-secondary mt-1">
-                  {{ JSON.stringify(activity.new_values).substring(0, 100) }}
+                  {{ formatActivityValues(activity.new_values) }}
                 </div>
               </div>
             </div>
@@ -11920,6 +11920,76 @@ const formatPersonReference = (name, personId = null) => {
   return personId ? 'person reference present' : 'person reference unavailable';
 };
 
+const formatActivityValues = (value) => {
+  if (value === null || value === undefined || value === '') return 'No displayable changes';
+  if (Array.isArray(value)) {
+    return value.length ? `Structured changes (${value.length} items)` : 'No structured changes';
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value).filter((key) => !isSensitiveDisplayKey(key));
+    return keys.length ? `Structured changes (${keys.length} fields)` : 'Structured changes recorded';
+  }
+
+  return truncateText(redactGenealogyDisplayText(String(value).trim()), 100);
+};
+
+const formatReferenceCopyRoot = (value) => {
+  const text = `${value || ''}`.trim();
+  return text ? 'FT reference root configured' : 'No FT reference root configured';
+};
+
+const formatIntakePathLabel = (value, fallback) => {
+  const text = `${value || ''}`.trim();
+  if (!text) return fallback;
+  if (looksLikeSensitiveDisplayText(text)) return 'File reference configured';
+  return redactGenealogyDisplayText(text);
+};
+
+const formatCopyExecutionResultLabel = (result) => {
+  const sourceName = redactGenealogyDisplayText(`${result?.source_name || ''}`.trim());
+  if (sourceName) return sourceName;
+  return result?.reference_copy_path ? 'document reference' : 'document';
+};
+
+const isSensitiveDisplayKey = (key) => {
+  const normalized = `${key || ''}`.toLowerCase();
+  return normalized === 'id'
+    || normalized.endsWith('_id')
+    || normalized.includes('locator')
+    || normalized.includes('url')
+    || normalized.includes('uri')
+    || normalized.includes('href')
+    || normalized.includes('link')
+    || normalized.includes('path')
+    || normalized.includes('token')
+    || normalized.includes('secret')
+    || normalized.includes('password')
+    || normalized.includes('hash')
+    || normalized.includes('payload');
+};
+
+const looksLikeSensitiveDisplayText = (value) => {
+  const text = `${value || ''}`;
+  return /\/(?:home|Users|root)\//.test(text)
+    || /^[A-Za-z]:\\/.test(text)
+    || /(?:^|[\\/])(?:Nextcloud|FT|Family Tree|Media|Pictures|Documents)(?:[\\/]|$)/i.test(text)
+    || /[?&](?:token|key|secret|password)=/i.test(text)
+    || /\bBearer\s+/i.test(text)
+    || /\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/i.test(text);
+};
+
+const redactGenealogyDisplayText = (value) => {
+  return `${value || ''}`
+    .replace(/\s*\(#\d+\)/g, '')
+    .replace(/\b(Person|Family|Media|Source|Face|Cluster)\s+#\d+\b/gi, '$1 reference')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[redacted]@')
+    .replace(/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/gi, '[redacted token]')
+    .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
+    .replace(/[A-Za-z]:\\[^\s,"')\]}]+/g, '[redacted path]');
+};
+
 // Tree view state
 const treeSvg = ref(null);
 const homePersonId = ref(null);
@@ -14621,7 +14691,9 @@ const selectedIntakeRunDocumentPreviewItems = computed(() => {
       documentId: `${document?.document_id || index}`,
       sourceName: `${document?.source_name || 'document'}`.trim() || 'document',
       sourcePath: sourcePath || 'No source path recorded',
+      sourcePathLabel: formatIntakePathLabel(sourcePath, 'No source path recorded'),
       referenceCopyPath: referenceCopyPath || 'No FT target planned yet',
+      referenceCopyPathLabel: formatIntakePathLabel(referenceCopyPath, 'No FT target planned yet'),
       documentType,
       pageCount: Number(document?.page_count || 0),
       copyStatus,
@@ -17013,10 +17085,10 @@ const formatActivityAction = (activity) => {
     'update_collaborator': 'Updated collaborator permissions'
   };
 
-  let text = actions[activity.action] || activity.action;
+  let text = actions[activity.action] || redactGenealogyDisplayText(`${activity.action || 'Recorded activity'}`);
 
   if (activity.entity_type && activity.entity_id) {
-    text += ` (${activity.entity_type} #${activity.entity_id})`;
+    text += ` (${redactGenealogyDisplayText(activity.entity_type)} reference)`;
   }
 
   return text;

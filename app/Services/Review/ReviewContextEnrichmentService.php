@@ -191,7 +191,7 @@ class ReviewContextEnrichmentService
                     : null,
                 'created_at' => $row->created_at,
                 'expires_at' => $row->expires_at,
-                'details' => $details,
+                'details' => $this->sanitizeDetailsForBrowser($details),
             ],
             'person' => $person,
             'comparison' => [
@@ -230,6 +230,103 @@ class ReviewContextEnrichmentService
         }
 
         return $context;
+    }
+
+    /**
+     * Keep the browser payload useful for layout routing while avoiding a
+     * second raw copy of agent_review_queue.details in dev tools/API clients.
+     *
+     * @param  array<string, mixed>  $details
+     * @return array<string, mixed>
+     */
+    private function sanitizeDetailsForBrowser(array $details): array
+    {
+        $sanitized = $this->sanitizeBrowserValue($details);
+
+        return is_array($sanitized) ? $sanitized : [];
+    }
+
+    private function sanitizeBrowserValue(mixed $value, int|string|null $key = null): mixed
+    {
+        if ($this->isSensitiveBrowserKey($key)) {
+            return '[redacted]';
+        }
+
+        if (is_string($key) && strtolower($key) === 'evidence_sources') {
+            if (is_array($value)) {
+                $sources = [];
+                foreach (array_values($value) as $idx => $source) {
+                    $sources[] = is_string($source) && preg_match('~^https?://~i', trim($source)) === 1
+                        ? 'External source '.($idx + 1)
+                        : 'Source reference '.($idx + 1);
+                }
+
+                return $sources;
+            }
+
+            return $value === null || $value === '' ? [] : ['Source reference 1'];
+        }
+
+        if (is_array($value)) {
+            $out = [];
+            foreach ($value as $childKey => $childValue) {
+                $out[$childKey] = $this->sanitizeBrowserValue($childValue, $childKey);
+            }
+
+            return $out;
+        }
+
+        if (is_string($value)) {
+            return $this->redactBrowserString($value);
+        }
+
+        return $value;
+    }
+
+    private function isSensitiveBrowserKey(int|string|null $key): bool
+    {
+        if ($key === null || is_int($key)) {
+            return false;
+        }
+
+        $normalized = strtolower($key);
+
+        return $normalized === 'id'
+            || str_ends_with($normalized, '_id')
+            || str_contains($normalized, 'locator')
+            || str_contains($normalized, 'url')
+            || str_contains($normalized, 'uri')
+            || str_contains($normalized, 'href')
+            || str_contains($normalized, 'link')
+            || str_contains($normalized, 'path')
+            || str_contains($normalized, 'token')
+            || str_contains($normalized, 'secret')
+            || str_contains($normalized, 'password')
+            || str_contains($normalized, 'hash')
+            || str_contains($normalized, 'payload');
+    }
+
+    private function redactBrowserString(string $value): string
+    {
+        return (string) preg_replace([
+            '/\s*\(#\d+\)/',
+            '/\b(Person|Family|Media|Source|Face|Cluster)\s+#\d+\b/i',
+            '/\bBearer\s+[A-Za-z0-9._~+\/=-]+/i',
+            '/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/i',
+            '/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@\/\s]+):([^@\/\s]+)@/i',
+            '/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/i',
+            '/\/(?:home|Users|root)\/[^\s,"\')\]}]+/',
+            '/[A-Za-z]:\\\\[^\s,"\')\]}]+/',
+        ], [
+            '',
+            '$1 reference',
+            'Bearer [redacted]',
+            '[redacted secret]',
+            '$1[redacted]@',
+            '[redacted token]',
+            '[redacted path]',
+            '[redacted path]',
+        ], $value);
     }
 
     /**

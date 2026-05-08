@@ -1,7 +1,7 @@
 <template>
   <div class="relationship-detail">
     <div class="rel-header">
-      <h3 class="rel-title">{{ context.item.title || 'Proposed relationship' }}</h3>
+      <h3 class="rel-title">{{ safeTitle }}</h3>
       <div class="rel-meta">
         <span v-if="context.item.confidence !== null" class="meta-pill" :class="confidenceClass">
           {{ Math.round(context.item.confidence * 100) }}%
@@ -31,14 +31,20 @@
           <MiniTreeFragment
             :root-name="rootDisplayName"
             :root-subtext="rootSubtext"
-            :proposed-name="prop.proposed_value || prop.field_name || '(unnamed)'"
+            :proposed-name="proposedDisplayName(prop)"
             :proposed-subtext="proposedSubtextFor(prop)"
             :role="extractRole(prop)"
           />
           <div class="rel-cite">
-            <div v-if="prop.evidence_summary" class="rel-evidence">{{ prop.evidence_summary }}</div>
+            <div v-if="safeEvidenceSummary(prop)" class="rel-evidence">{{ safeEvidenceSummary(prop) }}</div>
             <div v-if="prop.evidence_sources?.length" class="rel-sources">
-              <span v-for="s in prop.evidence_sources" :key="s" class="source-pill">{{ s }}</span>
+              <span
+                v-for="(s, idx) in prop.evidence_sources"
+                :key="safeEvidenceSourceKey(s, idx)"
+                class="source-pill"
+              >
+                {{ safeEvidenceSourceLabel(s, idx) }}
+              </span>
             </div>
           </div>
         </div>
@@ -100,6 +106,10 @@ const relTypeLabel = computed(() => {
   return REL_TYPE_LABELS[ft] || 'relationship'
 })
 
+const safeTitle = computed(() => {
+  return displayText(props.context?.item?.title) || 'Proposed relationship'
+})
+
 const relationshipProposals = computed(() => {
   const proposals = props.context?.item?.details?.proposals || []
   return proposals
@@ -129,7 +139,7 @@ const rootDisplayName = computed(() => {
   const p = props.context?.person
   if (!p) return '(root)'
   const parts = [p.given_name, p.surname].filter(Boolean).join(' ').trim()
-  return parts || 'Person reference'
+  return displayText(parts) || 'Person reference'
 })
 
 const rootSubtext = computed(() => {
@@ -143,12 +153,62 @@ const rootSubtext = computed(() => {
 
 function proposedSubtextFor(prop) {
   const bits = []
-  if (prop.proposed_birth_date) bits.push(`b. ${prop.proposed_birth_date}`)
-  if (prop.proposed_death_date) bits.push(`d. ${prop.proposed_death_date}`)
+  if (prop.proposed_birth_date) bits.push(`b. ${displayText(prop.proposed_birth_date)}`)
+  if (prop.proposed_death_date) bits.push(`d. ${displayText(prop.proposed_death_date)}`)
   if (prop.confidence !== null && prop.confidence !== undefined) {
     bits.push(`${Math.round(prop.confidence * 100)}% conf`)
   }
   return bits.join(' · ') || null
+}
+
+function proposedDisplayName(prop) {
+  return displayText(prop.proposed_value || prop.field_name) || '(unnamed)'
+}
+
+function safeEvidenceSummary(prop) {
+  return displayText(prop.evidence_summary)
+}
+
+function safeEvidenceSourceKey(src, idx) {
+  return `source-${idx}-${safeEvidenceSourceKind(src)}`
+}
+
+function safeEvidenceSourceLabel(src, idx) {
+  const kind = safeEvidenceSourceKind(src)
+  if (kind === 'external') return `External source ${idx + 1}`
+  return `Source reference ${idx + 1}`
+}
+
+function safeEvidenceSourceKind(src) {
+  const text = String(src || '').trim()
+  if (/^https?:\/\//i.test(text) && !isSensitiveEvidenceText(text)) return 'external'
+  return 'reference'
+}
+
+function displayText(value) {
+  if (value === null || value === undefined) return ''
+  if (Array.isArray(value)) return value.length ? `details available (${value.length} items)` : ''
+  if (typeof value === 'object') return Object.keys(value).length ? `details available (${Object.keys(value).length} fields)` : ''
+  return redactDisplayText(String(value).trim())
+}
+
+function redactDisplayText(value) {
+  return String(value)
+    .replace(/\s*\(#\d+\)/g, '')
+    .replace(/\b(Person|Family|Media|Source|Face|Cluster)\s+#\d+\b/gi, '$1 reference')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[redacted]@')
+    .replace(/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/gi, '[redacted token]')
+    .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
+}
+
+function isSensitiveEvidenceText(value) {
+  const text = String(value || '')
+  return /[?&](?:token|key|secret|password)=/i.test(text)
+    || /\bBearer\s+/i.test(text)
+    || /\/(?:home|Users|root)\//.test(text)
+    || /\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/i.test(text)
 }
 
 const confidenceClass = computed(() => {

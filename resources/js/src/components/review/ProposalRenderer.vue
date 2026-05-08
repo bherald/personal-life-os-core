@@ -27,23 +27,23 @@
       </div>
 
       <div class="item-title">
-        {{ item.proposed_name || 'Unknown Person' }}
+        {{ safeProposalName }}
       </div>
 
       <div class="item-summary">
         <template v-if="item.person_name">
-          Proposed for: <span class="text-ops-sky">{{ item.person_name }}</span>
+          Proposed for: <span class="text-ops-sky">{{ safePersonName }}</span>
         </template>
         <template v-if="item.proposed_birth_date || item.proposed_birth_place">
           <br />
           <span class="text-ops-text-muted">
-            {{ [item.proposed_birth_date, item.proposed_birth_place].filter(Boolean).join(' - ') }}
+            {{ safeLifeDetails }}
           </span>
         </template>
       </div>
 
-      <div v-if="item.evidence_summary" class="item-evidence">
-        {{ item.evidence_summary }}
+      <div v-if="safeEvidenceSummary" class="item-evidence">
+        {{ safeEvidenceSummary }}
       </div>
 
       <div class="item-meta">
@@ -89,10 +89,47 @@ const confidenceClass = computed(() => {
   return 'low'
 })
 
+const safeProposalName = computed(() => {
+  return displayText(props.item.proposed_name) || 'Unknown Person'
+})
+
+const safePersonName = computed(() => {
+  return displayText(props.item.person_name)
+})
+
+const safeLifeDetails = computed(() => {
+  return [props.item.proposed_birth_date, props.item.proposed_birth_place]
+    .map(displayText)
+    .filter(Boolean)
+    .join(' - ')
+})
+
+const safeEvidenceSummary = computed(() => {
+  return displayText(props.item.evidence_summary)
+})
+
 const formatDate = (dateStr) => {
   if (!dateStr) return ''
   const d = new Date(dateStr)
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+function displayText(value) {
+  if (value === null || value === undefined) return ''
+  if (Array.isArray(value)) return value.length ? `details available (${value.length} items)` : ''
+  if (typeof value === 'object') return Object.keys(value).length ? `details available (${Object.keys(value).length} fields)` : ''
+  return redactDisplayText(String(value).trim())
+}
+
+function redactDisplayText(value) {
+  return String(value)
+    .replace(/\s*\(#\d+\)/g, '')
+    .replace(/\b(Person|Family|Media|Source|Face|Cluster)\s+#\d+\b/gi, '$1 reference')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[redacted]@')
+    .replace(/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/gi, '[redacted token]')
+    .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
 }
 </script>
 
