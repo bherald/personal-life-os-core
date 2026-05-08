@@ -32,7 +32,7 @@
               <button @click="renaming = false" class="px-2 py-1 text-gray-400 text-xs hover:text-white">Cancel</button>
             </div>
             <div v-else class="font-medium text-sm truncate cursor-pointer hover:text-blue-400" @click="startRename" title="Click to rename">{{ item.filename }}</div>
-            <div class="text-xs text-gray-500 truncate">{{ item.current_path }}</div>
+            <div class="text-xs text-gray-500 truncate">{{ displayMediaPath(item.current_path) }}</div>
           </div>
           <div class="flex items-center gap-1">
             <button v-if="isImage" @click="showEditor = true" class="text-white hover:text-blue-400 p-1.5" title="Edit image">
@@ -400,8 +400,8 @@
             <MetaField label="Last Verified" :value="formatDate(fileData.last_verified_at)" />
           </div>
           <div class="grid grid-cols-1 gap-y-2 mt-2">
-            <MetaField label="Current Path" :value="fileData.current_path" mono full />
-            <MetaField v-if="fileData.original_path && fileData.original_path !== fileData.current_path" label="Original Path" :value="fileData.original_path" mono full />
+            <MetaField label="Current Path" :value="displayMediaPath(fileData.current_path)" mono full />
+            <MetaField v-if="fileData.original_path && fileData.original_path !== fileData.current_path" label="Original Path" :value="displayMediaPath(fileData.original_path)" mono full />
           </div>
           <div v-if="perceptualHash" class="grid grid-cols-2 gap-x-4 gap-y-3 mt-2 pt-2 border-t border-gray-800">
             <MetaField label="Perceptual Hash" :value="perceptualHash.phash" mono />
@@ -1646,6 +1646,19 @@ function formatDateSource(src) {
     file_modified: 'File Modified Date',
   }
   return map[src] || formatSource(src)
+}
+
+function displayMediaPath(path) {
+  if (!path) return ''
+  let value = String(path).replace(/\\/g, '/').replace(/^\/+/, '')
+  value = value.replace(/^[A-Za-z]:\//, '')
+  value = value.replace(/^(home|users)\/[^/]+\//i, '')
+  value = value.replace(/^mnt\/[^/]+\//i, '')
+  const lastSlash = value.lastIndexOf('/')
+  if (lastSlash > 0) value = value.substring(0, lastSlash)
+  const parts = value.split('/').filter(Boolean)
+  if (parts.length === 0) return 'Configured media location'
+  return parts.slice(Math.max(0, parts.length - 3)).join('/')
 }
 
 function writebackStatus(val) {

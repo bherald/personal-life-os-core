@@ -28,4 +28,28 @@ class MediaLightboxFrontendContractTest extends TestCase
             $this->assertStringNotContainsString($needle, $source);
         }
     }
+
+    public function test_media_lightbox_path_display_uses_bounded_safe_labels(): void
+    {
+        $source = file_get_contents(resource_path('js/src/components/media/MediaLightbox.vue'));
+
+        foreach ([
+            'function displayMediaPath(path)',
+            '{{ displayMediaPath(item.current_path) }}',
+            '<MetaField label="Current Path" :value="displayMediaPath(fileData.current_path)" mono full />',
+            '<MetaField v-if="fileData.original_path && fileData.original_path !== fileData.current_path" label="Original Path" :value="displayMediaPath(fileData.original_path)" mono full />',
+            'Configured media location',
+            'replace(/^(home|users)\\/[^/]+\\//i, \'\')',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        foreach ([
+            '{{ item.current_path }}',
+            '<MetaField label="Current Path" :value="fileData.current_path" mono full />',
+            'label="Original Path" :value="fileData.original_path"',
+        ] as $needle) {
+            $this->assertStringNotContainsString($needle, $source);
+        }
+    }
 }
