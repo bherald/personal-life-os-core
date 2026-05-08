@@ -55,7 +55,7 @@
       </svg>
     </button>
     <div v-if="field.label && !field.collapsible" class="field-label">{{ field.label }}:</div>
-    <pre v-show="!field.collapsible || jsonExpanded" class="json-content" :class="{ 'compact': field.compact }">{{ formatJson(value) }}</pre>
+    <div v-show="!field.collapsible || jsonExpanded" class="json-content" :class="{ 'compact': field.compact }">{{ formatJson(value) }}</div>
   </div>
 
   <!-- Diff (current → proposed) -->
@@ -241,9 +241,11 @@ const cleanText = (val) => {
 
 const formatJson = (val) => {
   if (typeof val === 'string') {
-    try { val = JSON.parse(val) } catch { return val }
+    try { val = JSON.parse(val) } catch { return 'Structured details available' }
   }
-  return JSON.stringify(val, null, 2)
+  if (Array.isArray(val)) return val.length ? `Structured details (${val.length} items)` : 'No structured details'
+  if (val && typeof val === 'object') return `Structured details (${Object.keys(val).length} fields)`
+  return 'Structured details available'
 }
 </script>
 

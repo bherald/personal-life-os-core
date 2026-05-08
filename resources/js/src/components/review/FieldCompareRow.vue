@@ -26,11 +26,17 @@
         </span>
         — likely wrong person.
       </div>
-      <div v-if="diff.evidence_summary" class="field-evidence" :title="diff.evidence_summary">
+      <div v-if="truncatedEvidence" class="field-evidence" :title="safeEvidenceText">
         {{ truncatedEvidence }}
       </div>
       <div v-if="diff.evidence_sources?.length" class="field-sources">
-        <span v-for="src in diff.evidence_sources" :key="src" class="source-pill">{{ src }}</span>
+        <span
+          v-for="(src, idx) in diff.evidence_sources"
+          :key="safeEvidenceSourceKey(src, idx)"
+          class="source-pill"
+        >
+          {{ safeEvidenceSourceLabel(src, idx) }}
+        </span>
       </div>
     </div>
     <div class="field-badge">
@@ -137,11 +143,31 @@ const rowClass = computed(() => {
   return null
 })
 
+const safeEvidenceText = computed(() => {
+  return redactDisplayText(props.diff.evidence_summary || '')
+})
+
 const truncatedEvidence = computed(() => {
-  const text = props.diff.evidence_summary || ''
+  const text = safeEvidenceText.value
   if (text.length <= 140) return text
   return text.slice(0, 137) + '…'
 })
+
+function safeEvidenceSourceKey(src, idx) {
+  return `source-${idx}-${safeEvidenceSourceKind(src)}`
+}
+
+function safeEvidenceSourceLabel(src, idx) {
+  const kind = safeEvidenceSourceKind(src)
+  if (kind === 'external') return `External source ${idx + 1}`
+  return `Source reference ${idx + 1}`
+}
+
+function safeEvidenceSourceKind(src) {
+  const text = String(src || '').trim()
+  if (/^https?:\/\//i.test(text) && !isSensitiveEvidenceText(text)) return 'external'
+  return 'reference'
+}
 
 function formatValue(v) {
   if (typeof v === 'string') return redactDisplayText(v)
@@ -170,7 +196,17 @@ function redactDisplayText(value) {
   return String(value)
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[redacted]@')
+    .replace(/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/gi, '[redacted token]')
     .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
+}
+
+function isSensitiveEvidenceText(value) {
+  const text = String(value || '')
+  return /[?&](?:token|key|secret|password)=/i.test(text)
+    || /\bBearer\s+/i.test(text)
+    || /\/(?:home|Users|root)\//.test(text)
+    || /\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/i.test(text)
 }
 </script>
 

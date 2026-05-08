@@ -182,7 +182,7 @@ class GenealogyReviewPacketFocusService
                 is_scalar($person['surname'] ?? null) ? (string) $person['surname'] : null,
             ])));
             if ($name !== '') {
-                return $personId !== null ? "{$name} (#{$personId})" : $name;
+                return $name;
             }
         }
 

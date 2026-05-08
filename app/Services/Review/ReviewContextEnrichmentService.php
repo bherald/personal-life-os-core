@@ -1682,7 +1682,7 @@ class ReviewContextEnrichmentService
                 }
 
                 if ($name !== '') {
-                    return $personId !== null ? "{$name} (#{$personId})" : $name;
+                    return $name;
                 }
             }
         }
@@ -2033,7 +2033,9 @@ class ReviewContextEnrichmentService
             $path = (string) ($row->nextcloud_path ?? '');
             $outById[(int) $row->id] = [
                 'id' => (int) $row->id,
-                'title' => (string) ($row->title ?? ('Media #'.$row->id)),
+                'title' => trim((string) ($row->title ?? '')) !== ''
+                    ? (string) $row->title
+                    : 'Media item',
                 'file_format' => $row->file_format,
                 'mime_type' => $row->mime_type,
                 'media_type' => $row->media_type,
@@ -2462,7 +2464,7 @@ class ReviewContextEnrichmentService
         if (! empty($row->field_name)) {
             $titleParts[] = (string) $row->field_name;
         }
-        $titleParts[] = "person #{$row->person_id}";
+        $titleParts[] = 'person reference present';
 
         $proposal = [
             'person_id' => (int) $row->person_id,

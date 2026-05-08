@@ -78,10 +78,66 @@
 
         <div class="summary">{{ $item->summary }}</div>
 
-        @php $details = json_decode($item->details, true); @endphp
-        @if($details)
+        @php
+            $details = json_decode($item->details, true);
+            $redactScalar = static function ($value) {
+                if (! is_string($value)) {
+                    return $value;
+                }
+
+                return preg_replace([
+                    '/\bBearer\s+[A-Za-z0-9._~+\/=-]+/i',
+                    '/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/i',
+                    '/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@\/\s]+):([^@\/\s]+)@/i',
+                    '/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/i',
+                    '/\/(?:home|Users|root)\/[^\s,"\')\]}]+/',
+                ], [
+                    'Bearer [redacted]',
+                    '[redacted secret]',
+                    '$1[redacted]@',
+                    '[redacted token]',
+                    '[redacted path]',
+                ], $value);
+            };
+            $sanitizeDetails = static function ($value, $key = null) use (&$sanitizeDetails, $redactScalar) {
+                $normalized = strtolower((string) $key);
+                if ($normalized !== '' && (
+                    $normalized === 'id'
+                    || str_ends_with($normalized, '_id')
+                    || str_contains($normalized, 'locator')
+                    || str_contains($normalized, 'url')
+                    || str_contains($normalized, 'uri')
+                    || str_contains($normalized, 'href')
+                    || str_contains($normalized, 'link')
+                    || str_contains($normalized, 'path')
+                    || str_contains($normalized, 'token')
+                    || str_contains($normalized, 'secret')
+                    || str_contains($normalized, 'password')
+                    || str_contains($normalized, 'hash')
+                    || str_contains($normalized, 'payload')
+                )) {
+                    return '[redacted]';
+                }
+
+                if (is_array($value)) {
+                    $out = [];
+                    foreach ($value as $childKey => $childValue) {
+                        $out[$childKey] = $sanitizeDetails($childValue, $childKey);
+                    }
+                    return $out;
+                }
+
+                if (is_string($value)) {
+                    return $redactScalar($value);
+                }
+
+                return $value;
+            };
+            $safeDetails = is_array($details) ? $sanitizeDetails($details) : null;
+        @endphp
+        @if($safeDetails)
             <div class="details-toggle" onclick="document.getElementById('details-block').style.display = document.getElementById('details-block').style.display === 'none' ? 'block' : 'none'">Show/hide details</div>
-            <div class="details" id="details-block" style="display:none;">{{ json_encode($details, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) }}</div>
+            <div class="details" id="details-block" style="display:none;">{{ json_encode($safeDetails, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</div>
         @endif
     </div>
 

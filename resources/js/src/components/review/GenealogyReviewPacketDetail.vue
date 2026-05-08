@@ -592,7 +592,7 @@
                 </div>
                 <div class="kv-row">
                   <span class="kv-key">stale hash</span>
-                  <span class="kv-value mono">{{ staleHashShort(operation.stale_hash) }}</span>
+                  <span class="kv-value">{{ staleHashLabel(operation.stale_hash) }}</span>
                 </div>
               </div>
               <div v-if="touchedRows(operation.proposed_effect).length" class="touch-list">
@@ -1477,8 +1477,8 @@ function displayValue(value) {
   if (value === null || value === undefined || value === '') return '-'
   if (value === true) return 'true'
   if (value === false) return 'false'
-  if (Array.isArray(value) || isPlainObject(value)) return compactJson(value)
-  return String(value)
+  if (Array.isArray(value) || isPlainObject(value)) return structuredDisplayLabel(value)
+  return redactDisplayText(String(value))
 }
 
 function displayPreviewValue(value) {
@@ -1487,12 +1487,30 @@ function displayPreviewValue(value) {
   return displayValue(value)
 }
 
+function structuredDisplayLabel(value) {
+  if (Array.isArray(value)) {
+    return value.length ? `details available (${value.length} items)` : 'no details'
+  }
+
+  const safeFieldCount = Object.keys(value).filter((key) => !isRawPreviewPayloadKey(key)).length
+  return safeFieldCount ? `details available (${safeFieldCount} fields)` : 'details available'
+}
+
 function structuredPreviewLabel(value) {
   if (Array.isArray(value)) {
     return value.length ? `details available (${value.length} items)` : 'no details'
   }
 
   return Object.keys(value).length ? 'details available' : 'no details'
+}
+
+function redactDisplayText(value) {
+  return String(value)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[redacted]@')
+    .replace(/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/gi, '[redacted token]')
+    .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
 }
 
 function isSensitivePreviewValue(value) {
@@ -1858,7 +1876,8 @@ function issueCode(issue) {
 function issueMessage(issue) {
   if (typeof issue === 'string') return issue
   if (!isPlainObject(issue)) return displayValue(issue)
-  return issue.message || issue.error || issue.warning || 'Validation details available; no display message supplied.'
+  const message = issue.message || issue.error || issue.warning
+  return message ? displayValue(message) : 'Validation details available; no display message supplied.'
 }
 
 function operationKey(operation, idx) {
@@ -2155,10 +2174,10 @@ function matchingFieldText(operation) {
   return fields.length ? fields.join(', ') : '-'
 }
 
-function staleHashShort(hash) {
+function staleHashLabel(hash) {
   const value = String(hash || '')
   if (value === '') return '-'
-  return value.length > 16 ? `${value.slice(0, 16)}...` : value
+  return 'recorded'
 }
 
 function decisionLogDisplayRow(entry, idx) {
