@@ -32,37 +32,113 @@ class PublicExportPackagingTest extends TestCase
     }
 
     #[Test]
+    public function dry_run_public_export_allowlist_excludes_private_and_generated_paths(): void
+    {
+        $destination = sys_get_temp_dir().'/plos-public-export-dry-run-'.bin2hex(random_bytes(6));
+        $process = new Process([
+            base_path('scripts/public-export.sh'),
+            '--dry-run',
+            $destination,
+        ]);
+        $process->setTimeout(30);
+        $process->run();
+
+        $this->assertTrue($process->isSuccessful(), $process->getOutput().$process->getErrorOutput());
+        $this->assertDirectoryDoesNotExist($destination, 'Dry-run must not create or stage a destination tree.');
+
+        $output = $process->getOutput();
+        $this->assertStringContainsString("Public export destination: {$destination}", $output);
+        $this->assertStringContainsString('Allowlisted tracked files:', $output);
+
+        $files = $this->publicExportFilesFromDryRunOutput($output);
+
+        foreach ([
+            'scripts/guards/public-release-audit.sh',
+            'scripts/guards/public-workflow-push-preflight.sh',
+            'scripts/guards/github-auth-storage-audit.sh',
+            'scripts/guards/public-temp-artifact-cleanup.sh',
+        ] as $path) {
+            $this->assertContains($path, $files, "{$path} must stay in the public export allowlist.");
+        }
+
+        foreach ($files as $file) {
+            $this->assertStringStartsNotWith('mcp-server/dist/', $file);
+            $this->assertStringStartsNotWith('mcp-server/node_modules/', $file);
+            $this->assertStringStartsNotWith('mcp-servers/plos/dist/', $file);
+            $this->assertStringStartsNotWith('mcp-servers/plos/node_modules/', $file);
+            $this->assertStringStartsNotWith('node_modules/', $file);
+            $this->assertStringStartsNotWith('docs/planning/', $file);
+            $this->assertDoesNotMatchRegularExpression('/^storage\/.*\.key$/', $file);
+        }
+
+        foreach ([
+            'mcp-server/dist',
+            'mcp-server/node_modules',
+            'mcp-servers/plos/dist',
+            'mcp-servers/plos/node_modules',
+            'node_modules',
+            'docs/planning',
+        ] as $path) {
+            $this->assertNotContains($path, $files);
+        }
+    }
+
+    #[Test]
+    public function public_export_force_refuses_unsafe_destinations(): void
+    {
+        $home = sys_get_temp_dir().'/plos-public-export-home-'.bin2hex(random_bytes(6));
+        mkdir($home, 0700, true);
+
+        foreach ([
+            '/',
+            base_path(),
+            base_path('storage'),
+            $home,
+            $home.'/.ssh/public-export',
+            '/etc',
+            '/usr/local/public-export',
+        ] as $destination) {
+            $process = new Process([
+                base_path('scripts/public-export.sh'),
+                '--dry-run',
+                '--force',
+                $destination,
+            ]);
+            $process->setEnv(['HOME' => $home]);
+            $process->setTimeout(30);
+            $process->run();
+
+            $this->assertSame(2, $process->getExitCode(), "Expected {$destination} to be rejected.");
+            $this->assertStringContainsString('Refusing to export', $process->getErrorOutput());
+        }
+    }
+
+    #[Test]
     public function public_smoke_runs_the_current_public_quality_tests(): void
     {
         $smokeScript = file_get_contents(base_path('scripts/public-smoke.sh'));
+        $exportScript = file_get_contents(base_path('scripts/public-export.sh'));
         $workflow = file_get_contents(base_path('.github/workflows/public-readiness.yml'));
 
         $this->assertStringContainsString('scripts/audit-licenses.sh', $smokeScript);
         $this->assertStringContainsString('scripts/audit-licenses.sh', $workflow);
+        $this->assertStringContainsString('scripts/guards/dependency-provenance-check.sh', $smokeScript);
+        $this->assertStringContainsString('scripts/guards/dependency-provenance-check.sh', $workflow);
+        $this->assertStringContainsString(
+            'scripts/guards/dependency-provenance-check.sh',
+            $this->publicExportShorterLocalCheck($exportScript)
+        );
 
-        $publicQualityPaths = [
-            'tests/Feature/Quality/GitHubAuthStorageAuditGuardTest.php',
-            'tests/Feature/Quality/PublicGithubMonitorScriptTest.php',
-            'tests/Feature/Console/AwoReplayCommandTest.php',
-            'tests/Feature/Console/OpsMcpHealthCommandTest.php',
-            'tests/Feature/Console/GenealogyReviewPacketMaterializeCommandTest.php',
-            'tests/Feature/Console/OpsReviewBacklogReportCommandTest.php',
-            'tests/Unit/Commands/RagRetrievalEvidenceCommandTest.php',
-            'tests/Unit/Commands/RagScaleReviewCommandTest.php',
-            'tests/Unit/Nodes/PushoverNotifyTest.php',
-            'tests/Unit/Setup',
-            'tests/Unit/Services/MetadataWritebackSafetyTest.php',
-            'tests/Feature/Console/SetupDoctorCommandTest.php',
-            'tests/Feature/Quality/FixturesProvenanceTest.php',
-            'tests/Feature/Quality/PublicExportPackagingTest.php',
-            'tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php',
-            'tests/Feature/Quality/RepositoryGovernanceTest.php',
-        ];
+        $smokePaths = $this->focusedPhpunitTestPaths($smokeScript, 'scripts/public-smoke.sh');
+        $exportManifestPaths = $this->focusedPhpunitTestPaths(
+            $this->publicExportShorterLocalCheck($exportScript),
+            'PUBLIC_EXPORT_MANIFEST shorter local check'
+        );
+        $workflowPaths = $this->focusedPhpunitTestPaths($workflow, '.github/workflows/public-readiness.yml');
 
-        foreach ($publicQualityPaths as $path) {
-            $this->assertStringContainsString($path, $smokeScript, "{$path} must stay in public smoke.");
-            $this->assertStringContainsString($path, $workflow, "{$path} must stay in public readiness CI.");
-        }
+        $this->assertSame($smokePaths, $exportManifestPaths, 'Public smoke and PUBLIC_EXPORT_MANIFEST focused PHPUnit slices must match exactly.');
+        $this->assertSame($smokePaths, $workflowPaths, 'Public smoke and public readiness focused PHPUnit slices must match exactly.');
+        $this->assertContains('tests/Unit/Services/GedZipExportTest.php', $smokePaths);
     }
 
     #[Test]
@@ -86,6 +162,58 @@ class PublicExportPackagingTest extends TestCase
             $this->assertStringContainsString($path, $smokeScript, "{$path} must stay in public smoke.");
             $this->assertStringContainsString($path, $manifestBlock, "{$path} must stay in PUBLIC_EXPORT_MANIFEST shorter local check.");
         }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function focusedPhpunitTestPaths(string $body, string $source): array
+    {
+        $lines = preg_split('/\R/', $body) ?: [];
+
+        foreach ($lines as $index => $line) {
+            $offset = strpos($line, 'php artisan test');
+
+            if ($offset === false) {
+                continue;
+            }
+
+            $paths = [];
+            $tail = substr($line, $offset + strlen('php artisan test'));
+
+            do {
+                $trimmed = trim($tail);
+                $continued = str_ends_with($trimmed, '\\');
+                $trimmed = rtrim($trimmed, "\\ \t");
+
+                foreach (preg_split('/\s+/', $trimmed, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $token) {
+                    if (str_starts_with($token, 'tests/')) {
+                        $paths[] = $token;
+                    }
+                }
+
+                $index++;
+                $tail = $lines[$index] ?? '';
+            } while ($continued);
+
+            $this->assertNotSame([], $paths, "{$source} must include focused PHPUnit test paths.");
+            $this->assertSame($paths, array_values(array_unique($paths)), "{$source} must not repeat focused PHPUnit test paths.");
+
+            return $paths;
+        }
+
+        $this->fail("{$source} must include a php artisan test command.");
+    }
+
+    private function publicExportShorterLocalCheck(string $exportScript): string
+    {
+        $manifestStart = strpos($exportScript, 'For a shorter local check inside this exported tree');
+        $manifestEnd = strpos($exportScript, 'EOF', $manifestStart);
+
+        $this->assertIsInt($manifestStart);
+        $this->assertIsInt($manifestEnd);
+
+        return substr($exportScript, $manifestStart, $manifestEnd - $manifestStart);
     }
 
     #[Test]
@@ -634,6 +762,7 @@ class PublicExportPackagingTest extends TestCase
         foreach ([
             'PLOS source code is released under the MIT license',
             'Run `scripts/audit-licenses.sh`',
+            'scripts/guards/dependency-provenance-check.sh',
             'passed with 12 warnings',
             'phpoffice/phpword',
             'smalot/pdfparser',
@@ -692,6 +821,18 @@ class PublicExportPackagingTest extends TestCase
             'THIRD_PARTY.md',
         ] as $path) {
             $this->assertStringContainsString('scripts/audit-licenses.sh', file_get_contents(base_path($path)), "{$path} must reference the license audit.");
+        }
+
+        foreach ([
+            'NOTICE.md',
+            'docs/README.md',
+            'docs/public-github-first-push-checklist.md',
+        ] as $path) {
+            $this->assertStringContainsString(
+                'scripts/guards/dependency-provenance-check.sh',
+                file_get_contents(base_path($path)),
+                "{$path} must reference the dependency provenance guard."
+            );
         }
 
         $exportScript = file_get_contents(base_path('scripts/public-export.sh'));
@@ -1478,7 +1619,15 @@ class PublicExportPackagingTest extends TestCase
 
         $this->assertTrue($process->isSuccessful(), $process->getOutput().$process->getErrorOutput());
 
-        return array_values(array_filter(array_map('trim', explode("\n", $process->getOutput())), function (string $line): bool {
+        return $this->publicExportFilesFromDryRunOutput($process->getOutput());
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function publicExportFilesFromDryRunOutput(string $output): array
+    {
+        return array_values(array_filter(array_map('trim', explode("\n", $output)), function (string $line): bool {
             return $line !== ''
                 && ! str_starts_with($line, 'Public export destination:')
                 && ! str_starts_with($line, 'Allowlisted tracked files:');

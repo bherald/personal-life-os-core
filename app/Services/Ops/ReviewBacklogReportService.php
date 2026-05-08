@@ -18,6 +18,7 @@ class ReviewBacklogReportService
         'typed-remediation',
         'materializable-remediation',
         'source-backed-packet',
+        'aged-review',
     ];
 
     /**
@@ -165,12 +166,23 @@ class ReviewBacklogReportService
             $query
                 ->where('review_type', 'genealogy_finding')
                 ->whereIn('finding_type', self::REMEDIATION_FINDING_TYPES);
+        } elseif ($focus === 'aged-review') {
+            $query->where('created_at', '<=', now()->subDays($staleDays)->toDateTimeString());
+        }
+
+        if ($focus === 'aged-review') {
+            $query
+                ->orderBy('created_at')
+                ->orderByRaw('CASE WHEN priority >= ? THEN 0 ELSE 1 END', [$highPriorityThreshold])
+                ->orderBy('id');
+        } else {
+            $query
+                ->orderByRaw('CASE WHEN priority >= ? THEN 0 ELSE 1 END', [$highPriorityThreshold])
+                ->orderBy('created_at')
+                ->orderBy('id');
         }
 
         $rows = $query
-            ->orderByRaw('CASE WHEN priority >= ? THEN 0 ELSE 1 END', [$highPriorityThreshold])
-            ->orderBy('created_at')
-            ->orderBy('id')
             ->limit(500)
             ->get();
 
@@ -192,8 +204,16 @@ class ReviewBacklogReportService
             return $payload;
         }
 
-        usort($candidates, fn (array $left, array $right): int => $this->compareNextTargetCandidates($left, $right));
+        usort(
+            $candidates,
+            $focus === 'aged-review'
+                ? fn (array $left, array $right): int => $this->compareAgedReviewCandidates($left, $right)
+                : fn (array $left, array $right): int => $this->compareNextTargetCandidates($left, $right)
+        );
         $target = $candidates[0];
+        if ($focus === 'aged-review') {
+            $target['selection_reason'] = 'oldest_aged_review';
+        }
 
         unset($target['_sort_rank'], $target['_sort_created_ts'], $target['_sort_priority']);
         unset($target['_sort_id']);
@@ -235,6 +255,7 @@ class ReviewBacklogReportService
 
         $reviewPass = $this->nextTargetReviewPassText($target);
         $materialization = $this->nextTargetMaterializationText($target);
+        $focusSummary = $this->nextTargetFocusSummaryText($payload);
 
         return sprintf(
             'Review backlog next target: %s focus=%s target_ref=%s type=%s finding=%s classification=%s selection_reason=%s priority=%s age_days=%s age_bucket=%s stale_over=%s created=%s action=%s',
@@ -251,7 +272,7 @@ class ReviewBacklogReportService
             $target['stale_days_over_threshold'] ?? 'unknown',
             $target['created_at'] ?? 'unknown',
             $target['next_action'] ?? 'Review one at a time.',
-        ).$underlying.$reviewPass.$materialization."\n";
+        ).$underlying.$reviewPass.$materialization.$focusSummary."\n";
     }
 
     /**
@@ -302,7 +323,160 @@ class ReviewBacklogReportService
 
         $this->appendNextTargetReviewPassMarkdown($lines, $target);
         $this->appendNextTargetMaterializationMarkdown($lines, $target);
+        $this->appendNoTargetFocusSummaryMarkdown($lines, $payload);
 
+        $lines[] = '';
+
+        return implode("\n", $lines);
+    }
+
+    public function compactNextTargetPayload(array $payload): array
+    {
+        $target = is_array($payload['next_target'] ?? null) ? $payload['next_target'] : null;
+        $materialization = is_array($target['remediation_materialization'] ?? null)
+            ? $target['remediation_materialization']
+            : [];
+        $materializationSafety = is_array($materialization['safety'] ?? null)
+            ? $materialization['safety']
+            : [];
+        $reviewPass = is_array($target['review_pass'] ?? null) ? $target['review_pass'] : [];
+        $applyEnabled = (bool) ($materializationSafety['apply_enabled'] ?? false);
+
+        return [
+            'version' => 1,
+            'mode' => $payload['mode'] ?? 'observe',
+            'compact' => true,
+            'status' => $this->safeReviewPassCode($payload['status'] ?? null) ?? 'unknown',
+            'dry_run' => (bool) ($payload['dry_run'] ?? false),
+            'queries_executed' => (bool) ($payload['queries_executed'] ?? false),
+            'query_state' => $this->safeReviewPassCode($payload['query_state'] ?? null) ?? 'unknown',
+            'stale_days' => (int) ($payload['stale_days'] ?? 0),
+            'high_priority_threshold' => (int) ($payload['high_priority_threshold'] ?? 0),
+            'focus' => $this->safeReviewPassCode($payload['focus'] ?? null) ?? 'global',
+            'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
+            'target' => $target === null ? null : [
+                'available' => true,
+                'review_type' => $this->safeReviewPassCode($target['review_type'] ?? null) ?? 'unknown',
+                'finding_type' => $this->safeReviewPassCode($target['finding_type'] ?? null),
+                'classification' => $this->safeReviewPassCode($target['classification'] ?? null) ?? 'unknown',
+                'underlying_classification' => $this->safeReviewPassCode($target['underlying_classification'] ?? null),
+                'selection_reason' => $this->safeReviewPassCode($target['selection_reason'] ?? null),
+                'operator_action' => $this->compactNextTargetOperatorAction($payload, $target, $materialization),
+                'priority' => (int) ($target['priority'] ?? 0),
+                'age_days' => isset($target['age_days']) ? (int) $target['age_days'] : null,
+                'age_bucket' => $this->safeReviewPassCode($target['age_bucket'] ?? null),
+                'stale_days_over_threshold' => isset($target['stale_days_over_threshold'])
+                    ? (int) $target['stale_days_over_threshold']
+                    : null,
+                'review_pass_state' => $this->safeReviewPassCode($reviewPass['state'] ?? null),
+                'materialization_status' => $this->safeReviewPassCode($materialization['status'] ?? null),
+                'materialization_available' => (bool) ($materialization['available'] ?? false),
+                'dry_run_available' => (bool) ($materialization['dry_run_available'] ?? false),
+                'apply_enabled' => $applyEnabled,
+                'apply_held' => array_key_exists('apply_held', $materializationSafety)
+                    ? (bool) $materializationSafety['apply_held']
+                    : ! $applyEnabled,
+            ],
+            'focus_summary' => $this->compactNextTargetFocusSummary($payload['focus_summary'] ?? null),
+            'posture' => [
+                'scope' => 'aggregate_only',
+                'target_ref_included' => false,
+                'row_pointers_included' => false,
+                'raw_ids_included' => false,
+                'tokens_included' => false,
+                'locators_included' => false,
+                'details_included' => false,
+                'commands_included' => false,
+                'apply_controls_included' => false,
+            ],
+        ];
+    }
+
+    public function toCompactNextTargetText(array $payload): string
+    {
+        $compact = $this->compactNextTargetPayload($payload);
+        $target = is_array($compact['target'] ?? null) ? $compact['target'] : null;
+        $summary = is_array($compact['focus_summary'] ?? null) ? $compact['focus_summary'] : [];
+        $posture = is_array($compact['posture'] ?? null) ? $compact['posture'] : [];
+
+        $line = sprintf(
+            'Review backlog next target compact: %s focus=%s query_state=%s available=%s captured=%s',
+            $compact['status'],
+            $compact['focus'],
+            $compact['query_state'],
+            $target === null ? 'false' : 'true',
+            $compact['captured_at'] ?? '-',
+        );
+
+        if ($target !== null) {
+            $line .= sprintf(
+                ' type=%s finding=%s classification=%s selection_reason=%s operator_action=%s priority=%d age_days=%s age_bucket=%s stale_over=%s',
+                $target['review_type'] ?? 'unknown',
+                $target['finding_type'] ?? 'none',
+                $target['classification'] ?? 'unknown',
+                $target['selection_reason'] ?? 'unspecified',
+                $target['operator_action'] ?? 'review_one_item',
+                (int) ($target['priority'] ?? 0),
+                $target['age_days'] ?? 'unknown',
+                $target['age_bucket'] ?? 'unknown',
+                $target['stale_days_over_threshold'] ?? 'unknown',
+            );
+        }
+
+        $line .= sprintf(
+            ' focus_candidates=%d stale_rows=%d high_priority_rows=%d age_buckets=%s classifications=%s target_ref_included=%s raw_ids_included=%s tokens_included=%s locators_included=%s commands_included=%s apply_controls_included=%s',
+            (int) ($summary['candidate_rows'] ?? 0),
+            (int) ($summary['stale_rows'] ?? 0),
+            (int) ($summary['high_priority_rows'] ?? 0),
+            $this->inlineCountMap($summary['age_bucket_counts'] ?? []),
+            $this->inlineCountMap($summary['classification_counts'] ?? []),
+            (($posture['target_ref_included'] ?? true) === true) ? 'true' : 'false',
+            (($posture['raw_ids_included'] ?? true) === true) ? 'true' : 'false',
+            (($posture['tokens_included'] ?? true) === true) ? 'true' : 'false',
+            (($posture['locators_included'] ?? true) === true) ? 'true' : 'false',
+            (($posture['commands_included'] ?? true) === true) ? 'true' : 'false',
+            (($posture['apply_controls_included'] ?? true) === true) ? 'true' : 'false',
+        );
+
+        return $line."\n";
+    }
+
+    public function toCompactNextTargetMarkdown(array $payload): string
+    {
+        $compact = $this->compactNextTargetPayload($payload);
+        $target = is_array($compact['target'] ?? null) ? $compact['target'] : null;
+        $summary = is_array($compact['focus_summary'] ?? null) ? $compact['focus_summary'] : [];
+
+        $lines = [
+            '# Review Backlog Next Target Compact',
+            '',
+            '- Status: `'.$compact['status'].'`',
+            '- Query state: `'.$compact['query_state'].'`',
+            '- Focus: `'.$compact['focus'].'`',
+            '- Target available: `'.($target === null ? 'false' : 'true').'`',
+        ];
+
+        if ($target !== null) {
+            $lines[] = '- Review type: `'.($target['review_type'] ?? 'unknown').'`';
+            $lines[] = '- Finding type: `'.($target['finding_type'] ?? 'none').'`';
+            $lines[] = '- Classification: `'.($target['classification'] ?? 'unknown').'`';
+            $lines[] = '- Selection reason: `'.($target['selection_reason'] ?? 'unspecified').'`';
+            $lines[] = '- Operator action: `'.($target['operator_action'] ?? 'review_one_item').'`';
+            $lines[] = '- Age: `'.($target['age_days'] ?? 'unknown').'` days';
+            $lines[] = '- Age bucket: `'.($target['age_bucket'] ?? 'unknown').'`';
+        }
+
+        $lines[] = '- Candidate rows: `'.((int) ($summary['candidate_rows'] ?? 0)).'`';
+        $lines[] = '- Stale rows: `'.((int) ($summary['stale_rows'] ?? 0)).'`';
+        $lines[] = '- High-priority rows: `'.((int) ($summary['high_priority_rows'] ?? 0)).'`';
+        $lines[] = '- Age buckets: `'.$this->inlineCountMap($summary['age_bucket_counts'] ?? []).'`';
+        $lines[] = '- Classifications: `'.$this->inlineCountMap($summary['classification_counts'] ?? []).'`';
+        $lines[] = '- Target ref included: `false`';
+        $lines[] = '- Raw ids included: `false`';
+        $lines[] = '- Tokens included: `false`';
+        $lines[] = '- Locators included: `false`';
+        $lines[] = '- Commands included: `false`';
+        $lines[] = '- Apply controls included: `false`';
         $lines[] = '';
 
         return implode("\n", $lines);
@@ -511,6 +685,10 @@ class ReviewBacklogReportService
             return array_merge($summary, $this->typedRemediationFocusSummary($candidates));
         }
 
+        if ($focus === 'aged-review') {
+            return array_merge($summary, $this->agedReviewFocusSummary($candidates));
+        }
+
         return $summary;
     }
 
@@ -658,6 +836,40 @@ class ReviewBacklogReportService
     }
 
     /**
+     * @param  list<array<string, mixed>>  $candidates
+     * @return array<string, mixed>
+     */
+    private function agedReviewFocusSummary(array $candidates): array
+    {
+        $summary = [
+            'stale_rows' => 0,
+            'high_priority_rows' => 0,
+            'age_bucket_counts' => [],
+            'classification_counts' => [],
+        ];
+
+        foreach ($candidates as $candidate) {
+            $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
+            if (($flags['stale'] ?? false) === true) {
+                $summary['stale_rows']++;
+            }
+            if (($flags['high_priority'] ?? false) === true) {
+                $summary['high_priority_rows']++;
+            }
+
+            $ageBucket = $this->safeReviewPassCode($candidate['age_bucket'] ?? null) ?? 'unknown';
+            $classification = $this->safeReviewPassCode($candidate['classification'] ?? null) ?? 'unknown';
+            $this->incrementCount($summary['age_bucket_counts'], $ageBucket);
+            $this->incrementCount($summary['classification_counts'], $classification);
+        }
+
+        ksort($summary['age_bucket_counts']);
+        ksort($summary['classification_counts']);
+
+        return $summary;
+    }
+
+    /**
      * @param  array<string, mixed>  $payload
      */
     private function nextTargetFocusSummaryText(array $payload): string
@@ -692,9 +904,72 @@ class ReviewBacklogReportService
                 $this->inlineCountMap($summary['packet_pass_state_counts'] ?? []),
                 $this->inlineCountMap($summary['packet_pass_blocker_code_counts'] ?? []),
             );
+        } elseif (($summary['stale_rows'] ?? null) !== null) {
+            $text .= sprintf(
+                ' stale_rows=%d high_priority_rows=%d age_buckets=%s classifications=%s',
+                (int) ($summary['stale_rows'] ?? 0),
+                (int) ($summary['high_priority_rows'] ?? 0),
+                $this->inlineCountMap($summary['age_bucket_counts'] ?? []),
+                $this->inlineCountMap($summary['classification_counts'] ?? []),
+            );
         }
 
         return $text;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function compactNextTargetFocusSummary(mixed $summary): array
+    {
+        if (! is_array($summary)) {
+            return [
+                'schema' => 'review_backlog_focus_summary.v1',
+                'scope' => 'aggregate_only',
+                'candidate_rows' => 0,
+                'stale_rows' => 0,
+                'high_priority_rows' => 0,
+                'age_bucket_counts' => [],
+                'classification_counts' => [],
+            ];
+        }
+
+        return [
+            'schema' => 'review_backlog_focus_summary.v1',
+            'scope' => 'aggregate_only',
+            'focus' => $this->safeReviewPassCode($summary['focus'] ?? null),
+            'candidate_rows' => (int) ($summary['candidate_rows'] ?? 0),
+            'stale_rows' => (int) ($summary['stale_rows'] ?? 0),
+            'high_priority_rows' => (int) ($summary['high_priority_rows'] ?? 0),
+            'age_bucket_counts' => $this->safeReviewPassCountMap($summary['age_bucket_counts'] ?? []),
+            'classification_counts' => $this->safeReviewPassCountMap($summary['classification_counts'] ?? []),
+            'row_pointers_included' => false,
+            'auth_markers_included' => false,
+            'raw_ids_included' => false,
+            'source_refs_included' => false,
+            'commands_included' => false,
+            'apply_controls_included' => false,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $target
+     * @param  array<string, mixed>  $materialization
+     */
+    private function compactNextTargetOperatorAction(array $payload, array $target, array $materialization): string
+    {
+        $focus = $this->safeReviewPassCode($payload['focus'] ?? null);
+        $materializationStatus = $this->safeReviewPassCode($materialization['status'] ?? null);
+
+        return match (true) {
+            $focus === 'source-backed-packet' => 'review_one_source_backed_packet',
+            $focus === 'materializable-remediation' => 'inspect_one_preview_remediation',
+            $focus === 'typed-remediation' && $materializationStatus === 'validation_blocked' => 'explain_validation_blocked_remediation',
+            $focus === 'aged-review' => 'classify_one_aged_review',
+            ($target['classification'] ?? null) === 'source_backed_packet_review' => 'review_one_source_backed_packet',
+            default => 'review_one_item',
+        };
     }
 
     /**
@@ -730,6 +1005,11 @@ class ReviewBacklogReportService
             $lines[] = '- Canonical-mutation rows: `'.((int) ($summary['canonical_mutation_rows'] ?? 0)).'`';
             $lines[] = '- Packet pass states: `'.$this->inlineCountMap($summary['packet_pass_state_counts'] ?? []).'`';
             $lines[] = '- Packet blockers: `'.$this->inlineCountMap($summary['packet_pass_blocker_code_counts'] ?? []).'`';
+        } elseif (($summary['stale_rows'] ?? null) !== null) {
+            $lines[] = '- Stale rows: `'.((int) ($summary['stale_rows'] ?? 0)).'`';
+            $lines[] = '- High-priority rows: `'.((int) ($summary['high_priority_rows'] ?? 0)).'`';
+            $lines[] = '- Age buckets: `'.$this->inlineCountMap($summary['age_bucket_counts'] ?? []).'`';
+            $lines[] = '- Classifications: `'.$this->inlineCountMap($summary['classification_counts'] ?? []).'`';
         }
     }
 
@@ -1048,6 +1328,7 @@ class ReviewBacklogReportService
             'dry_run' => (bool) ($payload['dry_run'] ?? false),
             'queries_executed' => (bool) ($payload['queries_executed'] ?? false),
             'query_state' => $payload['query_state'] ?? 'unknown',
+            'posture' => $this->compactPosture(),
             'stale_days' => $payload['stale_days'] ?? null,
             'high_priority_threshold' => $payload['high_priority_threshold'] ?? null,
             'summary' => [
@@ -1106,6 +1387,7 @@ class ReviewBacklogReportService
         $summary = $compact['summary'];
         $readiness = $compact['remediation_readiness'];
         $packetReadiness = $compact['packet_readiness'];
+        $posture = $compact['posture'];
         $lines = [
             sprintf(
                 'Review backlog compact: %s captured=%s pending=%s stale=%s high_priority=%s dry_run=%s queries_executed=%s query_state=%s',
@@ -1117,6 +1399,19 @@ class ReviewBacklogReportService
                 $compact['dry_run'] ? 'true' : 'false',
                 $compact['queries_executed'] ? 'true' : 'false',
                 $compact['query_state']
+            ),
+            sprintf(
+                'posture: scope=%s row_pointers_included=%s raw_ids_included=%s tokens_included=%s locators_included=%s details_included=%s commands_included=%s apply_controls_included=%s review_decisions_included=%s classification_performed=%s',
+                $posture['scope'] ?? 'unknown',
+                (($posture['row_pointers_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['raw_ids_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['tokens_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['locators_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['details_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['commands_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['apply_controls_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['review_decisions_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['classification_performed'] ?? true) === true) ? 'true' : 'false',
             ),
             sprintf(
                 'remediation: typed=%s apply_preview=%s preview_only=%s supported_preview=%s context_without_preview=%s without_ids=%s source_context=%s family_context=%s family_signals=%s/%s/%s',
@@ -1217,6 +1512,7 @@ class ReviewBacklogReportService
         $summary = $compact['summary'];
         $readiness = $compact['remediation_readiness'];
         $packetReadiness = $compact['packet_readiness'];
+        $posture = $compact['posture'];
         $lines = [
             '# Review Backlog Compact Report',
             '',
@@ -1225,6 +1521,19 @@ class ReviewBacklogReportService
             '- Dry run: `'.($compact['dry_run'] ? 'true' : 'false').'`',
             '- Queries executed: `'.($compact['queries_executed'] ? 'true' : 'false').'`',
             '- Query state: `'.$compact['query_state'].'`',
+            sprintf(
+                '- Compact posture: `scope=%s`, `row_pointers_included=%s`, `raw_ids_included=%s`, `tokens_included=%s`, `locators_included=%s`, `details_included=%s`, `commands_included=%s`, `apply_controls_included=%s`, `review_decisions_included=%s`, `classification_performed=%s`',
+                (string) ($posture['scope'] ?? 'unknown'),
+                (($posture['row_pointers_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['raw_ids_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['tokens_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['locators_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['details_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['commands_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['apply_controls_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['review_decisions_included'] ?? true) === true) ? 'true' : 'false',
+                (($posture['classification_performed'] ?? true) === true) ? 'true' : 'false',
+            ),
             '- Pending total: `'.$summary['pending_total'].'`',
             '- Stale pending: `'.$summary['stale_pending'].'`',
             '- High-priority pending: `'.$summary['high_priority_pending'].'`',
@@ -2635,6 +2944,25 @@ class ReviewBacklogReportService
     }
 
     /**
+     * @return array<string, bool|string>
+     */
+    private function compactPosture(): array
+    {
+        return [
+            'scope' => 'aggregate_only',
+            'row_pointers_included' => false,
+            'raw_ids_included' => false,
+            'tokens_included' => false,
+            'locators_included' => false,
+            'details_included' => false,
+            'commands_included' => false,
+            'apply_controls_included' => false,
+            'review_decisions_included' => false,
+            'classification_performed' => false,
+        ];
+    }
+
+    /**
      * @param  list<string>  $operationTypes
      * @return array<string, mixed>
      */
@@ -2870,7 +3198,30 @@ class ReviewBacklogReportService
             }));
         }
 
+        if ($focus === 'aged-review') {
+            return array_values(array_filter($candidates, function (array $candidate): bool {
+                $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
+
+                return ($flags['stale'] ?? false) === true;
+            }));
+        }
+
         return [];
+    }
+
+    private function compareAgedReviewCandidates(array $left, array $right): int
+    {
+        $createdAt = ((int) ($left['_sort_created_ts'] ?? PHP_INT_MAX)) <=> ((int) ($right['_sort_created_ts'] ?? PHP_INT_MAX));
+        if ($createdAt !== 0) {
+            return $createdAt;
+        }
+
+        $priority = ((int) ($right['_sort_priority'] ?? 0)) <=> ((int) ($left['_sort_priority'] ?? 0));
+        if ($priority !== 0) {
+            return $priority;
+        }
+
+        return ((int) ($left['_sort_id'] ?? PHP_INT_MAX)) <=> ((int) ($right['_sort_id'] ?? PHP_INT_MAX));
     }
 
     private function nextTargetRank(string $classification, bool $isHighPriority, bool $isStale): int

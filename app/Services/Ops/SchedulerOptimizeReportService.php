@@ -60,18 +60,15 @@ class SchedulerOptimizeReportService
             'recommendation_count' => (int) ($payload['recommendation_count'] ?? count($recommendations)),
             'severity_counts' => $this->countRecommendationValues($recommendations, 'severity'),
             'category_counts' => $this->countRecommendationValues($recommendations, 'category'),
-            'top_recommendation_ids' => array_values(array_filter(array_map(
-                static fn (array $recommendation): ?string => isset($recommendation['id'])
-                    ? (string) $recommendation['id']
-                    : null,
+            'top_recommendation_types' => array_values(array_unique(array_map(
+                fn (array $recommendation): string => $this->compactRecommendationType($recommendation),
                 $topRecommendations
             ))),
-            'top_recommendations' => array_map(static function (array $recommendation): array {
+            'top_recommendations' => array_map(function (array $recommendation): array {
                 return array_filter([
-                    'id' => isset($recommendation['id']) ? (string) $recommendation['id'] : null,
+                    'type' => $this->compactRecommendationType($recommendation),
                     'severity' => isset($recommendation['severity']) ? (string) $recommendation['severity'] : null,
                     'category' => isset($recommendation['category']) ? (string) $recommendation['category'] : null,
-                    'job_id' => isset($recommendation['job_id']) ? (int) $recommendation['job_id'] : null,
                 ], static fn ($value): bool => $value !== null);
             }, $topRecommendations),
         ];
@@ -401,6 +398,23 @@ class SchedulerOptimizeReportService
         ksort($counts);
 
         return $counts;
+    }
+
+    private function compactRecommendationType(array $recommendation): string
+    {
+        $id = isset($recommendation['id']) ? (string) $recommendation['id'] : '';
+        $type = preg_replace('/-\d+$/', '', $id) ?? '';
+        $type = trim($type);
+
+        if ($type === '') {
+            $type = isset($recommendation['category']) ? (string) $recommendation['category'] : 'unknown';
+        }
+
+        $type = strtolower($type);
+        $type = preg_replace('/[^a-z0-9_-]+/', '_', $type) ?? 'unknown';
+        $type = trim($type, '_');
+
+        return $type !== '' ? $type : 'unknown';
     }
 
     private function mysqlTableExists(string $table): bool

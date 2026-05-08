@@ -18,7 +18,7 @@ Targets only top-level directories matching:
 
 Options:
   --root DIR          Temp root to scan. Default: $PLOS_PUBLIC_TEMP_ROOT or ~/tmp.
-  --keep-latest N    Keep newest N directories per artifact kind. Default: 1.
+  --keep-latest N    Keep newest N directories per artifact kind; must be >= 1. Default: 1.
   --dry-run           Scan and report only. This is also the default mode.
   --execute          Delete selected generated temp trees.
   -h, --help         Show this help text.
@@ -39,7 +39,7 @@ while (($#)); do
             shift 2
             ;;
         --keep-latest)
-            if [[ -z "${2:-}" || ! "$2" =~ ^[0-9]+$ ]]; then
+            if [[ -z "${2:-}" || ! "$2" =~ ^[0-9]+$ || "$2" == "0" ]]; then
                 usage >&2
                 exit 2
             fi
@@ -66,6 +66,20 @@ while (($#)); do
 done
 
 temp_root="$(realpath -m "$temp_root")"
+tmp_root="$(realpath -m "${TMPDIR:-/tmp}")"
+home_tmp_root=""
+if [[ -n "${HOME:-}" ]]; then
+    home_tmp_root="$(realpath -m "$HOME/tmp")"
+fi
+
+is_temp_root=false
+for allowed_root in "$tmp_root" /tmp /var/tmp "$home_tmp_root"; do
+    [[ -n "$allowed_root" ]] || continue
+    if [[ "$temp_root" == "$allowed_root" || "$temp_root" == "$allowed_root"/* ]]; then
+        is_temp_root=true
+        break
+    fi
+done
 
 case "$temp_root" in
     /|"")
@@ -77,6 +91,12 @@ case "$temp_root" in
         exit 2
         ;;
 esac
+
+if [[ "$is_temp_root" != true ]]; then
+    printf 'Refusing to scan non-temp root: %s\n' "$temp_root" >&2
+    printf 'Use a root under %s, /tmp, /var/tmp, or ~/tmp.\n' "$tmp_root" >&2
+    exit 2
+fi
 
 if [[ ! -d "$temp_root" ]]; then
     printf 'Temp root does not exist: %s\n' "$temp_root" >&2

@@ -63,21 +63,20 @@
         <div v-if="context.media_refs && context.media_refs.length" class="media-refs">
           <div class="media-refs-heading">Source media</div>
           <a
-            v-for="m in context.media_refs"
-            :key="m.id"
+            v-for="(m, idx) in context.media_refs"
+            :key="mediaRefKey(m, idx)"
             :href="m.view_url || '#'"
             target="_blank"
             rel="noopener"
             class="media-ref-card"
             :class="{ 'media-ref-disabled': !m.view_url || !m.file_exists }"
-            :title="m.nextcloud_path || ''"
+            :title="mediaRefTitle(m)"
           >
             <div class="media-ref-icon">{{ mediaIcon(m) }}</div>
             <div class="media-ref-meta">
               <div class="media-ref-title">{{ m.title }}</div>
               <div class="media-ref-sub">
-                #{{ m.id }} · {{ m.file_format || m.mime_type || 'unknown' }}
-                <span v-if="m.media_type">· {{ m.media_type }}</span>
+                {{ mediaRefDescriptor(m) }}
                 <span v-if="!m.file_exists" class="text-ops-red"> · file missing</span>
               </div>
             </div>
@@ -122,11 +121,31 @@
         This row is advisory. The preview is generated for inspection only and does not write back to queue details or canonical genealogy data.
       </div>
 
+      <div v-if="typedPreviewSafetyRows.length" class="typed-preview-safety">
+        <div class="typed-preview-safety-heading">No-write safety</div>
+        <div class="typed-preview-safety-grid">
+          <div v-for="row in typedPreviewSafetyRows" :key="row.key" class="typed-preview-safety-row">
+            <span class="typed-preview-safety-key">{{ row.label }}</span>
+            <span class="typed-preview-safety-value" :class="row.state">{{ row.value }}</span>
+          </div>
+        </div>
+      </div>
+
       <div class="typed-preview-meta">
         <span>persisted: {{ String(typedPreviewMeta.persisted === true) }}</span>
         <span>generated: {{ String(typedPreviewMeta.generated === true) }}</span>
         <span>writeback: {{ String(typedPreviewMeta.writeback === true) }}</span>
         <span>mutates accepted facts: {{ String(typedRemediationPreview.mutates_accepted_facts === true) }}</span>
+      </div>
+
+      <div v-if="typedMaterializationRows.length" class="typed-preview-safety typed-materialization-readiness">
+        <div class="typed-preview-safety-heading">Materialization readiness</div>
+        <div class="typed-preview-safety-grid">
+          <div v-for="row in typedMaterializationRows" :key="row.key" class="typed-preview-safety-row">
+            <span class="typed-preview-safety-key">{{ row.label }}</span>
+            <span class="typed-preview-safety-value" :class="row.state">{{ row.value }}</span>
+          </div>
+        </div>
       </div>
 
       <div v-if="typedPreviewSummaryRows.length" class="typed-preview-kv">
@@ -278,20 +297,16 @@ const changeProposalView = computed(() => {
 function formatProposedValue(v) {
   if (v === null || v === undefined || v === '') return '—'
   if (typeof v === 'string') {
-    // Try to detect JSON and pretty-print briefly.
-    if ((v.startsWith('{') && v.endsWith('}')) || (v.startsWith('[') && v.endsWith(']'))) {
+    if (looksLikeJsonPayload(v)) {
       try {
         const parsed = JSON.parse(v)
-        return Object.entries(parsed)
-          .filter(([_, val]) => val !== null && val !== '')
-          .map(([k, val]) => `${k}: ${val}`)
-          .join(' · ') || v
-      } catch (e) { return v }
+        return structuredValueLabel(parsed, 'Structured proposed value')
+      } catch (e) { return redactDisplayText(v) }
     }
-    return v
+    return redactDisplayText(v)
   }
-  if (typeof v === 'object') return JSON.stringify(v)
-  return String(v)
+  if (Array.isArray(v) || isPlainObject(v)) return structuredValueLabel(v, 'Structured proposed value')
+  return redactDisplayText(String(v))
 }
 
 function mediaIcon(m) {
@@ -307,6 +322,31 @@ function mediaIcon(m) {
   return '📎'
 }
 
+function mediaRefKey(m, idx) {
+  return `${mediaTextOrNull(m?.title) || mediaTextOrNull(m?.file_format) || mediaTextOrNull(m?.mime_type) || 'media'}-${idx}`
+}
+
+function mediaRefTitle(m) {
+  if (!m?.view_url) return 'Source media unavailable'
+  if (m.file_exists === false) return 'Source media file missing'
+  return 'Open source media'
+}
+
+function mediaRefDescriptor(m) {
+  const parts = [
+    mediaTextOrNull(m?.file_format) || mediaTextOrNull(m?.mime_type) || 'unknown format',
+  ]
+  const type = mediaTextOrNull(m?.media_type)
+  if (type) parts.push(type)
+  return parts.join(' / ')
+}
+
+function mediaTextOrNull(value) {
+  if (value === null || value === undefined) return null
+  const text = String(value).trim()
+  return text !== '' ? text : null
+}
+
 // ============================================================
 // Phase 3 — per-field decisions
 // ============================================================
@@ -316,6 +356,7 @@ const applyError = ref(null)
 
 const typedRemediationPreview = computed(() => objectValue(props.context?.typed_remediation_preview))
 const typedPreviewMeta = computed(() => objectValue(props.context?.typed_remediation_preview_meta))
+const typedMaterializationReadiness = computed(() => objectValue(props.context?.typed_remediation_materialization))
 const isTypedRemediationAdvisory = computed(
   () => Object.keys(typedRemediationPreview.value).length > 0
        || typedPreviewMeta.value.generated === true
@@ -323,6 +364,77 @@ const isTypedRemediationAdvisory = computed(
 const typedPreviewOperations = computed(
   () => arrayValue(typedRemediationPreview.value.operations).filter(isPlainObject)
 )
+const typedPreviewSafetyRows = computed(() => {
+  const operations = typedPreviewOperations.value
+  if (operations.length === 0 && Object.keys(typedRemediationPreview.value).length === 0) return []
+
+  const guardCounts = { pass: 0, fail: 0, other: 0 }
+  const failedGuards = new Set()
+  let touchedRows = 0
+  let allApplyDisabled = true
+  const operationTypes = new Set()
+  const operationStatuses = new Set()
+
+  for (const operation of operations) {
+    if (operation.operation_type) operationTypes.add(safePreviewCode(operation.operation_type))
+    if (operation.status) operationStatuses.add(safePreviewCode(operation.status))
+    if (operation.apply_enabled === true) allApplyDisabled = false
+
+    for (const guard of typedPreviewGuards(operation)) {
+      const status = String(guard.status || '').toLowerCase()
+      if (status === 'pass') {
+        guardCounts.pass += 1
+      } else if (status === 'fail') {
+        guardCounts.fail += 1
+        failedGuards.add(safePreviewCode(guard.name || 'guard'))
+      } else {
+        guardCounts.other += 1
+      }
+    }
+
+    touchedRows += arrayValue(operation?.proposed_effect?.rows_that_would_be_touched).length
+  }
+
+  return [
+    safetyRow('status', 'Preview status', safePreviewCode(typedRemediationPreview.value.status || 'unknown'), 'neutral'),
+    safetyRow('operations', 'Operations', String(typedRemediationPreview.value.operation_count ?? operations.length), 'neutral'),
+    safetyRow('operation_types', 'Operation types', safePreviewList(operationTypes), 'neutral'),
+    safetyRow('operation_statuses', 'Operation statuses', safePreviewList(operationStatuses), operationStatuses.has('blocked') ? 'warn' : 'ok'),
+    safetyRow('guards_passed', 'Guards passed', String(guardCounts.pass), 'ok'),
+    safetyRow('guards_failed', 'Guards failed', String(guardCounts.fail), guardCounts.fail > 0 ? 'blocked' : 'ok'),
+    safetyRow('failed_guards', 'Failed guard names', safePreviewList(failedGuards), guardCounts.fail > 0 ? 'blocked' : 'ok'),
+    safetyRow('rows_touched', 'Rows touched if later approved', String(touchedRows), touchedRows > 0 ? 'warn' : 'ok'),
+    safetyRow('apply_controls', 'Apply controls', allApplyDisabled ? 'disabled' : 'enabled', allApplyDisabled ? 'ok' : 'blocked'),
+    safetyRow('writeback', 'Writeback', typedPreviewMeta.value.writeback === true ? 'enabled' : 'disabled', typedPreviewMeta.value.writeback === true ? 'blocked' : 'ok'),
+    safetyRow('accepted_fact_mutation', 'Accepted fact mutation', typedRemediationPreview.value.mutates_accepted_facts === true ? 'possible' : 'none', typedRemediationPreview.value.mutates_accepted_facts === true ? 'blocked' : 'ok'),
+  ]
+})
+const typedMaterializationRows = computed(() => {
+  const readiness = typedMaterializationReadiness.value
+  if (Object.keys(readiness).length === 0) return []
+
+  const validation = objectValue(readiness.validation)
+  const packetSummary = objectValue(readiness.packet_summary)
+  const safety = objectValue(readiness.safety)
+  const blockerCount = Number(validation.blocker_count ?? 0)
+  const validationState = validation.valid === true
+    ? 'valid'
+    : (validation.valid === false ? 'blocked' : 'unknown')
+
+  return [
+    safetyRow('readiness_status', 'Readiness', safePreviewCode(readiness.status || 'unknown'), readinessState(readiness.status)),
+    safetyRow('operation_types', 'Operation types', safePreviewArray(readiness.operation_types), 'neutral'),
+    safetyRow('validation_state', 'Validation', validationState, validationState === 'valid' ? 'ok' : 'warn'),
+    safetyRow('validation_blockers', 'Blockers', String(blockerCount), blockerCount > 0 ? 'blocked' : 'ok'),
+    safetyRow('blocker_codes', 'Blocker codes', safePreviewArray(validation.blocker_codes), blockerCount > 0 ? 'blocked' : 'ok'),
+    safetyRow('source_references', 'Source refs', String(packetSummary.source_reference_count ?? 0), 'neutral'),
+    safetyRow('claims', 'Claims', String(packetSummary.claim_count ?? 0), 'neutral'),
+    safetyRow('target_context', 'Target context', safePreviewArray(packetSummary.target_context_types), 'neutral'),
+    safetyRow('privacy', 'Privacy', packetSummary.privacy_present === true ? 'present' : 'missing', packetSummary.privacy_present === true ? 'ok' : 'warn'),
+    safetyRow('apply_posture', 'Apply', safety.apply_enabled === true ? 'enabled' : 'held', safety.apply_enabled === true ? 'blocked' : 'ok'),
+    safetyRow('canonical_write', 'Canonical write', safety.canonical_write_allowed === true ? 'enabled' : 'disabled', safety.canonical_write_allowed === true ? 'blocked' : 'ok'),
+  ]
+})
 const typedPreviewSummaryRows = computed(() => {
   const rows = []
   for (const key of ['status', 'operation_count']) {
@@ -386,7 +498,7 @@ function isPlainObject(value) {
 function kvRows(value) {
   if (!isPlainObject(value)) return []
   return Object.entries(value)
-    .filter(([_, val]) => val !== undefined)
+    .filter(([key, val]) => val !== undefined && !isSensitiveDisplayKey(key))
     .map(([key, val]) => toKvRow(key, val))
 }
 
@@ -402,16 +514,48 @@ function displayValue(value) {
   if (value === null || value === undefined || value === '') return '-'
   if (value === true) return 'true'
   if (value === false) return 'false'
-  if (Array.isArray(value) || isPlainObject(value)) return compactJson(value)
-  return String(value)
+  if (Array.isArray(value) || isPlainObject(value)) return structuredValueLabel(value)
+  return redactDisplayText(String(value))
 }
 
-function compactJson(value) {
-  try {
-    return JSON.stringify(value)
-  } catch (e) {
-    return String(value)
+function structuredValueLabel(value, label = 'Structured details') {
+  if (Array.isArray(value)) return `${label} (${value.length} item${value.length === 1 ? '' : 's'})`
+  if (isPlainObject(value)) {
+    const count = Object.keys(value).filter((key) => !isSensitiveDisplayKey(key)).length
+    return `${label} (${count} field${count === 1 ? '' : 's'})`
   }
+  return label
+}
+
+function redactDisplayText(value) {
+  return String(value)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[redacted]@')
+    .replace(/\b(?:sk|ghp|github_pat|glpat|xox[baprs]?)-[A-Za-z0-9_=-]{8,}\b/gi, '[redacted token]')
+    .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
+}
+
+function looksLikeJsonPayload(value) {
+  const trimmed = value.trim()
+  return (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    || (trimmed.startsWith('[') && trimmed.endsWith(']'))
+}
+
+function isSensitiveDisplayKey(key) {
+  const normalized = String(key || '').toLowerCase()
+  return normalized === 'id'
+    || normalized.endsWith('_id')
+    || normalized.includes('locator')
+    || normalized.includes('url')
+    || normalized.includes('uri')
+    || normalized.includes('href')
+    || normalized.includes('link')
+    || normalized.includes('path')
+    || normalized.includes('token')
+    || normalized.includes('secret')
+    || normalized.includes('password')
+    || normalized.includes('hash')
 }
 
 function typedPreviewOperationKey(operation, idx) {
@@ -436,6 +580,35 @@ function typedPreviewGuardClass(guard) {
   if (status === 'pass') return 'guard-pass'
   if (status === 'fail') return 'guard-fail'
   return 'guard-warn'
+}
+
+function safetyRow(key, label, value, state = 'neutral') {
+  return { key, label, value: value || '-', state }
+}
+
+function readinessState(status) {
+  const safe = safePreviewCode(status || 'unknown')
+  if (safe === 'dry_run_ready' || safe === 'existing_packet') return 'ok'
+  if (safe === 'validation_blocked') return 'blocked'
+  if (safe === 'unsupported' || safe === 'failed') return 'warn'
+  return 'neutral'
+}
+
+function safePreviewCode(value) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return normalized || 'unknown'
+}
+
+function safePreviewArray(values) {
+  return safePreviewList(Array.isArray(values) ? values.map(safePreviewCode) : [])
+}
+
+function safePreviewList(values) {
+  const list = Array.from(values).filter(Boolean).sort()
+  return list.length ? list.join(', ') : '-'
 }
 
 const acceptedCount = computed(
@@ -690,6 +863,49 @@ const confidenceClass = computed(() => {
   font-size: 0.78rem;
   line-height: 1.4;
 }
+.typed-preview-safety {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.65rem;
+  background: rgba(0, 0, 0, 0.20);
+  border: 1px solid rgba(181, 245, 181, 0.24);
+  border-radius: 0.375rem;
+}
+.typed-preview-safety-heading {
+  color: #b5f5b5;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.typed-preview-safety-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.35rem 0.6rem;
+}
+.typed-preview-safety-row {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+}
+.typed-preview-safety-key {
+  color: #8fbfe8;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.typed-preview-safety-value {
+  color: #d8ecff;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.typed-preview-safety-value.ok { color: #b5f5b5; }
+.typed-preview-safety-value.warn { color: #ffd980; }
+.typed-preview-safety-value.blocked { color: #ffb5b5; }
 .typed-preview-meta {
   display: flex;
   flex-wrap: wrap;

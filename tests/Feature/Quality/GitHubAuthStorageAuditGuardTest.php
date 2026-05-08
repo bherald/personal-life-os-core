@@ -332,6 +332,54 @@ class GitHubAuthStorageAuditGuardTest extends TestCase
         $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
     }
 
+    public function test_symlinked_default_gh_config_dir_fails_before_invoking_gh(): void
+    {
+        $fixture = $this->makeFixture();
+        $redirectedConfigDir = $fixture['root'].'/redirected-gh-config';
+        mkdir($redirectedConfigDir, 0700, true);
+        file_put_contents($redirectedConfigDir.'/hosts.yml', "github.com:\n    oauth_token: stored-secret\n");
+        chmod($redirectedConfigDir.'/hosts.yml', 0600);
+        symlink($redirectedConfigDir, $fixture['config'].'/gh');
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runGuard($fixture, ['--allow-plaintext'], [
+            'FAKE_GH_CALL_LOG' => $callLog,
+            'GH_TOKEN' => 'session-secret',
+        ]);
+
+        $this->assertSame(1, $result->getExitCode());
+        $this->assertStringContainsString('GitHub CLI config directory is a symlink', $result->getOutput());
+        $this->assertFileDoesNotExist($callLog);
+        $this->assertStringNotContainsString('stored-secret', $result->getOutput());
+        $this->assertStringNotContainsString('session-secret', $result->getOutput());
+        $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
+    }
+
+    public function test_symlinked_explicit_gh_config_dir_fails_before_invoking_gh(): void
+    {
+        $fixture = $this->makeFixture();
+        $redirectedConfigDir = $fixture['root'].'/redirected-explicit-gh-config';
+        $explicitConfigDir = $fixture['root'].'/explicit-gh-config';
+        mkdir($redirectedConfigDir, 0700, true);
+        file_put_contents($redirectedConfigDir.'/hosts.yml', "github.com:\n    oauth_token: stored-secret\n");
+        chmod($redirectedConfigDir.'/hosts.yml', 0600);
+        symlink($redirectedConfigDir, $explicitConfigDir);
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runGuard($fixture, ['--allow-plaintext', '--require-session-token'], [
+            'FAKE_GH_CALL_LOG' => $callLog,
+            'GH_CONFIG_DIR' => $explicitConfigDir,
+            'GITHUB_TOKEN' => 'session-secret',
+        ]);
+
+        $this->assertSame(1, $result->getExitCode());
+        $this->assertStringContainsString('GitHub CLI config directory is a symlink', $result->getOutput());
+        $this->assertFileDoesNotExist($callLog);
+        $this->assertStringNotContainsString('stored-secret', $result->getOutput());
+        $this->assertStringNotContainsString('session-secret', $result->getOutput());
+        $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
+    }
+
     public function test_public_workflow_preflight_passes_without_workflow_changes_or_session_token(): void
     {
         $fixture = $this->makeFixture();
@@ -346,6 +394,27 @@ class GitHubAuthStorageAuditGuardTest extends TestCase
         $this->assertSame(0, $result->getExitCode());
         $this->assertStringContainsString('OK: no .github/workflows changes detected', $result->getOutput());
         $this->assertFileDoesNotExist($callLog);
+    }
+
+    public function test_public_workflow_preflight_rejects_url_host_even_without_workflow_changes(): void
+    {
+        $fixture = $this->makeFixture();
+        $repo = $this->makeGitRepo($fixture);
+        $this->commitFile($repo, 'README.md', "# Public export\n");
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runWorkflowPreflight($fixture, $repo, [
+            '--host',
+            'https://github.example.invalid/example/repo',
+        ], [
+            'FAKE_GH_CALL_LOG' => $callLog,
+            'GH_TOKEN' => 'session-secret',
+        ]);
+
+        $this->assertSame(2, $result->getExitCode());
+        $this->assertStringContainsString('GitHub host must be a bare hostname', $result->getErrorOutput());
+        $this->assertFileDoesNotExist($callLog);
+        $this->assertStringNotContainsString('session-secret', $result->getOutput().$result->getErrorOutput());
     }
 
     public function test_public_workflow_preflight_fails_for_workflow_change_without_session_token(): void
@@ -405,6 +474,86 @@ class GitHubAuthStorageAuditGuardTest extends TestCase
         $this->assertStringNotContainsString('stored-secret', $result->getOutput());
         $this->assertStringNotContainsString('session-secret', $result->getOutput());
         $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
+    }
+
+    public function test_public_workflow_preflight_base_requires_workflow_scope_for_workflow_change_after_base(): void
+    {
+        $fixture = $this->makeFixture();
+        $repo = $this->makeGitRepo($fixture);
+        $this->commitFile($repo, 'README.md', "# Public export\n");
+        $baseRef = $this->currentGitHead($repo);
+        $this->commitFile($repo, '.github/workflows/public-readiness.yml', "name: Public Readiness\n");
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runWorkflowPreflight($fixture, $repo, ['--base', $baseRef], [
+            'GH_TOKEN' => 'session-secret',
+            'FAKE_GH_CALL_LOG' => $callLog,
+            'FAKE_GH_SCOPES' => "'repo'",
+            'FAKE_GH_ISOLATED_SCOPES' => "'repo', 'workflow'",
+        ]);
+
+        $this->assertSame(0, $result->getExitCode());
+        $this->assertStringContainsString('INFO: detected .github/workflows changes requiring GitHub workflow scope:', $result->getOutput());
+        $this->assertStringContainsString('- .github/workflows/public-readiness.yml', $result->getOutput());
+        $this->assertStringContainsString('INFO: workflow scope will be checked against the isolated session token, not the persistent gh bridge.', $result->getOutput());
+        $this->assertStringContainsString('OK: session-gh token includes workflow scope.', $result->getOutput());
+        $this->assertFileExists($callLog);
+        $this->assertStringNotContainsString('session-secret', $result->getOutput());
+        $this->assertStringNotContainsString('fake-gh-token', $result->getOutput());
+    }
+
+    public function test_public_workflow_preflight_detects_workflow_paths_with_newlines(): void
+    {
+        $fixture = $this->makeFixture();
+        $repo = $this->makeGitRepo($fixture);
+        $this->commitFile($repo, 'README.md', "# Public export\n");
+        $baseRef = $this->currentGitHead($repo);
+        $this->commitFile($repo, ".github/workflows/public\nreadiness.yml", "name: Public Readiness\n");
+
+        $result = $this->runWorkflowPreflight($fixture, $repo, ['--base', $baseRef]);
+
+        $this->assertSame(1, $result->getExitCode());
+        $this->assertStringContainsString('INFO: detected .github/workflows changes requiring GitHub workflow scope:', $result->getOutput());
+        $this->assertStringContainsString('FAIL: no session-scoped GH_TOKEN/GITHUB_TOKEN is present.', $result->getOutput());
+        $this->assertStringNotContainsString('OK: no .github/workflows changes detected', $result->getOutput());
+    }
+
+    public function test_public_workflow_preflight_base_allows_non_workflow_change_after_base_without_session_token(): void
+    {
+        $fixture = $this->makeFixture();
+        $repo = $this->makeGitRepo($fixture);
+        $this->commitFile($repo, '.github/workflows/public-readiness.yml', "name: Public Readiness\n");
+        $baseRef = $this->currentGitHead($repo);
+        $this->commitFile($repo, 'README.md', "# Public export\n");
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runWorkflowPreflight($fixture, $repo, ['--base', $baseRef], [
+            'FAKE_GH_CALL_LOG' => $callLog,
+        ]);
+
+        $this->assertSame(0, $result->getExitCode());
+        $this->assertStringContainsString('OK: no .github/workflows changes detected; workflow scope is not required for this push surface.', $result->getOutput());
+        $this->assertFileDoesNotExist($callLog);
+    }
+
+    public function test_public_workflow_preflight_base_fails_closed_when_ref_does_not_exist(): void
+    {
+        $fixture = $this->makeFixture();
+        $repo = $this->makeGitRepo($fixture);
+        $this->commitFile($repo, '.github/workflows/public-readiness.yml', "name: Public Readiness\n");
+        $callLog = $fixture['root'].'/gh-calls.log';
+
+        $result = $this->runWorkflowPreflight($fixture, $repo, ['--base', 'refs/heads/missing'], [
+            'GH_TOKEN' => 'session-secret',
+            'FAKE_GH_CALL_LOG' => $callLog,
+            'FAKE_GH_SCOPES' => "'repo', 'workflow'",
+        ]);
+
+        $this->assertSame(2, $result->getExitCode());
+        $this->assertStringContainsString('--base must resolve to a commit', $result->getErrorOutput());
+        $this->assertFileDoesNotExist($callLog);
+        $this->assertStringNotContainsString('session-secret', $result->getOutput().$result->getErrorOutput());
+        $this->assertStringNotContainsString('fake-gh-token', $result->getOutput().$result->getErrorOutput());
     }
 
     /**
@@ -511,6 +660,14 @@ SH);
         }
 
         return $repo;
+    }
+
+    private function currentGitHead(string $repo): string
+    {
+        $process = new Process(['git', 'rev-parse', 'HEAD'], $repo);
+        $process->mustRun();
+
+        return trim($process->getOutput());
     }
 
     private function commitFile(string $repo, string $path, string $contents): void

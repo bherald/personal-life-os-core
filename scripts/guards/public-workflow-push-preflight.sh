@@ -18,50 +18,74 @@ validate_host() {
         usage >&2
         exit 2
     fi
-}
 
-add_paths() {
-    local output="$1"
-    local path
-
-    if [[ -z "$output" ]]; then
-        return
+    if [[ "$host" == *"://"* || "$host" == */* || "$host" == *[[:space:]]* || "$host" == *..* ]]; then
+        printf 'FAIL: GitHub host must be a bare hostname, not a URL, path, or spaced value.\n' >&2
+        usage >&2
+        exit 2
     fi
 
-    while IFS= read -r path; do
-        if [[ "$path" == .github/workflows/* ]]; then
-            workflow_paths["$path"]=1
+    if [[ ! "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]]; then
+        printf 'FAIL: GitHub host must be a hostname with only letters, numbers, dots, and hyphens.\n' >&2
+        usage >&2
+        exit 2
+    fi
+
+    local label
+    local -a host_labels
+    IFS='.' read -r -a host_labels <<< "$host"
+    for label in "${host_labels[@]}"; do
+        if [[ -z "$label" || "$label" == -* || "$label" == *- ]]; then
+            printf 'FAIL: GitHub host labels must not be empty or start/end with hyphens.\n' >&2
+            usage >&2
+            exit 2
         fi
-    done <<< "$output"
+    done
+}
+
+add_path() {
+    local path="$1"
+
+    if [[ "$path" == .github/workflows/* ]]; then
+        workflow_paths["$path"]=1
+    fi
 }
 
 collect_diff_paths() {
-    local output
+    local path
 
-    output="$(git diff --name-only -- .github/workflows 2>/dev/null || true)"
-    add_paths "$output"
+    while IFS= read -r -d '' path; do
+        add_path "$path"
+    done < <(git diff -z --name-only -- .github/workflows 2>/dev/null || true)
 
-    output="$(git diff --name-only --cached -- .github/workflows 2>/dev/null || true)"
-    add_paths "$output"
+    while IFS= read -r -d '' path; do
+        add_path "$path"
+    done < <(git diff -z --name-only --cached -- .github/workflows 2>/dev/null || true)
 
-    output="$(git ls-files --others --exclude-standard -- .github/workflows 2>/dev/null || true)"
-    add_paths "$output"
+    while IFS= read -r -d '' path; do
+        add_path "$path"
+    done < <(git ls-files -z --others --exclude-standard -- .github/workflows 2>/dev/null || true)
 }
 
 collect_commit_paths() {
     local compare_ref="$1"
-    local output
+    local before_count
+    local path
 
     if [[ -z "$compare_ref" ]]; then
         return
     fi
 
-    output="$(git diff --name-only "$compare_ref"...HEAD -- .github/workflows 2>/dev/null || true)"
-    if [[ -z "$output" ]]; then
-        output="$(git diff --name-only "$compare_ref" HEAD -- .github/workflows 2>/dev/null || true)"
-    fi
+    before_count="${#workflow_paths[@]}"
+    while IFS= read -r -d '' path; do
+        add_path "$path"
+    done < <(git diff -z --name-only "$compare_ref"...HEAD -- .github/workflows 2>/dev/null || true)
 
-    add_paths "$output"
+    if [[ "${#workflow_paths[@]}" -eq "$before_count" ]]; then
+        while IFS= read -r -d '' path; do
+            add_path "$path"
+        done < <(git diff -z --name-only "$compare_ref" HEAD -- .github/workflows 2>/dev/null || true)
+    fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -109,6 +133,11 @@ if ! git_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
 fi
 
 cd "$git_root"
+
+if [[ -n "$base_ref" ]] && ! git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then
+    printf 'FAIL: --base must resolve to a commit before workflow preflight can compare the public push surface.\n' >&2
+    exit 2
+fi
 
 declare -A workflow_paths=()
 

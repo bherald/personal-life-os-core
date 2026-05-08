@@ -46,9 +46,8 @@ class GedcomExportService
     /**
      * Export a tree to GEDCOM format
      *
-     * @param int $treeId
-     * @param int|null $userId User performing export (for privacy filtering)
-     * @param array $options Export options
+     * @param  int|null  $userId  User performing export (for privacy filtering)
+     * @param  array  $options  Export options
      * @return string GEDCOM content
      */
     public function exportTree(int $treeId, ?int $userId = null, array $options = []): string
@@ -63,8 +62,8 @@ class GedcomExportService
             'gedcom_version' => '5.5.1', // GEN-4: '5.5.1' or '7.0'
         ], $options);
 
-        $tree = DB::selectOne("SELECT * FROM genealogy_trees WHERE id = ?", [$treeId]);
-        if (!$tree) {
+        $tree = DB::selectOne('SELECT * FROM genealogy_trees WHERE id = ?', [$treeId]);
+        if (! $tree) {
             throw new \InvalidArgumentException("Tree not found: {$treeId}");
         }
 
@@ -87,7 +86,7 @@ class GedcomExportService
 
         $lines[] = '0 TRLR';
 
-        return implode("\r\n", $lines) . "\r\n";
+        return implode("\r\n", $lines)."\r\n";
     }
 
     /**
@@ -129,11 +128,11 @@ class GedcomExportService
             "1 DATE {$now}",
             "2 TIME {$time}",
             '1 SUBM @SUBM@',
-            '1 FILE ' . $this->sanitizeFileName($tree->name) . '.ged',
+            '1 FILE '.$this->sanitizeFileName($tree->name).'.ged',
             '1 GEDC',
             '2 VERS 5.5.1',
             '2 FORM LINEAGE-LINKED',
-            '1 CHAR ' . self::ENCODING,
+            '1 CHAR '.self::ENCODING,
             '1 LANG English',
         ];
     }
@@ -145,11 +144,11 @@ class GedcomExportService
     {
         $lines = [
             '0 @SUBM@ SUBM',
-            '1 NAME ' . $this->sanitize($options['submitter_name']),
+            '1 NAME '.$this->sanitize($options['submitter_name']),
         ];
 
-        if (!empty($options['submitter_address'])) {
-            $lines[] = '1 ADDR ' . $this->sanitize($options['submitter_address']);
+        if (! empty($options['submitter_address'])) {
+            $lines[] = '1 ADDR '.$this->sanitize($options['submitter_address']);
         }
 
         return $lines;
@@ -162,20 +161,21 @@ class GedcomExportService
     {
         $lines = [];
 
-        $persons = DB::select("
+        $persons = DB::select('
             SELECT p.*
             FROM genealogy_persons p
             WHERE p.tree_id = ?
             ORDER BY p.id
-        ", [$treeId]);
+        ', [$treeId]);
 
         foreach ($persons as $person) {
             // Check privacy - skip living persons if not included
             $isLiving = $this->privacyService->isPersonLiving($person->id);
 
-            if ($isLiving && !$options['include_living']) {
+            if ($isLiving && ! $options['include_living']) {
                 // Add minimal record for living person
                 $lines = array_merge($lines, $this->buildLivingPersonStub($person));
+
                 continue;
             }
 
@@ -190,11 +190,11 @@ class GedcomExportService
      */
     protected function buildLivingPersonStub(object $person): array
     {
-        $xref = '@I' . $person->id . '@';
+        $xref = '@I'.$person->id.'@';
 
         return [
             "0 {$xref} INDI",
-            '1 NAME Living /' . $this->sanitize($person->surname ?? 'Person') . '/',
+            '1 NAME Living /'.$this->sanitize($person->surname ?? 'Person').'/',
             '1 RESN privacy',
         ];
     }
@@ -204,7 +204,7 @@ class GedcomExportService
      */
     protected function buildIndividualRecord(object $person, array $options): array
     {
-        $xref = '@I' . $person->id . '@';
+        $xref = '@I'.$person->id.'@';
         $lines = ["0 {$xref} INDI"];
 
         // Name
@@ -212,117 +212,117 @@ class GedcomExportService
         $surname = $this->sanitize($person->surname ?? '');
         $lines[] = "1 NAME {$givenName} /{$surname}/";
         if ($givenName) {
-            $lines[] = '2 GIVN ' . $givenName;
+            $lines[] = '2 GIVN '.$givenName;
         }
         if ($surname) {
-            $lines[] = '2 SURN ' . $surname;
+            $lines[] = '2 SURN '.$surname;
         }
-        if (!empty($person->name_prefix)) {
-            $lines[] = '2 NPFX ' . $this->sanitize($person->name_prefix);
+        if (! empty($person->name_prefix)) {
+            $lines[] = '2 NPFX '.$this->sanitize($person->name_prefix);
         }
-        if (!empty($person->name_suffix)) {
-            $lines[] = '2 NSFX ' . $this->sanitize($person->name_suffix);
+        if (! empty($person->name_suffix)) {
+            $lines[] = '2 NSFX '.$this->sanitize($person->name_suffix);
         }
 
         // Sex
-        if (!empty($person->sex)) {
-            $lines[] = '1 SEX ' . strtoupper($person->sex);
+        if (! empty($person->sex)) {
+            $lines[] = '1 SEX '.strtoupper($person->sex);
         }
 
         // Birth
-        if (!empty($person->birth_date) || !empty($person->birth_place)) {
+        if (! empty($person->birth_date) || ! empty($person->birth_place)) {
             $lines[] = '1 BIRT';
-            if (!empty($person->birth_date)) {
-                $lines[] = '2 DATE ' . $this->formatGedcomDate($person->birth_date);
+            if (! empty($person->birth_date)) {
+                $lines[] = '2 DATE '.$this->formatGedcomDate($person->birth_date);
             }
-            if (!empty($person->birth_place)) {
-                $lines[] = '2 PLAC ' . $this->sanitize($person->birth_place);
+            if (! empty($person->birth_place)) {
+                $lines[] = '2 PLAC '.$this->sanitize($person->birth_place);
             }
         }
 
         // Death
-        if (!empty($person->death_date) || !empty($person->death_place)) {
+        if (! empty($person->death_date) || ! empty($person->death_place)) {
             $lines[] = '1 DEAT';
-            if (!empty($person->death_date)) {
-                $lines[] = '2 DATE ' . $this->formatGedcomDate($person->death_date);
+            if (! empty($person->death_date)) {
+                $lines[] = '2 DATE '.$this->formatGedcomDate($person->death_date);
             }
-            if (!empty($person->death_place)) {
-                $lines[] = '2 PLAC ' . $this->sanitize($person->death_place);
+            if (! empty($person->death_place)) {
+                $lines[] = '2 PLAC '.$this->sanitize($person->death_place);
             }
         }
 
         // Burial
-        if (!empty($person->burial_date) || !empty($person->burial_place)) {
+        if (! empty($person->burial_date) || ! empty($person->burial_place)) {
             $lines[] = '1 BURI';
-            if (!empty($person->burial_date)) {
-                $lines[] = '2 DATE ' . $this->formatGedcomDate($person->burial_date);
+            if (! empty($person->burial_date)) {
+                $lines[] = '2 DATE '.$this->formatGedcomDate($person->burial_date);
             }
-            if (!empty($person->burial_place)) {
-                $lines[] = '2 PLAC ' . $this->sanitize($person->burial_place);
+            if (! empty($person->burial_place)) {
+                $lines[] = '2 PLAC '.$this->sanitize($person->burial_place);
             }
         }
 
         // Occupation
-        if (!empty($person->occupation)) {
-            $lines[] = '1 OCCU ' . $this->sanitize($person->occupation);
+        if (! empty($person->occupation)) {
+            $lines[] = '1 OCCU '.$this->sanitize($person->occupation);
         }
 
         // Events
         $lines = array_merge($lines, $this->buildPersonEvents($person->id));
 
         // Family links (as child)
-        $childFamilies = DB::select("
+        $childFamilies = DB::select('
             SELECT fc.family_id
             FROM genealogy_children fc
             WHERE fc.person_id = ?
-        ", [$person->id]);
+        ', [$person->id]);
 
         foreach ($childFamilies as $fam) {
-            $lines[] = '1 FAMC @F' . $fam->family_id . '@';
+            $lines[] = '1 FAMC @F'.$fam->family_id.'@';
         }
 
         // Family links (as spouse)
-        $spouseFamilies = DB::select("
+        $spouseFamilies = DB::select('
             SELECT f.id
             FROM genealogy_families f
             WHERE f.husband_id = ? OR f.wife_id = ?
-        ", [$person->id, $person->id]);
+        ', [$person->id, $person->id]);
 
         foreach ($spouseFamilies as $fam) {
-            $lines[] = '1 FAMS @F' . $fam->id . '@';
+            $lines[] = '1 FAMS @F'.$fam->id.'@';
         }
 
         // Notes
-        if ($options['include_notes'] && !empty($person->notes)) {
+        if ($options['include_notes'] && ! empty($person->notes)) {
             $lines = array_merge($lines, $this->buildNote($person->notes));
         }
 
         // Source citations
-        $citations = DB::select("
+        $citations = DB::select('
             SELECT c.*, s.title as source_title
             FROM genealogy_citations c
             JOIN genealogy_sources s ON c.source_id = s.id
             WHERE c.person_id = ?
-        ", [$person->id]);
+        ', [$person->id]);
 
         foreach ($citations as $citation) {
-            $lines[] = '1 SOUR @S' . $citation->source_id . '@';
-            if (!empty($citation->page)) {
-                $lines[] = '2 PAGE ' . $this->sanitize($citation->page);
+            $lines[] = '1 SOUR @S'.$citation->source_id.'@';
+            if (! empty($citation->page)) {
+                $lines[] = '2 PAGE '.$this->sanitize($citation->page);
             }
         }
 
         // Media links
         if ($options['include_media']) {
-            $mediaLinks = DB::select("
+            $mediaLinks = DB::select('
                 SELECT m.id
                 FROM genealogy_media m
                 JOIN genealogy_person_media pm ON m.id = pm.media_id
                 WHERE pm.person_id = ?
-            ", [$person->id]);
+            ', [$person->id]);
 
             foreach ($mediaLinks as $media) {
-                $lines[] = '1 OBJE @M' . $media->id . '@';
+                $lines[] = '1 OBJE @M'.$media->id.'@';
             }
         }
 
@@ -336,23 +336,23 @@ class GedcomExportService
     {
         $lines = [];
 
-        $events = DB::select("
+        $events = DB::select('
             SELECT * FROM genealogy_events
             WHERE person_id = ?
             ORDER BY event_date
-        ", [$personId]);
+        ', [$personId]);
 
         foreach ($events as $event) {
             $tag = $this->mapEventTypeToGedcom($event->event_type);
             $lines[] = "1 {$tag}";
 
-            if (!empty($event->event_date)) {
-                $lines[] = '2 DATE ' . $this->formatGedcomDate($event->event_date);
+            if (! empty($event->event_date)) {
+                $lines[] = '2 DATE '.$this->formatGedcomDate($event->event_date);
             }
-            if (!empty($event->event_place)) {
-                $lines[] = '2 PLAC ' . $this->sanitize($event->event_place);
+            if (! empty($event->event_place)) {
+                $lines[] = '2 PLAC '.$this->sanitize($event->event_place);
             }
-            if (!empty($event->description)) {
+            if (! empty($event->description)) {
                 $lines = array_merge($lines, $this->buildContinuedText('2 NOTE', $event->description));
             }
         }
@@ -367,53 +367,53 @@ class GedcomExportService
     {
         $lines = [];
 
-        $families = DB::select("
+        $families = DB::select('
             SELECT f.*
             FROM genealogy_families f
             WHERE f.tree_id = ?
             ORDER BY f.id
-        ", [$treeId]);
+        ', [$treeId]);
 
         foreach ($families as $family) {
-            $xref = '@F' . $family->id . '@';
+            $xref = '@F'.$family->id.'@';
             $lines[] = "0 {$xref} FAM";
 
             // Husband
-            if (!empty($family->husband_id)) {
-                $lines[] = '1 HUSB @I' . $family->husband_id . '@';
+            if (! empty($family->husband_id)) {
+                $lines[] = '1 HUSB @I'.$family->husband_id.'@';
             }
 
             // Wife
-            if (!empty($family->wife_id)) {
-                $lines[] = '1 WIFE @I' . $family->wife_id . '@';
+            if (! empty($family->wife_id)) {
+                $lines[] = '1 WIFE @I'.$family->wife_id.'@';
             }
 
             // Marriage
-            if (!empty($family->marriage_date) || !empty($family->marriage_place)) {
+            if (! empty($family->marriage_date) || ! empty($family->marriage_place)) {
                 $lines[] = '1 MARR';
-                if (!empty($family->marriage_date)) {
-                    $lines[] = '2 DATE ' . $this->formatGedcomDate($family->marriage_date);
+                if (! empty($family->marriage_date)) {
+                    $lines[] = '2 DATE '.$this->formatGedcomDate($family->marriage_date);
                 }
-                if (!empty($family->marriage_place)) {
-                    $lines[] = '2 PLAC ' . $this->sanitize($family->marriage_place);
+                if (! empty($family->marriage_place)) {
+                    $lines[] = '2 PLAC '.$this->sanitize($family->marriage_place);
                 }
             }
 
             // Divorce
-            if (!empty($family->divorce_date)) {
+            if (! empty($family->divorce_date)) {
                 $lines[] = '1 DIV';
-                $lines[] = '2 DATE ' . $this->formatGedcomDate($family->divorce_date);
+                $lines[] = '2 DATE '.$this->formatGedcomDate($family->divorce_date);
             }
 
             // Children
-            $children = DB::select("
+            $children = DB::select('
                 SELECT person_id FROM genealogy_children
                 WHERE family_id = ?
                 ORDER BY birth_order
-            ", [$family->id]);
+            ', [$family->id]);
 
             foreach ($children as $child) {
-                $lines[] = '1 CHIL @I' . $child->person_id . '@';
+                $lines[] = '1 CHIL @I'.$child->person_id.'@';
             }
 
             // Family events
@@ -430,21 +430,21 @@ class GedcomExportService
     {
         $lines = [];
 
-        $events = DB::select("
+        $events = DB::select('
             SELECT * FROM genealogy_family_events
             WHERE family_id = ?
             ORDER BY event_date
-        ", [$familyId]);
+        ', [$familyId]);
 
         foreach ($events as $event) {
             $tag = $this->mapFamilyEventTypeToGedcom($event->event_type);
             $lines[] = "1 {$tag}";
 
-            if (!empty($event->event_date)) {
-                $lines[] = '2 DATE ' . $this->formatGedcomDate($event->event_date);
+            if (! empty($event->event_date)) {
+                $lines[] = '2 DATE '.$this->formatGedcomDate($event->event_date);
             }
-            if (!empty($event->event_place)) {
-                $lines[] = '2 PLAC ' . $this->sanitize($event->event_place);
+            if (! empty($event->event_place)) {
+                $lines[] = '2 PLAC '.$this->sanitize($event->event_place);
             }
         }
 
@@ -458,38 +458,38 @@ class GedcomExportService
     {
         $lines = [];
 
-        $sources = DB::select("
+        $sources = DB::select('
             SELECT * FROM genealogy_sources
             WHERE tree_id = ?
             ORDER BY id
-        ", [$treeId]);
+        ', [$treeId]);
 
         foreach ($sources as $source) {
-            $xref = '@S' . $source->id . '@';
+            $xref = '@S'.$source->id.'@';
             $lines[] = "0 {$xref} SOUR";
 
-            if (!empty($source->title)) {
-                $lines[] = '1 TITL ' . $this->sanitize($source->title);
+            if (! empty($source->title)) {
+                $lines[] = '1 TITL '.$this->sanitize($source->title);
             }
-            if (!empty($source->author)) {
-                $lines[] = '1 AUTH ' . $this->sanitize($source->author);
+            if (! empty($source->author)) {
+                $lines[] = '1 AUTH '.$this->sanitize($source->author);
             }
-            if (!empty($source->publication)) {
-                $lines[] = '1 PUBL ' . $this->sanitize($source->publication);
+            if (! empty($source->publication)) {
+                $lines[] = '1 PUBL '.$this->sanitize($source->publication);
             }
-            if (!empty($source->abbreviation)) {
-                $lines[] = '1 ABBR ' . $this->sanitize($source->abbreviation);
+            if (! empty($source->abbreviation)) {
+                $lines[] = '1 ABBR '.$this->sanitize($source->abbreviation);
             }
-            if (!empty($source->repository_id)) {
-                $lines[] = '1 REPO @R' . $source->repository_id . '@';
-                if (!empty($source->call_number)) {
-                    $lines[] = '2 CALN ' . $this->sanitize($source->call_number);
+            if (! empty($source->repository_id)) {
+                $lines[] = '1 REPO @R'.$source->repository_id.'@';
+                if (! empty($source->call_number)) {
+                    $lines[] = '2 CALN '.$this->sanitize($source->call_number);
                 }
             }
-            if (!empty($source->text)) {
+            if (! empty($source->text)) {
                 $lines = array_merge($lines, $this->buildContinuedText('1 TEXT', $source->text));
             }
-            if (!empty($source->notes)) {
+            if (! empty($source->notes)) {
                 $lines = array_merge($lines, $this->buildNote($source->notes));
             }
         }
@@ -504,42 +504,42 @@ class GedcomExportService
     {
         $lines = [];
 
-        $repositories = DB::select("
+        $repositories = DB::select('
             SELECT * FROM genealogy_repositories
             WHERE tree_id = ?
             ORDER BY id
-        ", [$treeId]);
+        ', [$treeId]);
 
         foreach ($repositories as $repo) {
-            $xref = '@R' . $repo->id . '@';
+            $xref = '@R'.$repo->id.'@';
             $lines[] = "0 {$xref} REPO";
 
-            if (!empty($repo->name)) {
-                $lines[] = '1 NAME ' . $this->sanitize($repo->name);
+            if (! empty($repo->name)) {
+                $lines[] = '1 NAME '.$this->sanitize($repo->name);
             }
-            if (!empty($repo->address) || !empty($repo->city) || !empty($repo->state)) {
-                $lines[] = '1 ADDR ' . $this->sanitize($repo->address ?? '');
-                if (!empty($repo->city)) {
-                    $lines[] = '2 CITY ' . $this->sanitize($repo->city);
+            if (! empty($repo->address) || ! empty($repo->city) || ! empty($repo->state)) {
+                $lines[] = '1 ADDR '.$this->sanitize($repo->address ?? '');
+                if (! empty($repo->city)) {
+                    $lines[] = '2 CITY '.$this->sanitize($repo->city);
                 }
-                if (!empty($repo->state)) {
-                    $lines[] = '2 STAE ' . $this->sanitize($repo->state);
+                if (! empty($repo->state)) {
+                    $lines[] = '2 STAE '.$this->sanitize($repo->state);
                 }
-                if (!empty($repo->postal_code)) {
-                    $lines[] = '2 POST ' . $this->sanitize($repo->postal_code);
+                if (! empty($repo->postal_code)) {
+                    $lines[] = '2 POST '.$this->sanitize($repo->postal_code);
                 }
-                if (!empty($repo->country)) {
-                    $lines[] = '2 CTRY ' . $this->sanitize($repo->country);
+                if (! empty($repo->country)) {
+                    $lines[] = '2 CTRY '.$this->sanitize($repo->country);
                 }
             }
-            if (!empty($repo->phone)) {
-                $lines[] = '1 PHON ' . $this->sanitize($repo->phone);
+            if (! empty($repo->phone)) {
+                $lines[] = '1 PHON '.$this->sanitize($repo->phone);
             }
-            if (!empty($repo->email)) {
-                $lines[] = '1 EMAIL ' . $this->sanitize($repo->email);
+            if (! empty($repo->email)) {
+                $lines[] = '1 EMAIL '.$this->sanitize($repo->email);
             }
-            if (!empty($repo->website)) {
-                $lines[] = '1 WWW ' . $this->sanitize($repo->website);
+            if (! empty($repo->website)) {
+                $lines[] = '1 WWW '.$this->sanitize($repo->website);
             }
         }
 
@@ -553,37 +553,37 @@ class GedcomExportService
     {
         $lines = [];
 
-        $media = DB::select("
+        $media = DB::select('
             SELECT * FROM genealogy_media
             WHERE tree_id = ?
             ORDER BY id
-        ", [$treeId]);
+        ', [$treeId]);
 
         foreach ($media as $item) {
-            $xref = '@M' . $item->id . '@';
+            $xref = '@M'.$item->id.'@';
             $lines[] = "0 {$xref} OBJE";
 
             // File reference
-            $lines[] = '1 FILE ' . $this->sanitize($item->nextcloud_path ?? $item->file_path ?? 'unknown');
+            $lines[] = '1 FILE '.$this->sanitize($item->nextcloud_path ?? $item->file_path ?? 'unknown');
 
             // Format
             $format = $this->mapMimeToGedcomFormat($item->mime_type ?? '');
             if ($format) {
-                $lines[] = '2 FORM ' . $format;
+                $lines[] = '2 FORM '.$format;
             }
 
             // Title
-            if (!empty($item->title)) {
-                $lines[] = '1 TITL ' . $this->sanitize($item->title);
+            if (! empty($item->title)) {
+                $lines[] = '1 TITL '.$this->sanitize($item->title);
             }
 
             // Date
-            if (!empty($item->date_taken)) {
-                $lines[] = '1 DATE ' . $this->formatGedcomDate($item->date_taken);
+            if (! empty($item->date_taken)) {
+                $lines[] = '1 DATE '.$this->formatGedcomDate($item->date_taken);
             }
 
             // Note/description
-            if (!empty($item->description)) {
+            if (! empty($item->description)) {
                 $lines = array_merge($lines, $this->buildNote($item->description));
             }
         }
@@ -615,13 +615,13 @@ class GedcomExportService
         foreach ($paragraphs as $paragraph) {
             if ($isFirst) {
                 // First line uses the prefix
-                $line = $prefix . ' ' . substr($paragraph, 0, self::MAX_LINE_LENGTH - strlen($prefix) - 1);
+                $line = $prefix.' '.substr($paragraph, 0, self::MAX_LINE_LENGTH - strlen($prefix) - 1);
                 $lines[] = $line;
                 $remaining = substr($paragraph, self::MAX_LINE_LENGTH - strlen($prefix) - 1);
                 $isFirst = false;
             } else {
                 // New paragraph uses CONT
-                $line = ($level + 1) . ' CONT ' . substr($paragraph, 0, self::MAX_LINE_LENGTH - 7);
+                $line = ($level + 1).' CONT '.substr($paragraph, 0, self::MAX_LINE_LENGTH - 7);
                 $lines[] = $line;
                 $remaining = substr($paragraph, self::MAX_LINE_LENGTH - 7);
             }
@@ -629,7 +629,7 @@ class GedcomExportService
             // Handle long lines with CONC
             while (strlen($remaining) > 0) {
                 $chunk = substr($remaining, 0, self::MAX_LINE_LENGTH - 7);
-                $lines[] = ($level + 1) . ' CONC ' . $chunk;
+                $lines[] = ($level + 1).' CONC '.$chunk;
                 $remaining = substr($remaining, self::MAX_LINE_LENGTH - 7);
             }
         }
@@ -709,7 +709,7 @@ class GedcomExportService
      */
     protected function mapMimeToGedcomFormat(?string $mime): ?string
     {
-        if (!$mime) {
+        if (! $mime) {
             return null;
         }
 
@@ -735,7 +735,7 @@ class GedcomExportService
      */
     protected function formatGedcomDate(?string $date): string
     {
-        if (!$date) {
+        if (! $date) {
             return '';
         }
 
@@ -783,32 +783,29 @@ class GedcomExportService
     /**
      * Export tree to file and return the file path
      *
-     * @param int $treeId
-     * @param int|null $userId
-     * @param array $options
      * @return string File path
      */
     public function exportToFile(int $treeId, ?int $userId = null, array $options = []): string
     {
-        $tree = DB::selectOne("SELECT name FROM genealogy_trees WHERE id = ?", [$treeId]);
-        if (!$tree) {
+        $tree = DB::selectOne('SELECT name FROM genealogy_trees WHERE id = ?', [$treeId]);
+        if (! $tree) {
             throw new \InvalidArgumentException("Tree not found: {$treeId}");
         }
 
         $content = $this->exportTree($treeId, $userId, $options);
 
-        $filename = $this->sanitizeFileName($tree->name) . '_' . date('Y-m-d_His') . '.ged';
-        $path = storage_path('app/genealogy/exports/' . $filename);
+        $filename = $this->sanitizeFileName($tree->name).'_'.date('Y-m-d_His').'.ged';
+        $path = storage_path('app/genealogy/exports/'.$filename);
 
         // Ensure directory exists
         $dir = dirname($path);
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             mkdir($dir, 0755, true);
         }
 
         file_put_contents($path, $content);
 
-        Log::info("GEDCOM export completed", [
+        Log::info('GEDCOM export completed', [
             'tree_id' => $treeId,
             'file' => $filename,
             'size' => strlen($content),
@@ -826,69 +823,71 @@ class GedcomExportService
      *
      * Per GEDCOM 7.0 spec, .gdz is the standard portable format.
      *
-     * @param int $treeId Tree to export
-     * @param int|null $userId User for privacy filtering
-     * @param array $options Export options
+     * @param  int  $treeId  Tree to export
+     * @param  int|null  $userId  User for privacy filtering
+     * @param  array  $options  Export options
      * @return string Path to the generated .gdz file
      */
     public function exportToGedZip(int $treeId, ?int $userId = null, array $options = []): string
     {
-        $tree = DB::selectOne("SELECT name FROM genealogy_trees WHERE id = ?", [$treeId]);
-        if (!$tree) {
+        $tree = DB::selectOne('SELECT name FROM genealogy_trees WHERE id = ?', [$treeId]);
+        if (! $tree) {
             throw new \InvalidArgumentException("Tree not found: {$treeId}");
         }
 
         // Generate GEDCOM content
         $gedcomContent = $this->exportTree($treeId, $userId, $options);
         $treeName = $this->sanitizeFileName($tree->name);
-        $zipFilename = $treeName . '_' . date('Y-m-d_His') . '.gdz';
-        $zipPath = storage_path('app/genealogy/exports/' . $zipFilename);
+        $zipFilename = $treeName.'_'.date('Y-m-d_His').'.gdz';
+        $zipPath = storage_path('app/genealogy/exports/'.$zipFilename);
 
         $dir = dirname($zipPath);
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             mkdir($dir, 0755, true);
         }
 
-        $zip = new \ZipArchive();
+        $zip = new \ZipArchive;
         if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
             throw new \RuntimeException("Cannot create GEDZip file: {$zipPath}");
         }
 
         // Add GEDCOM file
-        $zip->addFromString($treeName . '.ged', $gedcomContent);
-
-        // Add media files referenced by this tree
-        $mediaFiles = DB::select(
-            "SELECT gm.nextcloud_path, gm.local_filename
-             FROM genealogy_media gm
-             WHERE gm.tree_id = ? AND gm.nextcloud_path IS NOT NULL",
-            [$treeId]
-        );
+        $zip->addFromString($treeName.'.ged', $gedcomContent);
 
         $mediaCount = 0;
-        $nextcloudPath = config('services.nextcloud.data_path');
+        if ($options['include_media'] ?? true) {
+            // Add media files referenced by this tree
+            $mediaFiles = DB::select(
+                'SELECT gm.nextcloud_path, gm.local_filename
+                 FROM genealogy_media gm
+                 WHERE gm.tree_id = ? AND gm.nextcloud_path IS NOT NULL',
+                [$treeId]
+            );
 
-        foreach ($mediaFiles as $media) {
-            $fullPath = null;
+            $nextcloudPath = config('services.nextcloud.data_path');
 
-            // Filesystem-first (Nextcloud data path)
-            if ($nextcloudPath && $media->nextcloud_path) {
-                $candidate = $nextcloudPath . '/' . ltrim($media->nextcloud_path, '/');
-                if (file_exists($candidate)) {
-                    $fullPath = $candidate;
+            foreach ($mediaFiles as $media) {
+                $fullPath = null;
+
+                // Filesystem-first (Nextcloud data path)
+                if ($nextcloudPath && $media->nextcloud_path) {
+                    $candidate = $nextcloudPath.'/'.ltrim($media->nextcloud_path, '/');
+                    if (file_exists($candidate)) {
+                        $fullPath = $candidate;
+                    }
                 }
-            }
 
-            if ($fullPath) {
-                $archiveName = 'media/' . ($media->local_filename ?: basename($media->nextcloud_path));
-                $zip->addFile($fullPath, $archiveName);
-                $mediaCount++;
+                if ($fullPath) {
+                    $archiveName = 'media/'.($media->local_filename ?: basename($media->nextcloud_path));
+                    $zip->addFile($fullPath, $archiveName);
+                    $mediaCount++;
+                }
             }
         }
 
         $zip->close();
 
-        Log::info("GEDZip export completed", [
+        Log::info('GEDZip export completed', [
             'tree_id' => $treeId,
             'file' => $zipFilename,
             'gedcom_size' => strlen($gedcomContent),

@@ -10,7 +10,7 @@ return [
         'scan_hours_default' => env('DEV_AGENT_TRACE_SCAN_HOURS_DEFAULT', 24),
         'scan_hours_max' => env('DEV_AGENT_TRACE_SCAN_HOURS_MAX', 168),
         'retention_days' => env('DEV_AGENT_TRACE_RETENTION_DAYS', 14),
-        'redaction_rules_version' => '2026-05-01',
+        'redaction_rules_version' => '2026-05-08',
     ],
 
     'readiness' => [

@@ -416,6 +416,7 @@ class NewsBiasTagsAuditCommand extends Command
             'provider' => $this->stringOrNull($meta['provider'] ?? null),
             'priority' => $this->intOrNull($meta['priority'] ?? null),
             'format_type' => $this->stringOrNull($data['format_type'] ?? $meta['format_type'] ?? null),
+            'source_group' => $this->stringOrNull($data['source_group'] ?? $meta['source_group'] ?? null),
             'notification_sent' => $this->boolOrNull($data['notification_sent'] ?? null),
             'notification_suppressed' => $this->boolOrNull($data['notification_suppressed'] ?? null),
             'total_parts' => $this->intOrNull($data['total_parts'] ?? null),
@@ -785,6 +786,7 @@ class NewsBiasTagsAuditCommand extends Command
                 'state' => $report['pushover']['state'] ?? null,
                 'notification_sent' => $report['pushover']['notification_sent'] ?? null,
                 'notification_suppressed' => $report['pushover']['notification_suppressed'] ?? null,
+                'source_group' => $report['pushover']['source_group'] ?? null,
                 'parts_sent' => $report['pushover']['parts_sent'] ?? null,
                 'total_parts' => $report['pushover']['total_parts'] ?? null,
                 'timed_out' => $report['pushover']['timed_out'] ?? null,
@@ -865,6 +867,7 @@ class NewsBiasTagsAuditCommand extends Command
             .' reason='.$pushover['reason']
             .' sent='.var_export($pushover['notification_sent'], true)
             .' suppressed='.var_export($pushover['notification_suppressed'], true)
+            .' source_group='.($pushover['source_group'] ?? 'n/a')
             .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
             .' timeout='.var_export($pushover['timed_out'], true)
             .' duration_ms='.($pushover['duration_ms'] ?? 'n/a'));

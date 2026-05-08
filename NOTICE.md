@@ -16,7 +16,9 @@ MIT license terms through package metadata.
 
 ## Dependency Watch Items
 
-Run `scripts/audit-licenses.sh` before creating or publishing a public export.
+Run `scripts/audit-licenses.sh` and
+`scripts/guards/dependency-provenance-check.sh` before creating or publishing a
+public export.
 The current local audit was run on 2026-04-30 and passed with 12 warnings.
 Current known watch items include:
 
@@ -117,6 +119,7 @@ tracked in `docs/python-constraints-license-snapshot.md` and
 Before public release:
 
 1. Run `scripts/audit-licenses.sh`.
-2. Run `scripts/public-smoke.sh --force "$HOME/tmp/personal-life-os-core-smoke"`.
-3. Confirm no copied GPL/AGPL source, private data, private paths, private
+2. Run `scripts/guards/dependency-provenance-check.sh`.
+3. Run `scripts/public-smoke.sh --force "$HOME/tmp/personal-life-os-core-smoke"`.
+4. Confirm no copied GPL/AGPL source, private data, private paths, private
    credentials, or model weights are present in the exported tree.

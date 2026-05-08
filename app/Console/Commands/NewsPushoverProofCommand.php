@@ -246,18 +246,20 @@ class NewsPushoverProofCommand extends Command
             ];
         }
 
-        $last = $executions[array_key_last($executions)];
-        $data = $this->arrayValue($last['outputs']['data'] ?? null);
-        $meta = $this->arrayValue($last['outputs']['meta'] ?? null);
-        [$error, $ignoredError] = $this->pushoverExecutionError($last, $data);
+        [$selected, $selectionReason] = $this->selectPushoverExecution($executions);
+        $data = $this->arrayValue($selected['outputs']['data'] ?? null);
+        $meta = $this->arrayValue($selected['outputs']['meta'] ?? null);
+        [$error, $ignoredError] = $this->pushoverExecutionError($selected, $data);
 
         $summary = [
             'present' => true,
             'execution_ids' => array_map(fn (array $execution): int => $execution['id'], $executions),
-            'state' => $last['state'],
-            'duration_ms' => $last['duration_ms'] ?? null,
-            'timeout_seconds' => $last['timeout_seconds'] ?? null,
-            'timed_out' => $last['timed_out'] ?? null,
+            'selected_execution_id' => $selected['id'],
+            'selection_reason' => $selectionReason,
+            'state' => $selected['state'],
+            'duration_ms' => $selected['duration_ms'] ?? null,
+            'timeout_seconds' => $selected['timeout_seconds'] ?? null,
+            'timed_out' => $selected['timed_out'] ?? null,
             'error' => $error,
             'ignored_error' => $ignoredError,
             'provider' => $this->stringOrNull($meta['provider'] ?? null),
@@ -288,6 +290,43 @@ class NewsPushoverProofCommand extends Command
         [$summary['proof_state'], $summary['reason']] = $this->pushoverProofState($summary);
 
         return $summary;
+    }
+
+    private function selectPushoverExecution(array $executions): array
+    {
+        foreach (array_reverse($executions) as $execution) {
+            if ($this->hasCompletePushoverDeliveryEvidence($execution)) {
+                return [$execution, 'latest_complete_delivery'];
+            }
+        }
+
+        return [$executions[array_key_last($executions)], 'latest_execution'];
+    }
+
+    private function hasCompletePushoverDeliveryEvidence(array $execution): bool
+    {
+        $data = $this->arrayValue($execution['outputs']['data'] ?? null);
+
+        if ($this->boolOrNull($data['notification_sent'] ?? null) !== true) {
+            return false;
+        }
+
+        $totalParts = $this->intOrNull($data['total_parts'] ?? null);
+        $partsSent = $this->intOrNull($data['parts_sent'] ?? null);
+        if ($totalParts === null || $partsSent === null || $totalParts < 1 || $partsSent !== $totalParts) {
+            return false;
+        }
+
+        if ($this->intList($data['part_numbers_failed'] ?? null) !== []) {
+            return false;
+        }
+
+        $sentParts = $this->intList($data['part_numbers_sent'] ?? null);
+        if ($totalParts > 1 && $sentParts !== [] && count($sentParts) !== $totalParts) {
+            return false;
+        }
+
+        return true;
     }
 
     private function summarizeCurrentPushoverConfig(int $workflowId): ?array
@@ -769,7 +808,8 @@ class NewsPushoverProofCommand extends Command
             || ($partTimestampProof['state'] ?? null) === 'recorded';
         $headerProofOk = ($partHeaderProof['required'] ?? false) !== true
             || ($partHeaderProof['state'] ?? null) === 'recorded';
-        $contentProofOk = in_array(($partContentProof['state'] ?? null), ['recorded', 'metadata_missing'], true);
+        $contentProofState = $partContentProof['state'] ?? null;
+        $contentProofOk = in_array($contentProofState, ['recorded', 'metadata_missing'], true);
         $apiDeliveryConfirmed = ($pushover['proof_state'] ?? null) === 'delivery_confirmed'
             && ($partNumberProof['state'] ?? null) === 'exact_reverse_sequence'
             && $timestampProofOk
@@ -783,6 +823,16 @@ class NewsPushoverProofCommand extends Command
                 'api_delivery_confirmed' => false,
                 'device_display_verified' => false,
                 'operator_device_check_required' => false,
+            ];
+        }
+
+        if ($contentProofState === 'metadata_missing') {
+            return [
+                'state' => 'api_delivery_confirmed_content_unverified',
+                'reason' => 'Server-side proof confirms Pushover accepted every multipart packet, but this legacy run did not record per-part content fingerprints and device display still requires an operator check.',
+                'api_delivery_confirmed' => true,
+                'device_display_verified' => false,
+                'operator_device_check_required' => true,
             ];
         }
 

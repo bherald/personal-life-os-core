@@ -214,7 +214,7 @@ class AwoReplayService
             'agent_rollup' => $this->compactAgentRollup($byAgent),
             'promotion_decisions' => $this->compactPromotionDecisions($promotionDecisions),
             'stop_rules' => $this->replayStopRules(),
-            'note' => 'Compact replay is read-only and omits row-level review items, review queue ids, details, reviewer notes, titles, summaries, and tokens.',
+            'note' => 'Compact replay is read-only and omits row-level review items, review queue ids, agent identifiers, promotion item details, details, reviewer notes, titles, summaries, and tokens.',
         ];
     }
 
@@ -672,12 +672,12 @@ class AwoReplayService
 
         return [
             'agent_count' => count($agentIds),
-            'agent_ids' => $agentIds,
             'completed_reviews' => $completed,
             'approval_worthy_reviews' => $approvalWorthy,
             'completed_hard_fail_count' => $hardFails,
             'pending_hard_fail_signal_count' => $pendingHardFailSignals,
             'rework_count' => $rework,
+            'agent_identifiers_included' => false,
         ];
     }
 
@@ -687,23 +687,48 @@ class AwoReplayService
      */
     private function compactPromotionDecisions(array $decisions): array
     {
-        $items = [];
+        $count = 0;
+        $actionCounts = [];
+        $statusCounts = [];
+
         foreach ($decisions as $decision) {
             if (! is_array($decision)) {
                 continue;
             }
 
-            $items[] = array_filter([
-                'agent_id' => $this->nullableString($decision['agent_id'] ?? null),
-                'action' => $this->nullableString($decision['action'] ?? null),
-                'status' => $this->nullableString($decision['status'] ?? null),
-            ], fn (mixed $value): bool => $value !== null);
+            $count++;
+            $this->incrementCodeCount($actionCounts, $decision['action'] ?? null);
+            $this->incrementCodeCount($statusCounts, $decision['status'] ?? null);
         }
 
+        ksort($actionCounts);
+        ksort($statusCounts);
+
         return [
-            'count' => count($items),
-            'items' => $items,
+            'count' => $count,
+            'action_counts' => $actionCounts,
+            'status_counts' => $statusCounts,
+            'agent_identifiers_included' => false,
+            'item_details_included' => false,
         ];
+    }
+
+    /**
+     * @param  array<string, int>  $counts
+     */
+    private function incrementCodeCount(array &$counts, mixed $value): void
+    {
+        $code = $this->safeAggregateCode($value);
+        $counts[$code] = ($counts[$code] ?? 0) + 1;
+    }
+
+    private function safeAggregateCode(mixed $value): string
+    {
+        $code = strtolower((string) ($this->nullableString($value) ?? 'unknown'));
+        $code = preg_replace('/[^a-z0-9_-]+/', '_', $code) ?? 'unknown';
+        $code = trim($code, '_');
+
+        return $code !== '' ? $code : 'unknown';
     }
 
     /**

@@ -255,6 +255,13 @@ class SourceRegistryService
             $url = $this->nullableString($row->archive_url ?? null);
             $domain = $this->locatorHost($url ?? '');
 
+            $urlIssue = $this->archiveUrlIssue($url);
+            if ($urlIssue !== null) {
+                $errors[] = $this->postureError($row, $domain, $toolName, $urlIssue);
+
+                continue;
+            }
+
             if ($url === null || $domain === null) {
                 $errors[] = $this->postureError($row, $domain, $toolName, 'archive_url_missing_or_invalid');
 
@@ -383,12 +390,50 @@ class SourceRegistryService
         return false;
     }
 
+    private function archiveUrlIssue(?string $url): ?string
+    {
+        if ($url === null || $url === '') {
+            return 'archive_url_missing_or_invalid';
+        }
+
+        $scheme = parse_url($url, PHP_URL_SCHEME);
+        if (is_string($scheme) && trim($scheme) !== '') {
+            $scheme = strtolower(trim($scheme));
+            if (! in_array($scheme, ['http', 'https'], true)) {
+                return 'archive_url_unsupported_scheme';
+            }
+        }
+
+        if ($this->archiveUrlHasUserinfo($url)) {
+            return 'archive_url_contains_credentials';
+        }
+
+        return null;
+    }
+
+    private function archiveUrlHasUserinfo(string $url): bool
+    {
+        foreach ([PHP_URL_USER, PHP_URL_PASS] as $component) {
+            $value = parse_url($url, $component);
+            if (is_string($value) && trim($value) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function postureError(object $row, ?string $domain, ?string $toolName, string $code): array
     {
+        $archiveUrl = $this->nullableString($row->archive_url ?? null);
+        if (is_string($archiveUrl) && $this->archiveUrlHasUserinfo($archiveUrl)) {
+            $archiveUrl = null;
+        }
+
         return [
             'id' => (int) $row->id,
             'archive_name' => (string) ($row->archive_name ?? ''),
-            'archive_url' => $this->nullableString($row->archive_url ?? null),
+            'archive_url' => $archiveUrl,
             'domain' => $domain,
             'tool_name' => $toolName,
             'code' => $code,

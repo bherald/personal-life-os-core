@@ -120,8 +120,8 @@ class DbaTelemetryReportService
             'deep' => (bool) ($payload['deep'] ?? false),
             'status' => $payload['status'] ?? 'unknown',
             'section_statuses' => $this->sectionStatuses($sections),
+            'posture' => $this->compactPosture(),
             'threshold_breach_count' => count($thresholdBreaches),
-            'threshold_breach_ids' => $this->thresholdBreachIds($thresholdBreaches),
             'threshold_breach_status_counts' => $this->countValues($thresholdBreaches, 'status'),
             'recommendation_count' => count($recommendations),
             'arc' => [
@@ -156,11 +156,33 @@ class DbaTelemetryReportService
         ];
     }
 
+    /**
+     * @return array<string, bool|string>
+     */
+    private function compactPosture(): array
+    {
+        return [
+            'scope' => 'aggregate_only',
+            'mode' => 'observe',
+            'read_only' => true,
+            'writes_enabled' => false,
+            'cleanup_enabled' => false,
+            'arc_execute_enabled' => false,
+            'scheduler_changes_enabled' => false,
+            'notification_sends_enabled' => false,
+            'raw_table_dumps_included' => false,
+            'service_strategy_rows_included' => false,
+            'recommendation_text_included' => false,
+            'destructive_sql_included' => false,
+        ];
+    }
+
     public function compactToMarkdown(array $payload): string
     {
         $arc = $payload['arc'] ?? [];
         $redis = $payload['redis'] ?? [];
         $postgres = $payload['postgres'] ?? [];
+        $posture = is_array($payload['posture'] ?? null) ? $payload['posture'] : [];
 
         $lines = [
             '# DBA Telemetry Compact Report',
@@ -170,8 +192,16 @@ class DbaTelemetryReportService
             '- Captured: `'.($payload['captured_at'] ?? 'unknown').'`',
             '- Window: `'.($payload['window'] ?? 'current').'`',
             '- Threshold breaches: `'.(int) ($payload['threshold_breach_count'] ?? 0).'`',
-            '- Threshold breach ids: `'.$this->markdownList($payload['threshold_breach_ids'] ?? []).'`',
             '- Recommendations: `'.(int) ($payload['recommendation_count'] ?? 0).'`',
+            '',
+            '## Posture',
+            '',
+            '- Scope: `'.($posture['scope'] ?? 'aggregate_only').'`',
+            '- Mode: `'.($posture['mode'] ?? 'observe').'`',
+            '- Read only: `'.(($posture['read_only'] ?? true) ? 'true' : 'false').'`',
+            '- Writes enabled: `'.(($posture['writes_enabled'] ?? false) ? 'true' : 'false').'`',
+            '- ARC execute enabled: `'.(($posture['arc_execute_enabled'] ?? false) ? 'true' : 'false').'`',
+            '- Raw table dumps included: `'.(($posture['raw_table_dumps_included'] ?? false) ? 'true' : 'false').'`',
             '',
             '## ARC',
             '',
@@ -522,14 +552,6 @@ class DbaTelemetryReportService
         }
 
         return $statuses;
-    }
-
-    private function thresholdBreachIds(array $thresholdBreaches): array
-    {
-        return array_values(array_filter(array_map(
-            static fn (array $breach): ?string => isset($breach['id']) ? (string) $breach['id'] : null,
-            $thresholdBreaches
-        )));
     }
 
     private function countValues(array $rows, string $key): array

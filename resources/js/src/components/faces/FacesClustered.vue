@@ -65,7 +65,7 @@
             />
             <!-- Name or ID -->
             <span class="text-sm font-semibold truncate" :class="cluster.name ? 'text-ops-peach' : 'text-ops-text-muted'">
-              {{ cluster.name || `Cluster #${cluster.id}` }}
+              {{ clusterDisplayName(cluster) }}
             </span>
           </div>
           <div class="flex items-center gap-2 flex-shrink-0">
@@ -241,6 +241,10 @@ function statusLabel(status) {
     case 'merged': return 'merged'
     default: return status
   }
+}
+
+function clusterDisplayName(cluster) {
+  return cluster?.name || 'Unidentified cluster'
 }
 
 function faceCropUrl(face) {

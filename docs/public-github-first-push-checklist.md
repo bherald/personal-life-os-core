@@ -18,6 +18,10 @@ scripts/public-export.sh --force "$HOME/tmp/personal-life-os-core"
 scripts/public-smoke.sh --force "$HOME/tmp/personal-life-os-core-smoke"
 ```
 
+The smoke includes `scripts/guards/dependency-provenance-check.sh`; run the
+guard directly if dependency inventories or lockfiles changed since the last
+export.
+
 The smoke proves `setup:doctor --profile=core --skip-services` and the media
 `setup:doctor --profile=media --skip-services --only=assets,browser,docker`
 slice. GPU and full profile evidence is tag-gate work, not a first-push
@@ -86,6 +90,7 @@ Do not tag a public release until these are complete:
   loop restart
 - `scripts/guards/public-release-audit.sh`
 - `scripts/audit-licenses.sh`
+- `scripts/guards/dependency-provenance-check.sh`
 - `scripts/public-smoke.sh --force "$HOME/tmp/personal-life-os-core-smoke"`
 - GitHub `Public Readiness` workflow on the fresh public repository
 - every license warning is triaged as fixed, accepted with rationale, optional

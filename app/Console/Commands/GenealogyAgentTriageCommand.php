@@ -143,7 +143,6 @@ class GenealogyAgentTriageCommand extends Command
             ),
             'targets' => $compactTargets,
             'recommendation_count' => count($compactRecommendations),
-            'recommendations' => $compactRecommendations,
         ];
     }
 
@@ -189,13 +188,15 @@ class GenealogyAgentTriageCommand extends Command
             ?? ($awoSampleFloorMet
                 ? ($awoApprovalWorthyPresent ? 'approval_worthy_present' : 'no_approval_worthy')
                 : 'insufficient_sample');
+        $status = $this->safeCompactCode($target['status'] ?? null) ?? 'unknown';
+        $triageState = $this->safeCompactCode($target['triage_state'] ?? null) ?? $status;
 
         return [
             'job_name' => $target['job_name'] ?? '',
             'agent_id' => $target['agent_id'] ?? null,
             'enabled' => ! empty($target['enabled']),
-            'status' => $target['status'] ?? 'unknown',
-            'triage_state' => $target['triage_state'] ?? 'unknown',
+            'status' => $status,
+            'triage_state' => $triageState,
             'sessions_completed' => (int) ($sessions['completed'] ?? 0),
             'sessions_total' => (int) ($sessions['total'] ?? 0),
             'reviews_completed' => (int) ($reviews['completed'] ?? 0),
@@ -215,8 +216,53 @@ class GenealogyAgentTriageCommand extends Command
             'scheduler_enablement_allowed' => (bool) ($preEnableGates['scheduler_enablement_allowed'] ?? false),
             'production_writeback_allowed' => (bool) ($preEnableGates['production_writeback_allowed'] ?? false),
             'canonical_genealogy_writeback_allowed' => (bool) ($preEnableGates['canonical_genealogy_writeback_allowed'] ?? false),
-            'next_action' => $target['next_action'] ?? '',
+            'next_action_code' => $this->compactNextActionCode($target, $awoSampleFloorMet, $awoApprovalWorthyPresent),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $target
+     */
+    private function compactNextActionCode(array $target, bool $awoSampleFloorMet, bool $awoApprovalWorthyPresent): string
+    {
+        $triageState = $this->safeCompactCode($target['triage_state'] ?? null);
+        $allowedStates = [
+            'deferred_disabled',
+            'missing_scheduler_row',
+            'insufficient_awo_sample',
+            'low_awo_yield',
+            'recent_failure',
+            'no_review_output',
+            'observe_only',
+        ];
+
+        if ($triageState !== null && in_array($triageState, $allowedStates, true)) {
+            return $triageState;
+        }
+
+        $reviews = $target['reviews'] ?? [];
+        if (! is_array($reviews)) {
+            $reviews = [];
+        }
+
+        if ((int) ($reviews['total'] ?? 0) < 1) {
+            return 'no_review_output';
+        }
+
+        if (! $awoSampleFloorMet) {
+            return 'insufficient_awo_sample';
+        }
+
+        if (! $awoApprovalWorthyPresent) {
+            return 'low_awo_yield';
+        }
+
+        $status = $this->safeCompactCode($target['status'] ?? null);
+        if (in_array($status, ['failed', 'failure', 'degraded', 'critical'], true)) {
+            return 'recent_failure';
+        }
+
+        return 'observe_only';
     }
 
     /**
@@ -238,7 +284,7 @@ class GenealogyAgentTriageCommand extends Command
             && $this->allTargetsHave($targets, ['job_name', 'enabled', 'status', 'triage_state']);
         $reviewGateVisible = $targetsTotal > 0
             && count($targets) === $targetsTotal
-            && $this->allTargetsHave($targets, ['reviews_completed', 'reviews_total', 'next_action']);
+            && $this->allTargetsHave($targets, ['reviews_completed', 'reviews_total', 'next_action_code']);
         $sourceBackedPacketGateVisible = $targetsTotal > 0
             && count($targets) === $targetsTotal
             && $this->allTargetsHave($targets, ['source_backed_review_packets_required']);
@@ -449,7 +495,7 @@ class GenealogyAgentTriageCommand extends Command
             }
 
             $this->line(sprintf(
-                'target=%s agent=%s enabled=%s state=%s sessions=%d/%d reviews=%d/%d awo=%d/%d awo_floor=%s awo_yield=%s source_packet=%s scenarios=%d min_awo=%d operator_approval=%s scheduler_enable=%s writeback=%s canonical_writeback=%s action=%s',
+                'target=%s agent=%s enabled=%s state=%s sessions=%d/%d reviews=%d/%d awo=%d/%d awo_floor=%s awo_yield=%s source_packet=%s scenarios=%d min_awo=%d operator_approval=%s scheduler_enable=%s writeback=%s canonical_writeback=%s action_code=%s',
                 (string) ($target['job_name'] ?? ''),
                 (string) ($target['agent_id'] ?? '-'),
                 ! empty($target['enabled']) ? 'yes' : 'no',
@@ -469,7 +515,7 @@ class GenealogyAgentTriageCommand extends Command
                 ! empty($target['scheduler_enablement_allowed']) ? 'yes' : 'no',
                 ! empty($target['production_writeback_allowed']) ? 'yes' : 'no',
                 ! empty($target['canonical_genealogy_writeback_allowed']) ? 'yes' : 'no',
-                (string) ($target['next_action'] ?? ''),
+                (string) ($target['next_action_code'] ?? 'observe_only'),
             ));
         }
 

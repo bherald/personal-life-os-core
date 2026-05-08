@@ -54,7 +54,7 @@
       </div>
 
       <div class="item-meta">
-        <span v-if="item.tree_id" class="text-xs text-ops-text-muted">Tree #{{ item.tree_id }}</span>
+        <span v-if="item.tree_id" class="text-xs text-ops-text-muted">Tree reference present</span>
         <span v-if="item.created_at" class="text-xs text-ops-text-muted">{{ formatDate(item.created_at) }}</span>
       </div>
     </div>

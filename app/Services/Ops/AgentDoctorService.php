@@ -34,7 +34,7 @@ class AgentDoctorService
         $checks = [];
 
         $sessions = $this->collectSessions($since, $now, $checks);
-        $scheduledJobs = $this->collectScheduledJobs($since, $checks);
+        $scheduledJobs = $this->collectScheduledJobs($since, $now, $checks);
         $reviewQueues = $this->collectReviewQueues($now, $checks);
         $memory = $this->mergeMemorySummaries(
             $this->collectMemorySignals($since, $checks),
@@ -80,7 +80,7 @@ class AgentDoctorService
             'generated_at' => $now->utc()->toIso8601String(),
             'window_hours' => $windowHours,
             'overall_status' => $overallStatus,
-            'summary' => $this->buildSummary($agents),
+            'summary' => $this->buildSummary($agents, $now),
             'agents' => $agents,
             'recursion' => $recursion,
             'trace' => $trace,
@@ -159,7 +159,7 @@ class AgentDoctorService
      * @param  array<int, array<string, mixed>>  $checks
      * @return array<string, array<string, mixed>>
      */
-    private function collectScheduledJobs(CarbonImmutable $since, array &$checks): array
+    private function collectScheduledJobs(CarbonImmutable $since, CarbonImmutable $now, array &$checks): array
     {
         if (! Schema::hasTable('scheduled_jobs')) {
             $checks[] = $this->check('scheduled_jobs', 'warning', 'scheduled_jobs table is missing');
@@ -189,7 +189,7 @@ class AgentDoctorService
 
             $runs = $runsByJob[(int) $job->id] ?? collect();
             $lastRun = $runs->first();
-            $outputSignals = $this->scheduledOutputSignals($runs);
+            $outputSignals = $this->scheduledOutputSignals($runs, $now);
             $durations = $runs
                 ->pluck('duration_seconds')
                 ->filter(fn ($value): bool => $value !== null)
@@ -243,15 +243,19 @@ class AgentDoctorService
 
     /**
      * @param  Collection<int, object>  $runs
-     * @return array<string, int>
+     * @return array<string, mixed>
      */
-    private function scheduledOutputSignals(Collection $runs): array
+    private function scheduledOutputSignals(Collection $runs, CarbonImmutable $now): array
     {
         $successfulRuns = 0;
         $emptySuccessOutputs = 0;
         $cjkOutputRuns = 0;
         $nonAsciiOutputRuns = 0;
         $guardedOutputRuns = 0;
+        $latestEmptySuccessOutputAt = null;
+        $latestCjkOutputAt = null;
+        $latestNonAsciiOutputAt = null;
+        $latestGuardedOutputAt = null;
 
         foreach ($runs as $run) {
             if (($run->status ?? null) !== 'success') {
@@ -260,22 +264,27 @@ class AgentDoctorService
 
             $successfulRuns++;
             $output = trim((string) ($run->output ?? ''));
+            $signalAt = $this->runSignalTime($run);
             if ($output === '') {
                 $emptySuccessOutputs++;
+                $latestEmptySuccessOutputAt = $this->latestTime($latestEmptySuccessOutputAt, $signalAt);
 
                 continue;
             }
 
             if ($this->containsCjkScript($output)) {
                 $cjkOutputRuns++;
+                $latestCjkOutputAt = $this->latestTime($latestCjkOutputAt, $signalAt);
             }
 
             if ($this->containsNonAsciiMarker($output)) {
                 $nonAsciiOutputRuns++;
+                $latestNonAsciiOutputAt = $this->latestTime($latestNonAsciiOutputAt, $signalAt);
             }
 
             if ($this->containsAgentOutputGuard($output)) {
                 $guardedOutputRuns++;
+                $latestGuardedOutputAt = $this->latestTime($latestGuardedOutputAt, $signalAt);
             }
         }
 
@@ -285,6 +294,14 @@ class AgentDoctorService
             'cjk_output_runs_24h' => $cjkOutputRuns,
             'non_ascii_output_runs_24h' => $nonAsciiOutputRuns,
             'guarded_output_runs_24h' => $guardedOutputRuns,
+            'latest_empty_success_output_at' => $latestEmptySuccessOutputAt?->toIso8601String(),
+            'latest_empty_success_output_age_hours' => $this->ageHours($latestEmptySuccessOutputAt, $now),
+            'latest_cjk_output_at' => $latestCjkOutputAt?->toIso8601String(),
+            'latest_cjk_output_age_hours' => $this->ageHours($latestCjkOutputAt, $now),
+            'latest_non_ascii_output_at' => $latestNonAsciiOutputAt?->toIso8601String(),
+            'latest_non_ascii_output_age_hours' => $this->ageHours($latestNonAsciiOutputAt, $now),
+            'latest_guarded_output_at' => $latestGuardedOutputAt?->toIso8601String(),
+            'latest_guarded_output_age_hours' => $this->ageHours($latestGuardedOutputAt, $now),
         ];
     }
 
@@ -1217,7 +1234,7 @@ class AgentDoctorService
      * @param  array<int, array<string, mixed>>  $agents
      * @return array<string, mixed>
      */
-    private function buildSummary(array $agents): array
+    private function buildSummary(array $agents, CarbonImmutable $now): array
     {
         $sessionsActive = 0;
         $sessionsStalled = 0;
@@ -1236,6 +1253,10 @@ class AgentDoctorService
         $scheduledCjkOutputRuns = 0;
         $scheduledNonAsciiOutputRuns = 0;
         $scheduledGuardedOutputRuns = 0;
+        $latestScheduledEmptySuccessOutputAt = null;
+        $latestScheduledCjkOutputAt = null;
+        $latestScheduledNonAsciiOutputAt = null;
+        $latestScheduledGuardedOutputAt = null;
         $issueCodeCounts = [];
 
         foreach ($agents as $agent) {
@@ -1254,6 +1275,22 @@ class AgentDoctorService
             $scheduledCjkOutputRuns += (int) ($agent['scheduled_job']['cjk_output_runs_24h'] ?? 0);
             $scheduledNonAsciiOutputRuns += (int) ($agent['scheduled_job']['non_ascii_output_runs_24h'] ?? 0);
             $scheduledGuardedOutputRuns += (int) ($agent['scheduled_job']['guarded_output_runs_24h'] ?? 0);
+            $latestScheduledEmptySuccessOutputAt = $this->latestTime(
+                $latestScheduledEmptySuccessOutputAt,
+                $this->parseTime($agent['scheduled_job']['latest_empty_success_output_at'] ?? null)
+            );
+            $latestScheduledCjkOutputAt = $this->latestTime(
+                $latestScheduledCjkOutputAt,
+                $this->parseTime($agent['scheduled_job']['latest_cjk_output_at'] ?? null)
+            );
+            $latestScheduledNonAsciiOutputAt = $this->latestTime(
+                $latestScheduledNonAsciiOutputAt,
+                $this->parseTime($agent['scheduled_job']['latest_non_ascii_output_at'] ?? null)
+            );
+            $latestScheduledGuardedOutputAt = $this->latestTime(
+                $latestScheduledGuardedOutputAt,
+                $this->parseTime($agent['scheduled_job']['latest_guarded_output_at'] ?? null)
+            );
             if (((int) ($agent['memory']['episodes_window'] ?? 0)) > 0 && ((int) ($agent['memory']['summaries_window'] ?? 0)) === 0) {
                 $memoryUndistilledEpisodes += (int) ($agent['memory']['episodes_window'] ?? 0);
             }
@@ -1290,6 +1327,14 @@ class AgentDoctorService
             'scheduled_cjk_output_runs_window' => $scheduledCjkOutputRuns,
             'scheduled_non_ascii_output_runs_window' => $scheduledNonAsciiOutputRuns,
             'scheduled_guarded_output_runs_window' => $scheduledGuardedOutputRuns,
+            'scheduled_latest_empty_success_output_at' => $latestScheduledEmptySuccessOutputAt?->toIso8601String(),
+            'scheduled_latest_empty_success_output_age_hours' => $this->ageHours($latestScheduledEmptySuccessOutputAt, $now),
+            'scheduled_latest_cjk_output_at' => $latestScheduledCjkOutputAt?->toIso8601String(),
+            'scheduled_latest_cjk_output_age_hours' => $this->ageHours($latestScheduledCjkOutputAt, $now),
+            'scheduled_latest_non_ascii_output_at' => $latestScheduledNonAsciiOutputAt?->toIso8601String(),
+            'scheduled_latest_non_ascii_output_age_hours' => $this->ageHours($latestScheduledNonAsciiOutputAt, $now),
+            'scheduled_latest_guarded_output_at' => $latestScheduledGuardedOutputAt?->toIso8601String(),
+            'scheduled_latest_guarded_output_age_hours' => $this->ageHours($latestScheduledGuardedOutputAt, $now),
             'issue_code_counts' => $issueCodeCounts,
             'top_issue_codes' => array_slice(array_keys($issueCodeCounts), 0, 8),
         ];
@@ -1474,6 +1519,14 @@ class AgentDoctorService
             'cjk_output_runs_24h' => 0,
             'non_ascii_output_runs_24h' => 0,
             'guarded_output_runs_24h' => 0,
+            'latest_empty_success_output_at' => null,
+            'latest_empty_success_output_age_hours' => null,
+            'latest_cjk_output_at' => null,
+            'latest_cjk_output_age_hours' => null,
+            'latest_non_ascii_output_at' => null,
+            'latest_non_ascii_output_age_hours' => null,
+            'latest_guarded_output_at' => null,
+            'latest_guarded_output_age_hours' => null,
         ];
     }
 
@@ -1556,6 +1609,30 @@ class AgentDoctorService
     private function timeString(mixed $value): ?string
     {
         return $this->parseTime($value)?->toIso8601String();
+    }
+
+    private function runSignalTime(object $run): ?CarbonImmutable
+    {
+        return $this->parseTime($run->completed_at ?? null)
+            ?? $this->parseTime($run->started_at ?? null);
+    }
+
+    private function latestTime(?CarbonImmutable $current, ?CarbonImmutable $candidate): ?CarbonImmutable
+    {
+        if ($candidate === null) {
+            return $current;
+        }
+
+        return $current === null || $candidate->greaterThan($current) ? $candidate : $current;
+    }
+
+    private function ageHours(?CarbonImmutable $timestamp, CarbonImmutable $now): ?float
+    {
+        if ($timestamp === null) {
+            return null;
+        }
+
+        return round(max(0.0, $timestamp->floatDiffInHours($now)), 1);
     }
 
     /**

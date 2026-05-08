@@ -42,26 +42,56 @@ class PlosAgentTraceTailCommand extends Command
         ));
 
         foreach ($payload['events'] ?? [] as $event) {
+            if (! is_array($event)) {
+                continue;
+            }
+
             $this->line(sprintf(
-                '[%s] %s %s surface=%s actor=%s status=%s',
+                '[%s] %s trace=%s surface=%s actor=%s status=%s',
                 (string) ($event['recorded_at'] ?? ''),
                 (string) ($event['event_type'] ?? ''),
-                (string) ($event['trace_id'] ?? ''),
+                $this->humanTraceLabel($event),
                 (string) ($event['surface'] ?? ''),
-                (string) ($event['actor']['id'] ?? 'n/a'),
+                $this->humanActorLabel($event),
                 (string) ($event['result']['status'] ?? 'n/a'),
             ));
         }
 
         foreach ($payload['warnings'] ?? [] as $warning) {
+            if (! is_array($warning)) {
+                continue;
+            }
+
             $this->warn(sprintf(
-                'warning: %s:%s %s',
-                (string) ($warning['file'] ?? 'unknown'),
+                'warning: trace-file:%s %s',
                 (string) ($warning['line'] ?? '-'),
                 (string) ($warning['warning'] ?? 'unknown')
             ));
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * @param  array<string, mixed>  $event
+     */
+    private function humanTraceLabel(array $event): string
+    {
+        return isset($event['trace_id']) && trim((string) $event['trace_id']) !== '' ? 'matched' : 'n/a';
+    }
+
+    /**
+     * @param  array<string, mixed>  $event
+     */
+    private function humanActorLabel(array $event): string
+    {
+        $actor = is_array($event['actor'] ?? null) ? $event['actor'] : [];
+        $type = trim((string) ($actor['type'] ?? ''));
+
+        if ($type !== '') {
+            return $type;
+        }
+
+        return isset($actor['id']) && trim((string) $actor['id']) !== '' ? 'present' : 'n/a';
     }
 }

@@ -40,9 +40,20 @@ const FIELD_LABELS = {
 function formatField(field) { return FIELD_LABELS[field] || field }
 function formatValue(v) {
   if (v === null || v === undefined || v === '') return '—'
-  if (Array.isArray(v)) return v.join(', ')
-  if (typeof v === 'object') return JSON.stringify(v)
-  return String(v)
+  if (Array.isArray(v)) return structuredValueLabel(v)
+  if (typeof v === 'object') return structuredValueLabel(v)
+  return redactDisplayText(String(v))
+}
+function structuredValueLabel(value) {
+  if (Array.isArray(value)) return `Structured value (${value.length} item${value.length === 1 ? '' : 's'})`
+  if (value && typeof value === 'object') return `Structured value (${Object.keys(value).length} field${Object.keys(value).length === 1 ? '' : 's'})`
+  return 'Structured value'
+}
+function redactDisplayText(value) {
+  return String(value)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/gi, '[redacted secret]')
+    .replace(/\/(?:home|Users|root)\/[^\s,"')\]}]+/g, '[redacted path]')
 }
 </script>
 

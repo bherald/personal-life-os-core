@@ -186,7 +186,7 @@ class GenealogyReviewPacketFocusService
             }
         }
 
-        return $personId !== null ? "Person #{$personId}" : null;
+        return $personId !== null ? 'person reference present' : null;
     }
 
     /**
@@ -303,19 +303,24 @@ class GenealogyReviewPacketFocusService
      */
     private function firstSourceLabel(array $sources): ?string
     {
-        foreach ($sources as $source) {
+        foreach ($sources as $idx => $source) {
             if (! is_array($source)) {
                 continue;
             }
             foreach (['label', 'title', 'name'] as $key) {
                 $label = $source[$key] ?? null;
                 if (is_scalar($label) && trim((string) $label) !== '') {
-                    return trim((string) $label);
+                    return $this->sourceLabelService()->safeLabel($label, 'Source '.((int) $idx + 1));
                 }
             }
         }
 
         return null;
+    }
+
+    private function sourceLabelService(): GenealogyReviewPacketSourceLabelService
+    {
+        return app(GenealogyReviewPacketSourceLabelService::class);
     }
 
     /**

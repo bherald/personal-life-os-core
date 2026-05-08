@@ -4,7 +4,7 @@
     <div class="px-4 py-3 border-b border-ops-peach/20">
       <h3 class="text-sm font-semibold text-ops-peach uppercase">Similar Clusters</h3>
       <p v-if="clusterId" class="text-[10px] text-ops-text-muted mt-0.5">
-        Cluster #{{ clusterId }} · {{ clusterName || 'Unnamed' }}
+        Selected cluster · {{ clusterName || 'Unnamed' }}
       </p>
     </div>
 
@@ -46,7 +46,7 @@
       >
         <div class="flex items-center justify-between mb-1.5">
           <span class="text-xs font-semibold" :class="suggestion.name ? 'text-ops-peach' : 'text-ops-text-muted'">
-            {{ suggestion.name || `Cluster #${suggestion.cluster_id}` }}
+            {{ similarClusterLabel(suggestion) }}
           </span>
           <span class="text-[10px] font-mono" :class="confidenceClass(suggestion.max_confidence)">
             {{ Math.round(suggestion.max_confidence * 100) }}%
@@ -94,6 +94,10 @@ function confidenceClass(confidence) {
   if (confidence >= 0.85) return 'text-green-400'
   if (confidence >= 0.65) return 'text-yellow-400'
   return 'text-red-400'
+}
+
+function similarClusterLabel(suggestion) {
+  return suggestion?.name || 'Similar cluster'
 }
 
 function onImgError(e) {

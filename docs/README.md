@@ -44,7 +44,8 @@ GitHub PR template. Public fixtures are
 documented in `tests/Fixtures/PROVENANCE.md`. Research/project provenance that
 should be cited by publication drafts lives in `research-provenance.md`.
 Run `scripts/audit-licenses.sh` with the public audit before publishing an
-export candidate.
+export candidate, and run `scripts/guards/dependency-provenance-check.sh` to
+confirm dependency inventories still match the public provenance snapshots.
 
 ## Private Source Docs
 

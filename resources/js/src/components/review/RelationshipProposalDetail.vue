@@ -129,7 +129,7 @@ const rootDisplayName = computed(() => {
   const p = props.context?.person
   if (!p) return '(root)'
   const parts = [p.given_name, p.surname].filter(Boolean).join(' ').trim()
-  return parts || `Person #${p.id}`
+  return parts || 'Person reference'
 })
 
 const rootSubtext = computed(() => {

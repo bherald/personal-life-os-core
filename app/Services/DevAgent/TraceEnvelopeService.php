@@ -134,19 +134,39 @@ class TraceEnvelopeService
 
     /**
      * @param  array<string, mixed>  $filters
+     * @return array<string, mixed>
+     */
+    public function readEventById(string $eventId, array $filters = []): array
+    {
+        $events = $this->scan($filters);
+        $match = null;
+
+        foreach ($events['events'] as $event) {
+            if (($event['event_id'] ?? null) === $eventId) {
+                $match = $event;
+
+                break;
+            }
+        }
+
+        return [
+            'result' => $match === null ? 'not_found' : 'ok',
+            'event_id' => $eventId,
+            'hours' => $this->hours($filters['since'] ?? null),
+            'warnings' => $events['warnings'],
+            'event' => $match,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
      * @return array<string, mixed>|null
      */
     public function readByEventId(string $eventId, array $filters = []): ?array
     {
-        $events = $this->scan($filters);
+        $payload = $this->readEventById($eventId, $filters);
 
-        foreach ($events['events'] as $event) {
-            if (($event['event_id'] ?? null) === $eventId) {
-                return $event;
-            }
-        }
-
-        return null;
+        return is_array($payload['event'] ?? null) ? $payload['event'] : null;
     }
 
     /**
@@ -158,7 +178,7 @@ class TraceEnvelopeService
         $traceId = $this->cleanId((string) ($event['trace_id'] ?? '')) ?: 'trc_'.Str::uuid()->toString();
         $eventId = $this->cleanId((string) ($event['event_id'] ?? '')) ?: 'evt_'.Str::uuid()->toString();
         $sequence = max(1, (int) ($event['sequence'] ?? 1));
-        $maxSummary = max(120, (int) config('dev_agent.trace.max_summary_chars', 500));
+        $maxSummary = $this->maxSummaryChars();
 
         $envelope = [
             'schema_version' => self::SCHEMA_VERSION,
@@ -233,7 +253,7 @@ class TraceEnvelopeService
                     continue;
                 }
 
-                $events[] = $decoded;
+                $events[] = $this->sanitizeScannedEvent($decoded);
             }
 
             fclose($handle);
@@ -309,10 +329,26 @@ class TraceEnvelopeService
 
             $sanitized[$key] = match (true) {
                 is_array($item) => $this->sanitizeArray($item, $maxSummary),
-                is_string($item) => Str::limit($item, $maxSummary, ''),
+                is_string($item) => $this->boundedString($item, $maxSummary),
                 is_scalar($item) || $item === null => $item,
                 default => '[non-scalar]',
             };
+        }
+
+        return $sanitized;
+    }
+
+    /**
+     * @param  array<string, mixed>  $event
+     * @return array<string, mixed>
+     */
+    private function sanitizeScannedEvent(array $event): array
+    {
+        $maxSummary = $this->maxSummaryChars();
+        $sanitized = $this->sanitizeArray($event, $maxSummary);
+
+        if (isset($event['files']) && is_array($event['files'])) {
+            $sanitized['files'] = $this->sanitizeFiles((array) $event['files'], $maxSummary);
         }
 
         return $sanitized;
@@ -332,7 +368,7 @@ class TraceEnvelopeService
 
             $entry = $this->sanitizeArray($file, $maxSummary);
             if (isset($entry['path']) && is_string($entry['path'])) {
-                $entry['path'] = ltrim(str_replace(base_path(), '', $entry['path']), '/');
+                $entry['path'] = $this->safeTracePath((string) ($file['path'] ?? $entry['path']), $maxSummary);
             }
             $sanitized[] = $entry;
         }
@@ -361,6 +397,11 @@ class TraceEnvelopeService
     private function isForbiddenKey(string $key): bool
     {
         return in_array(strtolower($key), self::FORBIDDEN_KEYS, true);
+    }
+
+    private function maxSummaryChars(): int
+    {
+        return max(120, (int) config('dev_agent.trace.max_summary_chars', 500));
     }
 
     private function hashEvent(array $event): string
@@ -453,6 +494,7 @@ class TraceEnvelopeService
 
     private function cleanId(string $value): ?string
     {
+        $value = $this->redactSensitiveText($value);
         $value = trim($value);
         if ($value === '') {
             return null;
@@ -474,9 +516,94 @@ class TraceEnvelopeService
             return null;
         }
 
-        $value = trim((string) $value);
+        $value = trim($this->redactSensitiveText((string) $value));
 
         return $value === '' ? null : Str::limit($value, $limit, '');
+    }
+
+    private function safeTracePath(string $path, int $maxSummary): string
+    {
+        $path = trim($path);
+        if ($path === '') {
+            return '';
+        }
+
+        $normalized = str_replace('\\', '/', $path);
+        foreach ($this->safePathRoots() as $root => $prefix) {
+            if ($normalized === $root || str_starts_with($normalized, $root.'/')) {
+                $relative = ltrim(substr($normalized, strlen($root)), '/');
+                $value = $prefix.$relative;
+
+                return Str::limit($value === '' ? basename($root) : $value, $maxSummary, '');
+            }
+        }
+
+        if ($this->looksAbsolutePath($normalized)) {
+            return '[REDACTED_PATH]';
+        }
+
+        return Str::limit(ltrim($this->redactSensitiveText($normalized), './'), $maxSummary, '');
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function safePathRoots(): array
+    {
+        $roots = [];
+        foreach ([
+            base_path() => '',
+            storage_path() => 'storage/',
+        ] as $root => $prefix) {
+            $root = rtrim(str_replace('\\', '/', (string) $root), '/');
+            if ($root !== '' && $root !== '/') {
+                $roots[$root] = $prefix;
+            }
+        }
+
+        uksort($roots, static fn (string $a, string $b): int => strlen($b) <=> strlen($a));
+
+        return $roots;
+    }
+
+    private function looksAbsolutePath(string $path): bool
+    {
+        return str_starts_with($path, '/')
+            || preg_match('/^[A-Za-z]:\//', $path) === 1;
+    }
+
+    private function redactSensitiveText(string $value): string
+    {
+        $roots = array_filter([
+            base_path(),
+            storage_path(),
+            (string) getenv('HOME'),
+        ], static fn (string $path): bool => $path !== '' && $path !== '/');
+
+        usort($roots, static fn (string $a, string $b): int => strlen($b) <=> strlen($a));
+
+        foreach (array_unique($roots) as $root) {
+            $value = preg_replace(
+                '#'.preg_quote(rtrim(str_replace('\\', '/', $root), '/'), '#').'(?=/|$)[^\s,"\')\]}]*#',
+                '[REDACTED_PATH]',
+                str_replace('\\', '/', $value)
+            ) ?? $value;
+        }
+
+        $replacements = [
+            '/\b(?:api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password|authorization)\s*[:=]\s*[^\s,;\]}]+/i' => '[REDACTED_SECRET]',
+            '/\bBearer\s+[A-Za-z0-9._~+\/=-]+/i' => 'Bearer [REDACTED]',
+            '/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^:@\/\s]+):([^@\/\s]+)@/i' => '$1[REDACTED]@',
+            '/\b(?:sk-[A-Za-z0-9_=-]{8,}|ghp_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]{8,}|glpat-[A-Za-z0-9_=-]{8,}|xox[baprs]?-[A-Za-z0-9_-]{8,})\b/i' => '[REDACTED_TOKEN]',
+            '#/(?:home|Users|root)/[^\s,"\')\]}]+#' => '[REDACTED_PATH]',
+            '#[A-Za-z]:/Users/[^\s,"\')\]}]+#' => '[REDACTED_PATH]',
+        ];
+
+        foreach ($replacements as $pattern => $replacement) {
+            $value = preg_replace($pattern, $replacement, $value) ?? $value;
+        }
+
+        return $value;
     }
 
     private function isoTime(mixed $value): ?string

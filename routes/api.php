@@ -271,7 +271,7 @@ Route::get('/media/faces/recognized', [\App\Http\Controllers\Api\MediaBrowserCon
 Route::get('/media/faces/new', [\App\Http\Controllers\Api\MediaBrowserController::class, 'facesNew']);
 Route::middleware('auth:web')->get('/media/faces/named-only', [\App\Http\Controllers\Api\MediaBrowserController::class, 'facesNamedOnly']);
 Route::middleware('auth:web')->get('/media/faces/{faceId}/candidates', [\App\Http\Controllers\Api\MediaBrowserController::class, 'faceCandidates'])->where('faceId', '[0-9]+');
-Route::get('/media/faces/registry-crop/{faceId}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'serveFaceRegistryCrop']);
+Route::middleware('auth:web')->get('/media/faces/registry-crop/{faceId}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'serveFaceRegistryCrop']);
 Route::get('/media/faces/hidden', [\App\Http\Controllers\Api\MediaBrowserController::class, 'facesHidden']);
 Route::get('/media/faces/unidentified', [\App\Http\Controllers\Api\MediaBrowserController::class, 'unidentifiedFaces']);
 Route::get('/media/faces/person-faces', [\App\Http\Controllers\Api\MediaBrowserController::class, 'personFaces']);

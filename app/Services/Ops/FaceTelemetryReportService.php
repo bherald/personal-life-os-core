@@ -95,6 +95,9 @@ class FaceTelemetryReportService
             $lines[] = '- Open named-only faces: `'.($registrySummary['open_named_only_faces'] ?? 0).'`';
             $lines[] = '- Stale open named-only faces: `'.($registrySummary['stale_open_named_only_faces'] ?? 0).'`';
             $lines[] = '- Terminal-decided named-only faces: `'.($registrySummary['terminal_decided_named_only_faces'] ?? 0).'`';
+            $lines[] = '- Named-only with photo date: `'.($registrySummary['named_only_photo_date_faces'] ?? 0).'`';
+            $lines[] = '- Open named-only with photo date: `'.($registrySummary['open_named_only_photo_date_faces'] ?? 0).'`';
+            $lines[] = '- Named-only missing photo date: `'.($registrySummary['named_only_missing_photo_date_faces'] ?? 0).'`';
             $lines[] = '- Oldest named-only updated at: `'.($registrySummary['oldest_named_only_updated_at'] ?? 'none').'`';
             $lines[] = '- Newest named-only updated at: `'.($registrySummary['newest_named_only_updated_at'] ?? 'none').'`';
         }
@@ -126,7 +129,9 @@ class FaceTelemetryReportService
             $lines[] = '- Operator action: `'.($namedOnlyNextAction['operator_action'] ?? 'none').'`';
             $lines[] = '- Targeting scope: `'.($namedOnlyNextAction['targeting_scope'] ?? 'aggregate_only').'`';
             $lines[] = '- Automation allowed: `'.(($namedOnlyNextAction['automation_allowed'] ?? false) ? 'yes' : 'no').'`';
+            $lines[] = '- Automatic link allowed: `'.(($namedOnlyNextAction['automatic_link_allowed'] ?? false) ? 'yes' : 'no').'`';
             $lines[] = '- Create-person allowed: `'.(($namedOnlyNextAction['create_person_allowed'] ?? false) ? 'yes' : 'no').'`';
+            $lines[] = '- Writeback allowed: `'.(($namedOnlyNextAction['writeback_allowed'] ?? false) ? 'yes' : 'no').'`';
         }
 
         $namedOnlyTriage = $payload['sections']['named_only_triage_buckets']['summary'] ?? null;
@@ -140,6 +145,8 @@ class FaceTelemetryReportService
             $lines[] = '- Targeting scope: `'.($namedOnlyTriage['targeting_scope'] ?? 'aggregate_only').'`';
             $lines[] = '- Row identifiers: `'.(($namedOnlyTriage['uses_row_identifiers'] ?? false) ? 'yes' : 'no').'`';
             $lines[] = '- Automation allowed: `'.(($namedOnlyTriage['automation_allowed'] ?? false) ? 'yes' : 'no').'`';
+            $lines[] = '- Automatic link allowed: `'.(($namedOnlyTriage['automatic_link_allowed'] ?? false) ? 'yes' : 'no').'`';
+            $lines[] = '- Writeback allowed: `'.(($namedOnlyTriage['writeback_allowed'] ?? false) ? 'yes' : 'no').'`';
             $lines[] = '- Named-only faces: `'.($namedOnlyTriage['named_only_faces'] ?? 0).'`';
             $lines[] = '- Open faces: `'.($namedOnlyTriage['open_faces'] ?? 0).'`';
             $lines[] = '- Open without candidate decision: `'.($namedOnlyTriage['open_without_candidate_decision'] ?? 0).'`';
@@ -264,6 +271,9 @@ class FaceTelemetryReportService
                     'open_named_only_faces' => $this->intValue($registry['open_named_only_faces'] ?? 0),
                     'stale_open_named_only_faces' => $this->intValue($registry['stale_open_named_only_faces'] ?? 0),
                     'terminal_decided_named_only_faces' => $this->intValue($registry['terminal_decided_named_only_faces'] ?? 0),
+                    'named_only_photo_date_faces' => $this->intValue($registry['named_only_photo_date_faces'] ?? 0),
+                    'open_named_only_photo_date_faces' => $this->intValue($registry['open_named_only_photo_date_faces'] ?? 0),
+                    'named_only_missing_photo_date_faces' => $this->intValue($registry['named_only_missing_photo_date_faces'] ?? 0),
                     'oldest_named_only_updated_at' => $this->nullableString($registry['oldest_named_only_updated_at'] ?? null),
                     'newest_named_only_updated_at' => $this->nullableString($registry['newest_named_only_updated_at'] ?? null),
                     'unclustered_visible_faces' => $this->intValue($registry['unclustered_visible_faces'] ?? 0),
@@ -290,7 +300,9 @@ class FaceTelemetryReportService
                     'targeting_scope' => $this->nullableString($nextAction['targeting_scope'] ?? null) ?? 'aggregate_only',
                     'operator_approval_required' => (bool) ($nextAction['operator_approval_required'] ?? false),
                     'automation_allowed' => (bool) ($nextAction['automation_allowed'] ?? false),
+                    'automatic_link_allowed' => (bool) ($nextAction['automatic_link_allowed'] ?? false),
                     'create_person_allowed' => (bool) ($nextAction['create_person_allowed'] ?? false),
+                    'writeback_allowed' => (bool) ($nextAction['writeback_allowed'] ?? false),
                     'uses_row_identifiers' => (bool) ($nextAction['uses_row_identifiers'] ?? false),
                     'open_named_only_faces' => $this->intValue($nextAction['open_named_only_faces'] ?? 0),
                     'stale_open_named_only_faces' => $this->intValue($nextAction['stale_open_named_only_faces'] ?? 0),
@@ -303,7 +315,9 @@ class FaceTelemetryReportService
                     'targeting_scope' => $this->nullableString($triage['targeting_scope'] ?? null) ?? 'aggregate_only',
                     'uses_row_identifiers' => (bool) ($triage['uses_row_identifiers'] ?? false),
                     'automation_allowed' => (bool) ($triage['automation_allowed'] ?? false),
+                    'automatic_link_allowed' => (bool) ($triage['automatic_link_allowed'] ?? false),
                     'create_person_allowed' => (bool) ($triage['create_person_allowed'] ?? false),
+                    'writeback_allowed' => (bool) ($triage['writeback_allowed'] ?? false),
                     'named_only_faces' => $this->intValue($triage['named_only_faces'] ?? 0),
                     'open_faces' => $this->intValue($triage['open_faces'] ?? 0),
                     'terminal_faces' => $this->intValue($triage['terminal_faces'] ?? 0),
@@ -385,7 +399,7 @@ class FaceTelemetryReportService
             '## Headlines',
             '',
             sprintf(
-                '- Face registry: `%s`, total=`%s`, visible=`%s`, linked=`%s`, named_only=`%s`, open_named_only=`%s`, stale_open_named_only=`%s`, terminal_named_only=`%s`, stale_named_only_faces=`%s`, oldest_named_only_updated_at=`%s`, newest_named_only_updated_at=`%s`, unclustered_visible=`%s`',
+                '- Face registry: `%s`, total=`%s`, visible=`%s`, linked=`%s`, named_only=`%s`, open_named_only=`%s`, stale_open_named_only=`%s`, terminal_named_only=`%s`, stale_named_only_faces=`%s`, named_only_photo_date=`%s`, open_named_only_photo_date=`%s`, named_only_missing_photo_date=`%s`, oldest_named_only_updated_at=`%s`, newest_named_only_updated_at=`%s`, unclustered_visible=`%s`',
                 $sections['mysql_face_registry']['status'],
                 $sections['mysql_face_registry']['total_faces'],
                 $sections['mysql_face_registry']['visible_faces'],
@@ -395,6 +409,9 @@ class FaceTelemetryReportService
                 $sections['mysql_face_registry']['stale_open_named_only_faces'],
                 $sections['mysql_face_registry']['terminal_decided_named_only_faces'],
                 $sections['mysql_face_registry']['stale_named_only_faces'],
+                $sections['mysql_face_registry']['named_only_photo_date_faces'],
+                $sections['mysql_face_registry']['open_named_only_photo_date_faces'],
+                $sections['mysql_face_registry']['named_only_missing_photo_date_faces'],
                 $sections['mysql_face_registry']['oldest_named_only_updated_at'] ?? 'none',
                 $sections['mysql_face_registry']['newest_named_only_updated_at'] ?? 'none',
                 $sections['mysql_face_registry']['unclustered_visible_faces']
@@ -414,7 +431,7 @@ class FaceTelemetryReportService
                 $sections['review_queue']['oldest_named_only_no_match_pending_at'] ?? 'none'
             ),
             sprintf(
-                '- Named-only next action: `%s`, state=`%s`, reason=`%s`, action=`%s`, scope=`%s`, approval_required=`%s`, automation_allowed=`%s`, create_person_allowed=`%s`, row_identifiers=`%s`',
+                '- Named-only next action: `%s`, state=`%s`, reason=`%s`, action=`%s`, scope=`%s`, approval_required=`%s`, automation_allowed=`%s`, automatic_link_allowed=`%s`, create_person_allowed=`%s`, writeback_allowed=`%s`, row_identifiers=`%s`',
                 $sections['named_only_next_action']['status'],
                 $sections['named_only_next_action']['state'],
                 $sections['named_only_next_action']['reason_code'],
@@ -422,11 +439,13 @@ class FaceTelemetryReportService
                 $sections['named_only_next_action']['targeting_scope'],
                 $sections['named_only_next_action']['operator_approval_required'] ? 'yes' : 'no',
                 $sections['named_only_next_action']['automation_allowed'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['automatic_link_allowed'] ? 'yes' : 'no',
                 $sections['named_only_next_action']['create_person_allowed'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['writeback_allowed'] ? 'yes' : 'no',
                 $sections['named_only_next_action']['uses_row_identifiers'] ? 'yes' : 'no'
             ),
             sprintf(
-                '- Named-only triage: `%s`, named=`%s`, open=`%s`, no_decision=`%s`, nonterminal=`%s`, pending_no_match=`%s`, stale_pending_no_match=`%s`, age_7_30d=`%s`, age_30d_plus=`%s`, row_identifiers=`%s`',
+                '- Named-only triage: `%s`, named=`%s`, open=`%s`, no_decision=`%s`, nonterminal=`%s`, pending_no_match=`%s`, stale_pending_no_match=`%s`, age_7_30d=`%s`, age_30d_plus=`%s`, automation_allowed=`%s`, automatic_link_allowed=`%s`, create_person_allowed=`%s`, writeback_allowed=`%s`, row_identifiers=`%s`',
                 $sections['named_only_triage_buckets']['status'],
                 $sections['named_only_triage_buckets']['named_only_faces'],
                 $sections['named_only_triage_buckets']['open_faces'],
@@ -436,6 +455,10 @@ class FaceTelemetryReportService
                 $sections['named_only_triage_buckets']['stale_pending_no_match_faces'],
                 $sections['named_only_triage_buckets']['open_age_buckets']['seven_to_thirty_days'] ?? 0,
                 $sections['named_only_triage_buckets']['open_age_buckets']['over_thirty_days'] ?? 0,
+                $sections['named_only_triage_buckets']['automation_allowed'] ? 'yes' : 'no',
+                $sections['named_only_triage_buckets']['automatic_link_allowed'] ? 'yes' : 'no',
+                $sections['named_only_triage_buckets']['create_person_allowed'] ? 'yes' : 'no',
+                $sections['named_only_triage_buckets']['writeback_allowed'] ? 'yes' : 'no',
                 $sections['named_only_triage_buckets']['uses_row_identifiers'] ? 'yes' : 'no'
             ),
             sprintf(
@@ -501,7 +524,7 @@ class FaceTelemetryReportService
                 $compact['recommendation_count']
             ),
             sprintf(
-                'face-registry: %s total=%s visible=%s linked=%s named_only=%s open_named_only=%s stale_open_named_only=%s terminal_named_only=%s stale_named_only_faces=%s oldest_named_only_updated_at=%s newest_named_only_updated_at=%s unclustered_visible=%s',
+                'face-registry: %s total=%s visible=%s linked=%s named_only=%s open_named_only=%s stale_open_named_only=%s terminal_named_only=%s stale_named_only_faces=%s named_only_photo_date=%s open_named_only_photo_date=%s named_only_missing_photo_date=%s oldest_named_only_updated_at=%s newest_named_only_updated_at=%s unclustered_visible=%s',
                 $sections['mysql_face_registry']['status'],
                 $sections['mysql_face_registry']['total_faces'],
                 $sections['mysql_face_registry']['visible_faces'],
@@ -511,6 +534,9 @@ class FaceTelemetryReportService
                 $sections['mysql_face_registry']['stale_open_named_only_faces'],
                 $sections['mysql_face_registry']['terminal_decided_named_only_faces'],
                 $sections['mysql_face_registry']['stale_named_only_faces'],
+                $sections['mysql_face_registry']['named_only_photo_date_faces'],
+                $sections['mysql_face_registry']['open_named_only_photo_date_faces'],
+                $sections['mysql_face_registry']['named_only_missing_photo_date_faces'],
                 $sections['mysql_face_registry']['oldest_named_only_updated_at'] ?? 'none',
                 $sections['mysql_face_registry']['newest_named_only_updated_at'] ?? 'none',
                 $sections['mysql_face_registry']['unclustered_visible_faces']
@@ -531,7 +557,7 @@ class FaceTelemetryReportService
                 $sections['review_queue']['oldest_named_only_no_match_pending_at'] ?? 'none'
             ),
             sprintf(
-                'named-only-next-action: %s state=%s reason=%s action=%s scope=%s approval_required=%s automation_allowed=%s create_person_allowed=%s row_identifiers=%s',
+                'named-only-next-action: %s state=%s reason=%s action=%s scope=%s approval_required=%s automation_allowed=%s automatic_link_allowed=%s create_person_allowed=%s writeback_allowed=%s row_identifiers=%s',
                 $sections['named_only_next_action']['status'],
                 $sections['named_only_next_action']['state'],
                 $sections['named_only_next_action']['reason_code'],
@@ -539,11 +565,13 @@ class FaceTelemetryReportService
                 $sections['named_only_next_action']['targeting_scope'],
                 $sections['named_only_next_action']['operator_approval_required'] ? 'yes' : 'no',
                 $sections['named_only_next_action']['automation_allowed'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['automatic_link_allowed'] ? 'yes' : 'no',
                 $sections['named_only_next_action']['create_person_allowed'] ? 'yes' : 'no',
+                $sections['named_only_next_action']['writeback_allowed'] ? 'yes' : 'no',
                 $sections['named_only_next_action']['uses_row_identifiers'] ? 'yes' : 'no'
             ),
             sprintf(
-                'named-only-triage: %s named=%s open=%s terminal=%s no_decision=%s nonterminal=%s pending_no_match=%s stale_pending_no_match=%s age_under_24h=%s age_1_7d=%s age_7_30d=%s age_30d_plus=%s row_identifiers=%s',
+                'named-only-triage: %s named=%s open=%s terminal=%s no_decision=%s nonterminal=%s pending_no_match=%s stale_pending_no_match=%s age_under_24h=%s age_1_7d=%s age_7_30d=%s age_30d_plus=%s automation_allowed=%s automatic_link_allowed=%s create_person_allowed=%s writeback_allowed=%s row_identifiers=%s',
                 $sections['named_only_triage_buckets']['status'],
                 $sections['named_only_triage_buckets']['named_only_faces'],
                 $sections['named_only_triage_buckets']['open_faces'],
@@ -556,6 +584,10 @@ class FaceTelemetryReportService
                 $sections['named_only_triage_buckets']['open_age_buckets']['one_to_seven_days'] ?? 0,
                 $sections['named_only_triage_buckets']['open_age_buckets']['seven_to_thirty_days'] ?? 0,
                 $sections['named_only_triage_buckets']['open_age_buckets']['over_thirty_days'] ?? 0,
+                $sections['named_only_triage_buckets']['automation_allowed'] ? 'yes' : 'no',
+                $sections['named_only_triage_buckets']['automatic_link_allowed'] ? 'yes' : 'no',
+                $sections['named_only_triage_buckets']['create_person_allowed'] ? 'yes' : 'no',
+                $sections['named_only_triage_buckets']['writeback_allowed'] ? 'yes' : 'no',
                 $sections['named_only_triage_buckets']['uses_row_identifiers'] ? 'yes' : 'no'
             ),
             sprintf(
@@ -628,11 +660,15 @@ class FaceTelemetryReportService
                     SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_faces,
                     SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_open_named_only_faces,
                     SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND fr.date_taken IS NOT NULL THEN 1 ELSE 0 END) AS named_only_photo_date_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND fr.date_taken IS NOT NULL THEN 1 ELSE 0 END) AS open_named_only_photo_date_faces,
+                    SUM(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL AND fr.date_taken IS NULL THEN 1 ELSE 0 END) AS named_only_missing_photo_date_faces,
                     MIN(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL THEN frf.updated_at ELSE NULL END) AS oldest_named_only_updated_at,
                     MAX(CASE WHEN frf.hidden = 0 AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown' AND frf.genealogy_person_id IS NULL THEN frf.updated_at ELSE NULL END) AS newest_named_only_updated_at,
                     SUM(CASE WHEN frf.hidden = 0 AND (frf.cluster_id IS NULL OR frf.cluster_id = 0) THEN 1 ELSE 0 END) AS unclustered_visible_faces,
                     SUM(CASE WHEN frf.created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS created_recent_faces
                  FROM file_registry_faces frf
+                 LEFT JOIN file_registry fr ON fr.id = frf.file_registry_id
                  ".$this->latestCandidateDecisionJoinSql('frf'),
                 [$hours, $hours, $hours]
             );
@@ -653,6 +689,9 @@ class FaceTelemetryReportService
                     'open_named_only_faces' => $this->intValue($row->open_named_only_faces ?? 0),
                     'stale_open_named_only_faces' => $this->intValue($row->stale_open_named_only_faces ?? 0),
                     'terminal_decided_named_only_faces' => $this->intValue($row->terminal_decided_named_only_faces ?? 0),
+                    'named_only_photo_date_faces' => $this->intValue($row->named_only_photo_date_faces ?? 0),
+                    'open_named_only_photo_date_faces' => $this->intValue($row->open_named_only_photo_date_faces ?? 0),
+                    'named_only_missing_photo_date_faces' => $this->intValue($row->named_only_missing_photo_date_faces ?? 0),
                     'oldest_named_only_updated_at' => $this->nullableString($row->oldest_named_only_updated_at ?? null),
                     'newest_named_only_updated_at' => $this->nullableString($row->newest_named_only_updated_at ?? null),
                     'unclustered_visible_faces' => $this->intValue($row->unclustered_visible_faces ?? 0),
@@ -766,7 +805,9 @@ class FaceTelemetryReportService
                 'targeting_scope' => 'aggregate_only',
                 'operator_approval_required' => $state !== 'clear',
                 'automation_allowed' => false,
+                'automatic_link_allowed' => false,
                 'create_person_allowed' => false,
+                'writeback_allowed' => false,
                 'uses_row_identifiers' => false,
                 'open_named_only_faces' => $openNamedOnly,
                 'stale_open_named_only_faces' => $staleOpenNamedOnly,
@@ -796,6 +837,10 @@ class FaceTelemetryReportService
                     SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) >= 24 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) < 168 THEN 1 ELSE 0 END) AS open_one_to_seven_days,
                     SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) >= 168 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) < 720 THEN 1 ELSE 0 END) AS open_seven_to_thirty_days,
                     SUM(CASE WHEN COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()) >= 720 THEN 1 ELSE 0 END) AS open_over_thirty_days,
+                    SUM(CASE WHEN queue_counts.oldest_pending_no_match_at IS NOT NULL AND TIMESTAMPDIFF(HOUR, queue_counts.oldest_pending_no_match_at, NOW()) < 24 THEN 1 ELSE 0 END) AS pending_no_match_under_24h,
+                    SUM(CASE WHEN queue_counts.oldest_pending_no_match_at IS NOT NULL AND TIMESTAMPDIFF(HOUR, queue_counts.oldest_pending_no_match_at, NOW()) >= 24 AND TIMESTAMPDIFF(HOUR, queue_counts.oldest_pending_no_match_at, NOW()) < 168 THEN 1 ELSE 0 END) AS pending_no_match_one_to_seven_days,
+                    SUM(CASE WHEN queue_counts.oldest_pending_no_match_at IS NOT NULL AND TIMESTAMPDIFF(HOUR, queue_counts.oldest_pending_no_match_at, NOW()) >= 168 AND TIMESTAMPDIFF(HOUR, queue_counts.oldest_pending_no_match_at, NOW()) < 720 THEN 1 ELSE 0 END) AS pending_no_match_seven_to_thirty_days,
+                    SUM(CASE WHEN queue_counts.oldest_pending_no_match_at IS NOT NULL AND TIMESTAMPDIFF(HOUR, queue_counts.oldest_pending_no_match_at, NOW()) >= 720 THEN 1 ELSE 0 END) AS pending_no_match_over_thirty_days,
                     SUM(CASE WHEN candidate_decisions.latest_candidate_action = 'keep_name_only' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_keep_name_only,
                     SUM(CASE WHEN candidate_decisions.latest_candidate_action = 'outside_tree' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_outside_tree,
                     SUM(CASE WHEN candidate_decisions.latest_candidate_action = 'too_vague' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_too_vague,
@@ -807,7 +852,8 @@ class FaceTelemetryReportService
                     SELECT
                         file_registry_face_id,
                         SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' THEN 1 ELSE 0 END) AS pending_no_match_count,
-                        SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_pending_no_match_count
+                        SUM(CASE WHEN status = 'pending' AND match_type = 'no_match' AND created_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS stale_pending_no_match_count,
+                        MIN(CASE WHEN status = 'pending' AND match_type = 'no_match' THEN created_at ELSE NULL END) AS oldest_pending_no_match_at
                     FROM genealogy_face_match_queue
                     WHERE file_registry_face_id IS NOT NULL
                     GROUP BY file_registry_face_id
@@ -829,7 +875,9 @@ class FaceTelemetryReportService
                     'targeting_scope' => 'aggregate_only',
                     'uses_row_identifiers' => false,
                     'automation_allowed' => false,
+                    'automatic_link_allowed' => false,
                     'create_person_allowed' => false,
+                    'writeback_allowed' => false,
                     'named_only_faces' => $this->intValue($row->named_only_faces ?? 0),
                     'open_faces' => $open,
                     'terminal_faces' => $this->intValue($row->terminal_faces ?? 0),
@@ -844,6 +892,12 @@ class FaceTelemetryReportService
                         'one_to_seven_days' => $this->intValue($row->open_one_to_seven_days ?? 0),
                         'seven_to_thirty_days' => $this->intValue($row->open_seven_to_thirty_days ?? 0),
                         'over_thirty_days' => $this->intValue($row->open_over_thirty_days ?? 0),
+                    ],
+                    'pending_no_match_age_buckets' => [
+                        'under_24h' => $this->intValue($row->pending_no_match_under_24h ?? 0),
+                        'one_to_seven_days' => $this->intValue($row->pending_no_match_one_to_seven_days ?? 0),
+                        'seven_to_thirty_days' => $this->intValue($row->pending_no_match_seven_to_thirty_days ?? 0),
+                        'over_thirty_days' => $this->intValue($row->pending_no_match_over_thirty_days ?? 0),
                     ],
                     'terminal_action_buckets' => [
                         'keep_name_only' => $this->intValue($row->terminal_keep_name_only ?? 0),

@@ -147,6 +147,11 @@ printf '== GitHub CLI Auth Storage Audit ==\n'
 printf 'INFO: GitHub host: %s\n' "$host"
 printf 'INFO: Target posture: use session-scoped GH_TOKEN/GITHUB_TOKEN for GitHub CLI/API work; persistent gh auth is transitional only.\n'
 
+if [[ -L "$gh_config_dir" ]]; then
+    printf 'FAIL: GitHub CLI config directory is a symlink at %s; refusing to inspect redirected auth storage.\n' "$gh_config_dir"
+    exit 1
+fi
+
 if command -v gh >/dev/null 2>&1; then
     gh_available=true
     if gh auth status -h "$host" >"$status_file" 2>&1; then

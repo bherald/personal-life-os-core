@@ -51,7 +51,10 @@ return new class extends Migration
         return DB::table('workflow_nodes')
             ->join('workflows', 'workflows.id', '=', 'workflow_nodes.workflow_id')
             ->whereIn('workflows.name', self::WORKFLOWS)
-            ->where('workflow_nodes.node_type', $nodeType)
+            ->where(function ($query) use ($nodeType): void {
+                $query->where('workflow_nodes.node_type', $nodeType)
+                    ->orWhere('workflow_nodes.node_type', 'like', '%\\'.$nodeType);
+            })
             ->pluck('workflow_nodes.id')
             ->map(fn ($id): int => (int) $id)
             ->all();

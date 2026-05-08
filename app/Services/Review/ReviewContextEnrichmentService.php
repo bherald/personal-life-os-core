@@ -5,6 +5,8 @@ namespace App\Services\Review;
 use App\Services\Genealogy\GenealogyReviewPacketApplyPreviewService;
 use App\Services\Genealogy\GenealogyReviewPacketFocusService;
 use App\Services\Genealogy\GenealogyReviewPacketOutcomeService;
+use App\Services\Genealogy\GenealogyReviewPacketSourceLabelService;
+use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
 use App\Services\Genealogy\PersonService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -63,6 +65,7 @@ class ReviewContextEnrichmentService
         'source_duplicate_mark',
         'family_duplicate_mark',
         'family_child_unlink',
+        'genealogy_todo_create',
     ];
 
     private const STRUCTURED_MEDIA_ID_KEYS = [
@@ -115,15 +118,19 @@ class ReviewContextEnrichmentService
 
     private readonly GenealogyReviewPacketOutcomeService $reviewPacketOutcome;
 
+    private readonly GenealogyTypedRemediationMaterializationService $typedRemediationMaterialization;
+
     public function __construct(
         private readonly PersonService $personService,
         ?GenealogyReviewPacketApplyPreviewService $reviewPacketApplyPreview = null,
         ?GenealogyReviewPacketFocusService $reviewPacketFocus = null,
         ?GenealogyReviewPacketOutcomeService $reviewPacketOutcome = null,
+        ?GenealogyTypedRemediationMaterializationService $typedRemediationMaterialization = null,
     ) {
         $this->reviewPacketApplyPreview = $reviewPacketApplyPreview ?? new GenealogyReviewPacketApplyPreviewService;
         $this->reviewPacketFocus = $reviewPacketFocus ?? new GenealogyReviewPacketFocusService;
         $this->reviewPacketOutcome = $reviewPacketOutcome ?? new GenealogyReviewPacketOutcomeService;
+        $this->typedRemediationMaterialization = $typedRemediationMaterialization ?? new GenealogyTypedRemediationMaterializationService;
     }
 
     /**
@@ -253,7 +260,148 @@ class ReviewContextEnrichmentService
                 'source' => 'generated_from_finding_details',
                 'writeback' => false,
             ],
+            'typed_remediation_materialization' => $this->typedRemediationMaterializationReadiness($row),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function typedRemediationMaterializationReadiness(object $row): array
+    {
+        try {
+            $inspection = $this->typedRemediationMaterialization->inspectQueueRow($row);
+        } catch (\Throwable) {
+            $inspection = [
+                'success' => false,
+                'error' => 'inspection_failed',
+            ];
+        }
+
+        $status = match (true) {
+            (bool) ($inspection['materialized_existing'] ?? false) => 'existing_packet',
+            (bool) ($inspection['success'] ?? false) => 'dry_run_ready',
+            ($inspection['error'] ?? null) === 'packet_validation_failed' => 'validation_blocked',
+            ($inspection['error'] ?? null) === 'unsupported_typed_remediation' => 'unsupported',
+            default => 'failed',
+        };
+
+        return [
+            'projection_only' => true,
+            'status' => $status,
+            'operation_types' => $this->safeTypedRemediationOperationTypes($inspection['operation_types'] ?? []),
+            'validation' => $this->safeTypedRemediationValidation($inspection['validation'] ?? null),
+            'packet_summary' => $this->safeTypedRemediationPacketSummary($inspection['packet_summary'] ?? null),
+            'safety' => [
+                'canonical_write_allowed' => false,
+                'apply_enabled' => false,
+                'apply_held' => true,
+                'writeback_enabled' => false,
+            ],
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function safeTypedRemediationOperationTypes(mixed $types): array
+    {
+        if (! is_array($types)) {
+            return [];
+        }
+
+        $safe = [];
+        foreach ($types as $type) {
+            $code = $this->safeReviewPassCode($type);
+            if ($code !== null && in_array($code, self::TYPED_REMEDIATION_CHANGE_TYPES, true)) {
+                $safe[] = $code;
+            }
+        }
+
+        sort($safe);
+
+        return array_values(array_unique($safe));
+    }
+
+    /**
+     * @return array{valid: bool|null, blocker_count: int, blocker_codes: list<string>}
+     */
+    private function safeTypedRemediationValidation(mixed $validation): array
+    {
+        if (! is_array($validation)) {
+            return [
+                'valid' => null,
+                'blocker_count' => 0,
+                'blocker_codes' => [],
+            ];
+        }
+
+        $codes = [];
+        foreach ((array) ($validation['errors'] ?? []) as $error) {
+            if (! is_array($error)) {
+                continue;
+            }
+
+            $code = $this->safeReviewPassCode($error['code'] ?? null);
+            if ($code !== null && ! in_array($code, $codes, true)) {
+                $codes[] = $code;
+            }
+        }
+
+        sort($codes);
+
+        return [
+            'valid' => isset($validation['valid']) ? (bool) $validation['valid'] : null,
+            'blocker_count' => count($codes),
+            'blocker_codes' => $codes,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function safeTypedRemediationPacketSummary(mixed $summary): ?array
+    {
+        if (! is_array($summary)) {
+            return null;
+        }
+
+        return [
+            'target_review_type' => (string) ($summary['target_review_type'] ?? 'genealogy_review_packet'),
+            'source_reference_count' => (int) ($summary['source_locator_count'] ?? 0),
+            'claim_count' => (int) ($summary['claim_count'] ?? 0),
+            'identity_present' => (bool) ($summary['identity_present'] ?? false),
+            'target_context_present' => (bool) ($summary['target_context_present'] ?? false),
+            'target_context_types' => $this->safeTypedRemediationTargetContextTypes($summary['target_context_types'] ?? []),
+            'privacy_present' => (bool) ($summary['privacy_present'] ?? false),
+            'validation_valid' => (bool) ($summary['validation_valid'] ?? false),
+            'validation_error_count' => (int) ($summary['validation_error_count'] ?? 0),
+            'validation_warning_count' => (int) ($summary['validation_warning_count'] ?? 0),
+            'preview_only' => (bool) ($summary['preview_only'] ?? false),
+            'mutates_accepted_facts' => (bool) ($summary['mutates_accepted_facts'] ?? false),
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function safeTypedRemediationTargetContextTypes(mixed $types): array
+    {
+        if (! is_array($types)) {
+            return [];
+        }
+
+        $safe = [];
+        foreach ($types as $type) {
+            $code = $this->safeReviewPassCode($type);
+            if ($code !== null && in_array($code, ['tree', 'person', 'family', 'source'], true)) {
+                $safe[] = $code;
+            }
+        }
+
+        sort($safe);
+
+        return array_values(array_unique($safe));
     }
 
     /**
@@ -466,8 +614,8 @@ class ReviewContextEnrichmentService
             $this->checklistRow('source_origin', 'Source origin', $this->evidenceLensValue($sourceOrigin), $this->evidenceLensKnownState($sourceOrigin)),
             $this->checklistRow('information_type', 'Information type', $this->evidenceLensValue($informationType), $this->evidenceLensKnownState($informationType)),
             $this->checklistRow('evidence_type', 'Evidence type', $this->evidenceLensValue($evidenceType), $this->evidenceLensKnownState($evidenceType)),
-            $this->checklistRow('citation_quality', 'Citation quality', $this->evidenceLensValue($citationQuality), $citationQuality !== null ? 'ok' : 'warning'),
-            $this->checklistRow('extraction_certainty', 'Extraction certainty', $this->evidenceLensValue($extractionCertainty), $extractionCertainty !== null ? 'ok' : 'warning'),
+            $this->checklistRow('citation_quality', 'Citation quality', $this->evidenceLensValue($citationQuality), $this->evidenceLensKnownState($citationQuality)),
+            $this->checklistRow('extraction_certainty', 'Extraction certainty', $this->evidenceLensValue($extractionCertainty), $this->evidenceLensKnownState($extractionCertainty)),
             $this->checklistRow('conflict_signal', 'Conflict signal', $conflictSignal ? 'possible' : 'not signaled', $conflictSignal ? 'warning' : 'ok'),
             $this->checklistRow('negative_evidence', 'Negative evidence', $negativeEvidence ? 'yes' : 'no', $negativeEvidence ? 'warning' : 'ok'),
             $this->checklistRow('locator_present', 'Locator present', $locatorPresent ? 'yes' : 'no', $locatorPresent ? 'ok' : 'missing'),
@@ -485,6 +633,9 @@ class ReviewContextEnrichmentService
             'canonical_write_allowed' => false,
             'batch_review_allowed' => false,
             'details_included' => false,
+            'raw_identifiers_included' => false,
+            'tokens_included' => false,
+            'locators_included' => false,
             'summary' => [
                 'source_origin' => $this->evidenceLensValue($sourceOrigin),
                 'information_type' => $this->evidenceLensValue($informationType),
@@ -649,6 +800,9 @@ class ReviewContextEnrichmentService
         $sourceCount = $this->nonNegativeInt($reviewFocus['source_count'] ?? null) ?? 0;
         $resolvedMediaCount = $this->nonNegativeInt($reviewFocus['resolved_media_count'] ?? null) ?? 0;
         $missingMediaCount = $this->nonNegativeInt($reviewFocus['missing_media_count'] ?? null) ?? 0;
+        $claimSourceCoverage = $this->reviewPacketClaimSourceCoverage($claimContexts);
+        $allClaimsSourceLinked = (bool) $claimSourceCoverage['all_claims_source_linked'];
+        $claimsWithSourceContext = (int) $claimSourceCoverage['claims_with_source_context'];
 
         $rows = [
             $this->checklistRow('target_ref', 'Target ref', $targetRef ?? 'missing', $targetRef !== null ? 'ok' : 'missing'),
@@ -659,6 +813,18 @@ class ReviewContextEnrichmentService
             $this->checklistRow('privacy_cleared', 'Privacy cleared', $privacyCleared ? 'yes' : 'no', $privacyCleared ? 'ok' : 'warning'),
             $this->checklistRow('claim_count', 'Claim count', (string) $claimCount, $claimCount > 0 ? 'ok' : 'blocked'),
             $this->checklistRow('source_count', 'Source count', (string) $sourceCount, $sourceCount > 0 ? 'ok' : 'warning'),
+            $this->checklistRow(
+                'claim_source_coverage',
+                'Claim/source coverage',
+                (string) $claimSourceCoverage['claim_source_coverage'],
+                $allClaimsSourceLinked ? 'ok' : ($claimsWithSourceContext > 0 ? 'warning' : 'blocked')
+            ),
+            $this->checklistRow(
+                'all_claims_source_linked',
+                'All claims source-linked',
+                $allClaimsSourceLinked ? 'yes' : 'no',
+                $allClaimsSourceLinked ? 'ok' : ($claimCount > 0 ? 'warning' : 'blocked')
+            ),
             $this->checklistRow('media_resolved', 'Media resolved', (string) $resolvedMediaCount, 'ok'),
             $this->checklistRow('media_missing', 'Media missing', (string) $missingMediaCount, $missingMediaCount === 0 ? 'ok' : 'warning'),
             $this->checklistRow('validation_state', 'Validation', $validationState, $validationState === 'valid' ? 'ok' : 'blocked'),
@@ -687,6 +853,9 @@ class ReviewContextEnrichmentService
                 'privacy_cleared' => $privacyCleared,
                 'claim_count' => $claimCount,
                 'source_count' => $sourceCount,
+                'claims_with_source_context' => $claimsWithSourceContext,
+                'all_claims_source_linked' => $allClaimsSourceLinked,
+                'claim_source_coverage' => (string) $claimSourceCoverage['claim_source_coverage'],
                 'resolved_media_count' => $resolvedMediaCount,
                 'missing_media_count' => $missingMediaCount,
                 'validation_state' => $validationState,
@@ -745,6 +914,7 @@ class ReviewContextEnrichmentService
             'counts' => [
                 'claim_count' => $this->nonNegativeInt($proofSummary['claim_count'] ?? null) ?? 0,
                 'source_count' => $this->nonNegativeInt($proofSummary['source_count'] ?? null) ?? 0,
+                'claims_with_source_context' => $this->nonNegativeInt($proofSummary['claims_with_source_context'] ?? null) ?? 0,
                 'resolved_media_count' => $this->nonNegativeInt($proofSummary['resolved_media_count'] ?? null) ?? 0,
                 'missing_media_count' => $this->nonNegativeInt($proofSummary['missing_media_count'] ?? null) ?? 0,
                 'checklist_row_count' => $this->nonNegativeInt($proofSummary['checklist_row_count'] ?? null)
@@ -754,6 +924,7 @@ class ReviewContextEnrichmentService
             'signals' => [
                 'review_ready' => ($proofSummary['review_ready'] ?? null) === true,
                 'source_backed' => ($proofSummary['source_backed'] ?? null) === true,
+                'all_claims_source_linked' => ($proofSummary['all_claims_source_linked'] ?? null) === true,
                 'boundary_present' => ($proofSummary['boundary_present'] ?? null) === true,
                 'identity_present' => ($proofSummary['identity_present'] ?? null) === true,
                 'privacy_cleared' => ($proofSummary['privacy_cleared'] ?? null) === true,
@@ -789,6 +960,52 @@ class ReviewContextEnrichmentService
         }
 
         return array_values(array_unique($codes));
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $claimContexts
+     * @return array{claim_source_coverage:string,claims_with_source_context:int,all_claims_source_linked:bool}
+     */
+    private function reviewPacketClaimSourceCoverage(array $claimContexts): array
+    {
+        $claimCount = count($claimContexts);
+        $claimsWithSourceContext = 0;
+
+        foreach ($claimContexts as $claimContext) {
+            if ($this->claimContextHasSourceEvidence($claimContext)) {
+                $claimsWithSourceContext++;
+            }
+        }
+
+        return [
+            'claim_source_coverage' => $claimsWithSourceContext.'/'.$claimCount,
+            'claims_with_source_context' => $claimsWithSourceContext,
+            'all_claims_source_linked' => $claimCount > 0 && $claimsWithSourceContext === $claimCount,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $claimContext
+     */
+    private function claimContextHasSourceEvidence(array $claimContext): bool
+    {
+        if ($this->firstScalarText($claimContext, [
+            'source_ref',
+            'source_label',
+            'source_locator',
+            'source_access_class',
+        ]) !== null) {
+            return true;
+        }
+
+        if (($this->nonNegativeInt($claimContext['media_ref_count'] ?? null) ?? 0) > 0) {
+            return true;
+        }
+
+        return count(array_filter(
+            (array) ($claimContext['media_refs'] ?? []),
+            fn (mixed $media): bool => is_array($media)
+        )) > 0;
     }
 
     private function reviewPassLabel(string $state, ?string $reasonCode): string
@@ -890,11 +1107,16 @@ class ReviewContextEnrichmentService
      */
     private function identityChecklistValue(array $identity, array $reviewFocus): string
     {
-        return $this->firstScalarText($reviewFocus, ['person_label'])
-            ?: $this->firstScalarText($identity, ['status'])
-            ?: ($this->positiveInt($reviewFocus['person_id'] ?? null) !== null
-                ? 'Person #'.$this->positiveInt($reviewFocus['person_id'] ?? null)
-                : 'unknown');
+        $personLabel = $this->firstScalarText($reviewFocus, ['person_label']);
+        if ($personLabel !== null && preg_match('/^Person #\d+$/', $personLabel) !== 1) {
+            return $personLabel;
+        }
+
+        if ($this->positiveInt($reviewFocus['person_id'] ?? null) !== null) {
+            return 'person reference present';
+        }
+
+        return $this->firstScalarText($identity, ['status']) ?: 'unknown';
     }
 
     /**
@@ -1219,7 +1441,7 @@ class ReviewContextEnrichmentService
 
         $note = preg_replace('/\s+/', ' ', $note);
         $note = is_string($note) ? trim($note) : '';
-        if ($note === '' || preg_match('/(?:[a-z][a-z0-9+.-]*:\/\/|\/[^ ]+|[a-f0-9]{24,})/i', $note) === 1) {
+        if ($note === '' || $this->unsafeEvidenceLensText($note)) {
             return null;
         }
 
@@ -1232,9 +1454,23 @@ class ReviewContextEnrichmentService
             return 'unknown';
         }
 
-        $value = strtolower(trim($value));
+        $value = preg_replace('/\s+/', ' ', $value);
+        $value = is_string($value) ? trim($value) : '';
+        if ($value === '' || $this->unsafeEvidenceLensText($value)) {
+            return 'unknown';
+        }
+
+        $value = strtolower($value);
 
         return $value !== '' ? str_replace('_', ' ', $value) : 'unknown';
+    }
+
+    private function unsafeEvidenceLensText(string $value): bool
+    {
+        return preg_match(
+            '/(?:[a-z][a-z0-9+.-]*:\/\/|\/[^ ]+|[a-f0-9]{24,}|(?:token|secret|password|api[_-]?key|access[_-]?key|session)=[^ ]+)/i',
+            $value
+        ) === 1;
     }
 
     private function evidenceLensKnownState(?string $value): string
@@ -1451,7 +1687,7 @@ class ReviewContextEnrichmentService
             }
         }
 
-        return $personId !== null ? "Person #{$personId}" : null;
+        return $personId !== null ? 'person reference present' : null;
     }
 
     /**
@@ -1601,8 +1837,19 @@ class ReviewContextEnrichmentService
      */
     private function sourceContextLabel(array $source, int $idx): string
     {
-        return $this->firstScalarText($source, ['title', 'name', 'label'])
-            ?: 'Source '.($idx + 1);
+        foreach (['title', 'name', 'label'] as $key) {
+            $label = $source[$key] ?? null;
+            if (is_scalar($label) && trim((string) $label) !== '') {
+                return $this->sourceLabelService()->safeLabel($label, 'Source '.($idx + 1)) ?? 'Source '.($idx + 1);
+            }
+        }
+
+        return 'Source '.($idx + 1);
+    }
+
+    private function sourceLabelService(): GenealogyReviewPacketSourceLabelService
+    {
+        return app(GenealogyReviewPacketSourceLabelService::class);
     }
 
     private function sourceLocatorFromRef(?string $sourceRef): ?string

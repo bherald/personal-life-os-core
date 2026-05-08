@@ -6,6 +6,58 @@ use Symfony\Component\Process\Process;
 
 class McpHealthReportService
 {
+    private const TRUST_BOUNDARY_LABELS = [
+        'external_process',
+        'internet',
+        'internal',
+        'local_host',
+        'local_lan',
+        'local_user',
+        'plos_local',
+        'unknown',
+    ];
+
+    private const WRITE_SCOPE_LABELS = [
+        'email_outbox',
+        'filesystem_scoped',
+        'local_context_cache',
+        'local_memory_graph',
+        'nextcloud_calendar',
+        'nextcloud_contacts',
+        'nextcloud_data',
+        'none',
+        'plos_data',
+        'read',
+        'read_only',
+        'repo_worktree',
+        'unknown',
+        'workspace',
+    ];
+
+    private const NETWORK_REQUIRED_LABELS = [
+        'internet',
+        'lan_only',
+        'localhost',
+        'no',
+        'none',
+        'optional',
+        'unknown',
+        'yes',
+    ];
+
+    private const SECRET_SURFACE_RISK_LABELS = [
+        'high',
+        'low',
+        'medium',
+        'unknown',
+    ];
+
+    private const TRANSPORT_LABELS = [
+        'external_process',
+        'internal_service',
+        'unknown',
+    ];
+
     /**
      * @return array<string, mixed>
      */
@@ -54,10 +106,10 @@ class McpHealthReportService
                 ->filter(fn (mixed $server): bool => is_array($server)
                     && ! in_array(($server['status'] ?? null), ['ok', 'disabled'], true))
                 ->map(fn (array $server): array => [
-                    'name' => (string) ($server['name'] ?? ''),
+                    'name' => $this->safeServerName((string) ($server['name'] ?? '')),
                     'status' => (string) ($server['status'] ?? 'unknown'),
                     'enabled' => (bool) ($server['enabled'] ?? false),
-                    'transport' => (string) ($server['transport'] ?? 'unknown'),
+                    'transport' => $this->normalizeLabel($server['transport'] ?? null, self::TRANSPORT_LABELS),
                     'process_matchable' => (bool) data_get($server, 'process.matchable', false),
                     'process_running' => (bool) data_get($server, 'process.running', false),
                     'process_marker_count' => (int) data_get($server, 'process.marker_count', 0),
@@ -381,19 +433,46 @@ class McpHealthReportService
     private function labelCounts(array $servers, string $key): array
     {
         $counts = [];
+        $allowed = match ($key) {
+            'trust_boundary' => self::TRUST_BOUNDARY_LABELS,
+            'write_scope' => self::WRITE_SCOPE_LABELS,
+            'network_required' => self::NETWORK_REQUIRED_LABELS,
+            'secret_surface_risk' => self::SECRET_SURFACE_RISK_LABELS,
+            default => ['unknown'],
+        };
 
         foreach ($servers as $server) {
-            $label = trim((string) ($server[$key] ?? 'unknown'));
-            if ($label === '') {
-                $label = 'unknown';
-            }
-
+            $label = $this->normalizeLabel($server[$key] ?? null, $allowed);
             $counts[$label] = ($counts[$label] ?? 0) + 1;
         }
 
         ksort($counts);
 
         return $counts;
+    }
+
+    /**
+     * @param  list<string>  $allowed
+     */
+    private function normalizeLabel(mixed $value, array $allowed): string
+    {
+        $label = trim((string) ($value ?? 'unknown'));
+        if ($label === '') {
+            return 'unknown';
+        }
+
+        return in_array($label, $allowed, true) ? $label : 'other';
+    }
+
+    private function safeServerName(string $name): string
+    {
+        $name = trim($name);
+
+        if ($name !== '' && preg_match('/\A[A-Za-z0-9_.-]{1,80}\z/', $name) === 1) {
+            return $name;
+        }
+
+        return 'server_'.substr(hash('sha256', $name), 0, 12);
     }
 
     /**

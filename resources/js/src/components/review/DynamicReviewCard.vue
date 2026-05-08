@@ -138,9 +138,9 @@
         <span
           v-else-if="item.remediation && !item.remediation.executable"
           class="text-[10px] text-ops-text-muted italic ml-1"
-          :title="item.remediation.risk_level === 'destructive' ? 'Requires escalation' : 'In cooldown'"
+          :title="remediationHoldTitle(item.remediation)"
         >
-          {{ item.remediation.risk_level === 'destructive' ? 'Escalate' : 'Cooldown' }}
+          {{ remediationHoldLabel(item.remediation) }}
         </span>
         <!-- Custom actions from schema -->
         <template v-if="schema?.actions">
@@ -348,6 +348,22 @@ const intakeDetailLines = computed(() => {
 
   return lines
 })
+
+const remediationHoldLabel = (remediation) => {
+  if (remediation?.preview_only === true) {
+    return 'Preview-only'
+  }
+
+  return remediation?.risk_level === 'destructive' ? 'Escalate' : 'Cooldown'
+}
+
+const remediationHoldTitle = (remediation) => {
+  if (remediation?.preview_only === true) {
+    return 'Apply held for preview-only remediation'
+  }
+
+  return remediation?.risk_level === 'destructive' ? 'Requires escalation' : 'In cooldown'
+}
 
 const cacheBuster = Date.now()
 

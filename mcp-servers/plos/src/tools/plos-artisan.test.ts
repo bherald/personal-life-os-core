@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ALLOWED_COMMANDS, ALLOWLIST_REVISION, plosArtisan } from './plos-artisan.js';
+import {
+  ALLOWED_COMMANDS,
+  ALLOWLIST_REVISION,
+  COMPACT_SCORECARD_COMMANDS,
+  plosArtisan,
+} from './plos-artisan.js';
 
 test('read-only planning evidence commands stay allowlisted', async () => {
   for (const command of [
@@ -19,6 +24,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:review-backlog-report --next-target --focus=typed-remediation --json',
     'ops:review-backlog-report --next-target --focus=materializable-remediation --json',
     'ops:review-backlog-report --next-target --focus=source-backed-packet --json',
+    'ops:review-backlog-report --next-target --focus=aged-review --json',
     'ops:offline-status --json',
     'ops:offline-smoke --json',
     'ops:agent-doctor --json --since=24',
@@ -34,6 +40,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:mcp-health --json --compact',
     'ops:capacity-report --json',
     'ops:capacity-checkpoint --json',
+    'ops:capacity-checkpoint --json --compact',
     'ops:capacity-checkpoint --markdown',
     'ops:capacity-checkpoint --dry-run --json',
     'ops:runtime-diagnostics --window=60m --focus=all --json',
@@ -113,6 +120,19 @@ test('read-only planning evidence commands stay allowlisted', async () => {
 
   assert.match(listing, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
   assert.match(listing, new RegExp(`Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}`));
+  assert.match(listing, /Compact scorecard commands \(exact forms only\):/);
+  assert.match(
+    listing,
+    /No reordered flags, wider windows, trace ids, detail output, archive\/consolidate, or writeback variants are allowlisted\./,
+  );
+  assert.match(listing, /All allowed commands:/);
+  for (const command of COMPACT_SCORECARD_COMMANDS) {
+    assert.ok(ALLOWED_COMMANDS[command], `${command} should be allowlisted`);
+    assert.match(
+      listing,
+      new RegExp(`php artisan ${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+    );
+  }
   assert.match(listing, /php artisan ops:operator-evidence --json/);
   assert.match(listing, /php artisan ops:operator-evidence --compact/);
   assert.match(listing, /php artisan ops:operator-evidence --json --compact/);
@@ -125,6 +145,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=typed-remediation --json/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=materializable-remediation --json/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json/);
+  assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=aged-review --json/);
   assert.match(listing, /php artisan ops:offline-smoke --json/);
   assert.match(listing, /php artisan ops:agent-doctor --json --since=24/);
   assert.match(listing, /php artisan ops:agent-doctor --compact/);
@@ -134,10 +155,12 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan plos:agent-doctor --json --compact/);
   assert.match(listing, /php artisan ops:agent-doctor-snapshot --dry-run --json/);
   assert.match(listing, /php artisan ops:agent-doctor-history --json --days=7/);
+  assert.match(listing, /php artisan ops:agent-doctor-history --json --compact --days=7/);
   assert.match(listing, /php artisan plos:agent-trace-tail --limit=20 --since=24 --json/);
   assert.match(listing, /php artisan ops:mcp-health --compact/);
   assert.match(listing, /php artisan ops:mcp-health --json --compact/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --json/);
+  assert.match(listing, /php artisan ops:capacity-checkpoint --json --compact/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --markdown/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --dry-run --json/);
   assert.match(listing, /php artisan ops:arc-retention --json/);
@@ -199,6 +222,11 @@ test('next-target focus variants stay blocked unless they are canonical allowlis
     'ops:review-backlog-report --next-target --focus=typed-remediation --compact --json',
     'ops:review-backlog-report --next-target --focus=typed-remediation --json --compact',
     'ops:review-backlog-report --next-target --focus=typed-remediation --markdown --compact',
+    'ops:review-backlog-report --next-target --focus=aged-review --compact',
+    'ops:review-backlog-report --next-target --focus=aged-review --json --compact',
+    'ops:review-backlog-report --next-target --focus=aged-review --markdown',
+    'ops:review-backlog-report --json --next-target --focus=aged-review',
+    'ops:review-backlog-report --next-target --json --focus=aged-review',
   ]) {
     assert.equal(ALLOWED_COMMANDS[command], undefined, `${command} should not be allowlisted`);
 
@@ -238,6 +266,22 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(historyWindowResult, /Blocked:/);
   assert.match(historyWindowResult, /Use command "list"/);
 
+  const historyCompactReorderedResult = await plosArtisan({
+    command: 'ops:agent-doctor-history --json --days=7 --compact',
+    on_prod: false,
+  });
+
+  assert.match(historyCompactReorderedResult, /Blocked:/);
+  assert.match(historyCompactReorderedResult, /Use command "list"/);
+
+  const historyCompactWideWindowResult = await plosArtisan({
+    command: 'ops:agent-doctor-history --json --compact --days=90',
+    on_prod: false,
+  });
+
+  assert.match(historyCompactWideWindowResult, /Blocked:/);
+  assert.match(historyCompactWideWindowResult, /Use command "list"/);
+
   const agentDoctorReorderedSinceResult = await plosArtisan({
     command: 'ops:agent-doctor --json --since=24 --compact',
     on_prod: false,
@@ -261,6 +305,22 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(capacityReorderedDryRunResult, /Blocked:/);
   assert.match(capacityReorderedDryRunResult, /Use command "list"/);
+
+  const capacityReorderedCompactResult = await plosArtisan({
+    command: 'ops:capacity-checkpoint --compact --json',
+    on_prod: false,
+  });
+
+  assert.match(capacityReorderedCompactResult, /Blocked:/);
+  assert.match(capacityReorderedCompactResult, /Use command "list"/);
+
+  const capacityCompactMarkdownResult = await plosArtisan({
+    command: 'ops:capacity-checkpoint --markdown --compact',
+    on_prod: false,
+  });
+
+  assert.match(capacityCompactMarkdownResult, /Blocked:/);
+  assert.match(capacityCompactMarkdownResult, /Use command "list"/);
 
   const agentDoctorWideWindowResult = await plosArtisan({
     command: 'ops:agent-doctor --json --compact --since=168',
@@ -302,6 +362,22 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(proceduralConsolidateResult, /Blocked:/);
   assert.match(proceduralConsolidateResult, /Use command "list"/);
 
+  const proceduralReorderedResult = await plosArtisan({
+    command: 'agent:procedures --json --compact --stats',
+    on_prod: false,
+  });
+
+  assert.match(proceduralReorderedResult, /Blocked:/);
+  assert.match(proceduralReorderedResult, /Use command "list"/);
+
+  const proceduralDetailsResult = await plosArtisan({
+    command: 'agent:procedures --stats --json --compact --include-procedure-names',
+    on_prod: false,
+  });
+
+  assert.match(proceduralDetailsResult, /Blocked:/);
+  assert.match(proceduralDetailsResult, /Use command "list"/);
+
   const memoryReorderedResult = await plosArtisan({
     command: 'episodic:memory --json --compact --stats',
     on_prod: false,
@@ -309,6 +385,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(memoryReorderedResult, /Blocked:/);
   assert.match(memoryReorderedResult, /Use command "list"/);
+
+  const memoryArchiveSuffixResult = await plosArtisan({
+    command: 'episodic:memory --stats --json --compact --archive',
+    on_prod: false,
+  });
+
+  assert.match(memoryArchiveSuffixResult, /Blocked:/);
+  assert.match(memoryArchiveSuffixResult, /Use command "list"/);
 
   const traceTailWiderWindowResult = await plosArtisan({
     command: 'plos:agent-trace-tail --limit=20 --since=168 --json',
@@ -334,6 +418,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(traceTailSpecificTraceResult, /Blocked:/);
   assert.match(traceTailSpecificTraceResult, /Use command "list"/);
 
+  const traceTailHigherLimitResult = await plosArtisan({
+    command: 'plos:agent-trace-tail --limit=50 --since=24 --json',
+    on_prod: false,
+  });
+
+  assert.match(traceTailHigherLimitResult, /Blocked:/);
+  assert.match(traceTailHigherLimitResult, /Use command "list"/);
+
   const traceReadResult = await plosArtisan({
     command: 'plos:agent-trace-read trc_example --since=24 --json',
     on_prod: false,
@@ -341,6 +433,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(traceReadResult, /Blocked:/);
   assert.match(traceReadResult, /Use command "list"/);
+
+  const traceReadIdOptionResult = await plosArtisan({
+    command: 'plos:agent-trace-read --id=trc_example --json',
+    on_prod: false,
+  });
+
+  assert.match(traceReadIdOptionResult, /Blocked:/);
+  assert.match(traceReadIdOptionResult, /Use command "list"/);
 
   const compareMarkdownResult = await plosArtisan({
     command: 'awo:replay --compare-scheduled --window=7d --limit=500 --markdown',

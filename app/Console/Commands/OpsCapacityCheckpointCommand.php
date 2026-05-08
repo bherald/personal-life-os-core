@@ -10,6 +10,7 @@ class OpsCapacityCheckpointCommand extends Command
     protected $signature = 'ops:capacity-checkpoint
         {--json : Emit machine-readable JSON}
         {--markdown : Emit Markdown}
+        {--compact : Emit compact aggregate JSON; requires --json}
         {--dry-run : Validate command wiring without invoking collectors}
         {--window=24h : Time window, e.g. 60m, 24h, 7d}';
 
@@ -19,6 +20,12 @@ class OpsCapacityCheckpointCommand extends Command
     {
         if ($this->option('json') && $this->option('markdown')) {
             $this->error('Choose either --json or --markdown, not both.');
+
+            return self::FAILURE;
+        }
+
+        if ($this->option('compact') && ! $this->option('json')) {
+            $this->error('Use --compact with --json.');
 
             return self::FAILURE;
         }
@@ -33,6 +40,10 @@ class OpsCapacityCheckpointCommand extends Command
         $payload = $checkpoints->buildCheckpoint($window, (bool) $this->option('dry-run'));
 
         if ($this->option('json')) {
+            if ($this->option('compact')) {
+                $payload = $checkpoints->compactPayload($payload);
+            }
+
             $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
             if ($json === false) {
                 $this->error('Failed to encode capacity checkpoint JSON.');

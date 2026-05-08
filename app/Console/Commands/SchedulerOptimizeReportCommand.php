@@ -10,7 +10,7 @@ class SchedulerOptimizeReportCommand extends Command
     protected $signature = 'scheduler:optimize-report
                             {--window=24h : time window, e.g. 60m, 24h, 7d}
                             {--json : Emit machine-readable JSON}
-                            {--compact : Emit compact counts and top recommendation identifiers}';
+                            {--compact : Emit compact counts and top recommendation classes}';
 
     protected $description = 'Read-only scheduler optimization recommendations for spacing, timeout, and failure hotspots';
 
@@ -80,8 +80,8 @@ class SchedulerOptimizeReportCommand extends Command
         $this->line('severity_counts: '.$this->renderCounts($payload['severity_counts'] ?? []));
         $this->line('category_counts: '.$this->renderCounts($payload['category_counts'] ?? []));
 
-        $topIds = $payload['top_recommendation_ids'] ?? [];
-        $this->line('top_recommendation_ids: '.($topIds === [] ? 'none' : implode(', ', $topIds)));
+        $topTypes = $payload['top_recommendation_types'] ?? [];
+        $this->line('top_recommendation_types: '.($topTypes === [] ? 'none' : implode(', ', $topTypes)));
     }
 
     private function renderCounts(array $counts): string

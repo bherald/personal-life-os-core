@@ -2,7 +2,7 @@
   <div v-if="visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="$emit('close')">
     <div class="bg-black border-2 border-ops-peach rounded-lg w-full max-w-2xl mx-4 p-6 max-h-[80vh] flex flex-col">
       <h3 class="text-ops-peach text-lg font-bold mb-1">
-        Split {{ cluster?.name || `Cluster #${cluster?.id}` }}
+        Split {{ cluster?.name || 'selected cluster' }}
       </h3>
       <p class="text-xs text-ops-text-muted mb-3">
         Select faces to move to a new cluster. {{ selectedFaces.size }} of {{ faces.length }} selected.

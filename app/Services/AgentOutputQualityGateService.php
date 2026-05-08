@@ -149,6 +149,9 @@ class AgentOutputQualityGateService
         if ($outputSurface === 'public_doc' && in_array($privateDataPossible, ['yes', 'unknown'], true)) {
             $hardFailReasons[] = 'public_doc_private_boundary_not_cleared';
         }
+        if ($this->claimsVerificationPassed($text) && ! $this->hasVerificationEvidence($details)) {
+            $hardFailReasons[] = 'claimed_verification_without_evidence';
+        }
 
         $hardFailReasons = array_values(array_unique($hardFailReasons));
         $privacyReviewStatus = $this->classifyPrivacyReviewStatus($privateDataPossible, $livingPersonStatus, $providerBoundaryStatus);
@@ -406,6 +409,7 @@ class AgentOutputQualityGateService
                 'manual_browser_provider_as_automated_evidence' => 25,
                 'high_confidence_weak_genealogy_evidence' => 20,
                 'public_doc_private_boundary_not_cleared' => 20,
+                'claimed_verification_without_evidence' => 25,
                 default => 10,
             };
         }
@@ -424,6 +428,111 @@ class AgentOutputQualityGateService
     private function hasUnsupportedPublicDocClaim(string $text): bool
     {
         return (bool) preg_match('/\b(production[- ]ready|turnkey install|complete license review|fully license reviewed|gpu support|security guarantee|secure by default|tests? passed|ci passed|all checks passed)\b/i', $text);
+    }
+
+    private function claimsVerificationPassed(string $text): bool
+    {
+        $subject = '(?:composer test|php artisan test|artisan test|npm run build|npm build|tests?|test suite|build|deploy(?:ment)?|prod(?:uction)? deploy|smoke(?: tests?)?|sql validation|pint|public[- ]release audit|public audit|git diff --check|diff check|ci|checks?)';
+        $result = '(?:passed|pass(?:es|ed)?|green|succeeded|successful|clean|ok)';
+
+        return preg_match('/\b'.$subject.'\s+(?:is\s+|was\s+|were\s+)?'.$result.'\b/i', $text) === 1
+            || preg_match('/\b'.$result.'\s+'.$subject.'\b/i', $text) === 1
+            || preg_match('/\ball checks passed\b/i', $text) === 1;
+    }
+
+    private function hasVerificationEvidence(array $details): bool
+    {
+        foreach ([
+            'tests_run',
+            'test_results',
+            'test_output',
+            'test_command',
+            'commands_run',
+            'command_run_id',
+            'command_output',
+            'verification',
+            'verification_evidence',
+            'checks',
+            'ci_run',
+            'workflow_run_id',
+            'log_window',
+            'logs',
+            'build_log',
+            'deploy_log',
+            'smoke_results',
+            'sql_validation',
+            'pint',
+            'pint_output',
+            'public_audit',
+            'public_release_audit',
+            'diff',
+            'diff_check',
+            'git_diff',
+            'git_diff_check',
+            'commit',
+            'commit_sha',
+        ] as $key) {
+            if ($this->hasMeaningfulEvidenceValue($this->nestedValue($details, $key))) {
+                return true;
+            }
+        }
+
+        foreach ($details as $key => $value) {
+            if (! is_string($key)) {
+                continue;
+            }
+
+            $normalized = strtolower($key);
+            if (
+                preg_match('/(?:test|command|verification|check|ci|workflow|log|build|deploy|smoke|sql|diff|commit|run)/', $normalized) === 1
+                && $this->hasMeaningfulEvidenceValue($value)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function nestedValue(array $details, string $key): mixed
+    {
+        if (array_key_exists($key, $details)) {
+            return $details[$key];
+        }
+
+        foreach ($details as $value) {
+            if (is_array($value)) {
+                $nested = $this->nestedValue($value, $key);
+                if ($nested !== null) {
+                    return $nested;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function hasMeaningfulEvidenceValue(mixed $value): bool
+    {
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                if ($this->hasMeaningfulEvidenceValue($item)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return $value !== 0;
+        }
+
+        return is_scalar($value) && trim((string) $value) !== '';
     }
 
     private function manualProviderPresentedAsAutomatedEvidence(string $text): bool

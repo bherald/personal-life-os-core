@@ -95,10 +95,10 @@ class GenealogyReviewPacketValidatorService
     private function validateSourceRealism(array $packet): array
     {
         foreach ($this->collectSourceLocators($packet) as $locator) {
-            if ($this->isNonPublicNetworkLocator($locator)) {
+            if ($this->isCredentialBearingWebLocator($locator) || $this->isNonPublicNetworkLocator($locator)) {
                 return $this->fail(
                     'non_public_source_locator_blocked',
-                    'Source locators using fixture, reserved, local, or private-network hosts cannot be counted as source-backed evidence.'
+                    'Source locators using credentials, fixture, reserved, local, or private-network hosts cannot be counted as source-backed evidence.'
                 );
             }
         }
@@ -557,6 +557,29 @@ class GenealogyReviewPacketValidatorService
         }
 
         return $this->isNonPublicHost($host);
+    }
+
+    private function isCredentialBearingWebLocator(string $locator): bool
+    {
+        $locator = trim($locator);
+        if ($locator === '') {
+            return false;
+        }
+
+        $scheme = parse_url($locator, PHP_URL_SCHEME);
+        $scheme = is_string($scheme) ? strtolower(trim($scheme)) : null;
+        if (! in_array($scheme, ['http', 'https'], true) && ! str_starts_with($locator, '//')) {
+            return false;
+        }
+
+        foreach ([PHP_URL_USER, PHP_URL_PASS] as $component) {
+            $value = parse_url($locator, $component);
+            if (is_string($value) && trim($value) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function isNonPublicHost(string $host): bool

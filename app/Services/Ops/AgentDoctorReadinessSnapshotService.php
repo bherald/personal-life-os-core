@@ -140,7 +140,7 @@ class AgentDoctorReadinessSnapshotService
             }
 
             $counts[$status]++;
-            $id = $this->nullableBounded($check['id'] ?? null, 120);
+            $id = $this->safeCheckId($check['id'] ?? null, 120);
             if ($id === null) {
                 continue;
             }
@@ -216,5 +216,19 @@ class AgentDoctorReadinessSnapshotService
         }
 
         return substr(preg_replace('/[^A-Za-z0-9_.:-]/', '_', $value) ?: 'unknown', 0, $limit);
+    }
+
+    private function safeCheckId(mixed $value, int $limit): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $raw = trim((string) $value);
+        if ($raw === '' || preg_match('/(?:^~[\/\\\\]|[\/\\\\]|^[A-Za-z]:[\/\\\\]|^file:)/', $raw) === 1) {
+            return null;
+        }
+
+        return $this->nullableBounded($raw, $limit);
     }
 }

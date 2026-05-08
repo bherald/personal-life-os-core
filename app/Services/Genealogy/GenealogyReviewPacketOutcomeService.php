@@ -21,20 +21,48 @@ class GenealogyReviewPacketOutcomeService
         'deferred' => true,
     ];
 
+    private const DECISION_ACTIONS = [
+        'queued' => true,
+        'packet_reviewed_preview_only' => true,
+        'packet_rejected' => true,
+        'packet_clarification_requested' => true,
+        'packet_deferred' => true,
+        'reviewed_preview_only' => true,
+        'rejected' => true,
+        'clarification_requested' => true,
+        'deferred' => true,
+    ];
+
+    private const DECISION_REASON_CODES = [
+        'source_verified' => true,
+        'missing_source_locator' => true,
+        'locator_mismatch' => true,
+        'source_needs_review' => true,
+        'citation_incomplete' => true,
+        'identity_unclear' => true,
+        'weak_evidence' => true,
+        'privacy_review_needed' => true,
+        'duplicate_packet' => true,
+        'other' => true,
+    ];
+
     /**
      * @param  array<string, mixed>  $details
      * @return array<string, mixed>
      */
     public function fromDetails(array $details, ?string $rowStatus = null): array
     {
-        $packetStatus = $this->normalizedText($details['packet_status'] ?? null) ?: $this->normalizedText($rowStatus) ?: 'pending';
+        $packetStatus = $this->safeCode($details['packet_status'] ?? null)
+            ?? $this->safeCode($rowStatus)
+            ?? 'pending';
+        $safeRowStatus = $this->safeCode($rowStatus);
         $decisionLog = $this->decisionLog($details['decision_log'] ?? null);
         $latest = $this->latestDecision($decisionLog);
-        $latestAction = $this->normalizedText($latest['action'] ?? null);
-        $latestReason = $this->normalizedText($latest['meta']['reason_code'] ?? $latest['reason_code'] ?? null);
+        $latestAction = $this->safeAction($latest['action'] ?? null);
+        $latestReason = $this->safeReasonCode($latest['meta']['reason_code'] ?? $latest['reason_code'] ?? null);
         $previewOnly = $this->isPreviewOnly($details);
         $terminal = isset(self::TERMINAL_PACKET_STATUSES[$packetStatus])
-            || in_array($this->normalizedText($rowStatus), ['reviewed', 'rejected'], true);
+            || in_array($safeRowStatus, ['reviewed', 'rejected'], true);
         $followUp = isset(self::FOLLOW_UP_PACKET_STATUSES[$packetStatus])
             || ($latestAction !== null && isset(self::FOLLOW_UP_ACTIONS[$latestAction]));
         $touched = $decisionLog !== [];
@@ -44,7 +72,7 @@ class GenealogyReviewPacketOutcomeService
             'schema' => 'genealogy_review_packet_outcome.v1',
             'packet_status' => $packetStatus,
             'packet_status_label' => $this->labelize($packetStatus),
-            'row_status' => $this->normalizedText($rowStatus),
+            'row_status' => $safeRowStatus,
             'decision_count' => count($decisionLog),
             'touched' => $touched,
             'terminal' => $terminal,
@@ -57,8 +85,8 @@ class GenealogyReviewPacketOutcomeService
             'latest_action_label' => $latestAction !== null ? $this->labelize($latestAction) : null,
             'latest_reason_code' => $latestReason,
             'latest_reason_label' => $latestReason !== null ? $this->labelize($latestReason) : null,
-            'latest_actor' => $this->normalizedText($latest['actor'] ?? null),
-            'latest_at' => $this->normalizedText($latest['created_at'] ?? null),
+            'latest_actor' => $this->safeActor($latest['actor'] ?? null),
+            'latest_at' => $this->safeTimestamp($latest['created_at'] ?? null),
         ];
     }
 
@@ -200,6 +228,67 @@ class GenealogyReviewPacketOutcomeService
         $text = trim((string) $value);
 
         return $text === '' ? null : $text;
+    }
+
+    private function safeCode(mixed $value): ?string
+    {
+        $text = $this->normalizedText($value);
+        if ($text === null) {
+            return null;
+        }
+
+        $code = strtolower($text);
+        if (! preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $code)) {
+            return null;
+        }
+
+        return $code;
+    }
+
+    private function safeAction(mixed $value): ?string
+    {
+        $code = $this->safeCode($value);
+        if ($code === null) {
+            return null;
+        }
+
+        return isset(self::DECISION_ACTIONS[$code]) ? $code : 'unknown';
+    }
+
+    private function safeReasonCode(mixed $value): ?string
+    {
+        $code = $this->safeCode($value);
+        if ($code === null) {
+            return null;
+        }
+
+        return isset(self::DECISION_REASON_CODES[$code]) ? $code : 'other';
+    }
+
+    private function safeActor(mixed $value): ?string
+    {
+        $text = $this->normalizedText($value);
+        if ($text === null) {
+            return null;
+        }
+
+        if (strlen($text) > 64 || str_contains($text, '://') || str_contains($text, '/')) {
+            return 'unknown';
+        }
+
+        return preg_match('/^[A-Za-z0-9][A-Za-z0-9 ._-]*$/', $text) ? $text : 'unknown';
+    }
+
+    private function safeTimestamp(mixed $value): ?string
+    {
+        $text = $this->normalizedText($value);
+        if ($text === null) {
+            return null;
+        }
+
+        return preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/', $text)
+            ? $text
+            : null;
     }
 
     private function labelize(string $value): string

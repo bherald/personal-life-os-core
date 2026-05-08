@@ -4,6 +4,7 @@ namespace App\Nodes;
 
 use App\Controllers\NotificationController;
 use App\Exceptions\NodeTimeoutException;
+use App\Services\PushoverRateLimitPolicy;
 use Exception;
 
 class PushoverNotify extends BaseNode
@@ -79,6 +80,41 @@ class PushoverNotify extends BaseNode
             $partResponseRequests = [];
             $partTimestampBase = time();
             $sourceGroup = (string) $this->getConfigValue('source_group', 'workflow_node_notifications');
+
+            if ($totalChunks > 1 && ! PushoverRateLimitPolicy::hasCapacity($sourceGroup, $totalChunks)) {
+                $capacity = PushoverRateLimitPolicy::capacity($sourceGroup);
+
+                return $this->standardOutput([
+                    'notification_sent' => false,
+                    'notification_suppressed' => false,
+                    'title' => $title,
+                    'message_length' => strlen($message),
+                    'total_parts' => $totalChunks,
+                    'parts_sent' => 0,
+                    'parts_suppressed' => 0,
+                    'part_numbers_sent' => [],
+                    'part_numbers_suppressed' => [],
+                    'part_numbers_failed' => range($totalChunks, 1),
+                    'rate_limit_preflight' => 'insufficient_capacity',
+                    'rate_limit_capacity' => [
+                        'source_group' => $sourceGroup,
+                        'limit' => $capacity['limit'],
+                        'current_count' => $capacity['current_count'],
+                        'remaining' => $capacity['remaining'],
+                        'required' => $totalChunks,
+                    ],
+                    'format_type' => $formatType,
+                    'has_url' => $url !== null,
+                    'source_group' => $sourceGroup,
+                    'inter_chunk_delay_seconds' => $interChunkDelaySeconds,
+                    'max_retries_per_chunk' => $maxRetriesPerChunk,
+                ], [
+                    'provider' => 'pushover',
+                    'priority' => $priority,
+                    'format_type' => $formatType,
+                    'source_group' => $sourceGroup,
+                ], "Pushover multipart rate-limit capacity insufficient for {$totalChunks} parts in source group {$sourceGroup}.");
+            }
 
             $this->assertMultipartDeliveryBudget(
                 $totalChunks,

@@ -630,9 +630,9 @@ const normalizeRouteString = (value) => {
 const normalizeTargetRef = (value) => {
   const text = `${value ?? ''}`.trim()
   if (text === '') return null
-  const full = text.match(/genealogy_review_packet:target-[a-f0-9]{12}/i)
+  const full = text.match(/^genealogy_review_packet:target-[a-f0-9]{12}$/i)
   if (full) return full[0].toLowerCase()
-  const short = text.match(/target-[a-f0-9]{12}/i)
+  const short = text.match(/^target-[a-f0-9]{12}$/i)
   return short ? `genealogy_review_packet:${short[0].toLowerCase()}` : null
 }
 
@@ -840,7 +840,7 @@ const targetRefMatchCount = computed(() => {
 const targetRefLinkAvailable = computed(() => Boolean(targetRef.value))
 const targetRefShareUrl = computed(() => {
   if (!targetRef.value || typeof window === 'undefined') return ''
-  const url = new URL(window.location.href)
+  const url = new URL(window.location.pathname, window.location.origin)
   url.searchParams.set('target_ref', targetRef.value)
   return url.toString()
 })

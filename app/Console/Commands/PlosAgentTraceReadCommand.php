@@ -27,14 +27,9 @@ class PlosAgentTraceReadCommand extends Command
         }
 
         if ($eventId !== '') {
-            $event = $traces->readByEventId($eventId, [
+            $payload = $traces->readEventById($eventId, [
                 'since' => $this->option('since'),
             ]);
-            $payload = [
-                'result' => $event === null ? 'not_found' : 'ok',
-                'event_id' => $eventId,
-                'event' => $event,
-            ];
         } else {
             $payload = $traces->readByTraceId($traceId, [
                 'since' => $this->option('since'),
@@ -49,6 +44,7 @@ class PlosAgentTraceReadCommand extends Command
 
         if (($payload['result'] ?? null) !== 'ok') {
             $this->warn('Trace envelope not found.');
+            $this->writeWarnings($payload['warnings'] ?? []);
 
             return self::SUCCESS;
         }
@@ -58,16 +54,48 @@ class PlosAgentTraceReadCommand extends Command
             : (array) ($payload['events'] ?? []);
 
         foreach ($events as $event) {
+            if (! is_array($event)) {
+                continue;
+            }
+
             $this->line(sprintf(
-                '[%s] %s %s surface=%s status=%s',
+                '[%s] %s trace=%s surface=%s status=%s',
                 (string) ($event['recorded_at'] ?? ''),
                 (string) ($event['event_type'] ?? ''),
-                (string) ($event['trace_id'] ?? ''),
+                $this->humanTraceLabel($event),
                 (string) ($event['surface'] ?? ''),
                 (string) ($event['result']['status'] ?? 'n/a'),
             ));
         }
 
+        $this->writeWarnings($payload['warnings'] ?? []);
+
         return self::SUCCESS;
+    }
+
+    /**
+     * @param  array<int, mixed>  $warnings
+     */
+    private function writeWarnings(array $warnings): void
+    {
+        foreach ($warnings as $warning) {
+            if (! is_array($warning)) {
+                continue;
+            }
+
+            $this->warn(sprintf(
+                'warning: trace-file:%s %s',
+                (string) ($warning['line'] ?? '-'),
+                (string) ($warning['warning'] ?? 'unknown')
+            ));
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $event
+     */
+    private function humanTraceLabel(array $event): string
+    {
+        return isset($event['trace_id']) && trim((string) $event['trace_id']) !== '' ? 'matched' : 'n/a';
     }
 }

@@ -85,6 +85,43 @@ class PublicTempArtifactCleanupScriptTest extends TestCase
         $this->assertStringContainsString('Usage:', $process->getErrorOutput());
     }
 
+    public function test_rejects_zero_keep_latest(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = $this->runCleanup($fixture['root'], ['--keep-latest', '0', '--execute']);
+
+        $this->assertSame(2, $process->getExitCode());
+        $this->assertStringContainsString('Usage:', $process->getErrorOutput());
+
+        foreach ($fixture['paths'] as $path) {
+            $this->assertDirectoryExists($path);
+        }
+    }
+
+    public function test_refuses_non_temp_root_before_delete(): void
+    {
+        $home = rtrim((string) getenv('HOME'), '/');
+        if ($home === '') {
+            $this->markTestSkipped('HOME is required to create a portable non-temp cleanup fixture.');
+        }
+
+        $root = $home.'/plos-public-cleanup-nontemp-'.bin2hex(random_bytes(5));
+        $candidate = $root.'/personal-life-os-core-export-old';
+        mkdir($candidate, 0700, true);
+        file_put_contents($candidate.'/README.txt', 'must stay');
+
+        try {
+            $process = $this->runCleanup($root, ['--keep-latest', '1', '--execute']);
+
+            $this->assertSame(2, $process->getExitCode());
+            $this->assertStringContainsString('Refusing to scan non-temp root', $process->getErrorOutput());
+            $this->assertDirectoryExists($candidate);
+        } finally {
+            $this->removeTree($root);
+        }
+    }
+
     public function test_symlinked_generated_artifact_names_are_reported_and_never_deleted(): void
     {
         $fixture = $this->makeFixture();
@@ -118,6 +155,26 @@ class PublicTempArtifactCleanupScriptTest extends TestCase
         $process->run();
 
         return $process;
+    }
+
+    private function removeTree(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+
+        foreach ($items as $item) {
+            $item->isDir() && ! $item->isLink()
+                ? rmdir($item->getPathname())
+                : unlink($item->getPathname());
+        }
+
+        rmdir($path);
     }
 
     /**

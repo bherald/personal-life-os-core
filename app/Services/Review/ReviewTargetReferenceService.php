@@ -42,7 +42,7 @@ final class ReviewTargetReferenceService
             return null;
         }
 
-        if (preg_match('/([a-z_]+):target-([a-f0-9]{12})/i', $text, $matches) !== 1) {
+        if (preg_match('/^([a-z_]+):target-([a-f0-9]{12})$/i', $text, $matches) !== 1) {
             return null;
         }
 
@@ -78,6 +78,11 @@ final class ReviewTargetReferenceService
         $rows = DB::table('agent_review_queue')
             ->where('status', 'pending')
             ->where('review_type', $normalized['review_type'])
+            ->where(function ($query): void {
+                $query
+                    ->whereNull('expires_at')
+                    ->orWhere('expires_at', '>', now());
+            })
             ->orderBy('created_at')
             ->orderBy('id')
             ->limit(max(1, min($limit, 1000)))

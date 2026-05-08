@@ -114,7 +114,7 @@ class OperatorEvidenceCommand extends Command
 
         $face = is_array($headlines['face'] ?? null) ? $headlines['face'] : [];
         $this->line(sprintf(
-            'face: %s pending=%s stale=%s no_match=%s stale_no_match=%s named_only=%s open_named_only=%s stale_open_named_only=%s terminal_named_only=%s no_decision=%s nonterminal=%s age30d=%s candidate_decisions=%s',
+            'face: %s pending=%s stale=%s no_match=%s stale_no_match=%s named_only=%s open_named_only=%s stale_open_named_only=%s terminal_named_only=%s no_decision=%s nonterminal=%s age30d=%s candidate_decisions=%s next_state=%s next_reason=%s approval_required=%s automation_allowed=%s link_allowed=%s create_person=%s writeback=%s selectors=%s',
             $face['status'] ?? 'unavailable',
             $face['pending_total'] ?? '-',
             $face['stale_pending'] ?? '-',
@@ -127,7 +127,15 @@ class OperatorEvidenceCommand extends Command
             $face['named_only_open_without_candidate_decision'] ?? '-',
             $face['named_only_open_with_nonterminal_decision'] ?? '-',
             $face['named_only_open_over_thirty_days'] ?? '-',
-            $face['candidate_decision_rows'] ?? '-'
+            $face['candidate_decision_rows'] ?? '-',
+            $face['named_only_next_state'] ?? '-',
+            $face['named_only_next_reason'] ?? '-',
+            $this->yesNo($face['named_only_approval_required'] ?? null),
+            $this->yesNo($face['named_only_automation_allowed'] ?? null),
+            $this->yesNo($face['named_only_automatic_link_allowed'] ?? null),
+            $this->yesNo($face['named_only_create_person_allowed'] ?? null),
+            $this->yesNo($face['named_only_writeback_allowed'] ?? null),
+            $this->yesNo($face['named_only_row_selectors_included'] ?? null)
         ));
 
         $offline = is_array($headlines['offline_runtime'] ?? null) ? $headlines['offline_runtime'] : [];
@@ -179,6 +187,7 @@ class OperatorEvidenceCommand extends Command
             $genealogyTriage['production_writeback_allowed_targets'] ?? '-',
             $genealogyTriage['canonical_genealogy_writeback_allowed_targets'] ?? '-'
         ));
+        $this->renderCompactGenealogyPostureLine('genealogy-triage-posture', $genealogyTriage['posture'] ?? null);
 
         $genealogyGates = is_array($headlines['genealogy_no_decision_gates'] ?? null)
             ? $headlines['genealogy_no_decision_gates']
@@ -206,6 +215,7 @@ class OperatorEvidenceCommand extends Command
             $this->yesNo($genealogyGates['production_writeback_allowed'] ?? null),
             $this->yesNo($genealogyGates['canonical_writeback_allowed'] ?? null)
         ));
+        $this->renderCompactGenealogyPostureLine('genealogy-gates-posture', $genealogyGates['posture'] ?? null);
 
         if (is_array($headlines['agent_doctor'] ?? null)) {
             $agentDoctor = $headlines['agent_doctor'];
@@ -219,6 +229,27 @@ class OperatorEvidenceCommand extends Command
                 $agentDoctor['memory_error_episodes_window'] ?? '-'
             ));
         }
+    }
+
+    private function renderCompactGenealogyPostureLine(string $label, mixed $posture): void
+    {
+        if (! is_array($posture)) {
+            return;
+        }
+
+        $this->line(sprintf(
+            '%s: scope=%s target_lists=%s selectors=%s recommendations=%s scheduled_output=%s awo_changed=%s scheduler_enablement=%s writeback=%s canonical_writeback=%s',
+            $label,
+            $posture['scope'] ?? '-',
+            $this->yesNo($posture['target_lists_included'] ?? null),
+            $this->yesNo($posture['row_selectors_included'] ?? null),
+            $this->yesNo($posture['raw_recommendations_included'] ?? null),
+            $this->yesNo($posture['raw_scheduled_output_included'] ?? null),
+            $this->yesNo($posture['awo_recording_changed'] ?? null),
+            $this->yesNo($posture['scheduler_enablement_performed'] ?? null),
+            $this->yesNo($posture['production_writeback_performed'] ?? null),
+            $this->yesNo($posture['canonical_genealogy_writeback_performed'] ?? null)
+        ));
     }
 
     private function minutes(mixed $value): string

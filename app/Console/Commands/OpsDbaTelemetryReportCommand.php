@@ -96,8 +96,24 @@ class OpsDbaTelemetryReportCommand extends Command
             $payload['captured_at'] ?? '-'
         ));
 
-        $breachIds = $payload['threshold_breach_ids'] ?? [];
-        $this->line('threshold_breach_ids: '.($breachIds === [] ? 'none' : implode(', ', $breachIds)));
+        $posture = is_array($payload['posture'] ?? null) ? $payload['posture'] : [];
+        if ($posture !== []) {
+            $this->line(sprintf(
+                'posture: scope=%s mode=%s read_only=%s writes_enabled=%s cleanup_enabled=%s arc_execute_enabled=%s scheduler_changes_enabled=%s notification_sends_enabled=%s raw_table_dumps=%s service_strategy_rows=%s recommendation_text=%s destructive_sql=%s',
+                $posture['scope'] ?? 'aggregate_only',
+                $posture['mode'] ?? 'observe',
+                ($posture['read_only'] ?? true) ? 'yes' : 'no',
+                ($posture['writes_enabled'] ?? false) ? 'yes' : 'no',
+                ($posture['cleanup_enabled'] ?? false) ? 'yes' : 'no',
+                ($posture['arc_execute_enabled'] ?? false) ? 'yes' : 'no',
+                ($posture['scheduler_changes_enabled'] ?? false) ? 'yes' : 'no',
+                ($posture['notification_sends_enabled'] ?? false) ? 'yes' : 'no',
+                ($posture['raw_table_dumps_included'] ?? false) ? 'yes' : 'no',
+                ($posture['service_strategy_rows_included'] ?? false) ? 'yes' : 'no',
+                ($posture['recommendation_text_included'] ?? false) ? 'yes' : 'no',
+                ($posture['destructive_sql_included'] ?? false) ? 'yes' : 'no'
+            ));
+        }
 
         $arc = $payload['arc'] ?? [];
         $this->line(sprintf(

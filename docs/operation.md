@@ -69,6 +69,7 @@ when planning cleanup work:
 php artisan ops:review-backlog-report --compact
 php artisan ops:review-backlog-report --next-target
 php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json
+php artisan ops:review-backlog-report --next-target --focus=aged-review --json
 php artisan ops:review-backlog-report --json --compact
 php artisan ops:review-backlog-report --json
 php artisan ops:review-backlog-report --markdown
@@ -98,6 +99,17 @@ show the same display-only `target_ref`, so match that value to the command
 output, open the selected packet, and decide it one at a time; do not use batch
 review or canonical writeback.
 
+Use the aged-review focus when Agent Doctor or Operator Evidence reports stale
+pending reviews and no higher-priority packet pass is underway:
+
+```bash
+php artisan ops:review-backlog-report --next-target --focus=aged-review --json
+```
+
+The aged target is still read-only and sanitized. It should return one opaque
+target pointer selected by oldest stale age, not raw row ids, tokens, source
+locators, packet details, repair selectors, or apply commands.
+
 Typed remediation materialization has a separate, dry-run-first operator
 handoff. Use it only when the next backlog target is a pending
 `genealogy_finding` typed-remediation candidate:
@@ -105,7 +117,7 @@ handoff. Use it only when the next backlog target is a pending
 ```bash
 php artisan ops:review-backlog-report --next-target
 php artisan ops:review-backlog-report --json --next-target
-php artisan ops:review-backlog-report --json --next-target --focus=typed-remediation
+php artisan ops:review-backlog-report --next-target --focus=typed-remediation --json
 php artisan genealogy:materialize-typed-remediation --target-ref=GENEALOGY_FINDING_TARGET_REF --json --compact
 php artisan genealogy:materialize-typed-remediation --id=SOURCE_REVIEW_QUEUE_ID --json --compact
 php artisan genealogy:materialize-typed-remediation --token=SOURCE_REVIEW_QUEUE_TOKEN --json --compact
@@ -220,6 +232,7 @@ authority or degraded-mode posture:
 php artisan ops:offline-status
 php artisan ops:offline-status --json
 php artisan ops:offline-smoke --json
+php artisan ops:offline-smoke --json --compact
 php artisan ops:operator-evidence --json
 ```
 
@@ -234,7 +247,10 @@ other operational evidence.
 offline-status payload, audit summary, profile-filtered MCP catalog boundary,
 and local runtime scorecard. It does not switch profiles, execute network
 calls, run remediation, or write audit receipts, and it is not scheduled by
-default.
+default. Use `--json --compact` for routine status checks; it keeps section
+statuses, stable reason codes, aggregate counts, leaked-server counts, and safe
+local runtime labels while omitting nested payloads, raw details, server lists,
+paths, prompts, traces, and environment values.
 
 Key fields to check:
 
@@ -266,8 +282,6 @@ Use this sequence for the current local/offline dev-agent scorecard pass:
 php artisan ops:agent-doctor --json --compact --since=24
 php artisan ops:mcp-health --compact
 php artisan plos:agent-trace-tail --limit=20 --since=24 --json
-php artisan plos:agent-trace-read trc_example --since=168 --json
-php artisan plos:agent-trace-read --event=evt_example --since=168 --json
 php artisan offline:dev-assist /doctor --json
 ```
 
@@ -295,6 +309,21 @@ Doctor and recent trace-tail forms shown above. Trace reads, trace-specific
 tail filters, wider windows, higher limits, reordered flags, detail-expanding
 options, and non-JSON trace commands stay blocked through MCP until separately
 reviewed.
+
+If a live MCP session blocks one of those exact forms, run `plos_artisan` with
+`command=list` and compare the reported allowlist revision to source. Treat a
+missing revision or missing exact command as a loaded-session freshness issue;
+use direct local/prod artisan for read-only proof until the normal MCP reload.
+Do not widen the command, reorder flags, or add trace ids to work around a stale
+session.
+
+Trace reads are direct operator diagnostics only after a sanitized trace id or
+event id is already visible:
+
+```bash
+php artisan plos:agent-trace-read trc_example --since=168 --json
+php artisan plos:agent-trace-read --event=evt_example --since=168 --json
+```
 
 `offline:dev-assist` is local opt-in, not part of routine observation. For
 status work, prefer `/doctor --json` with the default `read-only` approval mode.
@@ -332,13 +361,15 @@ For trend evidence, preview aggregate readiness snapshots before writing rows:
 ```bash
 php artisan ops:agent-doctor-snapshot --dry-run --json
 php artisan ops:agent-doctor-history --json --days=7
+php artisan ops:agent-doctor-history --json --compact --days=7
 ```
 
 Without `--dry-run`, `ops:agent-doctor-snapshot` appends one aggregate row to
 `dev_agent_readiness_snapshots`. The stored row contains only status/count
 fields, trace-readiness aggregates, recursion status/count, check ids, and
 scheduled output-quality counts. `ops:agent-doctor-history` reads that table
-only and does not re-run live diagnostics.
+only and does not re-run live diagnostics. Use the compact form for routine
+MCP/operator checks because it omits snapshot ids and check-id lists.
 
 ## Agent Output Quality Replay
 

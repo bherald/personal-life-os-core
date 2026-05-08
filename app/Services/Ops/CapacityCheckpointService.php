@@ -291,6 +291,91 @@ class CapacityCheckpointService
     }
 
     /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function compactPayload(array $payload): array
+    {
+        $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+        $posture = is_array($payload['posture'] ?? null) ? $payload['posture'] : [];
+        $evidence = [];
+
+        foreach (($payload['evidence'] ?? []) as $name => $section) {
+            if (! is_array($section)) {
+                continue;
+            }
+
+            $evidence[(string) $name] = [
+                'status' => (string) ($section['status'] ?? 'unknown'),
+                'available' => (bool) ($section['available'] ?? false),
+            ];
+        }
+
+        $errorCodes = [];
+        foreach (($payload['evidence_errors'] ?? []) as $error) {
+            if (! is_array($error)) {
+                continue;
+            }
+
+            $code = $this->safeEvidenceCode($error['code'] ?? $error['type'] ?? 'evidence_error');
+            $errorCodes[$code] = ($errorCodes[$code] ?? 0) + 1;
+        }
+
+        ksort($errorCodes);
+
+        return [
+            'version' => 1,
+            'command' => 'ops:capacity-checkpoint',
+            'mode' => (string) ($payload['mode'] ?? 'observe'),
+            'compact' => true,
+            'decision' => (string) ($payload['decision'] ?? 'no_decision'),
+            'dry_run' => (bool) ($payload['dry_run'] ?? false),
+            'read_only' => (bool) ($payload['read_only'] ?? true),
+            'artifact_write' => (bool) ($payload['artifact_write'] ?? false),
+            'captured_at' => $payload['captured_at'] ?? null,
+            'window' => $payload['window'] ?? null,
+            'window_minutes' => $payload['window_minutes'] ?? null,
+            'status' => (string) ($summary['status'] ?? 'unknown'),
+            'summary' => [
+                'status' => (string) ($summary['status'] ?? 'unknown'),
+                'capacity_enforcement_ready' => (bool) ($summary['capacity_enforcement_ready'] ?? false),
+                'observe_threshold_warning_count' => (int) ($summary['observe_threshold_warning_count'] ?? 0),
+                'jobs_captures' => $summary['jobs_captures'] ?? null,
+                'jobs_heavy_window_captures' => $summary['jobs_heavy_window_captures'] ?? null,
+                'scheduler_recommendation_count' => $summary['scheduler_recommendation_count'] ?? null,
+                'scheduler_warning_recommendations' => (int) ($summary['scheduler_warning_recommendations'] ?? 0),
+                'runtime_failed_runs' => $summary['runtime_failed_runs'] ?? null,
+                'runtime_timeout_runs' => $summary['runtime_timeout_runs'] ?? null,
+                'stale_agent_sessions' => $summary['stale_agent_sessions'] ?? null,
+                'past_deadline_jobs' => $summary['past_deadline_jobs'] ?? null,
+                'queue_depth_total' => $summary['queue_depth_total'] ?? null,
+                'kg_pending' => $summary['kg_pending'] ?? null,
+                'kg_net_burn_per_day' => $summary['kg_net_burn_per_day'] ?? null,
+                'kg_net_burn_trend' => $summary['kg_net_burn_trend'] ?? null,
+                'raptor_pending' => $summary['raptor_pending'] ?? null,
+                'sentence_pending' => $summary['sentence_pending'] ?? null,
+                'dba_threshold_breach_count' => $summary['dba_threshold_breach_count'] ?? null,
+                'evidence_error_count' => (int) ($summary['evidence_error_count'] ?? 0),
+            ],
+            'evidence' => $evidence,
+            'evidence_error_count' => count((array) ($payload['evidence_errors'] ?? [])),
+            'evidence_error_codes' => $errorCodes,
+            'posture' => [
+                'tuning_allowed' => (bool) ($posture['tuning_allowed'] ?? false),
+                'writes_enabled' => (bool) ($posture['writes_enabled'] ?? false),
+                'artifact_write_enabled' => (bool) ($posture['artifact_write_enabled'] ?? false),
+                'scheduler_changes_allowed' => (bool) ($posture['scheduler_changes_allowed'] ?? false),
+                'queue_mutations_allowed' => (bool) ($posture['queue_mutations_allowed'] ?? false),
+                'cache_flush_allowed' => (bool) ($posture['cache_flush_allowed'] ?? false),
+                'notifications_allowed' => (bool) ($posture['notifications_allowed'] ?? false),
+                'raw_payloads_included' => false,
+                'recommendation_details_included' => false,
+                'operator_evidence_collected' => false,
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function collectCapacityReport(): array
@@ -373,9 +458,10 @@ class CapacityCheckpointService
             array_values((array) ($metrics['evidence_errors'] ?? [])),
             array_values((array) ($netBurn['evidence_errors'] ?? []))
         );
+        $sanitizedEvidenceErrors = $this->sanitizeNestedEvidenceErrors('rag_kg', $evidenceErrors);
 
         return [
-            'status' => $evidenceErrors === [] ? 'observe_ok' : 'observe_warning',
+            'status' => $sanitizedEvidenceErrors === [] ? 'observe_ok' : 'observe_warning',
             'available' => true,
             'summary' => [
                 'documents' => isset($metrics['documents']) ? (int) $metrics['documents'] : null,
@@ -391,8 +477,9 @@ class CapacityCheckpointService
                 'raptor_net_burn_trend' => $raptorNetBurn['trend'] ?? null,
                 'sentence_pending' => isset($sentence['pending']) ? (int) $sentence['pending'] : null,
                 'sentence_net_burn_trend' => $sentenceNetBurn['trend'] ?? null,
-                'evidence_error_count' => count($evidenceErrors),
+                'evidence_error_count' => count($sanitizedEvidenceErrors),
             ],
+            'evidence_errors' => $sanitizedEvidenceErrors,
         ];
     }
 
@@ -626,18 +713,78 @@ class CapacityCheckpointService
         $errors = [];
 
         foreach ($evidence as $name => $section) {
-            if (! isset($section['error']) || ! is_array($section['error'])) {
-                continue;
+            if (isset($section['error']) && is_array($section['error'])) {
+                $errors[] = [
+                    'section' => (string) ($section['error']['section'] ?? $name),
+                    'type' => (string) ($section['error']['type'] ?? 'unknown'),
+                    'code' => (string) ($section['error']['code'] ?? $section['error']['type'] ?? 'unknown'),
+                    'message' => (string) ($section['error']['message'] ?? ''),
+                ];
             }
 
-            $errors[] = [
-                'section' => (string) ($section['error']['section'] ?? $name),
-                'type' => (string) ($section['error']['type'] ?? 'unknown'),
-                'message' => (string) ($section['error']['message'] ?? ''),
-            ];
+            if (isset($section['evidence_errors']) && is_array($section['evidence_errors'])) {
+                foreach ($section['evidence_errors'] as $error) {
+                    if (! is_array($error)) {
+                        continue;
+                    }
+
+                    $errors[] = [
+                        'section' => (string) ($error['section'] ?? $name),
+                        'type' => (string) ($error['type'] ?? $error['code'] ?? 'evidence_error'),
+                        'code' => (string) ($error['code'] ?? $error['type'] ?? 'evidence_error'),
+                        'message' => (string) ($error['message'] ?? ''),
+                    ];
+                }
+            }
         }
 
         return $errors;
+    }
+
+    /**
+     * @param  list<mixed>  $errors
+     * @return list<array<string, string>>
+     */
+    private function sanitizeNestedEvidenceErrors(string $section, array $errors): array
+    {
+        $sanitized = [];
+
+        foreach ($errors as $error) {
+            if (! is_array($error)) {
+                continue;
+            }
+
+            $code = $this->safeEvidenceCode($error['code'] ?? $error['type'] ?? 'evidence_error');
+            $message = $this->safeEvidenceMessage($error['message'] ?? $error['context']['error'] ?? null, $code);
+
+            $sanitized[] = [
+                'section' => $section,
+                'type' => $code,
+                'code' => $code,
+                'message' => $message,
+            ];
+        }
+
+        return $sanitized;
+    }
+
+    private function safeEvidenceCode(mixed $value): string
+    {
+        $code = strtolower(trim((string) $value));
+        $code = preg_replace('/[^a-z0-9_-]+/', '_', $code) ?? '';
+        $code = trim($code, '_-');
+
+        return $code !== '' ? substr($code, 0, 80) : 'evidence_error';
+    }
+
+    private function safeEvidenceMessage(mixed $value, string $code): string
+    {
+        $message = trim(preg_replace('/\s+/', ' ', (string) ($value ?? '')) ?? '');
+        if ($message === '' || preg_match('/\b(select|from|where|join|insert|update|delete|drop|alter|truncate|vacuum)\b|[\/\\\\]/i', $message)) {
+            return 'RAG/KG evidence collector reported '.$code.'.';
+        }
+
+        return substr($message, 0, 180);
     }
 
     /**

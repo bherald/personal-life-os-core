@@ -9,6 +9,7 @@ class OpsOfflineSmokeCommand extends Command
 {
     protected $signature = 'ops:offline-smoke
         {--json : Emit machine-readable JSON}
+        {--compact : Emit redacted compact JSON; requires --json}
         {--profile=offline_review : Offline profile to inspect}
         {--hours=24 : Audit summary window in hours}';
 
@@ -31,10 +32,17 @@ class OpsOfflineSmokeCommand extends Command
             return self::INVALID;
         }
 
+        if ($this->option('compact') && ! $this->option('json')) {
+            $this->error('Use --compact with --json.');
+
+            return self::INVALID;
+        }
+
         $payload = $service->collect($profile, $hours);
 
         if ($this->option('json')) {
-            $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+            $jsonPayload = $this->option('compact') ? $service->compactPayload($payload) : $payload;
+            $json = json_encode($jsonPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
             if ($json === false) {
                 $this->error('Failed to encode offline smoke JSON.');
 

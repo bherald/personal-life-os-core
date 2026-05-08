@@ -379,6 +379,126 @@ class PushoverNotifyTest extends TestCase
         }
     }
 
+    public function test_default_source_group_preflights_multipart_when_bucket_is_nearly_full(): void
+    {
+        config([
+            'services.pushover.api_url' => 'https://api.pushover.net/1/messages.json',
+            'services.pushover.token' => 'test-token',
+            'services.pushover.user_key' => 'test-user',
+        ]);
+        Cache::flush();
+        Cache::put('pushover_rate_limit:workflow_node_notifications', 9, 60);
+        Http::fake([
+            'https://api.pushover.net/*' => Http::response(['status' => 1, 'request' => 'request-final-part'], 200),
+        ]);
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", [
+                'First packet '.str_repeat('A', 980),
+                'Second packet '.str_repeat('B', 980),
+                'Third packet '.str_repeat('C', 980),
+            ]),
+            'max_retries_per_chunk' => 1,
+            'inter_chunk_delay_seconds' => 0,
+        ]);
+
+        $result = $node->execute([]);
+        $requests = Http::recorded();
+
+        $this->assertStringContainsString('Pushover multipart rate-limit capacity insufficient', $result['error']);
+        $this->assertFalse($result['data']['notification_sent']);
+        $this->assertSame('workflow_node_notifications', $result['data']['source_group']);
+        $this->assertSame(3, $result['data']['total_parts']);
+        $this->assertSame(0, $result['data']['parts_sent']);
+        $this->assertSame([], $result['data']['part_numbers_sent']);
+        $this->assertSame([3, 2, 1], $result['data']['part_numbers_failed']);
+        $this->assertSame('insufficient_capacity', $result['data']['rate_limit_preflight']);
+        $this->assertSame(10, $result['data']['rate_limit_capacity']['limit']);
+        $this->assertSame(9, $result['data']['rate_limit_capacity']['current_count']);
+        $this->assertSame(1, $result['data']['rate_limit_capacity']['remaining']);
+        $this->assertSame(3, $result['data']['rate_limit_capacity']['required']);
+        $this->assertCount(0, $requests);
+    }
+
+    public function test_routine_source_group_avoids_generic_bucket_starvation_for_multipart_news(): void
+    {
+        config([
+            'services.pushover.api_url' => 'https://api.pushover.net/1/messages.json',
+            'services.pushover.token' => 'test-token',
+            'services.pushover.user_key' => 'test-user',
+        ]);
+        Cache::flush();
+        Cache::put('pushover_rate_limit:workflow_node_notifications', 9, 60);
+        Http::fake(function () {
+            return Http::response(['status' => 1], 200);
+        });
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", [
+                'First packet '.str_repeat('A', 980),
+                'Second packet '.str_repeat('B', 980),
+                'Third packet '.str_repeat('C', 980),
+            ]),
+            'source_group' => 'workflow_routine_updates',
+            'max_retries_per_chunk' => 1,
+            'inter_chunk_delay_seconds' => 0,
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertSame('workflow_routine_updates', $result['data']['source_group']);
+        $this->assertSame(3, $result['data']['total_parts']);
+        $this->assertSame(3, $result['data']['parts_sent']);
+        $this->assertSame([3, 2, 1], $result['data']['part_numbers_sent']);
+        $this->assertSame([], $result['data']['part_numbers_failed']);
+        Http::assertSentCount(3);
+    }
+
+    public function test_routine_source_group_preflights_when_routine_bucket_cannot_fit_all_parts(): void
+    {
+        config([
+            'services.pushover.api_url' => 'https://api.pushover.net/1/messages.json',
+            'services.pushover.token' => 'test-token',
+            'services.pushover.user_key' => 'test-user',
+        ]);
+        Cache::flush();
+        Cache::put('pushover_rate_limit:workflow_routine_updates', 58, 60);
+        Http::fake(function () {
+            return Http::response(['status' => 1], 200);
+        });
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", [
+                'First packet '.str_repeat('A', 980),
+                'Second packet '.str_repeat('B', 980),
+                'Third packet '.str_repeat('C', 980),
+            ]),
+            'source_group' => 'workflow_routine_updates',
+            'max_retries_per_chunk' => 1,
+            'inter_chunk_delay_seconds' => 0,
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertStringContainsString('Pushover multipart rate-limit capacity insufficient', $result['error']);
+        $this->assertFalse($result['data']['notification_sent']);
+        $this->assertSame('workflow_routine_updates', $result['data']['source_group']);
+        $this->assertSame(3, $result['data']['total_parts']);
+        $this->assertSame(0, $result['data']['parts_sent']);
+        $this->assertSame([3, 2, 1], $result['data']['part_numbers_failed']);
+        $this->assertSame('insufficient_capacity', $result['data']['rate_limit_preflight']);
+        $this->assertSame(60, $result['data']['rate_limit_capacity']['limit']);
+        $this->assertSame(58, $result['data']['rate_limit_capacity']['current_count']);
+        $this->assertSame(2, $result['data']['rate_limit_capacity']['remaining']);
+        $this->assertSame(3, $result['data']['rate_limit_capacity']['required']);
+        Http::assertSentCount(0);
+    }
+
     public function test_uses_configured_source_group_when_present(): void
     {
         $controller = Mockery::mock('overload:'.NotificationController::class);

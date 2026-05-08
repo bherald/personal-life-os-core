@@ -11,6 +11,7 @@ use App\Services\FileVersionService;
 use App\Services\Genealogy\FaceCandidateDecisionService;
 use App\Services\Genealogy\FaceCandidateService;
 use App\Services\Genealogy\FaceLinkBridgeService;
+use App\Services\Genealogy\Support\TemporalProximityChecker;
 use App\Services\ImageEditService;
 use App\Services\ThumbnailService;
 use Illuminate\Http\JsonResponse;
@@ -32,6 +33,22 @@ use Illuminate\Support\Facades\Log;
  */
 class MediaBrowserController extends Controller
 {
+    private const FACE_CANDIDATE_DECISION_ACTIONS = [
+        'keep_name_only',
+        'outside_tree',
+        'too_vague',
+        'not_this_person',
+        'defer',
+    ];
+
+    private const FACE_CANDIDATE_DECISION_STATUSES = [
+        'pending',
+        'ignored',
+        'dismissed',
+        'approved',
+        'rejected',
+    ];
+
     private ?ImageEditService $imageEditor = null;
 
     private ?FileVersionService $fileVersion = null;
@@ -3639,14 +3656,18 @@ class MediaBrowserController extends Controller
             ], 422);
         }
 
+        $allowedDecisionActionsSql = implode(', ', array_map(
+            fn (string $action): string => "'{$action}'",
+            self::FACE_CANDIDATE_DECISION_ACTIONS
+        ));
         $decisionJoin = "
             LEFT JOIN genealogy_face_match_queue q ON q.file_registry_face_id = frf.id
-              AND JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.action')) IS NOT NULL
+              AND JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.action')) IN ({$allowedDecisionActionsSql})
               AND NOT EXISTS (
                 SELECT 1
                 FROM genealogy_face_match_queue q2
                 WHERE q2.file_registry_face_id = frf.id
-                  AND JSON_UNQUOTE(JSON_EXTRACT(q2.match_details, '$.latest_candidate_decision.action')) IS NOT NULL
+                  AND JSON_UNQUOTE(JSON_EXTRACT(q2.match_details, '$.latest_candidate_decision.action')) IN ({$allowedDecisionActionsSql})
                   AND (
                     q2.updated_at > q.updated_at
                     OR (q2.updated_at = q.updated_at AND q2.id > q.id)
@@ -3683,7 +3704,7 @@ class MediaBrowserController extends Controller
                    frf.genealogy_person_id, frf.region_x, frf.region_y,
                    frf.region_w, frf.region_h, frf.confidence, frf.source,
                    frf.verified, frf.favorite, fr.asset_uuid, fr.filename,
-                   fr.current_path,
+                   fr.current_path, fr.date_taken,
                    IFNULL(GREATEST(TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()), 0), 0) AS backlog_age_hours,
                    CASE WHEN frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END AS is_stale_named_only,
                    q.status AS candidate_decision_status,
@@ -3704,6 +3725,12 @@ class MediaBrowserController extends Controller
             $face->backlog_age_hours = (int) ($face->backlog_age_hours ?? 0);
             $face->is_stale_named_only = (bool) ($face->is_stale_named_only ?? false);
             $face->face_genealogy_posture = $this->namedOnlyFaceGenealogyPosture();
+            $face->candidate_decision_status = $this->safeFaceCandidateDecisionStatus($face->candidate_decision_status ?? null);
+            $face->candidate_decision_action = $this->safeFaceCandidateDecisionAction($face->candidate_decision_action ?? null);
+            $face->candidate_decision_terminal = $this->safeFaceCandidateDecisionTerminal($face->candidate_decision_terminal ?? null);
+            $face->candidate_decision_at = $this->safeFaceCandidateDecisionTimestamp($face->candidate_decision_at ?? null);
+            $face->photo_date_context = $this->facePhotoDateContext($face->date_taken ?? null);
+            unset($face->date_taken);
 
             return $face;
         }, $faces);
@@ -3746,6 +3773,108 @@ class MediaBrowserController extends Controller
             'metadata_writeback_allowed' => false,
             'posture_reason' => 'named_only_face_review',
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function facePhotoDateContext(mixed $dateTaken): array
+    {
+        $safeDateTaken = $this->safePhotoDateTaken($dateTaken);
+        $photoYear = TemporalProximityChecker::extractYear($safeDateTaken ?? $dateTaken);
+
+        return [
+            'projection_only' => true,
+            'available' => $photoYear !== null,
+            'source' => $photoYear !== null ? 'file_registry.date_taken' : null,
+            'photo_year' => $photoYear,
+            'date_taken' => $safeDateTaken,
+        ];
+    }
+
+    private function safePhotoDateTaken(mixed $dateTaken): ?string
+    {
+        if ($dateTaken instanceof \DateTimeInterface) {
+            return $dateTaken->format('Y-m-d');
+        }
+
+        if (! is_scalar($dateTaken)) {
+            return null;
+        }
+
+        $value = trim((string) $dateTaken);
+        if (TemporalProximityChecker::extractYear($value) === null) {
+            return null;
+        }
+
+        return preg_match('/^\d{4}-\d{2}-\d{2}/', $value) === 1
+            ? substr($value, 0, 10)
+            : null;
+    }
+
+    private function safeFaceCandidateDecisionAction(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $action = trim((string) $value);
+
+        return in_array($action, self::FACE_CANDIDATE_DECISION_ACTIONS, true) ? $action : null;
+    }
+
+    private function safeFaceCandidateDecisionStatus(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $status = trim((string) $value);
+
+        return in_array($status, self::FACE_CANDIDATE_DECISION_STATUSES, true) ? $status : null;
+    }
+
+    private function safeFaceCandidateDecisionTerminal(mixed $value): ?string
+    {
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if (is_int($value) && in_array($value, [0, 1], true)) {
+            return $value === 1 ? 'true' : 'false';
+        }
+
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $terminal = strtolower(trim((string) $value));
+
+        return in_array($terminal, ['true', 'false'], true) ? $terminal : null;
+    }
+
+    private function safeFaceCandidateDecisionTimestamp(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $timestamp = trim((string) $value);
+        if ($timestamp === '' || strlen($timestamp) > 64 || str_contains($timestamp, '<') || str_contains($timestamp, '>')) {
+            return null;
+        }
+
+        if (preg_match('/^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?)?$/', $timestamp) !== 1) {
+            return null;
+        }
+
+        try {
+            new \DateTimeImmutable($timestamp);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $timestamp;
     }
 
     /**

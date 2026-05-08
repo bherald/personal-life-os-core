@@ -25,11 +25,11 @@
       <!-- Side-by-side person columns -->
       <div class="merge-grid">
         <section class="merge-col">
-          <div class="col-heading">Person A · #{{ mergeContext.person_ids[0] }}</div>
+          <div class="col-heading">Person A reference</div>
           <PersonSnapshotCard :person="mergeContext.persons[0]" />
         </section>
         <section class="merge-col">
-          <div class="col-heading">Person B · #{{ mergeContext.person_ids[1] }}</div>
+          <div class="col-heading">Person B reference</div>
           <PersonSnapshotCard :person="mergeContext.persons[1]" />
         </section>
       </div>

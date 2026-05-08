@@ -66,7 +66,7 @@
           <div class="relative aspect-square overflow-hidden">
             <img
               :src="`/api/media/faces/registry-crop/${face.face_id}`"
-              :alt="face.person_name || `Face ${face.face_id}`"
+              :alt="faceImageAlt(face)"
               class="h-full w-full object-cover"
               loading="lazy"
               @error="onImgError"
@@ -82,7 +82,7 @@
                 Stale
               </span>
               <span
-                v-if="face.candidate_decision_action"
+                v-if="hasCandidateDecision(face)"
                 class="rounded bg-black/75 px-1 py-0.5 text-[10px] uppercase tracking-wide text-ops-gold"
               >
                 {{ decisionBadge(face) }}
@@ -93,12 +93,20 @@
             <div class="truncate text-xs font-semibold text-ops-text" :title="face.person_name">
               {{ face.person_name || 'Unnamed' }}
             </div>
-            <div class="truncate text-[10px] text-ops-text-muted" :title="face.filename || face.current_path">
-              {{ face.filename || `Face ${face.face_id}` }}
+            <div class="truncate text-[10px] text-ops-text-muted" :title="faceFileLabel(face)">
+              {{ faceFileLabel(face) }}
             </div>
             <div class="mt-1 flex items-center gap-1 text-[10px] text-ops-text-muted">
               <span>{{ formatAge(face.backlog_age_hours) }}</span>
               <span v-if="isTerminalDecision(face)">Done</span>
+            </div>
+            <div class="mt-1">
+              <span
+                class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                :class="photoDateBadgeClass(facePhotoDateBadge(face))"
+              >
+                {{ facePhotoDateBadge(face).label }}
+              </span>
             </div>
           </div>
         </button>
@@ -124,7 +132,7 @@
         <div class="flex gap-3">
           <img
             :src="`/api/media/faces/registry-crop/${selectedFace.face_id}`"
-            :alt="selectedFace.person_name || `Face ${selectedFace.face_id}`"
+            :alt="faceImageAlt(selectedFace)"
             class="h-16 w-16 rounded border border-ops-plum/40 object-cover"
             @error="onImgError"
           />
@@ -132,10 +140,16 @@
             <div class="truncate font-semibold text-ops-peach" :title="selectedFace.person_name">
               {{ selectedFace.person_name || 'Unnamed' }}
             </div>
-            <div class="mt-1 text-xs text-ops-text-muted">Face #{{ selectedFace.face_id }}</div>
+            <div class="mt-1 text-xs text-ops-text-muted">Named-only face</div>
             <div class="mt-1 flex flex-wrap gap-1">
               <span class="rounded border border-ops-plum/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-ops-text-muted">
                 {{ formatAge(selectedFace.backlog_age_hours) }}
+              </span>
+              <span
+                class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                :class="photoDateBadgeClass(facePhotoDateBadge(selectedFace))"
+              >
+                {{ facePhotoDateBadge(selectedFace).label }}
               </span>
               <span
                 v-if="selectedFace.is_stale_named_only"
@@ -144,7 +158,7 @@
                 Stale
               </span>
               <span
-                v-if="selectedFace.candidate_decision_action"
+                v-if="hasCandidateDecision(selectedFace)"
                 class="rounded border border-ops-gold/50 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-ops-gold"
               >
                 {{ decisionBadge(selectedFace) }}
@@ -168,6 +182,25 @@
           </div>
         </div>
 
+        <div
+          v-if="faceGenealogyPostureBadges(selectedFace).length"
+          class="rounded border border-ops-plum/40 bg-black/30 p-3"
+        >
+          <div class="mb-2 text-[10px] font-semibold uppercase tracking-wide text-ops-text-muted">
+            Genealogy posture
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            <span
+              v-for="badge in faceGenealogyPostureBadges(selectedFace)"
+              :key="badge.key"
+              class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+              :class="facePostureBadgeClass(badge)"
+            >
+              {{ badge.label }}
+            </span>
+          </div>
+        </div>
+
         <div class="grid grid-cols-2 gap-2">
           <button
             v-for="action in faceDecisionActions"
@@ -181,12 +214,12 @@
         </div>
 
         <div
-          v-if="selectedFace.candidate_decision_action"
+          v-if="hasCandidateDecision(selectedFace)"
           class="rounded border border-ops-plum/40 bg-black/30 p-3 text-xs text-ops-text-muted"
         >
           <div class="flex items-center justify-between gap-3">
             <span class="uppercase tracking-wide">Decision</span>
-            <span class="font-semibold text-ops-gold">{{ formatReason(selectedFace.candidate_decision_action) }}</span>
+            <span class="font-semibold text-ops-gold">{{ formatDecisionAction(selectedFace.candidate_decision_action) }}</span>
           </div>
           <div class="mt-2 flex items-center justify-between gap-3">
             <span class="uppercase tracking-wide">State</span>
@@ -218,8 +251,8 @@
           >
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
-                <div class="truncate text-sm font-semibold text-ops-text" :title="candidate.name">
-                  {{ candidate.name || `Person #${candidate.genealogy_person_id}` }}
+                <div class="truncate text-sm font-semibold text-ops-text" :title="candidateDisplayName(candidate)">
+                  {{ candidateDisplayName(candidate) }}
                 </div>
                 <div class="mt-0.5 text-xs text-ops-text-muted">
                   {{ formatLifeSpan(candidate) }}
@@ -239,6 +272,17 @@
                 class="rounded border border-ops-plum/40 px-1.5 py-0.5 text-[10px] text-ops-text-muted"
               >
                 {{ formatReason(reason) }}
+              </span>
+            </div>
+
+            <div v-if="candidateLifespanBadges(candidate).length" class="mt-2 flex flex-wrap gap-1">
+              <span
+                v-for="badge in candidateLifespanBadges(candidate)"
+                :key="badge.key"
+                class="rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                :class="lifespanBadgeClass(badge)"
+              >
+                {{ badge.label }}
               </span>
             </div>
 
@@ -492,8 +536,126 @@ function formatLifeSpan(candidate) {
   return `${birth} - ${death || '?'}`
 }
 
+function candidateDisplayName(candidate) {
+  const name = String(candidate?.name || '').trim()
+  return name || 'Person reference'
+}
+
 function formatReason(reason) {
   return String(reason || '').replaceAll('_', ' ')
+}
+
+function numberValue(value) {
+  if (value === null || value === undefined || value === '') return null
+
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+const decisionActionLabels = {
+  keep_name_only: 'keep name only',
+  outside_tree: 'outside tree',
+  too_vague: 'too vague',
+  not_this_person: 'not this person',
+  defer: 'defer',
+}
+
+function formatDecisionAction(action) {
+  return decisionActionLabels[String(action || '').trim()] || ''
+}
+
+function hasCandidateDecision(face) {
+  return Boolean(formatDecisionAction(face?.candidate_decision_action))
+}
+
+function faceGenealogyPostureBadges(face) {
+  const posture = face?.face_genealogy_posture || {}
+  const badges = []
+
+  if (posture.projection_only === true) {
+    badges.push({ key: 'projection-only', label: 'Review only', tone: 'safe' })
+  }
+
+  if (posture.operator_review_required === true || posture.operator_decision_available === true) {
+    badges.push({ key: 'operator-decision', label: 'Manual decision', tone: 'safe' })
+  }
+
+  if (posture.operator_link_available === true) {
+    badges.push({ key: 'operator-link', label: 'Manual link', tone: 'safe' })
+  }
+
+  if (posture.automation_allowed === false && posture.automatic_link_allowed === false) {
+    badges.push({ key: 'no-automation', label: 'No automation', tone: 'hold' })
+  }
+
+  if (posture.create_person_allowed === false) {
+    badges.push({ key: 'no-new-person', label: 'No new person', tone: 'hold' })
+  }
+
+  if (posture.metadata_writeback_allowed === false) {
+    badges.push({ key: 'metadata-unchanged', label: 'Metadata unchanged', tone: 'hold' })
+  }
+
+  return badges
+}
+
+function facePostureBadgeClass(badge) {
+  if (badge?.tone === 'hold') {
+    return 'border-ops-gold/40 bg-ops-gold/10 text-ops-gold'
+  }
+
+  return 'border-ops-plum/40 bg-black/20 text-ops-text-muted'
+}
+
+function facePhotoDateBadge(face) {
+  const photoYear = numberValue(face?.photo_date_context?.photo_year)
+
+  if (photoYear !== null) {
+    return { key: 'photo-year', label: `Photo ${photoYear}`, tone: 'muted' }
+  }
+
+  return { key: 'photo-date-missing', label: 'No photo date', tone: 'hold' }
+}
+
+function photoDateBadgeClass(badge) {
+  if (badge?.tone === 'hold') {
+    return 'border-ops-gold/40 bg-ops-gold/10 text-ops-gold'
+  }
+
+  return 'border-ops-plum/40 bg-black/20 text-ops-text-muted'
+}
+
+function candidateLifespanBadges(candidate) {
+  const badges = []
+  const photoYear = numberValue(candidate?.photo_date_context?.photo_year)
+  const ageAtPhoto = numberValue(candidate?.age_at_photo)
+  const fit = String(candidate?.lifespan_fit || '')
+
+  if (photoYear !== null) {
+    badges.push({ key: 'photo-year', label: `Photo ${photoYear}`, tone: 'muted' })
+  }
+
+  if (ageAtPhoto !== null) {
+    badges.push({ key: 'age-at-photo', label: `Age ${ageAtPhoto}`, tone: 'muted' })
+  }
+
+  if (fit === 'before_birth') {
+    badges.push({ key: 'photo-before-birth', label: 'Before birth', tone: 'warning' })
+  } else if (fit === 'after_death') {
+    badges.push({ key: 'photo-after-death', label: 'After death', tone: 'warning' })
+  } else if (fit === 'unknown_lifespan' && photoYear !== null) {
+    badges.push({ key: 'lifespan-unknown', label: 'Lifespan unknown', tone: 'muted' })
+  }
+
+  return badges
+}
+
+function lifespanBadgeClass(badge) {
+  if (badge?.tone === 'warning') {
+    return 'border-ops-orange/40 bg-ops-orange/10 text-ops-orange'
+  }
+
+  return 'border-ops-plum/40 bg-black/20 text-ops-text-muted'
 }
 
 function candidatePrivacyBadges(candidate) {
@@ -556,8 +718,18 @@ function isTerminalDecision(face) {
 }
 
 function decisionBadge(face) {
-  const action = formatReason(face?.candidate_decision_action)
+  const action = formatDecisionAction(face?.candidate_decision_action)
+  if (!action) return ''
+
   return isTerminalDecision(face) ? action : `${action} pending`
+}
+
+function faceImageAlt(face) {
+  return face?.person_name || 'Named-only face'
+}
+
+function faceFileLabel(face) {
+  return face?.filename || 'Photo reference'
 }
 
 function formatAge(hours) {
@@ -574,7 +746,7 @@ function formatDateTime(value) {
   if (!value) return ''
 
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return String(value)
+  if (Number.isNaN(date.getTime())) return ''
 
   return date.toLocaleString(undefined, {
     year: 'numeric',

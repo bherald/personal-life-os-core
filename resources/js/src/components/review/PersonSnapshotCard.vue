@@ -78,7 +78,7 @@ const displayName = computed(() => {
   if (!props.person) return ''
   const parts = [props.person.given_name, props.person.surname].filter(Boolean)
   const name = parts.join(' ').trim()
-  return name || `Person #${props.person.id}`
+  return name || 'Person reference'
 })
 
 const parentNames = computed(() => {

@@ -14,7 +14,7 @@ class OpsReviewBacklogReportCommand extends Command
         {--json : Emit machine-readable JSON}
         {--compact : Emit routine-check compact output}
         {--next-target : Emit one sanitized next review target only}
-        {--focus= : Optional --next-target focus. Supported: typed-remediation, materializable-remediation, source-backed-packet}
+        {--focus= : Optional --next-target focus. Supported: typed-remediation, materializable-remediation, source-backed-packet, aged-review}
         {--dry-run : Validate command shape without running review backlog queries}';
 
     protected $description = 'Observe-only review backlog summary grouped by age, type, agent, and priority';
@@ -44,7 +44,10 @@ class OpsReviewBacklogReportCommand extends Command
             );
 
             if ($this->option('json')) {
-                $json = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+                $json = json_encode(
+                    $this->option('compact') ? $report->compactNextTargetPayload($payload) : $payload,
+                    JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+                );
                 if ($json === false) {
                     $this->error('Failed to encode review backlog next target JSON.');
 
@@ -57,12 +60,12 @@ class OpsReviewBacklogReportCommand extends Command
             }
 
             if ($this->option('markdown')) {
-                $this->line($report->toNextTargetMarkdown($payload));
+                $this->line($this->option('compact') ? $report->toCompactNextTargetMarkdown($payload) : $report->toNextTargetMarkdown($payload));
 
                 return self::SUCCESS;
             }
 
-            $this->line($report->toNextTargetText($payload));
+            $this->line($this->option('compact') ? $report->toCompactNextTargetText($payload) : $report->toNextTargetText($payload));
 
             return self::SUCCESS;
         }

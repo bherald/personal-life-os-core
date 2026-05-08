@@ -95,6 +95,15 @@ if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
     exit 2
 fi
 
+repo_owner="${repo%%/*}"
+repo_name="${repo#*/}"
+for repo_segment in "$repo_owner" "$repo_name"; do
+    if [[ -z "$repo_segment" || "$repo_segment" == -* || "$repo_segment" == *- || "$repo_segment" == .* || "$repo_segment" == *. || "$repo_segment" == *..* ]]; then
+        printf 'FAIL: repo must be a safe owner/name slug without option-like, empty, or dotted path segments.\n' >&2
+        exit 2
+    fi
+done
+
 if ! command -v gh >/dev/null 2>&1; then
     printf 'FAIL: gh is not installed or not on PATH.\n' >&2
     exit 1
@@ -208,7 +217,7 @@ else
     printf 'open_prs=unavailable\n'
 fi
 
-if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,status,conclusion,headBranch,headSha,displayTitle,createdAt --jq '.[] | "\(.createdAt) workflow=\(.workflowName) status=\(.status) conclusion=\(.conclusion // "none") branch=\(.headBranch) sha=\(.headSha[0:7]) title=\(.displayTitle)"' 2>/dev/null)"; then
+if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,status,conclusion,headBranch,headSha,createdAt --jq '.[] | "\(.createdAt) workflow=\(.workflowName) status=\(.status) conclusion=\(.conclusion // "none") branch=\(.headBranch) sha=\(.headSha[0:7])"' 2>/dev/null)"; then
     print_header "Latest Workflow Status"
     if [[ -n "$runs" ]]; then
         while IFS= read -r run_line; do
@@ -234,6 +243,10 @@ if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,s
             if [[ "$status" != "completed" || "$conclusion" != "success" ]]; then
                 strict_workflow_failures+=("$workflow latest_status=$status latest_conclusion=$conclusion branch=$branch sha=$sha")
             fi
+
+            if [[ -n "$required_default_branch" && "$branch" != "$required_default_branch" ]]; then
+                strict_workflow_failures+=("$workflow latest_branch=$branch expected_branch=$required_default_branch sha=$sha")
+            fi
         done <<< "$runs"
     else
         printf 'none\n'
@@ -242,7 +255,23 @@ if runs="$(gh run list --repo "$repo" --limit "$run_limit" --json workflowName,s
 
     print_header "Recent Workflow Runs"
     if [[ -n "$runs" ]]; then
-        printf '%s\n' "$runs"
+        while IFS= read -r run_line; do
+            created_at="${run_line%% workflow=*}"
+            workflow="${run_line#*workflow=}"
+            workflow="${workflow%% status=*}"
+            status="$(run_field "$run_line" status)"
+            conclusion="$(run_field "$run_line" conclusion)"
+            branch="$(run_field "$run_line" branch)"
+            sha="$(run_field "$run_line" sha)"
+
+            printf '%s workflow=%s status=%s conclusion=%s branch=%s sha=%s\n' \
+                "$created_at" \
+                "$workflow" \
+                "$status" \
+                "$conclusion" \
+                "$branch" \
+                "$sha"
+        done <<< "$runs"
     else
         printf 'none\n'
     fi

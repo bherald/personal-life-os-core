@@ -23,6 +23,14 @@ class OperatorEvidenceService
 
     private const QUEUES = ['high', 'default', 'low', 'long-running', 'workflow', 'speculative'];
 
+    private const FACE_NAMED_ONLY_ACTION_LABELS = [
+        'No named-only review needed',
+        'Review stale named-only no-match queue oldest-first',
+        'Review stale named-only faces oldest-first',
+        'Review open named-only faces as time permits',
+        'Review decided named-only faces only if needed',
+    ];
+
     private const DBA_TELEMETRY_CACHE_KEY = 'operator_evidence:dba_telemetry:v1';
 
     private const ARC_RETENTION_CACHE_KEY = 'operator_evidence:arc_retention:v1';
@@ -214,6 +222,7 @@ class OperatorEvidenceService
         $sourcePacketHandoff = $safeHandoffs['source_backed_packet'] ?? [];
         $materializableHandoff = $safeHandoffs['materializable_remediation'] ?? [];
         $typedRemediationHandoff = $safeHandoffs['typed_remediation'] ?? [];
+        $agedReviewHandoff = $safeHandoffs['aged_review'] ?? [];
 
         return [
             'status' => $this->compactStatus($section),
@@ -270,6 +279,19 @@ class OperatorEvidenceService
             'typed_remediation_dry_run_available' => (bool) ($typedRemediationHandoff['dry_run_available'] ?? false),
             'typed_remediation_apply_enabled' => (bool) ($typedRemediationHandoff['apply_enabled'] ?? false),
             'typed_remediation_apply_held' => (bool) ($typedRemediationHandoff['apply_held'] ?? false),
+            'aged_review_handoff_available' => (bool) ($agedReviewHandoff['available'] ?? false),
+            'aged_review_handoff_state' => $this->safeOperatorEvidenceCode($agedReviewHandoff['query_state'] ?? null),
+            'aged_review_selection_reason' => $this->safeOperatorEvidenceCode($agedReviewHandoff['selection_reason'] ?? null),
+            'aged_review_review_type' => $this->safeOperatorEvidenceCode($agedReviewHandoff['review_type'] ?? null),
+            'aged_review_finding_type' => $this->safeOperatorEvidenceCode($agedReviewHandoff['finding_type'] ?? null),
+            'aged_review_classification' => $this->safeOperatorEvidenceCode($agedReviewHandoff['classification'] ?? null),
+            'aged_review_age_days' => isset($agedReviewHandoff['age_days']) ? (int) $agedReviewHandoff['age_days'] : null,
+            'aged_review_age_bucket' => $this->safeOperatorEvidenceCode($agedReviewHandoff['age_bucket'] ?? null, allowLeadingDigit: true),
+            'aged_review_candidate_rows' => (int) ($agedReviewHandoff['focus_summary']['candidate_rows'] ?? 0),
+            'aged_review_stale_rows' => (int) ($agedReviewHandoff['focus_summary']['stale_rows'] ?? 0),
+            'aged_review_high_priority_rows' => (int) ($agedReviewHandoff['focus_summary']['high_priority_rows'] ?? 0),
+            'aged_review_age_bucket_counts' => $this->safeOperatorEvidenceCodeCountMap($agedReviewHandoff['focus_summary']['age_bucket_counts'] ?? [], allowLeadingDigit: true),
+            'aged_review_classification_counts' => $this->safeOperatorEvidenceCodeCountMap($agedReviewHandoff['focus_summary']['classification_counts'] ?? []),
             'recommendations' => (int) ($counts['recommendations'] ?? 0),
         ];
     }
@@ -278,6 +300,9 @@ class OperatorEvidenceService
     {
         $section = $this->compactSection($sections, 'face_match_link_backlog');
         $counts = $this->compactCounts($section);
+        $namedOnlyNextAction = is_array($counts['named_only_next_action'] ?? null)
+            ? $counts['named_only_next_action']
+            : [];
 
         return [
             'status' => $this->compactStatus($section),
@@ -290,6 +315,10 @@ class OperatorEvidenceService
             'open_named_only_unlinked' => (int) ($counts['open_named_only_unlinked'] ?? 0),
             'stale_open_named_only_unlinked' => (int) ($counts['stale_open_named_only_unlinked'] ?? 0),
             'terminal_decided_named_only_unlinked' => (int) ($counts['terminal_decided_named_only_unlinked'] ?? 0),
+            'named_only_photo_date_available' => (int) ($counts['named_only_photo_date_available'] ?? 0),
+            'named_only_photo_date_missing' => (int) ($counts['named_only_photo_date_missing'] ?? 0),
+            'open_named_only_photo_date_available' => (int) ($counts['open_named_only_photo_date_available'] ?? 0),
+            'open_named_only_photo_date_missing' => (int) ($counts['open_named_only_photo_date_missing'] ?? 0),
             'named_only_open_without_candidate_decision' => (int) ($counts['named_only_open_without_candidate_decision'] ?? 0),
             'named_only_open_with_nonterminal_decision' => (int) ($counts['named_only_open_with_nonterminal_decision'] ?? 0),
             'named_only_pending_no_match_faces' => (int) ($counts['named_only_pending_no_match_faces'] ?? 0),
@@ -299,6 +328,15 @@ class OperatorEvidenceService
             'approved_missing_person_media' => (int) ($counts['approved_missing_person_media'] ?? 0),
             'candidate_decision_rows' => (int) ($counts['candidate_decision_rows'] ?? 0),
             'candidate_recent_decisions' => (int) ($counts['candidate_recent_decisions'] ?? 0),
+            'named_only_next_state' => $this->safeOperatorEvidenceCode($namedOnlyNextAction['state'] ?? null),
+            'named_only_next_reason' => $this->safeOperatorEvidenceCode($namedOnlyNextAction['reason'] ?? null),
+            'named_only_next_action_label' => $this->safeFaceNamedOnlyActionLabel($namedOnlyNextAction['action_label'] ?? null),
+            'named_only_approval_required' => (bool) ($namedOnlyNextAction['approval_required'] ?? false),
+            'named_only_automation_allowed' => (bool) ($namedOnlyNextAction['automation_allowed'] ?? false),
+            'named_only_automatic_link_allowed' => (bool) ($namedOnlyNextAction['automatic_link_allowed'] ?? false),
+            'named_only_create_person_allowed' => (bool) ($namedOnlyNextAction['create_person_allowed'] ?? false),
+            'named_only_writeback_allowed' => (bool) ($namedOnlyNextAction['writeback_allowed'] ?? false),
+            'named_only_row_selectors_included' => (bool) ($namedOnlyNextAction['row_selectors_included'] ?? false),
             'weekly_report_status' => $this->nullableString($counts['weekly_report_status'] ?? null),
             'weekly_report_enabled' => (bool) ($counts['weekly_report_enabled'] ?? false),
             'weekly_report_latest_run_status' => $this->nullableString($counts['weekly_report_latest_run_status'] ?? null),
@@ -463,6 +501,22 @@ class OperatorEvidenceService
             'scheduler_enablement_guard_ok' => $schedulerEnablementAllowed === 0,
             'production_writeback_guard_ok' => $productionWritebackAllowed === 0,
             'canonical_writeback_guard_ok' => $canonicalWritebackAllowed === 0,
+            'posture' => $this->compactGenealogyNoDecisionPosture(),
+        ];
+    }
+
+    private function compactGenealogyNoDecisionPosture(): array
+    {
+        return [
+            'scope' => 'aggregate_only',
+            'target_lists_included' => false,
+            'row_selectors_included' => false,
+            'raw_recommendations_included' => false,
+            'raw_scheduled_output_included' => false,
+            'awo_recording_changed' => false,
+            'scheduler_enablement_performed' => false,
+            'production_writeback_performed' => false,
+            'canonical_genealogy_writeback_performed' => false,
         ];
     }
 
@@ -514,6 +568,8 @@ class OperatorEvidenceService
         $sourcePacketHandoffAvailable = (bool) ($review['source_backed_packet_handoff_available'] ?? false);
         $materializableHandoffAvailable = (bool) ($review['materializable_remediation_handoff_available'] ?? false);
         $openNamedOnly = max(0, (int) ($face['open_named_only_unlinked'] ?? 0));
+        $openNamedOnlyPhotoDateAvailable = max(0, (int) ($face['open_named_only_photo_date_available'] ?? 0));
+        $openNamedOnlyPhotoDateMissing = max(0, (int) ($face['open_named_only_photo_date_missing'] ?? 0));
         $namedOnlyWithoutDecision = max(0, (int) ($face['named_only_open_without_candidate_decision'] ?? 0));
         $candidateDecisionRows = max(0, (int) ($face['candidate_decision_rows'] ?? 0));
         $triageTargetsNeedingReview = max(0, (int) ($triage['targets_needing_review_count'] ?? 0));
@@ -575,6 +631,7 @@ class OperatorEvidenceService
             'scheduler_enablement_allowed' => $schedulerAllowedTargets > 0,
             'production_writeback_allowed' => $productionWritebackAllowedTargets > 0,
             'canonical_writeback_allowed' => $canonicalWritebackAllowedTargets > 0,
+            'posture' => $this->compactGenealogyNoDecisionPosture(),
             'packet_review_ready' => $packetReviewReady,
             'packet_operator_pass_recorded' => $operatorPassRecorded,
             'awo_recording_enabled' => $awoRecordingEnabled,
@@ -597,6 +654,8 @@ class OperatorEvidenceService
                 default => 'none',
             },
             'open_named_only_unlinked' => $openNamedOnly,
+            'open_named_only_photo_date_available' => $openNamedOnlyPhotoDateAvailable,
+            'open_named_only_photo_date_missing' => $openNamedOnlyPhotoDateMissing,
             'named_only_without_candidate_decision' => $namedOnlyWithoutDecision,
             'candidate_decision_rows' => $candidateDecisionRows,
             'triage_targets_needing_review' => $triageTargetsNeedingReview,
@@ -631,6 +690,22 @@ class OperatorEvidenceService
             'scheduled_empty_success_outputs_window' => (int) ($counts['scheduled_empty_success_outputs_window'] ?? 0),
             'scheduled_non_ascii_output_runs_window' => (int) ($counts['scheduled_non_ascii_output_runs_window'] ?? 0),
             'scheduled_guarded_output_runs_window' => (int) ($counts['scheduled_guarded_output_runs_window'] ?? 0),
+            'scheduled_latest_empty_success_output_at' => $this->nullableString($counts['scheduled_latest_empty_success_output_at'] ?? null),
+            'scheduled_latest_empty_success_output_age_hours' => isset($counts['scheduled_latest_empty_success_output_age_hours'])
+                ? (float) $counts['scheduled_latest_empty_success_output_age_hours']
+                : null,
+            'scheduled_latest_cjk_output_at' => $this->nullableString($counts['scheduled_latest_cjk_output_at'] ?? null),
+            'scheduled_latest_cjk_output_age_hours' => isset($counts['scheduled_latest_cjk_output_age_hours'])
+                ? (float) $counts['scheduled_latest_cjk_output_age_hours']
+                : null,
+            'scheduled_latest_non_ascii_output_at' => $this->nullableString($counts['scheduled_latest_non_ascii_output_at'] ?? null),
+            'scheduled_latest_non_ascii_output_age_hours' => isset($counts['scheduled_latest_non_ascii_output_age_hours'])
+                ? (float) $counts['scheduled_latest_non_ascii_output_age_hours']
+                : null,
+            'scheduled_latest_guarded_output_at' => $this->nullableString($counts['scheduled_latest_guarded_output_at'] ?? null),
+            'scheduled_latest_guarded_output_age_hours' => isset($counts['scheduled_latest_guarded_output_age_hours'])
+                ? (float) $counts['scheduled_latest_guarded_output_age_hours']
+                : null,
             'top_issue_codes' => array_values(array_filter(
                 (array) ($counts['top_issue_codes'] ?? []),
                 fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
@@ -686,6 +761,22 @@ class OperatorEvidenceService
                 'scheduled_cjk_output_runs_window' => (int) ($summary['scheduled_cjk_output_runs_window'] ?? 0),
                 'scheduled_non_ascii_output_runs_window' => (int) ($summary['scheduled_non_ascii_output_runs_window'] ?? 0),
                 'scheduled_guarded_output_runs_window' => (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
+                'scheduled_latest_empty_success_output_at' => $this->nullableString($summary['scheduled_latest_empty_success_output_at'] ?? null),
+                'scheduled_latest_empty_success_output_age_hours' => isset($summary['scheduled_latest_empty_success_output_age_hours'])
+                    ? (float) $summary['scheduled_latest_empty_success_output_age_hours']
+                    : null,
+                'scheduled_latest_cjk_output_at' => $this->nullableString($summary['scheduled_latest_cjk_output_at'] ?? null),
+                'scheduled_latest_cjk_output_age_hours' => isset($summary['scheduled_latest_cjk_output_age_hours'])
+                    ? (float) $summary['scheduled_latest_cjk_output_age_hours']
+                    : null,
+                'scheduled_latest_non_ascii_output_at' => $this->nullableString($summary['scheduled_latest_non_ascii_output_at'] ?? null),
+                'scheduled_latest_non_ascii_output_age_hours' => isset($summary['scheduled_latest_non_ascii_output_age_hours'])
+                    ? (float) $summary['scheduled_latest_non_ascii_output_age_hours']
+                    : null,
+                'scheduled_latest_guarded_output_at' => $this->nullableString($summary['scheduled_latest_guarded_output_at'] ?? null),
+                'scheduled_latest_guarded_output_age_hours' => isset($summary['scheduled_latest_guarded_output_age_hours'])
+                    ? (float) $summary['scheduled_latest_guarded_output_age_hours']
+                    : null,
                 'issue_code_counts' => $this->integerCountMap($summary['issue_code_counts'] ?? []),
                 'top_issue_codes' => array_values(array_filter(
                     (array) ($summary['top_issue_codes'] ?? []),
@@ -904,6 +995,12 @@ class OperatorEvidenceService
                 $staleDays,
                 $highPriorityThreshold
             ),
+            'aged_review' => $this->reviewBacklogNextSafeHandoff(
+                $service,
+                'aged-review',
+                $staleDays,
+                $highPriorityThreshold
+            ),
         ];
     }
 
@@ -975,6 +1072,10 @@ class OperatorEvidenceService
         $normalizedFocus = str_replace('-', '_', $focus);
         $available = $target !== null && ($payload['query_state'] ?? null) === 'next_target_selected';
         $focusSummary = $this->sanitizeReviewBacklogFocusSummary($payload['focus_summary'] ?? null);
+        $applyEnabled = (bool) ($safety['apply_enabled'] ?? false);
+        $applyHeld = array_key_exists('apply_held', $safety)
+            ? (bool) $safety['apply_held']
+            : ! $applyEnabled;
 
         return [
             'focus' => $normalizedFocus,
@@ -987,6 +1088,7 @@ class OperatorEvidenceService
                 $focus === 'source-backed-packet' => 'review_one_source_backed_packet',
                 $focus === 'materializable-remediation' => 'inspect_one_preview_remediation',
                 $focus === 'typed-remediation' && $materializationStatus === 'validation_blocked' => 'explain_validation_blocked_remediation',
+                $focus === 'aged-review' => 'classify_one_aged_review',
                 default => 'review_one_item',
             },
             'review_type' => $this->safeOperatorEvidenceCode($target['review_type'] ?? null),
@@ -995,7 +1097,7 @@ class OperatorEvidenceService
             'selection_reason' => $this->safeOperatorEvidenceCode($target['selection_reason'] ?? null),
             'priority' => (int) ($target['priority'] ?? 0),
             'age_days' => isset($target['age_days']) ? (int) $target['age_days'] : null,
-            'age_bucket' => $this->safeOperatorEvidenceCode($target['age_bucket'] ?? null),
+            'age_bucket' => $this->safeOperatorEvidenceCode($target['age_bucket'] ?? null, allowLeadingDigit: true),
             'review_pass_state' => $this->safeOperatorEvidenceCode($reviewPass['state'] ?? null),
             'review_pass_blocker_count' => (int) ($reviewPass['blocker_count'] ?? 0),
             'packet_source_backed' => (bool) ($signals['source_backed'] ?? false),
@@ -1028,8 +1130,8 @@ class OperatorEvidenceService
             'validation_blocker_codes' => $validationBlockerCodes,
             'dry_run_available' => (bool) ($materialization['dry_run_available'] ?? false),
             'no_canonical_write' => (bool) ($safety['no_canonical_write'] ?? false),
-            'apply_enabled' => (bool) ($safety['apply_enabled'] ?? false),
-            'apply_held' => (bool) ($safety['apply_held'] ?? false),
+            'apply_enabled' => $applyEnabled,
+            'apply_held' => $applyHeld,
         ];
     }
 
@@ -1049,6 +1151,10 @@ class OperatorEvidenceService
                 'source_refs_included' => false,
                 'commands_included' => false,
                 'apply_controls_included' => false,
+                'stale_rows' => 0,
+                'high_priority_rows' => 0,
+                'age_bucket_counts' => [],
+                'classification_counts' => [],
             ];
         }
 
@@ -1059,6 +1165,8 @@ class OperatorEvidenceService
                 isset($value['focus']) ? str_replace('-', '_', (string) $value['focus']) : null
             ),
             'candidate_rows' => (int) ($value['candidate_rows'] ?? 0),
+            'stale_rows' => (int) ($value['stale_rows'] ?? 0),
+            'high_priority_rows' => (int) ($value['high_priority_rows'] ?? 0),
             'typed_remediation_rows' => (int) ($value['typed_remediation_rows'] ?? 0),
             'materializable_rows' => (int) ($value['materializable_rows'] ?? 0),
             'dry_run_available_rows' => (int) ($value['dry_run_available_rows'] ?? 0),
@@ -1078,6 +1186,8 @@ class OperatorEvidenceService
             'validation_blocker_code_counts' => $this->safeOperatorEvidenceCodeCountMap($value['validation_blocker_code_counts'] ?? []),
             'packet_pass_state_counts' => $this->safeOperatorEvidenceCodeCountMap($value['packet_pass_state_counts'] ?? []),
             'packet_pass_blocker_code_counts' => $this->safeOperatorEvidenceCodeCountMap($value['packet_pass_blocker_code_counts'] ?? []),
+            'age_bucket_counts' => $this->safeOperatorEvidenceCodeCountMap($value['age_bucket_counts'] ?? [], allowLeadingDigit: true),
+            'classification_counts' => $this->safeOperatorEvidenceCodeCountMap($value['classification_counts'] ?? []),
             'row_pointers_included' => (bool) ($value['row_pointers_included'] ?? false),
             'auth_markers_included' => (bool) ($value['auth_markers_included'] ?? false),
             'raw_ids_included' => (bool) ($value['raw_ids_included'] ?? false),
@@ -1329,10 +1439,6 @@ class OperatorEvidenceService
                 'deep' => (bool) ($payload['deep'] ?? false),
                 'threshold_breaches' => count($breaches),
                 'recommendations' => count($recommendations),
-                'breach_ids' => array_values(array_filter(array_map(
-                    fn (array $breach): ?string => isset($breach['id']) ? (string) $breach['id'] : null,
-                    $breaches
-                ))),
                 'mysql_top20_total_gb' => (float) ($mysql['schema_top20_total_gb'] ?? 0.0),
                 'arc_rows_total_estimate' => (int) ($arc['rows_total_estimate'] ?? 0),
                 'arc_total_gb' => (float) ($arc['total_gb'] ?? 0.0),
@@ -1342,7 +1448,6 @@ class OperatorEvidenceService
                 'arc_retention_dry_run_status' => (string) ($arcRetention['status'] ?? 'unknown'),
                 'arc_retention_execute' => (bool) ($arcRetention['execute'] ?? true),
                 'arc_retention_has_eligible_rows' => $arcOldestEligible !== null,
-                'arc_retention_oldest_eligible_id' => $arcOldestEligible === null ? null : (int) ($arcOldestEligible['id'] ?? 0),
                 'arc_retention_oldest_eligible_at' => $this->nullableString($arcOldestEligible['created_at'] ?? null),
                 'arc_retention_retention_days' => (int) ($arcRetention['retention_days'] ?? 0),
                 'arc_retention_cutoff' => $this->nullableString($arcRetention['cutoff'] ?? null),
@@ -1416,10 +1521,7 @@ class OperatorEvidenceService
                 'reliability_recommendations' => (int) ($categoryCounts['reliability'] ?? 0),
                 'timeout_recommendations' => (int) ($categoryCounts['timeout'] ?? 0),
                 'spacing_recommendations' => (int) ($categoryCounts['spacing'] ?? 0),
-                'top_recommendation_ids' => array_values(array_filter(array_map(
-                    fn (array $recommendation): ?string => $this->nullableString($recommendation['id'] ?? null),
-                    array_slice($recommendations, 0, 5)
-                ))),
+                'recommendation_category_counts' => $this->safeSchedulerCategoryCounts($categoryCounts),
             ];
 
             return $this->section(
@@ -1511,6 +1613,36 @@ class OperatorEvidenceService
         ksort($counts);
 
         return $counts;
+    }
+
+    /**
+     * @param  array<string, int>  $counts
+     * @return array<string, int>
+     */
+    private function safeSchedulerCategoryCounts(array $counts): array
+    {
+        $allowed = ['metadata', 'reliability', 'spacing', 'timeout'];
+        $safe = [];
+        $other = 0;
+
+        foreach ($counts as $category => $count) {
+            $category = (string) $category;
+            $count = (int) $count;
+
+            if (in_array($category, $allowed, true)) {
+                $safe[$category] = ($safe[$category] ?? 0) + $count;
+            } else {
+                $other += $count;
+            }
+        }
+
+        if ($other > 0) {
+            $safe['other'] = $other;
+        }
+
+        ksort($safe);
+
+        return $safe;
     }
 
     /**
@@ -2085,9 +2217,9 @@ class OperatorEvidenceService
 
     private function collectFaceMatchLinkBacklog(Carbon $sampledAt): array
     {
-        $missing = $this->missingTables(['genealogy_face_match_queue', 'file_registry_faces', 'genealogy_person_media']);
+        $missing = $this->missingTables(['genealogy_face_match_queue', 'file_registry', 'file_registry_faces', 'genealogy_person_media']);
         if ($missing !== []) {
-            return $this->section('blocked', $sampledAt, ['genealogy_face_match_queue', 'file_registry_faces', 'genealogy_person_media'], [
+            return $this->section('blocked', $sampledAt, ['genealogy_face_match_queue', 'file_registry', 'file_registry_faces', 'genealogy_person_media'], [
                 'missing_tables' => $missing,
             ], 'Restore face/link evidence tables before evaluating backlog.');
         }
@@ -2115,6 +2247,10 @@ class OperatorEvidenceService
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS open_named_only_unlinked,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND f.updated_at < DATE_SUB(NOW(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS stale_open_named_only_unlinked,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 1 THEN 1 ELSE 0 END) AS terminal_decided_named_only_unlinked,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND fr.date_taken IS NOT NULL THEN 1 ELSE 0 END) AS named_only_photo_date_available,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND fr.date_taken IS NULL THEN 1 ELSE 0 END) AS named_only_photo_date_missing,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND fr.date_taken IS NOT NULL THEN 1 ELSE 0 END) AS open_named_only_photo_date_available,
+                    SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 AND fr.date_taken IS NULL THEN 1 ELSE 0 END) AS open_named_only_photo_date_missing,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND candidate_decisions.file_registry_face_id IS NULL THEN 1 ELSE 0 END) AS named_only_open_without_candidate_decision,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND candidate_decisions.file_registry_face_id IS NOT NULL AND COALESCE(candidate_decisions.has_terminal_candidate_decision, 0) = 0 THEN 1 ELSE 0 END) AS named_only_open_with_nonterminal_decision,
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND COALESCE(queue_counts.pending_no_match_count, 0) > 0 THEN 1 ELSE 0 END) AS named_only_pending_no_match_faces,
@@ -2126,6 +2262,7 @@ class OperatorEvidenceService
                     SUM(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' AND f.verified = 1 THEN 1 ELSE 0 END) AS named_only_verified,
                     MAX(CASE WHEN f.hidden = 0 AND f.genealogy_person_id IS NULL AND NULLIF(TRIM(f.person_name), '') IS NOT NULL AND LOWER(TRIM(f.person_name)) != 'unknown' THEN TIMESTAMPDIFF(HOUR, f.updated_at, NOW()) END) AS named_only_oldest_age_hours
                  FROM file_registry_faces f
+                 LEFT JOIN file_registry fr ON fr.id = f.file_registry_id
                  ".$this->latestFaceCandidateDecisionJoinSql('f')."
                  LEFT JOIN (
                     SELECT
@@ -2188,6 +2325,10 @@ class OperatorEvidenceService
                 'open_named_only_unlinked' => (int) ($faces->open_named_only_unlinked ?? 0),
                 'stale_open_named_only_unlinked' => (int) ($faces->stale_open_named_only_unlinked ?? 0),
                 'terminal_decided_named_only_unlinked' => (int) ($faces->terminal_decided_named_only_unlinked ?? 0),
+                'named_only_photo_date_available' => (int) ($faces->named_only_photo_date_available ?? 0),
+                'named_only_photo_date_missing' => (int) ($faces->named_only_photo_date_missing ?? 0),
+                'open_named_only_photo_date_available' => (int) ($faces->open_named_only_photo_date_available ?? 0),
+                'open_named_only_photo_date_missing' => (int) ($faces->open_named_only_photo_date_missing ?? 0),
                 'named_only_open_without_candidate_decision' => (int) ($faces->named_only_open_without_candidate_decision ?? 0),
                 'named_only_open_with_nonterminal_decision' => (int) ($faces->named_only_open_with_nonterminal_decision ?? 0),
                 'named_only_pending_no_match_faces' => (int) ($faces->named_only_pending_no_match_faces ?? 0),
@@ -2218,6 +2359,7 @@ class OperatorEvidenceService
                 'weekly_report_has_bridge_alignment' => (bool) ($weeklyReport['has_bridge_alignment'] ?? false),
                 'weekly_report_has_candidate_decisions' => (bool) ($weeklyReport['has_candidate_decisions'] ?? false),
             ];
+            $counts['named_only_next_action'] = $this->faceNamedOnlyNextAction($counts);
 
             $status = match (true) {
                 $counts['stale_pending'] > 0 || $counts['approved_missing_person_media'] > 0 => 'degraded',
@@ -2231,12 +2373,12 @@ class OperatorEvidenceService
             return $this->section(
                 $status,
                 $sampledAt,
-                ['genealogy_face_match_queue', 'file_registry_faces', 'genealogy_person_media', 'FaceLinkBridgeService', 'scheduled_jobs', 'scheduled_job_runs'],
+                ['genealogy_face_match_queue', 'file_registry', 'file_registry_faces', 'genealogy_person_media', 'FaceLinkBridgeService', 'scheduled_jobs', 'scheduled_job_runs'],
                 $counts,
                 $status === 'healthy' ? null : 'Review face match queue and bridge missing approved links.'
             );
         } catch (\Throwable $e) {
-            return $this->failedSection($sampledAt, ['genealogy_face_match_queue', 'file_registry_faces'], $e, 'Face backlog query failed.');
+            return $this->failedSection($sampledAt, ['genealogy_face_match_queue', 'file_registry', 'file_registry_faces'], $e, 'Face backlog query failed.');
         }
     }
 
@@ -2262,6 +2404,49 @@ class OperatorEvidenceService
                           )
                       )
                  ) candidate_decisions ON candidate_decisions.file_registry_face_id = {$faceAlias}.id";
+    }
+
+    /**
+     * @param  array<string, mixed>  $counts
+     * @return array<string, mixed>
+     */
+    private function faceNamedOnlyNextAction(array $counts): array
+    {
+        $state = 'observe_ok';
+        $reason = 'no_named_only_backlog';
+        $actionLabel = 'No named-only review needed';
+
+        if ((int) ($counts['named_only_stale_pending_no_match_faces'] ?? 0) > 0) {
+            $state = 'review_recommended';
+            $reason = 'stale_named_only_no_match_queue';
+            $actionLabel = 'Review stale named-only no-match queue oldest-first';
+        } elseif ((int) ($counts['stale_open_named_only_unlinked'] ?? 0) > 0) {
+            $state = 'review_recommended';
+            $reason = 'stale_open_named_only_faces';
+            $actionLabel = 'Review stale named-only faces oldest-first';
+        } elseif ((int) ($counts['open_named_only_unlinked'] ?? 0) > 0) {
+            $state = 'observe';
+            $reason = 'open_named_only_faces_available';
+            $actionLabel = 'Review open named-only faces as time permits';
+        } elseif ((int) ($counts['named_only_unlinked'] ?? 0) > 0) {
+            $state = 'observe';
+            $reason = 'decided_named_only_faces_available';
+            $actionLabel = 'Review decided named-only faces only if needed';
+        }
+
+        return [
+            'schema' => 'face_genealogy_named_only_next_action.v1',
+            'mode' => 'aggregate_only',
+            'state' => $state,
+            'reason' => $reason,
+            'action_label' => $actionLabel,
+            'approval_required' => true,
+            'automation_allowed' => false,
+            'automatic_link_allowed' => false,
+            'create_person_allowed' => false,
+            'writeback_allowed' => false,
+            'row_selectors_included' => false,
+        ];
     }
 
     /**
@@ -3160,7 +3345,7 @@ class OperatorEvidenceService
         }
 
         $handoffs = [];
-        foreach (['source_backed_packet', 'materializable_remediation', 'typed_remediation'] as $key) {
+        foreach (['source_backed_packet', 'materializable_remediation', 'typed_remediation', 'aged_review'] as $key) {
             if (is_array($value[$key] ?? null)) {
                 $handoffs[$key] = $value[$key];
             }
@@ -3255,7 +3440,19 @@ class OperatorEvidenceService
         return $value === null ? null : (string) $value;
     }
 
-    private function safeOperatorEvidenceCode(mixed $value): ?string
+    private function safeFaceNamedOnlyActionLabel(mixed $value): ?string
+    {
+        $label = $this->nullableString($value);
+        if ($label === null) {
+            return null;
+        }
+
+        $label = trim($label);
+
+        return in_array($label, self::FACE_NAMED_ONLY_ACTION_LABELS, true) ? $label : null;
+    }
+
+    private function safeOperatorEvidenceCode(mixed $value, bool $allowLeadingDigit = false): ?string
     {
         $code = $this->nullableString($value);
         if ($code === null) {
@@ -3263,7 +3460,11 @@ class OperatorEvidenceService
         }
 
         $code = trim($code);
-        if ($code === '' || preg_match('/^[a-z][a-z0-9_:-]{0,96}$/', $code) !== 1) {
+        $pattern = $allowLeadingDigit
+            ? '/^[a-z0-9][a-z0-9_:-]{0,96}$/'
+            : '/^[a-z][a-z0-9_:-]{0,96}$/';
+
+        if ($code === '' || preg_match($pattern, $code) !== 1) {
             return 'unknown';
         }
 
@@ -3298,7 +3499,7 @@ class OperatorEvidenceService
     /**
      * @return array<string, int>
      */
-    private function safeOperatorEvidenceCodeCountMap(mixed $value, int $limit = 8): array
+    private function safeOperatorEvidenceCodeCountMap(mixed $value, int $limit = 8, bool $allowLeadingDigit = false): array
     {
         if (! is_array($value)) {
             return [];
@@ -3306,7 +3507,7 @@ class OperatorEvidenceService
 
         $counts = [];
         foreach ($value as $key => $count) {
-            $code = $this->safeOperatorEvidenceCode($key);
+            $code = $this->safeOperatorEvidenceCode($key, allowLeadingDigit: $allowLeadingDigit);
             if ($code === null) {
                 continue;
             }

@@ -6055,7 +6055,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                                     :class="{ 'opacity-60': change.status === 'applied' || change.status === 'rejected' }"
                                   >
                                     <div class="flex items-center justify-between gap-2">
-                                      <div class="text-theme-primary text-sm font-medium">{{ change.person_name || `Person #${change.person_id}` }}</div>
+                                      <div class="text-theme-primary text-sm font-medium">{{ formatPersonReference(change.person_name, change.person_id) }}</div>
                                       <div class="flex items-center gap-1.5 shrink-0">
                                         <span
                                           v-if="change.confidence !== null && change.confidence !== undefined"
@@ -6123,7 +6123,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                                     :class="{ 'opacity-60': relationship.status === 'applied' || relationship.status === 'rejected' }"
                                   >
                                     <div class="flex items-center justify-between gap-2">
-                                      <div class="text-theme-primary text-sm font-medium">{{ relationship.person_name || `Person #${relationship.person_id}` }}</div>
+                                      <div class="text-theme-primary text-sm font-medium">{{ formatPersonReference(relationship.person_name, relationship.person_id) }}</div>
                                       <div class="flex items-center gap-1.5 shrink-0">
                                         <span
                                           v-if="relationship.confidence !== null && relationship.confidence !== undefined"
@@ -11913,6 +11913,13 @@ const getPaginatedCitationMedia = (mediaArray, citationId) => {
   return mediaArray.slice(start, start + citationMediaPerPage);
 };
 
+const formatPersonReference = (name, personId = null) => {
+  const displayName = typeof name === 'string' ? name.trim() : '';
+  if (displayName) return displayName;
+
+  return personId ? 'person reference present' : 'person reference unavailable';
+};
+
 // Tree view state
 const treeSvg = ref(null);
 const homePersonId = ref(null);
@@ -16735,8 +16742,8 @@ const hideContextMenu = () => {
 const getFocusPersonName = () => {
   if (!focusPersonId.value || !treeData.value?.persons) return '';
   const p = treeData.value.persons[String(focusPersonId.value)];
-  if (!p) return `Person #${focusPersonId.value}`;
-  return `${p.given_name || ''} ${p.surname || ''}`.trim();
+  if (!p) return formatPersonReference(null, focusPersonId.value);
+  return formatPersonReference(`${p.given_name || ''} ${p.surname || ''}`.trim(), focusPersonId.value);
 };
 
 // Set home person from context menu

@@ -164,6 +164,16 @@ class AgentDoctorCommand extends Command
                 'non_ascii_markers' => (int) ($summary['scheduled_non_ascii_output_runs_window'] ?? 0),
                 'guarded' => (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
             ],
+            'scheduled_output_freshness' => [
+                'latest_empty_success_at' => $summary['scheduled_latest_empty_success_output_at'] ?? null,
+                'latest_empty_success_age_hours' => $summary['scheduled_latest_empty_success_output_age_hours'] ?? null,
+                'latest_cjk_signal_at' => $summary['scheduled_latest_cjk_output_at'] ?? null,
+                'latest_cjk_signal_age_hours' => $summary['scheduled_latest_cjk_output_age_hours'] ?? null,
+                'latest_non_ascii_marker_at' => $summary['scheduled_latest_non_ascii_output_at'] ?? null,
+                'latest_non_ascii_marker_age_hours' => $summary['scheduled_latest_non_ascii_output_age_hours'] ?? null,
+                'latest_guarded_at' => $summary['scheduled_latest_guarded_output_at'] ?? null,
+                'latest_guarded_age_hours' => $summary['scheduled_latest_guarded_output_age_hours'] ?? null,
+            ],
             'memory_evidence' => [
                 'episodes' => (int) ($summary['memory_episodes_window'] ?? 0),
                 'summaries' => (int) ($summary['memory_summaries_window'] ?? 0),

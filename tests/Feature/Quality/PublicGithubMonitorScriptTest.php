@@ -44,6 +44,7 @@ class PublicGithubMonitorScriptTest extends TestCase
                 'GH_TOKEN' => 'fake-session-token',
                 'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
                 'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_RUN_TITLE' => 'private token=abc123 /home/example/private/key.env',
             ]
         );
 
@@ -67,6 +68,9 @@ class PublicGithubMonitorScriptTest extends TestCase
         $this->assertStringContainsString('Result: public GitHub monitor completed.', $output);
         $this->assertStringNotContainsString('fake-session-token', $output);
         $this->assertStringNotContainsString('fake-gh-token', $output);
+        $this->assertStringNotContainsString('title=', $output);
+        $this->assertStringNotContainsString('token=abc123', $output);
+        $this->assertStringNotContainsString('/home/example/private/key.env', $output);
 
         $calls = file($fixture['call_log'], FILE_IGNORE_NEW_LINES);
 
@@ -91,6 +95,29 @@ class PublicGithubMonitorScriptTest extends TestCase
 
         $this->assertSame(2, $process->getExitCode());
         $this->assertStringContainsString('FAIL: repo must be in owner/name form.', $process->getErrorOutput());
+    }
+
+    public function test_unsafe_repo_slug_fails_before_gh_is_required(): void
+    {
+        foreach ([
+            '-owner/name',
+            'owner/-name',
+            'owner/name-',
+            '.owner/name',
+            'owner./name',
+            'owner/..name',
+        ] as $repo) {
+            $process = new Process(
+                ['bash', base_path('scripts/guards/public-github-monitor.sh'), '--repo', $repo],
+                base_path(),
+                ['PATH' => sys_get_temp_dir()]
+            );
+
+            $process->run();
+
+            $this->assertSame(2, $process->getExitCode(), $repo);
+            $this->assertStringContainsString('FAIL: repo must be a safe owner/name slug', $process->getErrorOutput(), $repo);
+        }
     }
 
     public function test_strict_public_core_passes_for_expected_settings(): void
@@ -388,6 +415,38 @@ class PublicGithubMonitorScriptTest extends TestCase
         );
     }
 
+    public function test_strict_latest_workflows_fails_when_latest_run_is_not_on_required_default_branch(): void
+    {
+        $fixture = $this->makeFixture();
+
+        $process = new Process(
+            [
+                'bash',
+                base_path('scripts/guards/public-github-monitor.sh'),
+                '--repo',
+                'example/personal-life-os-core',
+                '--require-default-branch',
+                'main',
+                '--strict-latest-workflows',
+            ],
+            base_path(),
+            [
+                'PATH' => $fixture['bin'].PATH_SEPARATOR.getenv('PATH'),
+                'PUBLIC_GITHUB_MONITOR_CALL_LOG' => $fixture['call_log'],
+                'PUBLIC_GITHUB_MONITOR_FAKE_RUN_BRANCH' => 'feature/public-readiness',
+            ]
+        );
+
+        $process->run();
+
+        $this->assertSame(1, $process->getExitCode());
+        $this->assertStringContainsString('Strict public-core check: pass', $process->getOutput());
+        $this->assertStringContainsString(
+            'STRICT FAIL: Public Readiness latest_branch=feature/public-readiness expected_branch=main sha=5812537',
+            $process->getOutput()
+        );
+    }
+
     public function test_strict_latest_workflows_fails_when_workflow_run_listing_is_unavailable(): void
     {
         $fixture = $this->makeFixture();
@@ -593,9 +652,11 @@ if [[ "${1:-}" == "run" && "${2:-}" == "list" ]]; then
             exit 0
             ;;
     esac
-    printf '2026-05-03T13:29:00Z workflow=Public Readiness status=%s conclusion=%s branch=main sha=5812537 title=docs: tighten issue template privacy prompts\n' "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_STATUS:-completed}" "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_CONCLUSION:-success}"
+    run_branch="${PUBLIC_GITHUB_MONITOR_FAKE_RUN_BRANCH:-main}"
+    run_title="${PUBLIC_GITHUB_MONITOR_FAKE_RUN_TITLE:-docs: tighten issue template privacy prompts}"
+    printf '2026-05-03T13:29:00Z workflow=Public Readiness status=%s conclusion=%s branch=%s sha=5812537 title=%s\n' "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_STATUS:-completed}" "${PUBLIC_GITHUB_MONITOR_FAKE_RUN_CONCLUSION:-success}" "$run_branch" "$run_title"
     if [[ "${PUBLIC_GITHUB_MONITOR_FAKE_INCLUDE_GOVERNANCE:-false}" == "true" ]]; then
-        printf '2026-05-03T13:28:00Z workflow=Repository Governance status=completed conclusion=success branch=main sha=5812537 title=docs: tighten issue template privacy prompts\n'
+        printf '2026-05-03T13:28:00Z workflow=Repository Governance status=completed conclusion=success branch=%s sha=5812537 title=%s\n' "$run_branch" "$run_title"
     fi
     exit 0
 fi

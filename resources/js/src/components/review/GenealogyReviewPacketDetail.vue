@@ -153,27 +153,7 @@
           </div>
         </div>
       </div>
-      <div v-if="latestDecision" class="latest-decision">
-        <div class="kv-grid compact">
-          <div class="kv-row">
-            <span class="kv-key">latest action</span>
-            <span class="kv-value">{{ latestDecision.action || 'event' }}</span>
-          </div>
-          <div class="kv-row">
-            <span class="kv-key">reason</span>
-            <span class="kv-value">{{ latestDecisionReason || '-' }}</span>
-          </div>
-          <div v-if="latestDecision.actor" class="kv-row">
-            <span class="kv-key">actor</span>
-            <span class="kv-value">{{ latestDecision.actor }}</span>
-          </div>
-          <div v-if="latestDecision.created_at" class="kv-row">
-            <span class="kv-key">time</span>
-            <span class="kv-value">{{ formatDate(latestDecision.created_at) }}</span>
-          </div>
-        </div>
-      </div>
-      <div v-else class="empty-line">No decision has been recorded.</div>
+      <div v-else-if="!decisionLogRows.length" class="empty-line">No decision has been recorded.</div>
     </section>
 
     <div v-if="hasPersonSnapshot || fieldDiffs.length" class="packet-context-grid">
@@ -406,8 +386,8 @@
         <div class="section-heading">
           <span>Identity</span>
         </div>
-        <div v-if="identityRows.length" class="kv-grid">
-          <div v-for="row in identityRows" :key="row.key" class="kv-row">
+        <div v-if="redactedIdentityRows.length" class="kv-grid">
+          <div v-for="row in redactedIdentityRows" :key="row.key" class="kv-row">
             <span class="kv-key">{{ row.label }}</span>
             <span class="kv-value">{{ row.value }}</span>
           </div>
@@ -419,10 +399,10 @@
         <div class="section-heading">
           <span>Privacy</span>
         </div>
-        <div v-if="privacyRows.length" class="kv-grid">
-          <div v-for="row in privacyRows" :key="row.key" class="kv-row">
+        <div v-if="redactedPrivacyRows.length" class="kv-grid">
+          <div v-for="row in redactedPrivacyRows" :key="row.key" class="kv-row">
             <span class="kv-key">{{ row.label }}</span>
-            <span class="kv-value" :class="booleanValueClass(row.raw)">{{ row.value }}</span>
+            <span class="kv-value" :class="row.valueClass || ''">{{ row.value }}</span>
           </div>
         </div>
         <div v-else class="empty-line">No privacy payload supplied.</div>
@@ -567,7 +547,7 @@
                 <div class="subheading">Duplicate locator groups</div>
                 <div class="locator-group-list">
                   <div v-for="(group, groupIdx) in sourceLocatorGroups(operation)" :key="locatorGroupKey(group, groupIdx)" class="locator-group-row">
-                    <div class="locator-group-title">{{ group.locator || group.locator_key || `group ${groupIdx + 1}` }}</div>
+                    <div class="locator-group-title">{{ locatorGroupTitle(groupIdx) }}</div>
                     <div class="locator-group-meta">{{ locatorGroupMeta(group) }}</div>
                   </div>
                 </div>
@@ -630,17 +610,17 @@
     <section class="packet-section">
       <div class="section-heading">
         <span>Decision log</span>
-        <span v-if="decisionLog.length" class="section-count">{{ decisionLog.length }}</span>
+        <span v-if="decisionLogRows.length" class="section-count">{{ decisionLogRows.length }}</span>
       </div>
-      <div v-if="decisionLog.length" class="decision-list">
-        <div v-for="(entry, idx) in decisionLog" :key="decisionKey(entry, idx)" class="decision-row">
+      <div v-if="decisionLogRows.length" class="decision-list">
+        <div v-for="entry in decisionLogRows" :key="entry.key" class="decision-row">
           <div class="decision-head">
-            <span class="decision-action">{{ entry.action || 'event' }}</span>
-            <span v-if="entry.actor" class="decision-actor">{{ entry.actor }}</span>
-            <span v-if="entry.created_at" class="decision-time">{{ formatDate(entry.created_at) }}</span>
+            <span class="decision-action">{{ entry.actionLabel }}</span>
+            <span v-if="entry.reasonLabel" class="decision-actor">{{ entry.reasonLabel }}</span>
+            <span v-if="entry.actorLabel" class="decision-actor">{{ entry.actorLabel }}</span>
+            <span v-if="entry.timeLabel" class="decision-time">{{ entry.timeLabel }}</span>
           </div>
-          <div v-if="entry.note || entry.notes" class="decision-note">{{ entry.note || entry.notes }}</div>
-          <div v-if="decisionMetaSummary(entry)" class="decision-note muted">{{ decisionMetaSummary(entry) }}</div>
+          <div v-if="entry.metaSummary" class="decision-note muted">{{ entry.metaSummary }}</div>
         </div>
       </div>
       <div v-else class="empty-line">No decision log entries yet.</div>
@@ -673,6 +653,9 @@
           </select>
         </label>
       </div>
+      <div v-if="canAct && !selectedDecisionReasonCode" class="action-hint">
+        Choose a reason before rejecting, clarifying, or deferring this packet.
+      </div>
 
       <div class="action-buttons">
         <button
@@ -687,7 +670,8 @@
         <button
           type="button"
           class="packet-action danger"
-          :disabled="actioning || !canAct"
+          :disabled="actioning || !canSubmitPacketOutcome"
+          :title="packetOutcomeActionDisabledTitle"
           @click="submitDecision('reject')"
         >
           Reject
@@ -695,7 +679,8 @@
         <button
           type="button"
           class="packet-action"
-          :disabled="actioning || !canAct"
+          :disabled="actioning || !canSubmitPacketOutcome"
+          :title="packetOutcomeActionDisabledTitle"
           @click="submitDecision('clarify')"
         >
           Clarify
@@ -703,7 +688,8 @@
         <button
           type="button"
           class="packet-action"
-          :disabled="actioning || !canAct"
+          :disabled="actioning || !canSubmitPacketOutcome"
+          :title="packetOutcomeActionDisabledTitle"
           @click="submitDecision('defer')"
         >
           Defer
@@ -767,6 +753,29 @@ const reasonCodeOptions = [
   { value: 'other', label: 'Other' },
 ]
 
+const DECISION_ACTION_LABELS = {
+  queued: 'Queued',
+  packet_reviewed_preview_only: 'Packet reviewed preview-only',
+  packet_rejected: 'Packet rejected',
+  packet_clarification_requested: 'Clarification requested',
+  packet_deferred: 'Packet deferred',
+  reviewed_preview_only: 'Reviewed preview-only',
+  rejected: 'Rejected',
+  clarification_requested: 'Clarification requested',
+  deferred: 'Deferred',
+  unknown: 'Unknown action',
+}
+
+const DECISION_REASON_LABELS = Object.fromEntries(reasonCodeOptions.map((option) => [option.value, option.label]))
+
+const DECISION_OUTCOME_LABELS = {
+  terminal: 'Terminal',
+  follow_up: 'Follow-up',
+  touched: 'Touched',
+  pending: 'Pending',
+  unknown: 'Unknown',
+}
+
 const RAW_SOURCE_PAYLOAD_KEYS = new Set([
   'id',
   'source_id',
@@ -787,6 +796,16 @@ const RAW_SOURCE_PAYLOAD_KEYS = new Set([
   'hash',
   'gedcom_id',
   'proposed_change_id',
+])
+
+const RAW_PREVIEW_PAYLOAD_KEYS = new Set([
+  ...RAW_SOURCE_PAYLOAD_KEYS,
+  'command',
+  'selector',
+  'query',
+  'payload',
+  'raw',
+  'details',
 ])
 
 const item = computed(() => objectValue(props.context?.item))
@@ -840,6 +859,10 @@ const packetOutcomeRows = computed(() => [
   outcomeRow('time', 'Time', packetOutcome.value.latest_at ? formatDate(packetOutcome.value.latest_at) : null),
 ].filter(Boolean))
 
+const decisionLogRows = computed(() => decisionLog.value
+  .map((entry, idx) => decisionLogDisplayRow(entry, idx))
+  .filter(Boolean))
+
 const reviewPassRows = computed(() => {
   const counts = objectValue(reviewPass.value.counts)
   const signals = objectValue(reviewPass.value.signals)
@@ -855,9 +878,11 @@ const reviewPassRows = computed(() => {
     reviewPassRow('blocker_codes', 'Blocker codes', blockerCodes.map(labelize).join(', '), blockerCodes.length > 0 ? 'blocked' : 'ok'),
     reviewPassRow('claims', 'Claims', counts.claim_count, 'ok'),
     reviewPassRow('sources', 'Sources', counts.source_count, 'ok'),
+    reviewPassRow('claim_source_coverage', 'Claim/source coverage', claimSourceCoverageLabel(counts), signals.all_claims_source_linked === true ? 'ok' : 'warning'),
     reviewPassRow('media', 'Media', mediaReviewPassLabel(counts), (Number(counts.missing_media_count || 0) > 0) ? 'warning' : 'ok'),
     reviewPassRow('checklist', 'Checklist rows', counts.checklist_row_count, 'ok'),
     reviewPassRow('source_backed', 'Source-backed', displayBoolean(signals.source_backed), signals.source_backed === true ? 'ok' : 'blocked'),
+    reviewPassRow('all_claims_source_linked', 'All claims source-linked', displayBoolean(signals.all_claims_source_linked), signals.all_claims_source_linked === true ? 'ok' : 'warning'),
     reviewPassRow('boundary', 'Boundary', displayBoolean(signals.boundary_present), signals.boundary_present === true ? 'ok' : 'warning'),
     reviewPassRow('identity', 'Identity', displayBoolean(signals.identity_present), signals.identity_present === true ? 'ok' : 'warning'),
     reviewPassRow('privacy', 'Privacy', displayBoolean(signals.privacy_cleared), signals.privacy_cleared === true ? 'ok' : 'warning'),
@@ -914,6 +939,17 @@ const outcomeStateClass = computed(() => {
 
 const canAct = computed(() => String(item.value.status || '').toLowerCase() === 'pending')
 const canMarkReviewed = computed(() => canAct.value && reviewFocusApprovalReady.value)
+const selectedDecisionReasonCode = computed(() => {
+  const code = safeDecisionCode(decisionReasonCode.value)
+  return code && DECISION_REASON_LABELS[code] ? code : null
+})
+const canSubmitPacketOutcome = computed(() => canAct.value && selectedDecisionReasonCode.value !== null)
+
+const packetOutcomeActionDisabledTitle = computed(() => {
+  if (!canAct.value) return 'Packet is not pending.'
+  if (!selectedDecisionReasonCode.value) return 'Choose a reason before rejecting, clarifying, or deferring.'
+  return ''
+})
 
 const markReviewedDisabledTitle = computed(() => {
   if (!canAct.value) return 'Packet is not pending.'
@@ -926,11 +962,12 @@ const markReviewedDisabledTitle = computed(() => {
 })
 
 const reviewFocusApprovalReady = computed(() => {
-  if (typeof reviewFocus.value.approval_ready === 'boolean') {
-    return reviewFocus.value.approval_ready
-  }
+  if (reviewFocus.value.approval_ready === false) return false
 
-  return validation.value.valid === true && validationErrors.value.length === 0 && applyPreviewIsPreviewOnly.value
+  return validation.value.valid === true
+    && validationErrors.value.length === 0
+    && applyPreviewIsPreviewOnly.value
+    && reviewFocusCanonicalMutation.value !== true
 })
 
 const approvalBlockers = computed(() => {
@@ -952,6 +989,7 @@ const approvalBlockers = computed(() => {
   if (validationMissing.value) return [{ code: 'validation_missing', label: 'Validation missing' }]
   if (validationErrors.value.length) return [{ code: 'validation_errors', label: 'Validation errors present' }]
   if (!applyPreviewIsPreviewOnly.value) return [{ code: 'preview_not_preview_only', label: 'Preview is not preview-only' }]
+  if (reviewFocusCanonicalMutation.value === true) return [{ code: 'canonical_mutation_possible', label: 'Canonical mutation possible' }]
   return [{ code: 'approval_ready_unknown', label: 'Approval readiness unknown' }]
 })
 
@@ -1100,16 +1138,6 @@ const applyPreviewSafetyNote = computed(() => {
   return 'Accepted facts are not changed by this packet preview.'
 })
 
-const latestDecision = computed(() => {
-  for (let idx = decisionLog.value.length - 1; idx >= 0; idx--) {
-    const entry = decisionLog.value[idx]
-    if (entry && Object.keys(entry).length) return entry
-  }
-  return null
-})
-
-const latestDecisionReason = computed(() => decisionReason(latestDecision.value))
-
 const packetTitle = computed(() => {
   return packet.value.packet_label
     || packet.value.title
@@ -1152,8 +1180,8 @@ const statusClass = computed(() => {
   return STATUS_CLASS_BY_STATUS[status] || 'status-pending'
 })
 
-const identityRows = computed(() => kvRows(identity.value))
-const privacyRows = computed(() => kvRows(privacy.value))
+const redactedIdentityRows = computed(() => redactedIdentityProjection(identity.value))
+const redactedPrivacyRows = computed(() => redactedPrivacyProjection(privacy.value))
 const validationErrors = computed(() => arrayValue(validation.value.errors))
 const validationWarnings = computed(() => arrayValue(validation.value.warnings))
 const validationMissing = computed(() => !validation.value || Object.keys(validation.value).length === 0)
@@ -1214,11 +1242,11 @@ const applyPreviewSummaryRows = computed(() => {
   const rows = []
   for (const key of ['status', 'operation_count']) {
     if (applyPreview.value[key] !== undefined) {
-      rows.push(toKvRow(key, applyPreview.value[key]))
+      rows.push(toPreviewKvRow(key, applyPreview.value[key]))
     }
   }
   const summary = objectValue(applyPreview.value.summary)
-  for (const row of kvRows(summary)) {
+  for (const row of previewKvRows(summary)) {
     rows.push({
       ...row,
       key: `summary.${row.key}`,
@@ -1275,6 +1303,13 @@ function mediaReviewPassLabel(counts) {
   return `${resolved ?? 0} resolved, ${missing ?? 0} missing`
 }
 
+function claimSourceCoverageLabel(counts) {
+  const claimCount = numberOrNull(counts.claim_count)
+  const linkedCount = numberOrNull(counts.claims_with_source_context)
+  if (claimCount === null && linkedCount === null) return null
+  return `${linkedCount ?? 0}/${claimCount ?? 0}`
+}
+
 function checklistStateClass(state) {
   const value = String(state || '').toLowerCase()
   if (value === 'ok') return 'check-ok'
@@ -1325,6 +1360,88 @@ function toKvRow(key, value) {
   }
 }
 
+function previewKvRows(value) {
+  if (!isPlainObject(value)) return []
+  return Object.entries(value)
+    .filter(([_, val]) => val !== undefined)
+    .map(([key, val]) => toPreviewKvRow(key, val))
+    .filter((row) => !isRawPreviewPayloadKey(row.key))
+}
+
+function toPreviewKvRow(key, value) {
+  return {
+    key,
+    label: labelize(key),
+    raw: value,
+    value: displayPreviewValue(value),
+  }
+}
+
+function redactedIdentityProjection(value) {
+  if (!isPlainObject(value) || Object.keys(value).length === 0) return []
+
+  const rows = [
+    projectionRow('identity_present', 'Identity present', 'yes', 'text-ok'),
+    projectionRow(
+      'person_reference',
+      'Person reference',
+      hasAnyReferenceValue(value, ['person_id', 'person_ref', 'person_reference', 'target_person_ref']) ? 'present' : 'not supplied',
+    ),
+  ]
+
+  const contextCount = projectedContextCount(value, ['target_context', 'target_contexts', 'person_context', 'person_contexts'])
+  if (contextCount > 0) {
+    rows.push(projectionRow('target_context_count', 'Target context count', String(contextCount)))
+  }
+
+  return rows
+}
+
+function redactedPrivacyProjection(value) {
+  if (!isPlainObject(value) || Object.keys(value).length === 0) return []
+
+  const cleared = value.cleared
+  const livingKnown = typeof value.living_person_risk === 'boolean'
+
+  return [
+    projectionRow('privacy_present', 'Privacy present', 'yes', 'text-ok'),
+    projectionRow(
+      'privacy_cleared',
+      'Privacy cleared',
+      displayBoolean(cleared) || 'unknown',
+      cleared === true ? 'text-ok' : cleared === false ? 'text-muted' : '',
+    ),
+    projectionRow(
+      'living_status_known',
+      'Living status known',
+      livingKnown ? 'yes' : 'no',
+      livingKnown ? 'text-ok' : 'text-muted',
+    ),
+  ]
+}
+
+function projectionRow(key, label, value, valueClass = '') {
+  return { key, label, value, valueClass }
+}
+
+function hasAnyReferenceValue(source, keys) {
+  return keys.some((key) => {
+    const value = source?.[key]
+    const numeric = numberOrNull(value)
+    if (numeric !== null) return numeric > 0
+    return stringOrNull(value) !== null
+  })
+}
+
+function projectedContextCount(source, keys) {
+  for (const key of keys) {
+    const value = source?.[key]
+    if (Array.isArray(value)) return value.length
+    if (isPlainObject(value)) return Object.keys(value).length
+  }
+  return 0
+}
+
 function labelize(key) {
   return String(key).replace(/_/g, ' ')
 }
@@ -1362,6 +1479,32 @@ function displayValue(value) {
   if (value === false) return 'false'
   if (Array.isArray(value) || isPlainObject(value)) return compactJson(value)
   return String(value)
+}
+
+function displayPreviewValue(value) {
+  if (Array.isArray(value) || isPlainObject(value)) return structuredPreviewLabel(value)
+  if (typeof value === 'string' && isSensitivePreviewValue(value)) return 'value withheld'
+  return displayValue(value)
+}
+
+function structuredPreviewLabel(value) {
+  if (Array.isArray(value)) {
+    return value.length ? `details available (${value.length} items)` : 'no details'
+  }
+
+  return Object.keys(value).length ? 'details available' : 'no details'
+}
+
+function isSensitivePreviewValue(value) {
+  const text = value.trim()
+  if (text === '') return false
+  return /^https?:\/\//i.test(text)
+    || /^[a-z]+:\/\//i.test(text)
+    || /(^|[/?&])token=/i.test(text)
+    || /^bearer\s+/i.test(text)
+    || text.includes('/home/')
+    || text.includes('/storage/')
+    || text.includes('/private/')
 }
 
 function displayBoolean(value) {
@@ -1598,14 +1741,33 @@ function sourceLocator(source) {
 }
 
 function sourceLabel(source, idx) {
-  return stringOrNull(source.title)
-    || stringOrNull(source.name)
-    || stringOrNull(source.label)
+  return sourceLabelCandidate(source.title)
+    || sourceLabelCandidate(source.name)
+    || sourceLabelCandidate(source.label)
     || `Source ${idx + 1}`
 }
 
 function sourceDisplayLabel(source, idx) {
   return sourceLabel(source, idx)
+}
+
+function sourceLabelCandidate(value) {
+  const text = stringOrNull(value)
+  if (!text || isSensitiveSourceLabel(text)) return null
+  return text
+}
+
+function isSensitiveSourceLabel(value) {
+  const text = value.trim()
+  if (text === '') return false
+
+  return isSensitivePreviewValue(text)
+    || /^[-+a-z0-9.]+:[^\s]+/i.test(text)
+    || /^\/[^\s]+/.test(text)
+    || /^[a-z]:\\/i.test(text)
+    || /[\\/](home|storage|private|tmp|var|mnt|media|users)[\\/]/i.test(text)
+    || /(?:^|[/?&])token=/i.test(text)
+    || /^[a-z0-9_-]{32,}$/i.test(text)
 }
 
 function sourcePayloadRows(source) {
@@ -1622,9 +1784,29 @@ function isRawSourcePayloadKey(key) {
   return RAW_SOURCE_PAYLOAD_KEYS.has(normalized)
     || normalized.endsWith('_id')
     || normalized.includes('locator')
+    || normalized.includes('url')
+    || normalized.includes('uri')
+    || normalized.includes('href')
+    || normalized.includes('link')
     || normalized.includes('path')
     || normalized.includes('token')
     || normalized.includes('hash')
+}
+
+function isRawPreviewPayloadKey(key) {
+  const normalized = String(key || '').toLowerCase()
+  return RAW_PREVIEW_PAYLOAD_KEYS.has(normalized)
+    || normalized.endsWith('_id')
+    || normalized.includes('locator')
+    || normalized.includes('url')
+    || normalized.includes('uri')
+    || normalized.includes('href')
+    || normalized.includes('link')
+    || normalized.includes('path')
+    || normalized.includes('token')
+    || normalized.includes('hash')
+    || normalized.includes('command')
+    || normalized.includes('selector')
 }
 
 function locatorFromRef(sourceRef) {
@@ -1648,7 +1830,7 @@ function claimText(claim) {
   for (const key of ['claim', 'claim_text', 'statement', 'extracted_claim', 'extracted_text', 'text', 'value', 'proposed_value']) {
     if (typeof raw[key] === 'string' && raw[key].trim() !== '') return raw[key]
   }
-  if (Object.keys(raw).length) return compactJson(raw)
+  if (Object.keys(raw).length) return 'Claim details available; no display text supplied.'
   return null
 }
 
@@ -1658,12 +1840,6 @@ function claimConfidence(claim) {
   if (value === null || value === undefined || value === '') return null
   const numeric = Number(value)
   return Number.isFinite(numeric) ? Math.round(numeric * 100) : null
-}
-
-function booleanValueClass(value) {
-  if (value === true) return 'text-ok'
-  if (value === false) return 'text-muted'
-  return ''
 }
 
 function issueKey(issue, idx) {
@@ -1682,7 +1858,7 @@ function issueCode(issue) {
 function issueMessage(issue) {
   if (typeof issue === 'string') return issue
   if (!isPlainObject(issue)) return displayValue(issue)
-  return issue.message || issue.error || issue.warning || compactJson(issue)
+  return issue.message || issue.error || issue.warning || 'Validation details available; no display message supplied.'
 }
 
 function operationKey(operation, idx) {
@@ -1703,7 +1879,7 @@ function operationRows(operation) {
     hidden.push('operation_type', 'guards', 'current_state', 'proposed_effect')
   }
 
-  return kvRows(operation).filter((row) => !hidden.includes(row.key))
+  return previewKvRows(operation).filter((row) => !hidden.includes(row.key))
 }
 
 function hasAcceptedFactMutations(value) {
@@ -1886,6 +2062,10 @@ function locatorGroupKey(group, idx) {
   return `locator-group-${idx}`
 }
 
+function locatorGroupTitle(idx) {
+  return `Duplicate locator group ${idx + 1}`
+}
+
 function locatorGroupMeta(group) {
   const parts = []
   if (group.proposal_count !== undefined) parts.push(`${group.proposal_count} proposals`)
@@ -1906,13 +2086,29 @@ function sourceResolutionKey(row, idx) {
 function sourceResolutionLabel(row) {
   const parts = []
   if (row.proposed_change_id) parts.push('proposal linked')
-  if (row.proposal_status) parts.push(row.proposal_status)
-  if (row.resolution_status) parts.push(`resolution ${row.resolution_status}`)
-  if (row.resolution_method) parts.push(row.resolution_method)
+  const proposalStatus = sourceResolutionCodeLabel(row.proposal_status)
+  if (proposalStatus) parts.push(proposalStatus)
+  const resolutionStatus = sourceResolutionCodeLabel(row.resolution_status)
+  if (resolutionStatus) parts.push(`resolution ${resolutionStatus}`)
+  const resolutionMethod = sourceResolutionCodeLabel(row.resolution_method)
+  if (resolutionMethod) parts.push(resolutionMethod)
   if (row.resolved_source_id) parts.push('source row resolved')
-  if (row.locator || row.url) parts.push('source locator matched')
-  if (row.message) parts.push(row.message)
-  return parts.length ? parts.join(' · ') : displayValue(row)
+  if (sourceResolutionHasNote(row)) parts.push('resolution note recorded')
+  return parts.length ? parts.join(' · ') : 'source resolution row'
+}
+
+function sourceResolutionCodeLabel(value) {
+  const text = stringOrNull(value)
+  if (!text) return null
+  const normalized = text.toLowerCase()
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized)) {
+    return 'status recorded'
+  }
+  return normalized.replace(/[_-]+/g, ' ')
+}
+
+function sourceResolutionHasNote(row) {
+  return stringOrNull(row?.message) !== null
 }
 
 function childLabel(child) {
@@ -1965,31 +2161,91 @@ function staleHashShort(hash) {
   return value.length > 16 ? `${value.slice(0, 16)}...` : value
 }
 
-function decisionKey(entry, idx) {
-  return `${entry.action || 'event'}-${entry.created_at || 'time'}-${idx}`
-}
-
-function decisionReason(entry) {
+function decisionLogDisplayRow(entry, idx) {
   if (!isPlainObject(entry)) return null
   const meta = objectValue(entry.meta)
-  for (const value of [entry.reason_code, meta.reason_code, entry.reason, meta.reason, entry.note, entry.notes]) {
-    if (typeof value === 'string' && value.trim() !== '') return value.trim()
+
+  const actionCode = safeDecisionActionCode(entry.action)
+  const reasonCode = safeDecisionReasonCode(entry.reason_code)
+    || safeDecisionReasonCode(meta.reason_code)
+    || safeDecisionReasonCode(entry.reason)
+    || safeDecisionReasonCode(meta.reason)
+  const actorLabel = safeDecisionActor(entry.actor)
+  const timestamp = safeDecisionTimestamp(entry.created_at)
+
+  return {
+    key: `decision-${idx}-${actionCode || 'event'}`,
+    actionLabel: actionCode ? DECISION_ACTION_LABELS[actionCode] : 'Decision recorded',
+    reasonLabel: reasonCode ? DECISION_REASON_LABELS[reasonCode] : null,
+    actorLabel,
+    timeLabel: timestamp ? formatDate(timestamp) : null,
+    metaSummary: decisionMetaSummary(entry),
   }
-  return null
 }
 
 function decisionMetaSummary(entry) {
   if (!isPlainObject(entry)) return null
   const meta = objectValue(entry.meta)
   const parts = []
+  const reasonCode = safeDecisionReasonCode(meta.reason_code)
+  const outcomeState = safeDecisionOutcomeState(meta.outcome_state)
 
-  for (const key of ['reason_code', 'outcome_state', 'preview_only', 'canonical_mutation', 'blocker_count']) {
-    if (meta[key] !== null && meta[key] !== undefined && meta[key] !== '') {
-      parts.push(`${labelize(key)}: ${displayValue(meta[key])}`)
+  if (reasonCode) {
+    parts.push(`reason: ${DECISION_REASON_LABELS[reasonCode]}`)
+  }
+
+  if (outcomeState) {
+    parts.push(`outcome: ${DECISION_OUTCOME_LABELS[outcomeState]}`)
+  }
+
+  for (const key of ['preview_only', 'canonical_mutation']) {
+    if (typeof meta[key] === 'boolean') {
+      parts.push(`${labelize(key)}: ${displayBoolean(meta[key])}`)
     }
   }
 
+  const blockerCount = numberOrNull(meta.blocker_count)
+  if (blockerCount !== null) {
+    parts.push(`blockers: ${blockerCount}`)
+  }
+
   return parts.length ? parts.join(' · ') : null
+}
+
+function safeDecisionCode(value) {
+  const text = stringOrNull(value)
+  if (!text) return null
+  const code = text.toLowerCase()
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(code) ? code : null
+}
+
+function safeDecisionActionCode(value) {
+  const code = safeDecisionCode(value)
+  if (!code) return null
+  return DECISION_ACTION_LABELS[code] ? code : 'unknown'
+}
+
+function safeDecisionReasonCode(value) {
+  const code = safeDecisionCode(value)
+  if (!code) return null
+  return DECISION_REASON_LABELS[code] ? code : 'other'
+}
+
+function safeDecisionOutcomeState(value) {
+  const code = safeDecisionCode(value)
+  return code && DECISION_OUTCOME_LABELS[code] ? code : null
+}
+
+function safeDecisionActor(value) {
+  const text = stringOrNull(value)
+  if (!text || text.length > 64 || text.includes('://') || text.includes('/')) return null
+  return /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/.test(text) ? text : 'unknown'
+}
+
+function safeDecisionTimestamp(value) {
+  const text = stringOrNull(value)
+  if (!text) return null
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})$/.test(text) ? text : null
 }
 
 function referencePresenceRows(value, labels) {
@@ -2005,7 +2261,9 @@ function referencePresenceRows(value, labels) {
 
 function submitDecision(action) {
   const notes = decisionNotes.value.trim()
-  const reasonCode = decisionReasonCode.value.trim()
+  const reasonCode = selectedDecisionReasonCode.value
+  if (requiresDecisionReason(action) && reasonCode === null) return
+
   const payload = {
     unifiedId: item.value.unified_id,
     notes,
@@ -2014,6 +2272,10 @@ function submitDecision(action) {
     payload.reasonCode = reasonCode
   }
   emit(action, payload)
+}
+
+function requiresDecisionReason(action) {
+  return action === 'reject' || action === 'clarify' || action === 'defer'
 }
 
 async function copyTargetRef() {
@@ -3017,6 +3279,12 @@ a.media-ref-card:hover {
 .action-select:disabled {
   color: #9b8bb5;
   background: rgba(0, 0, 0, 0.14);
+}
+
+.action-hint {
+  margin-top: 0.5rem;
+  color: rgba(245, 158, 11, 0.9);
+  font-size: 0.78rem;
 }
 
 .action-buttons {

@@ -460,6 +460,21 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
                 ($emitPayload['safety']['no_canonical_write'] ?? false) ? 'yes' : 'no',
                 ($emitPayload['safety']['apply_held'] ?? false) ? 'yes' : 'no',
             ));
+            $posture = is_array($emitPayload['posture'] ?? null) ? $emitPayload['posture'] : [];
+            if ($posture !== []) {
+                $this->line(sprintf(
+                    'posture: scope=%s execute=%s dry_run=%s canonical_write_allowed=%s apply_enabled=%s apply_held=%s selectors=%s raw_details=%s commands=%s',
+                    (string) ($posture['scope'] ?? 'unknown'),
+                    ($posture['execute_requested'] ?? false) ? 'yes' : 'no',
+                    ($posture['dry_run'] ?? false) ? 'yes' : 'no',
+                    ($posture['canonical_write_allowed'] ?? false) ? 'yes' : 'no',
+                    ($posture['apply_enabled'] ?? false) ? 'yes' : 'no',
+                    ($posture['apply_held'] ?? false) ? 'yes' : 'no',
+                    ($posture['selector_value_included'] ?? true) ? 'yes' : 'no',
+                    ($posture['raw_preview_payload_included'] ?? true) ? 'yes' : 'no',
+                    ($posture['commands_included'] ?? true) ? 'yes' : 'no',
+                ));
+            }
 
             return $exitCode;
         }
@@ -532,7 +547,31 @@ class GenealogyTypedRemediationMaterializeCommand extends Command
             'packet_summary' => $this->compactPacketSummary($payload['packet_summary'] ?? null),
             'validation' => $this->compactValidation($payload['validation'] ?? null),
             'safety' => $payload['safety'] ?? $this->safetyPayload(),
+            'posture' => $this->compactPosture($payload),
             'typed_remediation_preview' => $this->compactPreview($payload['typed_remediation_preview'] ?? null),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, bool|string>
+     */
+    private function compactPosture(array $payload): array
+    {
+        $safety = is_array($payload['safety'] ?? null) ? $payload['safety'] : $this->safetyPayload();
+
+        return [
+            'scope' => 'typed_remediation_preview_only',
+            'execute_requested' => (bool) ($payload['execute'] ?? false),
+            'dry_run' => (bool) ($payload['dry_run'] ?? false),
+            'canonical_write_allowed' => (bool) ($safety['canonical_write_allowed'] ?? false),
+            'canonical_writes_performed' => (bool) ($safety['canonical_writes_performed'] ?? false),
+            'apply_enabled' => (bool) ($safety['apply_enabled'] ?? false),
+            'apply_held' => (bool) ($safety['apply_held'] ?? true),
+            'apply_performed' => (bool) ($safety['apply_performed'] ?? false),
+            'selector_value_included' => false,
+            'raw_preview_payload_included' => false,
+            'commands_included' => false,
         ];
     }
 

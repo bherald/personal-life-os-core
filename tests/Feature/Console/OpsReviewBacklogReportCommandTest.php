@@ -274,6 +274,28 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $this->assertSame('source-backed-packet', json_decode((string) Artisan::output(), true)['focus']);
     }
 
+    public function test_next_target_aged_review_focus_option_is_forwarded(): void
+    {
+        $payload = $this->nextTargetPayload(['focus' => 'aged-review']);
+
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, 'aged-review')
+            ->andReturn($payload);
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--json' => true,
+            '--next-target' => true,
+            '--focus' => 'aged-review',
+        ]);
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('aged-review', json_decode((string) Artisan::output(), true)['focus']);
+    }
+
     public function test_source_backed_packet_next_target_text_output_is_redacted(): void
     {
         $payload = $this->sourceBackedPacketNextTargetPayload();
@@ -360,19 +382,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
     public function test_source_backed_packet_next_target_compact_flag_output_is_redacted(): void
     {
         $payload = $this->sourceBackedPacketNextTargetPayload();
-        $expectedRef = $payload['next_target']['target_ref'];
-
-        $service = Mockery::mock(ReviewBacklogReportService::class);
-        $service->shouldReceive('nextTarget')
-            ->once()
-            ->with(7, 8, false, 'source-backed-packet')
-            ->andReturn($payload);
-        $service->shouldReceive('toNextTargetText')
-            ->once()
-            ->with($payload)
-            ->andReturn("Review backlog next target: review_required focus=source-backed-packet target_ref={$expectedRef} classification=source_backed_packet_review review_pass=ready details_included=false raw_identifiers_included=false tokens_included=false locators_included=false\n");
-        $service->shouldReceive('collect')->never();
-        $this->app->instance(ReviewBacklogReportService::class, $service);
+        $this->bindPartialNextTargetService($payload, 'source-backed-packet');
 
         $exit = Artisan::call('ops:review-backlog-report', [
             '--next-target' => true,
@@ -382,14 +392,139 @@ class OpsReviewBacklogReportCommandTest extends TestCase
 
         $output = (string) Artisan::output();
         $this->assertSame(0, $exit);
-        $this->assertStringContainsString('Review backlog next target: review_required', $output);
-        $this->assertStringContainsString('target_ref='.$expectedRef, $output);
-        $this->assertStringContainsString('review_pass=ready', $output);
-        $this->assertStringContainsString('details_included=false', $output);
-        $this->assertStringContainsString('raw_identifiers_included=false', $output);
+        $this->assertStringContainsString('Review backlog next target compact: review_required', $output);
+        $this->assertStringContainsString('focus=source-backed-packet', $output);
+        $this->assertStringContainsString('available=true', $output);
+        $this->assertStringContainsString('classification=source_backed_packet_review', $output);
+        $this->assertStringContainsString('operator_action=review_one_source_backed_packet', $output);
+        $this->assertStringContainsString('target_ref_included=false', $output);
+        $this->assertStringContainsString('raw_ids_included=false', $output);
         $this->assertStringContainsString('tokens_included=false', $output);
         $this->assertStringContainsString('locators_included=false', $output);
         $this->assertSourceBackedPacketCommandOutputIsRedacted($output);
+    }
+
+    public function test_aged_review_next_target_compact_json_is_redacted(): void
+    {
+        $payload = $this->agedReviewNextTargetPayload();
+        $this->bindPartialNextTargetService($payload, 'aged-review');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'aged-review',
+            '--json' => true,
+            '--compact' => true,
+        ]);
+
+        $compact = json_decode((string) Artisan::output(), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(0, $exit);
+        $this->assertTrue($compact['compact']);
+        $this->assertSame('aged-review', $compact['focus']);
+        $this->assertSame('next_target_selected', $compact['query_state']);
+        $this->assertTrue($compact['target']['available']);
+        $this->assertSame('system_alert', $compact['target']['review_type']);
+        $this->assertSame('high_priority_pending_review', $compact['target']['classification']);
+        $this->assertSame('oldest_aged_review', $compact['target']['selection_reason']);
+        $this->assertSame('classify_one_aged_review', $compact['target']['operator_action']);
+        $this->assertSame(34, $compact['target']['age_days']);
+        $this->assertSame('31d_plus', $compact['target']['age_bucket']);
+        $this->assertSame(35, $compact['focus_summary']['candidate_rows']);
+        $this->assertSame(35, $compact['focus_summary']['stale_rows']);
+        $this->assertSame(1, $compact['focus_summary']['high_priority_rows']);
+        $this->assertSame([
+            '31d_plus' => 2,
+            '8_30d' => 33,
+        ], $compact['focus_summary']['age_bucket_counts']);
+        $this->assertFalse($compact['posture']['target_ref_included']);
+        $this->assertFalse($compact['posture']['raw_ids_included']);
+        $this->assertFalse($compact['posture']['tokens_included']);
+        $this->assertFalse($compact['posture']['locators_included']);
+        $this->assertFalse($compact['posture']['commands_included']);
+        $this->assertFalse($compact['posture']['apply_controls_included']);
+
+        $encoded = json_encode($compact, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        foreach ([
+            'system_alert:target-private-aged',
+            'next-target-aged-private-token',
+            'COMMAND SECRET',
+            'genealogy:materialize-typed-remediation',
+            '--execute',
+        ] as $needle) {
+            $this->assertStringNotContainsString($needle, $encoded);
+        }
+    }
+
+    public function test_aged_review_next_target_compact_text_is_redacted(): void
+    {
+        $payload = $this->agedReviewNextTargetPayload();
+        $this->bindPartialNextTargetService($payload, 'aged-review');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'aged-review',
+            '--compact' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Review backlog next target compact: review_required', $output);
+        $this->assertStringContainsString('focus=aged-review', $output);
+        $this->assertStringContainsString('query_state=next_target_selected', $output);
+        $this->assertStringContainsString('available=true', $output);
+        $this->assertStringContainsString('type=system_alert', $output);
+        $this->assertStringContainsString('classification=high_priority_pending_review', $output);
+        $this->assertStringContainsString('selection_reason=oldest_aged_review', $output);
+        $this->assertStringContainsString('operator_action=classify_one_aged_review', $output);
+        $this->assertStringContainsString('age_days=34', $output);
+        $this->assertStringContainsString('age_bucket=31d_plus', $output);
+        $this->assertStringContainsString('stale_over=27', $output);
+        $this->assertStringContainsString('focus_candidates=35', $output);
+        $this->assertStringContainsString('stale_rows=35', $output);
+        $this->assertStringContainsString('high_priority_rows=1', $output);
+        $this->assertStringContainsString('age_buckets=31d_plus:2,8_30d:33', $output);
+        $this->assertStringContainsString('target_ref_included=false', $output);
+        $this->assertStringContainsString('raw_ids_included=false', $output);
+        $this->assertStringContainsString('tokens_included=false', $output);
+        $this->assertStringContainsString('locators_included=false', $output);
+        $this->assertStringContainsString('commands_included=false', $output);
+        $this->assertStringContainsString('apply_controls_included=false', $output);
+        $this->assertAgedReviewCompactOutputIsRedacted($output);
+    }
+
+    public function test_aged_review_next_target_compact_markdown_is_redacted(): void
+    {
+        $payload = $this->agedReviewNextTargetPayload();
+        $this->bindPartialNextTargetService($payload, 'aged-review');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'aged-review',
+            '--markdown' => true,
+            '--compact' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('# Review Backlog Next Target Compact', $output);
+        $this->assertStringContainsString('- Focus: `aged-review`', $output);
+        $this->assertStringContainsString('- Target available: `true`', $output);
+        $this->assertStringContainsString('- Review type: `system_alert`', $output);
+        $this->assertStringContainsString('- Classification: `high_priority_pending_review`', $output);
+        $this->assertStringContainsString('- Selection reason: `oldest_aged_review`', $output);
+        $this->assertStringContainsString('- Operator action: `classify_one_aged_review`', $output);
+        $this->assertStringContainsString('- Age: `34` days', $output);
+        $this->assertStringContainsString('- Age bucket: `31d_plus`', $output);
+        $this->assertStringContainsString('- Candidate rows: `35`', $output);
+        $this->assertStringContainsString('- Stale rows: `35`', $output);
+        $this->assertStringContainsString('- High-priority rows: `1`', $output);
+        $this->assertStringContainsString('- Age buckets: `31d_plus:2,8_30d:33`', $output);
+        $this->assertStringContainsString('- Target ref included: `false`', $output);
+        $this->assertStringContainsString('- Raw ids included: `false`', $output);
+        $this->assertStringContainsString('- Tokens included: `false`', $output);
+        $this->assertStringContainsString('- Locators included: `false`', $output);
+        $this->assertStringContainsString('- Commands included: `false`', $output);
+        $this->assertStringContainsString('- Apply controls included: `false`', $output);
+        $this->assertAgedReviewCompactOutputIsRedacted($output);
     }
 
     public function test_validation_blocked_typed_remediation_next_target_text_output_is_no_execute_and_redacted(): void
@@ -481,6 +616,67 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         }
     }
 
+    public function test_aged_review_no_focus_candidates_next_target_text_summarizes_aggregate_only(): void
+    {
+        $payload = $this->agedReviewNoFocusCandidatesNextTargetPayload();
+        $this->bindPartialNextTargetService($payload, 'aged-review');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'aged-review',
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Review backlog next target: observe_ok', $output);
+        $this->assertStringContainsString('query_state=no_focus_candidates', $output);
+        $this->assertStringContainsString('focus=aged-review', $output);
+        $this->assertStringContainsString('target=none', $output);
+        $this->assertStringContainsString('focus_candidates=0', $output);
+        $this->assertStringContainsString('stale_rows=0', $output);
+        $this->assertStringContainsString('high_priority_rows=0', $output);
+        $this->assertStringContainsString('age_buckets=none', $output);
+        $this->assertStringContainsString('classifications=none', $output);
+
+        foreach ([
+            'target_ref=',
+            'operator_action=',
+            'genealogy:materialize-typed-remediation',
+            '--token',
+            '--id',
+            'apply_enabled=true',
+            'canonical_write_allowed=true',
+        ] as $needle) {
+            $this->assertStringNotContainsString($needle, $output);
+        }
+    }
+
+    public function test_aged_review_no_focus_candidates_next_target_markdown_summarizes_aggregate_only(): void
+    {
+        $payload = $this->agedReviewNoFocusCandidatesNextTargetPayload();
+        $this->bindPartialNextTargetService($payload, 'aged-review');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'aged-review',
+            '--markdown' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('# Review Backlog Next Target', $output);
+        $this->assertStringContainsString('- Query state: `no_focus_candidates`', $output);
+        $this->assertStringContainsString('- Focus: `aged-review`', $output);
+        $this->assertStringContainsString('- Target: `none`', $output);
+        $this->assertStringContainsString('- Candidate rows: `0`', $output);
+        $this->assertStringContainsString('- Stale rows: `0`', $output);
+        $this->assertStringContainsString('- High-priority rows: `0`', $output);
+        $this->assertStringContainsString('- Age buckets: `none`', $output);
+        $this->assertStringContainsString('- Classifications: `none`', $output);
+        $this->assertStringNotContainsString('target_ref=', $output);
+        $this->assertStringNotContainsString('genealogy:materialize-typed-remediation', $output);
+    }
+
     public function test_focus_option_requires_next_target(): void
     {
         $service = Mockery::mock(ReviewBacklogReportService::class);
@@ -509,7 +705,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         ]);
 
         $this->assertSame(1, $exit);
-        $this->assertStringContainsString('Unsupported --focus value. Supported values: typed-remediation, materializable-remediation, source-backed-packet.', (string) Artisan::output());
+        $this->assertStringContainsString('Unsupported --focus value. Supported values: typed-remediation, materializable-remediation, source-backed-packet, aged-review.', (string) Artisan::output());
     }
 
     public function test_json_and_markdown_options_are_mutually_exclusive(): void
@@ -853,6 +1049,102 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         ];
     }
 
+    private function agedReviewNoFocusCandidatesNextTargetPayload(): array
+    {
+        return [
+            'version' => 1,
+            'mode' => 'observe',
+            'status' => 'observe_ok',
+            'dry_run' => false,
+            'queries_executed' => true,
+            'query_state' => 'no_focus_candidates',
+            'stale_days' => 7,
+            'high_priority_threshold' => 8,
+            'captured_at' => '2026-05-02T13:52:00Z',
+            'focus' => 'aged-review',
+            'next_target' => null,
+            'focus_summary' => [
+                'schema' => 'review_backlog_focus_summary.v1',
+                'scope' => 'aggregate_only',
+                'focus' => 'aged-review',
+                'candidate_rows' => 0,
+                'stale_rows' => 0,
+                'high_priority_rows' => 0,
+                'age_bucket_counts' => [],
+                'classification_counts' => [],
+                'row_pointers_included' => false,
+                'auth_markers_included' => false,
+                'raw_ids_included' => false,
+                'source_refs_included' => false,
+                'commands_included' => false,
+                'apply_controls_included' => false,
+            ],
+        ];
+    }
+
+    private function agedReviewNextTargetPayload(): array
+    {
+        return [
+            'version' => 1,
+            'mode' => 'observe',
+            'status' => 'review_required',
+            'dry_run' => false,
+            'queries_executed' => true,
+            'query_state' => 'next_target_selected',
+            'stale_days' => 7,
+            'high_priority_threshold' => 8,
+            'captured_at' => '2026-05-07T22:34:10Z',
+            'focus' => 'aged-review',
+            'next_target' => [
+                'target_ref' => 'system_alert:target-private-aged',
+                'review_type' => 'system_alert',
+                'finding_type' => null,
+                'classification' => 'high_priority_pending_review',
+                'underlying_classification' => 'stale_infrastructure_relevance_check',
+                'selection_reason' => 'oldest_aged_review',
+                'created_at' => '2026-04-02 22:19:32',
+                'age_days' => 34,
+                'age_bucket' => '31d_plus',
+                'stale_days_over_threshold' => 27,
+                'priority' => 8,
+                'next_action' => 'COMMAND SECRET should not appear in compact output.',
+                'underlying_next_action' => 'COMMAND SECRET underlying action should not appear.',
+                'evidence_flags' => [
+                    'stale' => true,
+                    'high_priority' => true,
+                    'age_bucket' => '31d_plus',
+                    'stale_days_over_threshold' => 27,
+                ],
+            ],
+            'focus_summary' => [
+                'schema' => 'review_backlog_focus_summary.v1',
+                'scope' => 'aggregate_only',
+                'focus' => 'aged-review',
+                'candidate_rows' => 35,
+                'stale_rows' => 35,
+                'high_priority_rows' => 1,
+                'age_bucket_counts' => [
+                    '31d_plus' => 2,
+                    '8_30d' => 33,
+                ],
+                'classification_counts' => [
+                    'actionable_or_obsolete_triage' => 3,
+                    'high_priority_pending_review' => 1,
+                    'source_backed_packet_needed' => 12,
+                    'stale_infrastructure_relevance_check' => 1,
+                    'typed_preview_needed' => 18,
+                ],
+                'row_pointers_included' => false,
+                'auth_markers_included' => false,
+                'raw_ids_included' => false,
+                'source_refs_included' => false,
+                'commands_included' => false,
+                'apply_controls_included' => false,
+            ],
+            'token' => 'next-target-aged-private-token',
+        ];
+    }
+
     private function sourceBackedPacketNextTargetPayload(): array
     {
         return [
@@ -961,6 +1253,27 @@ class OpsReviewBacklogReportCommandTest extends TestCase
             'apply_enabled=true',
             'apply_held=false',
             'create_or_reuse_pending_genealogy_review_packet_only',
+        ] as $needle) {
+            $this->assertStringNotContainsString($needle, $output);
+        }
+    }
+
+    private function assertAgedReviewCompactOutputIsRedacted(string $output): void
+    {
+        foreach ([
+            'system_alert:target-private-aged',
+            'next-target-aged-private-token',
+            'COMMAND SECRET',
+            'target_ref=',
+            'Target ref:',
+            'genealogy:materialize-typed-remediation',
+            '--execute',
+            '--token',
+            '--id',
+            'execute_options',
+            'dry_run_options',
+            'apply_enabled=true',
+            'canonical_write_allowed=true',
         ] as $needle) {
             $this->assertStringNotContainsString($needle, $output);
         }

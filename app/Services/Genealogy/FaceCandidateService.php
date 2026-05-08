@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\Genealogy\Support\TemporalProximityChecker;
 use Illuminate\Support\Facades\DB;
 
 class FaceCandidateService
@@ -19,9 +20,23 @@ class FaceCandidateService
         $limit = max(1, min($limit, 50));
         $treeId = $this->resolveTreeId(max(0, $treeId));
 
-        $face = DB::table('file_registry_faces')
-            ->select('id', 'file_registry_id', 'person_name', 'genealogy_person_id', 'region_x', 'region_y', 'region_w', 'region_h', 'confidence', 'cluster_id', 'hidden')
-            ->where('id', $fileRegistryFaceId)
+        $face = DB::table('file_registry_faces as frf')
+            ->leftJoin('file_registry as fr', 'fr.id', '=', 'frf.file_registry_id')
+            ->select(
+                'frf.id',
+                'frf.file_registry_id',
+                'frf.person_name',
+                'frf.genealogy_person_id',
+                'frf.region_x',
+                'frf.region_y',
+                'frf.region_w',
+                'frf.region_h',
+                'frf.confidence',
+                'frf.cluster_id',
+                'frf.hidden',
+                'fr.date_taken'
+            )
+            ->where('frf.id', $fileRegistryFaceId)
             ->first();
 
         if ($face === null) {
@@ -64,10 +79,11 @@ class FaceCandidateService
 
         $normalizedFaceName = $this->normalizeName((string) ($face->person_name ?? ''));
         $tokens = $this->nameTokens($normalizedFaceName);
+        $photoYear = $this->photoYear($face->date_taken ?? null);
 
         $candidates = $tokens === []
             ? []
-            : $this->rankCandidates($treeId['id'], $tokens, $normalizedFaceName, $limit);
+            : $this->rankCandidates($treeId['id'], $tokens, $normalizedFaceName, $limit, $photoYear);
 
         $rejectedCandidateIds = $includeRejected ? [] : $this->rejectedCandidateIds($fileRegistryFaceId);
         if ($rejectedCandidateIds !== []) {
@@ -116,8 +132,13 @@ class FaceCandidateService
      * @param  list<string>  $tokens
      * @return list<array<string, mixed>>
      */
-    private function rankCandidates(int $treeId, array $tokens, string $normalizedFaceName, int $limit): array
-    {
+    private function rankCandidates(
+        int $treeId,
+        array $tokens,
+        string $normalizedFaceName,
+        int $limit,
+        ?int $photoYear
+    ): array {
         $query = DB::table('genealogy_persons as gp')
             ->join('genealogy_trees as gt', 'gt.id', '=', 'gp.tree_id')
             ->leftJoinSub(
@@ -157,8 +178,9 @@ class FaceCandidateService
             ->get();
 
         return $query
-            ->map(function (object $person) use ($tokens, $normalizedFaceName): array {
+            ->map(function (object $person) use ($tokens, $normalizedFaceName, $photoYear): array {
                 [$score, $reasons] = $this->scorePerson($person, $tokens, $normalizedFaceName);
+                $lifespanContext = $this->lifespanContext($person, $photoYear);
 
                 return [
                     'genealogy_person_id' => (int) $person->id,
@@ -176,6 +198,10 @@ class FaceCandidateService
                     'privacy_state' => $this->privacyState($person),
                     'requires_elevated_review' => $this->requiresElevatedReview($person),
                     'review_posture' => $this->reviewPosture($person),
+                    'photo_date_context' => $lifespanContext['photo_date_context'],
+                    'lifespan_fit' => $lifespanContext['lifespan_fit'],
+                    'age_at_photo' => $lifespanContext['age_at_photo'],
+                    'lifespan_warnings' => $lifespanContext['lifespan_warnings'],
                     'face_count' => (int) $person->face_count,
                     'score' => $score,
                     'reasons' => $reasons,
@@ -369,6 +395,7 @@ class FaceCandidateService
             'genealogy_person_id' => $face->genealogy_person_id !== null ? (int) $face->genealogy_person_id : null,
             'cluster_id' => $face->cluster_id !== null ? (int) $face->cluster_id : null,
             'confidence' => $face->confidence !== null ? (float) $face->confidence : null,
+            'photo_date_context' => $this->facePhotoDateContext($face->date_taken ?? null),
             'region' => [
                 'x' => $face->region_x !== null ? (float) $face->region_x : null,
                 'y' => $face->region_y !== null ? (float) $face->region_y : null,
@@ -376,6 +403,89 @@ class FaceCandidateService
                 'h' => $face->region_h !== null ? (float) $face->region_h : null,
             ],
         ];
+    }
+
+    private function photoYear(mixed $dateTaken): ?int
+    {
+        return TemporalProximityChecker::extractYear($dateTaken);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function facePhotoDateContext(mixed $dateTaken): array
+    {
+        $photoYear = $this->photoYear($dateTaken);
+
+        return [
+            'projection_only' => true,
+            'available' => $photoYear !== null,
+            'source' => $photoYear !== null ? 'file_registry.date_taken' : null,
+            'photo_year' => $photoYear,
+            'date_taken' => $this->safeDateTaken($dateTaken),
+        ];
+    }
+
+    /**
+     * @return array{
+     *     photo_date_context: array<string, mixed>,
+     *     lifespan_fit: string,
+     *     age_at_photo: int|null,
+     *     lifespan_warnings: list<string>
+     * }
+     */
+    private function lifespanContext(object $person, ?int $photoYear): array
+    {
+        $birthYear = TemporalProximityChecker::extractYear($person->birth_date ?? null);
+        $deathYear = TemporalProximityChecker::extractYear($person->death_date ?? null);
+        $warnings = [];
+        $lifespanFit = 'compatible';
+
+        if ($photoYear === null) {
+            $lifespanFit = 'unknown_photo_date';
+        } elseif ($birthYear === null && $deathYear === null) {
+            $lifespanFit = 'unknown_lifespan';
+        } elseif ($birthYear !== null && $photoYear < $birthYear) {
+            $lifespanFit = 'before_birth';
+            $warnings[] = 'photo_before_birth';
+        } elseif ($deathYear !== null && $photoYear > $deathYear) {
+            $lifespanFit = 'after_death';
+            $warnings[] = 'photo_after_death';
+        }
+
+        return [
+            'photo_date_context' => [
+                'projection_only' => true,
+                'photo_year' => $photoYear,
+                'birth_year' => $birthYear,
+                'death_year' => $deathYear,
+            ],
+            'lifespan_fit' => $lifespanFit,
+            'age_at_photo' => $photoYear !== null && $birthYear !== null && $photoYear >= $birthYear
+                ? $photoYear - $birthYear
+                : null,
+            'lifespan_warnings' => $warnings,
+        ];
+    }
+
+    private function safeDateTaken(mixed $dateTaken): ?string
+    {
+        if ($dateTaken instanceof \DateTimeInterface) {
+            return $dateTaken->format('Y-m-d');
+        }
+
+        if (! is_scalar($dateTaken)) {
+            return null;
+        }
+
+        $value = trim((string) $dateTaken);
+        if ($this->photoYear($value) === null) {
+            return null;
+        }
+
+        return preg_match('/^\d{4}-\d{2}-\d{2}/', $value) === 1
+            ? substr($value, 0, 10)
+            : null;
     }
 
     /**

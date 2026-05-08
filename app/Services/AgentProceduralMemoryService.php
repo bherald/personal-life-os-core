@@ -42,6 +42,29 @@ class AgentProceduralMemoryService
 
     private const SEMANTIC_MIN_SIMILARITY = 0.35;
 
+    private const SAFE_PACKET_DECISION_ACTIONS = [
+        'packet_review_started',
+        'packet_reviewed',
+        'packet_reviewed_preview_only',
+        'packet_rejected',
+        'packet_clarification_requested',
+        'packet_deferred',
+    ];
+
+    private const SAFE_PACKET_REASON_CODES = [
+        'source_verified',
+        'missing_source_locator',
+        'locator_mismatch',
+        'source_needs_review',
+        'citation_incomplete',
+        'identity_unclear',
+        'weak_evidence',
+        'privacy_review_needed',
+        'duplicate_packet',
+        'needs_operator_outcome',
+        'other',
+    ];
+
     private AIService $aiService;
 
     public function __construct(AIService $aiService)
@@ -962,8 +985,8 @@ class AgentProceduralMemoryService
                 }
 
                 $meta = is_array($entry['meta'] ?? null) ? $entry['meta'] : [];
-                $reasonCode = is_string($meta['reason_code'] ?? null) ? trim($meta['reason_code']) : '';
-                if ($reasonCode === '') {
+                $reasonCode = $this->safePacketReasonCode($meta['reason_code'] ?? null);
+                if ($reasonCode === null) {
                     continue;
                 }
 
@@ -977,9 +1000,7 @@ class AgentProceduralMemoryService
                     continue;
                 }
 
-                $action = is_string($entry['action'] ?? null) && trim($entry['action']) !== ''
-                    ? trim($entry['action'])
-                    : 'unknown';
+                $action = $this->safePacketDecisionAction($entry['action'] ?? null);
                 $key = $date.'|'.$rowAgent;
                 if (! isset($rollup[$key])) {
                     $rollup[$key] = [
@@ -1027,6 +1048,46 @@ class AgentProceduralMemoryService
         });
 
         return $out;
+    }
+
+    private function safePacketDecisionAction(mixed $value): string
+    {
+        if (! is_scalar($value)) {
+            return 'unknown';
+        }
+
+        $action = strtolower(trim((string) $value));
+        if ($action === '') {
+            return 'unknown';
+        }
+
+        $action = (string) preg_replace('/[^a-z0-9_-]+/', '_', $action);
+        $action = (string) preg_replace('/_+/', '_', $action);
+        $action = trim($action, '_-');
+
+        return in_array($action, self::SAFE_PACKET_DECISION_ACTIONS, true)
+            ? $action
+            : 'unknown';
+    }
+
+    private function safePacketReasonCode(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $reasonCode = strtolower(trim((string) $value));
+        if ($reasonCode === '') {
+            return null;
+        }
+
+        $reasonCode = (string) preg_replace('/[^a-z0-9_-]+/', '_', $reasonCode);
+        $reasonCode = (string) preg_replace('/_+/', '_', $reasonCode);
+        $reasonCode = trim($reasonCode, '_-');
+
+        return in_array($reasonCode, self::SAFE_PACKET_REASON_CODES, true)
+            ? $reasonCode
+            : 'other';
     }
 
     private function reviewFeedbackDate(mixed $reviewedAt): ?string

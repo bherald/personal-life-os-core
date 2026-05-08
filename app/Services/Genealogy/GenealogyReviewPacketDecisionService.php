@@ -57,7 +57,8 @@ class GenealogyReviewPacketDecisionService
                 'accepted_fact_mutations' => false,
                 'proposal_materialization' => 'not_implemented',
             ], $reasonCode),
-            'Packet rejected.'
+            'Packet rejected.',
+            requiredReasonAction: 'reject'
         );
     }
 
@@ -74,7 +75,8 @@ class GenealogyReviewPacketDecisionService
                 'proposal_materialization' => 'not_implemented',
             ], $reasonCode),
             'Packet clarification requested; proposal materialization remains preview-only.',
-            false
+            false,
+            requiredReasonAction: 'clarify'
         );
     }
 
@@ -91,7 +93,8 @@ class GenealogyReviewPacketDecisionService
                 'proposal_materialization' => 'not_implemented',
             ], $reasonCode),
             'Packet deferred; proposal materialization remains preview-only.',
-            false
+            false,
+            requiredReasonAction: 'defer'
         );
     }
 
@@ -107,7 +110,8 @@ class GenealogyReviewPacketDecisionService
         array $meta,
         string $message,
         bool $markReviewedAt = true,
-        bool $requirePreviewOnly = false
+        bool $requirePreviewOnly = false,
+        ?string $requiredReasonAction = null
     ): array {
         $row = DB::table('agent_review_queue')
             ->where('token', $token)
@@ -125,6 +129,13 @@ class GenealogyReviewPacketDecisionService
         $details = json_decode((string) ($row->details ?? '{}'), true);
         if (! is_array($details)) {
             $details = [];
+        }
+
+        if ($requiredReasonAction !== null && ! isset($meta['reason_code'])) {
+            return [
+                'success' => false,
+                'error' => "A reason code is required to {$requiredReasonAction} a genealogy review packet.",
+            ];
         }
 
         if ($requirePreviewOnly) {

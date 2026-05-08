@@ -3,35 +3,14 @@
 namespace App\Controllers;
 
 use App\Exceptions\NodeTimeoutException;
+use App\Services\PushoverRateLimitPolicy;
 use Exception;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 
 class NotificationController
 {
-    private const PUSHOVER_RATE_LIMIT_TTL = 60;  // Window in seconds
-
-    private const PUSHOVER_ALLOWED_GROUPS = [
-        'daily_digests',
-        'agent_approval_review',
-        'workflow_node_notifications',
-        'workflow_routine_updates',
-        'auth_token_alerts',
-        'test_dev_only',
-    ];
-
-    private const PUSHOVER_RATE_LIMITS = [
-        'agent_approval_review' => 7,
-        'daily_digests' => 7,
-        'workflow_node_notifications' => 10,
-        'workflow_routine_updates' => 60,
-        'auth_token_alerts' => 10,
-        'test_dev_only' => 20,
-        'unknown' => 7,
-    ];
-
     public function send(string $provider, array $data): array
     {
         switch ($provider) {
@@ -74,7 +53,7 @@ class NotificationController
             return ['success' => false, 'error' => 'Configuration missing'];
         }
 
-        if (! in_array($sourceGroup, self::PUSHOVER_ALLOWED_GROUPS, true)) {
+        if (! PushoverRateLimitPolicy::isAllowed($sourceGroup)) {
             Log::info('Pushover notification suppressed by source-group policy', [
                 'title' => $data['title'] ?? 'Notification',
                 'source_group' => $sourceGroup,
@@ -88,9 +67,8 @@ class NotificationController
         }
 
         // Rate limiting — shared across all callers (NotificationHubNode, AgentLoop, etc.)
-        $rateLimit = $this->resolvePushoverRateLimit($sourceGroup);
-        $rateCacheKey = 'pushover_rate_limit:'.$sourceGroup;
-        $currentCount = Cache::get($rateCacheKey, 0);
+        $rateLimit = PushoverRateLimitPolicy::limitFor($sourceGroup);
+        $currentCount = PushoverRateLimitPolicy::currentCount($sourceGroup);
         if ($currentCount >= $rateLimit) {
             Log::warning('Pushover rate limit exceeded, skipping notification', [
                 'title' => $data['title'] ?? 'unknown',
@@ -194,7 +172,7 @@ class NotificationController
             }
 
             // Increment rate limit counter on successful send
-            Cache::put($rateCacheKey, $currentCount + 1, self::PUSHOVER_RATE_LIMIT_TTL);
+            PushoverRateLimitPolicy::recordSent($sourceGroup);
 
             Log::info('Pushover notification sent successfully', [
                 'title' => $data['title'] ?? 'Notification',
@@ -268,11 +246,6 @@ class NotificationController
         }
 
         return 'unknown';
-    }
-
-    private function resolvePushoverRateLimit(string $sourceGroup): int
-    {
-        return self::PUSHOVER_RATE_LIMITS[$sourceGroup] ?? self::PUSHOVER_RATE_LIMITS['unknown'];
     }
 
     /**

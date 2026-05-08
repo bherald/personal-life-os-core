@@ -5,7 +5,7 @@
         {{ batch ? `Identify ${clusterIds.length} clusters` : 'Identify Cluster' }}
       </h3>
       <p v-if="cluster && !batch" class="text-xs text-ops-text-muted mb-4">
-        {{ cluster.face_count }} faces · Cluster #{{ cluster.id }}
+        {{ cluster.face_count }} faces · Selected cluster
       </p>
 
       <!-- Sample faces preview -->

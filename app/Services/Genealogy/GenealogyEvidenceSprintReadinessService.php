@@ -14,6 +14,20 @@ class GenealogyEvidenceSprintReadinessService
 
     private const TARGET_PACKETS = 5;
 
+    private const SAFE_PACKET_REASON_CODES = [
+        'source_verified',
+        'missing_source_locator',
+        'locator_mismatch',
+        'source_needs_review',
+        'citation_incomplete',
+        'identity_unclear',
+        'weak_evidence',
+        'privacy_review_needed',
+        'duplicate_packet',
+        'needs_operator_outcome',
+        'other',
+    ];
+
     private ?GenealogyReviewPacketValidatorService $packetValidator = null;
 
     public function collect(int $days = 30, int $limit = 500): array
@@ -255,9 +269,7 @@ class GenealogyEvidenceSprintReadinessService
                 'operator_pass_recorded' => (bool) ($readiness['operator_pass_recorded'] ?? false),
             ],
             'recommendation_count' => count($payload['recommendations'] ?? []),
-            'recommendations' => array_values(array_filter($payload['recommendations'] ?? [], 'is_string')),
             'evidence_error_count' => count($payload['evidence_errors'] ?? []),
-            'evidence_errors' => array_values(array_filter($payload['evidence_errors'] ?? [], 'is_string')),
         ];
     }
 
@@ -435,17 +447,9 @@ class GenealogyEvidenceSprintReadinessService
             '- Boundary consistent: `'.$this->boolValue($readiness['boundary_consistent']).'`',
             '- Mutation guard ok: `'.$this->boolValue($readiness['mutation_guard_ok']).'`',
             '- Operator pass recorded: `'.$this->boolValue($readiness['operator_pass_recorded']).'`',
+            '- Recommendation count: `'.$compact['recommendation_count'].'`',
             '- Evidence error count: `'.$compact['evidence_error_count'].'`',
         ];
-
-        if ($compact['recommendations'] !== []) {
-            $lines[] = '';
-            $lines[] = '## Recommendations';
-            $lines[] = '';
-            foreach ($compact['recommendations'] as $recommendation) {
-                $lines[] = '- '.$recommendation;
-            }
-        }
 
         return implode(PHP_EOL, $lines).PHP_EOL;
     }
@@ -752,7 +756,10 @@ class GenealogyEvidenceSprintReadinessService
 
     private function isReviewReadyPendingPacket(array $details): bool
     {
-        return $this->hasSourceEvidence($details)
+        $packetStatus = $this->cleanKey($details['packet_status'] ?? 'pending');
+
+        return $packetStatus === 'pending'
+            && $this->hasSourceEvidence($details)
             && $this->isPreviewOnly($details)
             && $this->hasIdentity($details)
             && ($details['privacy']['cleared'] ?? null) === true
@@ -1124,13 +1131,33 @@ class GenealogyEvidenceSprintReadinessService
                 continue;
             }
 
-            $reasonCode = $entry['meta']['reason_code'] ?? $entry['reason_code'] ?? null;
-            if (is_string($reasonCode) && trim($reasonCode) !== '') {
+            $reasonCode = $this->safePacketReasonCode($entry['meta']['reason_code'] ?? $entry['reason_code'] ?? null);
+            if ($reasonCode !== null) {
                 $reasonCodes[] = $reasonCode;
             }
         }
 
         return $reasonCodes;
+    }
+
+    private function safePacketReasonCode(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $reasonCode = strtolower(trim((string) $value));
+        if ($reasonCode === '') {
+            return null;
+        }
+
+        $reasonCode = (string) preg_replace('/[^a-z0-9_-]+/', '_', $reasonCode);
+        $reasonCode = (string) preg_replace('/_+/', '_', $reasonCode);
+        $reasonCode = trim($reasonCode, '_-');
+
+        return in_array($reasonCode, self::SAFE_PACKET_REASON_CODES, true)
+            ? $reasonCode
+            : 'other';
     }
 
     private function hasDecisionLog(array $details): bool

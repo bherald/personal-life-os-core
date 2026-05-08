@@ -23,6 +23,13 @@ class ResearchHubController extends Controller
 {
     private const GENEALOGY_PACKET_TARGET_REF_LOOKUP_LIMIT = 2000;
 
+    private const GENEALOGY_TYPED_REMEDIATION_FINDING_TYPES = [
+        'data_quality_review',
+        'genealogy_data_quality',
+        'genealogy_source_cleanup',
+        'source_duplicate_cleanup',
+    ];
+
     public function __construct(
         private ReviewTypeRegistryService $registry,
         private ReviewContextEnrichmentService $enrichment,
@@ -339,11 +346,11 @@ class ResearchHubController extends Controller
             return null;
         }
 
-        if (preg_match('/genealogy_review_packet:target-[a-f0-9]{12}/i', $text, $matches) === 1) {
+        if (preg_match('/^genealogy_review_packet:target-[a-f0-9]{12}$/i', $text, $matches) === 1) {
             return strtolower($matches[0]);
         }
 
-        if (preg_match('/target-[a-f0-9]{12}/i', $text, $matches) === 1) {
+        if (preg_match('/^target-[a-f0-9]{12}$/i', $text, $matches) === 1) {
             return 'genealogy_review_packet:'.strtolower($matches[0]);
         }
 
@@ -459,7 +466,7 @@ class ResearchHubController extends Controller
     public function quickReject(string $unifiedId)
     {
         $item = $this->lookupReviewItem($unifiedId);
-        $result = $this->registry->rejectItem($unifiedId, 'Rejected via Pushover');
+        $result = $this->registry->rejectItem($unifiedId, 'Rejected via Pushover', 'other');
 
         if ($result['success']) {
             return $this->renderActionPage('rejected', $item, $unifiedId);
@@ -556,12 +563,11 @@ class ResearchHubController extends Controller
             'suggestion' => 'Suggestion',
         ];
 
-        $title = $item->title ?? 'Review Item';
-        $agentName = $agentLabels[$item->agent_id ?? ''] ?? ucwords(str_replace('-', ' ', $item->agent_id ?? 'System'));
-        $typeName = $typeLabels[$item->review_type ?? ''] ?? ucwords(str_replace('_', ' ', $item->review_type ?? 'Item'));
-        $confidence = $item->confidence !== null ? round($item->confidence * 100).'%' : '';
-        $summary = htmlspecialchars($this->summarizeItemForPage($item, 400));
-        $summary = nl2br($summary);
+        $title = $this->escapeHtml($item->title ?? 'Review Item');
+        $agentName = $this->escapeHtml($agentLabels[$item->agent_id ?? ''] ?? ucwords(str_replace('-', ' ', $item->agent_id ?? 'System')));
+        $typeName = $this->escapeHtml($typeLabels[$item->review_type ?? ''] ?? ucwords(str_replace('_', ' ', $item->review_type ?? 'Item')));
+        $confidence = $this->escapeHtml($item?->confidence !== null ? round($item->confidence * 100).'%' : '');
+        $summary = nl2br($this->escapeHtml($item ? $this->summarizeItemForPage($item, 400) : ''), false);
 
         if ($action === 'approved') {
             $icon = '✓';
@@ -577,11 +583,11 @@ class ResearchHubController extends Controller
             $icon = '⚠';
             $color = '#ffaa00';
             $heading = 'Failed';
-            $summary = htmlspecialchars($error ?? 'Unknown error');
+            $summary = nl2br($this->escapeHtml($error ?? 'Unknown error'), false);
             $statusCode = 400;
         }
 
-        $viewUrl = rtrim((string) config('app.public_url', config('app.url')), '/').'/research-hub';
+        $viewUrl = $this->escapeHtmlAttribute(rtrim((string) config('app.public_url', config('app.url')), '/').'/research-hub');
 
         $html = <<<HTML
 <!DOCTYPE html>
@@ -672,18 +678,17 @@ HTML;
             'suggestion' => 'Suggestion',
         ];
 
-        $title = htmlspecialchars($item->title ?? 'Review Item');
-        $agentName = $agentLabels[$item->agent_id ?? ''] ?? ucwords(str_replace('-', ' ', $item->agent_id ?? 'System'));
-        $typeName = $typeLabels[$item->review_type ?? ''] ?? ucwords(str_replace('_', ' ', $item->review_type ?? 'Item'));
-        $confidence = $item->confidence !== null ? round($item->confidence * 100).'%' : '—';
-        $status = htmlspecialchars($item->status ?? 'pending');
-        $summary = htmlspecialchars($this->summarizeItemForPage($item));
-        $summary = nl2br($summary);
+        $title = $this->escapeHtml($item->title ?? 'Review Item');
+        $agentName = $this->escapeHtml($agentLabels[$item->agent_id ?? ''] ?? ucwords(str_replace('-', ' ', $item->agent_id ?? 'System')));
+        $typeName = $this->escapeHtml($typeLabels[$item->review_type ?? ''] ?? ucwords(str_replace('_', ' ', $item->review_type ?? 'Item')));
+        $confidence = $this->escapeHtml($item->confidence !== null ? round($item->confidence * 100).'%' : '—');
+        $status = $this->escapeHtml($item->status ?? 'pending');
+        $summary = nl2br($this->escapeHtml($this->summarizeItemForPage($item)), false);
 
         $baseUrl = rtrim((string) config('app.public_url', config('app.url')), '/');
-        $approveUrl = "{$baseUrl}/api/research-hub/quick-approve/{$unifiedId}";
-        $rejectUrl = "{$baseUrl}/api/research-hub/quick-reject/{$unifiedId}";
-        $hubUrl = "{$baseUrl}/research-hub?unified_id=".rawurlencode($unifiedId);
+        $approveUrl = $this->escapeHtmlAttribute("{$baseUrl}/api/research-hub/quick-approve/{$unifiedId}");
+        $rejectUrl = $this->escapeHtmlAttribute("{$baseUrl}/api/research-hub/quick-reject/{$unifiedId}");
+        $hubUrl = $this->escapeHtmlAttribute("{$baseUrl}/research-hub?unified_id=".rawurlencode($unifiedId));
 
         $isPending = ($item->status ?? '') === 'pending';
         $actionButtons = $isPending
@@ -773,6 +778,16 @@ HTML;
         }
 
         return mb_substr($clean, 0, $limit);
+    }
+
+    private function escapeHtml(mixed $value): string
+    {
+        return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    }
+
+    private function escapeHtmlAttribute(mixed $value): string
+    {
+        return $this->escapeHtml($value);
     }
 
     private function normalizeReviewSummaryText(string $summary): string
@@ -1619,7 +1634,21 @@ HTML;
 
             foreach ($items as &$item) {
                 // INF-10e: Match by finding_type (from agent_review_queue) or source (review type name)
-                $findingType = $item['finding_type'] ?? $item['source'] ?? '';
+                $findingType = (string) ($item['finding_type'] ?? $item['source'] ?? '');
+                if ($this->isGenealogyTypedRemediationFindingType($findingType)) {
+                    $item['remediation'] = [
+                        'action_id' => null,
+                        'description' => 'Apply held for genealogy typed remediation preview.',
+                        'risk_level' => 'preview',
+                        'requires_confirmation' => true,
+                        'executable' => false,
+                        'preview_only' => true,
+                        'apply_held' => true,
+                    ];
+
+                    continue;
+                }
+
                 if (isset($actionMap[$findingType])) {
                     $action = $actionMap[$findingType];
                     $item['remediation'] = [
@@ -1638,6 +1667,11 @@ HTML;
         }
 
         return $items;
+    }
+
+    private function isGenealogyTypedRemediationFindingType(string $findingType): bool
+    {
+        return in_array($findingType, self::GENEALOGY_TYPED_REMEDIATION_FINDING_TYPES, true);
     }
 
     /**

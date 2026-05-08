@@ -384,6 +384,130 @@ class OpsMcpHealthCommandTest extends TestCase
         $this->assertCompactOutputDoesNotExposeSensitiveMaterial($textOutput, $sensitiveValues);
     }
 
+    public function test_compact_operator_outputs_allowlist_config_labels_and_server_names(): void
+    {
+        $serverNameSecret = 'synthetic://compact-server-name-redaction-marker';
+        $trustSecret = 'synthetic-trust-boundary-redaction-marker';
+        $writeScopeSecret = 'synthetic-write-scope-redaction-marker';
+        $networkSecret = 'synthetic-network-redaction-marker';
+        $riskSecret = 'synthetic-risk-redaction-marker';
+        $transportSecret = 'synthetic-transport-redaction-marker';
+
+        config()->set('mcp.servers', [
+            $serverNameSecret => [
+                'enabled' => true,
+                'type' => 'external',
+                'transport' => $transportSecret,
+                'command' => 'node',
+                'args' => [$this->fixtureEntry],
+                'trust_boundary' => $trustSecret,
+                'network_required' => $networkSecret,
+                'write_scope' => $writeScopeSecret,
+                'secret_surface_risk' => $riskSecret,
+            ],
+        ]);
+        $this->useFixturePs([]);
+
+        $sensitiveValues = [
+            $serverNameSecret,
+            $trustSecret,
+            $writeScopeSecret,
+            $networkSecret,
+            $riskSecret,
+            $transportSecret,
+        ];
+
+        $exit = Artisan::call('ops:mcp-health', ['--json' => true, '--compact' => true]);
+
+        $this->assertSame(0, $exit);
+        $jsonOutput = (string) Artisan::output();
+        $compact = json_decode($jsonOutput, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(['other' => 1], $compact['config_posture']['trust_boundary_counts']);
+        $this->assertSame(['other' => 1], $compact['config_posture']['write_scope_counts']);
+        $this->assertSame(['other' => 1], $compact['config_posture']['network_required_counts']);
+        $this->assertSame(['other' => 1], $compact['config_posture']['secret_surface_risk_counts']);
+        $this->assertSame('other', $compact['attention'][0]['transport']);
+        $this->assertStringStartsWith('server_', $compact['attention'][0]['name']);
+        $this->assertCompactOutputDoesNotExposeSensitiveMaterial($jsonOutput, $sensitiveValues);
+
+        $exit = Artisan::call('ops:mcp-health', ['--compact' => true]);
+
+        $this->assertSame(0, $exit);
+        $textOutput = (string) Artisan::output();
+        $this->assertStringContainsString('trust_boundary=other:1', $textOutput);
+        $this->assertStringContainsString('write_scope=other:1', $textOutput);
+        $this->assertStringContainsString('network_required=other:1', $textOutput);
+        $this->assertStringContainsString('secret_surface_risk=other:1', $textOutput);
+        $this->assertStringContainsString('attention=server_', $textOutput);
+        $this->assertCompactOutputDoesNotExposeSensitiveMaterial($textOutput, $sensitiveValues);
+    }
+
+    public function test_full_json_redacts_absolute_command_path_env_values_process_lines_and_process_tokens(): void
+    {
+        $envSecret = 'synthetic-full-json-env-redaction-marker';
+        $argSecret = '--redaction-arg=synthetic-full-json-arg-redaction-marker';
+        $processSecret = 'process_token=synthetic-full-json-process-redaction-marker';
+        $externalCommand = sys_get_temp_dir().'/synthetic-full-json-command-secret-mcp';
+        $externalEntry = sys_get_temp_dir().'/synthetic-full-json-entry-secret.js';
+        $processLine = '888 1 Sl '.$externalCommand.' '.$this->fixtureEntry.' '.$argSecret.' '.$processSecret.' '.$externalEntry;
+
+        config()->set('mcp.servers', [
+            'full-json-sensitive' => [
+                'enabled' => true,
+                'type' => 'external',
+                'transport' => 'external_process',
+                'command' => $externalCommand,
+                'args' => [
+                    $this->fixtureEntry,
+                    $argSecret,
+                    $externalEntry,
+                ],
+                'env' => [
+                    'MCP_API_TOKEN' => $envSecret,
+                    'MCP_ENTRY_PATH' => $this->fixtureEntry,
+                ],
+                'trust_boundary' => 'local_user',
+                'network_required' => 'optional',
+                'write_scope' => 'read',
+                'secret_surface_risk' => 'high',
+            ],
+        ]);
+        $this->useFixturePs([$processLine]);
+
+        $exit = Artisan::call('ops:mcp-health', ['--json' => true]);
+
+        $this->assertSame(0, $exit);
+        $jsonOutput = (string) Artisan::output();
+        $payload = json_decode($jsonOutput, true, 512, JSON_THROW_ON_ERROR);
+        $server = $payload['servers'][0];
+
+        $this->assertSame('synthetic-full-json-command-secret-mcp', $server['command']['label']);
+        $this->assertSame('external_absolute', $server['command']['path_class']);
+        $this->assertSame('storage/app/testing-mcp-health/server.js', $server['local_entries'][0]['path']);
+        $this->assertSame('repo', $server['local_entries'][0]['path_class']);
+        $this->assertSame('synthetic-full-json-entry-secret.js', $server['local_entries'][1]['path']);
+        $this->assertSame('external_absolute', $server['local_entries'][1]['path_class']);
+        $this->assertTrue($server['process']['matchable']);
+        $this->assertTrue($server['process']['running']);
+        $this->assertSame(3, $server['process']['marker_count']);
+        $this->assertSame(1, $server['process']['matches']);
+
+        foreach ([
+            $envSecret,
+            $argSecret,
+            $processSecret,
+            $processLine,
+            '888 1 Sl',
+            $externalCommand,
+            $externalEntry,
+            dirname($externalCommand),
+            base_path(),
+            storage_path(),
+        ] as $sensitiveValue) {
+            $this->assertStringNotContainsString($sensitiveValue, $jsonOutput);
+        }
+    }
+
     /**
      * @return array<string, mixed>
      */

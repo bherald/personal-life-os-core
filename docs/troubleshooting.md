@@ -147,6 +147,7 @@ Start with the narrow read-only status payload:
 ```bash
 php artisan ops:offline-status --json
 php artisan ops:offline-smoke --json
+php artisan ops:offline-smoke --json --compact
 ```
 
 The same data is available to authenticated UI/API consumers at
@@ -155,7 +156,10 @@ The same data is available to authenticated UI/API consumers at
 queue, backlog, review, and operational cards.
 `ops:offline-smoke --json` adds a manual report-only check of the audit reader,
 profile-filtered MCP catalog boundary, and local runtime scorecard; it does not
-change profiles or write audit receipts.
+change profiles or write audit receipts. Use `--json --compact` when sharing or
+logging the result; it keeps statuses, reason codes, and aggregate counts while
+omitting nested payloads, raw details, server lists, paths, prompts, traces, and
+environment values.
 
 Use the status as follows:
 
@@ -189,12 +193,16 @@ If an `offline:dev-assist --json` response includes `trace_written=false`, check
 the private trace reader before changing any policy:
 
 ```bash
-php artisan plos:agent-trace-tail --json
+php artisan plos:agent-trace-tail --limit=20 --since=24 --json
 ```
 
 An empty trace tail usually means tracing is disabled, the storage directory is
 unavailable, or the trace event was rejected because it contained a forbidden
 raw field. Trace failures should not be fixed by broadening profile permissions.
+Through the PLOS MCP `plos_artisan` wrapper, use only that exact redacted
+trace-tail form. If it is blocked while source allows it, check
+`plos_artisan list` for the allowlist revision and treat the mismatch as a
+loaded-session freshness issue, not a reason to widen the trace command.
 If Operator Evidence reports files over `DEV_AGENT_TRACE_RETENTION_DAYS`, treat
 that as an operator cleanup signal only; trace readers do not delete files.
 If `/doctor` reports missing dev-assist tools, compare its `tool_readiness`
@@ -217,6 +225,7 @@ To review stored history without re-running Agent Doctor:
 
 ```bash
 php artisan ops:agent-doctor-history --json --days=7
+php artisan ops:agent-doctor-history --json --compact --days=7
 ```
 
 ## Connector Issues

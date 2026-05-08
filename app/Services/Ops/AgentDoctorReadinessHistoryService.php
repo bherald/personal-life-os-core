@@ -81,6 +81,71 @@ class AgentDoctorReadinessHistoryService
     }
 
     /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    public function compactPayload(array $payload): array
+    {
+        $summary = is_array($payload['summary'] ?? null)
+            ? $payload['summary']
+            : $this->emptySummary();
+        $snapshots = is_array($payload['snapshots'] ?? null)
+            ? array_values(array_map(
+                fn (mixed $snapshot): array => $this->compactSnapshot(is_array($snapshot) ? $snapshot : []),
+                $payload['snapshots']
+            ))
+            : [];
+
+        $latest = $snapshots[0] ?? [];
+
+        return [
+            'version' => 1,
+            'mode' => (string) ($payload['mode'] ?? 'observe'),
+            'compact' => true,
+            'generated_at' => $this->nullableString($payload['generated_at'] ?? null),
+            'source' => [
+                'table' => 'dev_agent_readiness_snapshots',
+                'projection' => 'history_compact_aggregate_only',
+            ],
+            'window' => $this->compactWindow($payload['window'] ?? []),
+            'summary' => [
+                'snapshot_count' => (int) ($summary['snapshot_count'] ?? 0),
+                'latest_status' => $this->nullableStatus($summary['latest_status'] ?? null),
+                'latest_captured_at' => $this->nullableString($summary['latest_captured_at'] ?? null),
+                'trend' => $this->nullableString($summary['trend'] ?? null) ?? 'unknown',
+                'status_counts' => $this->statusCounts($summary['status_counts'] ?? []),
+                'latest_warning_count' => $this->nullableInt($summary['latest_warning_count'] ?? null),
+                'latest_critical_count' => $this->nullableInt($summary['latest_critical_count'] ?? null),
+                'warning_delta' => $this->nullableSignedInt($summary['warning_delta'] ?? null),
+                'critical_delta' => $this->nullableSignedInt($summary['critical_delta'] ?? null),
+                'agent_count_delta' => $this->nullableSignedInt($summary['agent_count_delta'] ?? null),
+            ],
+            'trace' => [
+                'latest_status' => $this->nullableStatus($latest['trace_status'] ?? null),
+                'latest_events_24h' => $this->nullableInt($latest['trace_events_24h'] ?? null),
+                'events_24h_delta' => $this->nullableSignedInt($summary['trace_events_24h_delta'] ?? null),
+            ],
+            'recursion' => [
+                'latest_status' => $this->nullableStatus($latest['recursion_status'] ?? null),
+                'latest_calls_7d' => $this->nullableInt($latest['recursion_calls_7d'] ?? null),
+                'calls_7d_delta' => $this->nullableSignedInt($summary['recursion_calls_7d_delta'] ?? null),
+            ],
+            'output_quality' => $this->outputQuality($summary['latest_output_quality'] ?? []),
+            'snapshots' => $snapshots,
+            'posture' => [
+                'scope' => 'aggregate_only',
+                'snapshot_ids_included' => false,
+                'check_ids_included' => false,
+                'per_agent_details_included' => false,
+                'raw_traces_included' => false,
+                'prompts_or_completions_included' => false,
+                'command_output_included' => false,
+                'filesystem_paths_included' => false,
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function emptySummary(): array
@@ -232,13 +297,68 @@ class AgentDoctorReadinessHistoryService
         return $value === null || $value === '' ? null : max(0, (int) $value);
     }
 
+    private function nullableSignedInt(mixed $value): ?int
+    {
+        return is_numeric($value) ? (int) $value : null;
+    }
+
     private function nullableString(mixed $value): ?string
     {
         if ($value === null || $value === '') {
             return null;
         }
 
-        return substr(preg_replace('/[^A-Za-z0-9_.:-]/', '_', trim((string) $value)) ?: 'unknown', 0, 120);
+        return substr(preg_replace('/[^A-Za-z0-9_.:+-]/', '_', trim((string) $value)) ?: 'unknown', 0, 120);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function compactWindow(mixed $value): array
+    {
+        $window = is_array($value) ? $value : [];
+
+        return [
+            'days' => $this->nullableInt($window['days'] ?? null),
+            'since' => $this->nullableString($window['since'] ?? null),
+            'limit' => $this->nullableInt($window['limit'] ?? null),
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function statusCounts(mixed $value): array
+    {
+        $counts = is_array($value) ? $value : [];
+
+        return [
+            'healthy' => max(0, (int) ($counts['healthy'] ?? 0)),
+            'warning' => max(0, (int) ($counts['warning'] ?? 0)),
+            'critical' => max(0, (int) ($counts['critical'] ?? 0)),
+            'unknown' => max(0, (int) ($counts['unknown'] ?? 0)),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $snapshot
+     * @return array<string, mixed>
+     */
+    private function compactSnapshot(array $snapshot): array
+    {
+        return [
+            'captured_at' => $this->nullableString($snapshot['captured_at'] ?? null),
+            'window_hours' => $this->nullableInt($snapshot['window_hours'] ?? null),
+            'overall_status' => $this->nullableStatus($snapshot['overall_status'] ?? null),
+            'agent_count' => $this->nullableInt($snapshot['agent_count'] ?? null),
+            'warning_count' => $this->nullableInt($snapshot['warning_count'] ?? null),
+            'critical_count' => $this->nullableInt($snapshot['critical_count'] ?? null),
+            'trace_status' => $this->nullableStatus($snapshot['trace_status'] ?? null),
+            'trace_events_24h' => $this->nullableInt($snapshot['trace_events_24h'] ?? null),
+            'recursion_status' => $this->nullableStatus($snapshot['recursion_status'] ?? null),
+            'recursion_calls_7d' => $this->nullableInt($snapshot['recursion_calls_7d'] ?? null),
+            'output_quality' => $this->outputQuality($snapshot['output_quality'] ?? []),
+        ];
     }
 
     private function timeString(mixed $value): ?string

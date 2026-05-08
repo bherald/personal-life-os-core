@@ -264,7 +264,7 @@ class OfflineDevAssistCommand extends Command
                 return [
                     'command' => '/help',
                     'type' => 'help',
-                    'profile' => $profile,
+                    'profile' => $this->displayProfile($profile),
                     'role' => $session['role'],
                     'content' => $this->helpText(),
                 ];
@@ -433,7 +433,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/clear',
             'type' => 'status',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'role' => $session['role'],
             'approval_mode' => $session['approval_mode'],
             'content' => 'Session history cleared.',
@@ -452,7 +452,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/context',
             'type' => 'context',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'role' => $session['role'],
             'approval_mode' => $session['approval_mode'],
             'turn_count' => count($history),
@@ -478,7 +478,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/status',
             'type' => 'status',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'role' => $session['role'],
             'approval_mode' => $session['approval_mode'],
             'offline_mode_active' => $policy->isOfflineModeActive(),
@@ -560,7 +560,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/doctor',
             'type' => 'doctor',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'role' => $session['role'],
             'approval_mode' => $session['approval_mode'],
             'local_availability' => $availability,
@@ -584,7 +584,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/permissions',
             'type' => 'permissions',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'approval_mode' => $approvalMode,
             'offline_mode_active' => $policy->isOfflineModeActive(),
             'definition' => $definition,
@@ -610,10 +610,13 @@ class OfflineDevAssistCommand extends Command
                 continue;
             }
 
+            $toolClass = $tool['tool_class'] ?? null;
             $groups[$server][] = [
-                'name' => $tool['name'] ?? '',
-                'description' => $tool['description'] ?? '',
-                'tool_class' => $tool['tool_class'] ?? null,
+                'name' => $this->redactSensitiveSlashText((string) ($tool['name'] ?? '')),
+                'description' => $this->redactSensitiveSlashText((string) ($tool['description'] ?? '')),
+                'tool_class' => $toolClass === null
+                    ? null
+                    : $this->sanitizeSlashOutputPayload($toolClass),
                 'requires_confirmation' => (bool) ($tool['requires_confirmation'] ?? false),
             ];
         }
@@ -623,9 +626,9 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/tools',
             'type' => 'tools',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'approval_mode' => $session['approval_mode'],
-            'server_filter' => $serverFilter !== '' ? $serverFilter : null,
+            'server_filter' => $serverFilter !== '' ? $this->redactSensitiveSlashText($serverFilter) : null,
             'servers' => $groups,
         ];
     }
@@ -648,7 +651,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/mcp',
             'type' => 'mcp',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'approval_mode' => $session['approval_mode'],
             'servers' => $serverSummary,
             'tools' => $toolsPayload['servers'] ?? [],
@@ -661,7 +664,7 @@ class OfflineDevAssistCommand extends Command
      */
     private function approvalPayload(array &$session, string $profile, string $tail): array
     {
-        $profile = $this->redactSensitiveSlashText($profile);
+        $profile = $this->displayProfile($profile);
         $requested = $this->normalizeApprovalMode($tail);
         if (trim($tail) === '') {
             return [
@@ -715,10 +718,10 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/routes',
             'type' => 'routes',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'scope' => $scope,
-            'filter' => $filter !== '' ? $filter : null,
-            'result' => $result,
+            'filter' => $filter !== '' ? $this->redactSensitiveSlashText($filter) : null,
+            'result' => $this->sanitizeSlashOutputPayload($result),
         ];
     }
 
@@ -748,7 +751,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/git',
             'type' => ($result['success'] ?? false) ? 'git' : 'error',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'action' => $action,
             'result' => $result,
         ];
@@ -802,7 +805,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/model',
             'type' => 'model',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'requested_role' => $role,
             'selected_local' => $this->serializeSelection($selectedLocal, $role),
             'selected_routed' => $this->serializeSelection($selectedRouted, $role),
@@ -858,7 +861,7 @@ class OfflineDevAssistCommand extends Command
             return [
                 'command' => '/profile',
                 'type' => 'profile',
-                'active_profile' => $currentProfile,
+                'active_profile' => $this->displayProfile($currentProfile),
                 'profile_definition' => $this->profileDefinition($currentProfile),
             ];
         }
@@ -867,7 +870,7 @@ class OfflineDevAssistCommand extends Command
             return [
                 'command' => '/profile',
                 'type' => 'profile_list',
-                'active_profile' => $currentProfile,
+                'active_profile' => $this->displayProfile($currentProfile),
                 'profiles' => array_keys((array) config('offline_policy.profiles', [])),
             ];
         }
@@ -890,7 +893,7 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/profile',
             'type' => 'profile',
-            'active_profile' => $requested,
+            'active_profile' => $this->displayProfile($requested),
             'profile_definition' => $this->profileDefinition($requested),
         ];
     }
@@ -973,6 +976,11 @@ class OfflineDevAssistCommand extends Command
         return is_scalar($value) || $value === null ? $value : '[non-scalar]';
     }
 
+    private function displayProfile(string $profile): string
+    {
+        return $this->redactSensitiveSlashText($profile);
+    }
+
     private function redactSensitiveSlashText(string $value): string
     {
         $roots = array_filter([
@@ -1029,7 +1037,7 @@ class OfflineDevAssistCommand extends Command
             '--stale' => $stale,
         ]);
 
-        $payload = $this->decodeJsonOutput((string) Artisan::output());
+        $payload = $this->sanitizeSlashOutputPayload($this->decodeJsonOutput((string) Artisan::output()));
 
         return [
             'command' => '/reassert',
@@ -1047,10 +1055,10 @@ class OfflineDevAssistCommand extends Command
         return [
             'command' => '/prompt',
             'type' => 'prompt',
-            'profile' => $profile,
+            'profile' => $this->displayProfile($profile),
             'role' => $role,
             'approval_mode' => $approvalMode,
-            'system_prompt' => $this->systemPrompt($profile, $role, $approvalMode),
+            'system_prompt' => $this->systemPrompt($this->displayProfile($profile), $role, $approvalMode),
         ];
     }
 
@@ -1097,10 +1105,11 @@ class OfflineDevAssistCommand extends Command
         TraceEnvelopeService $traces,
     ): array {
         $traceId = 'trc_'.\Illuminate\Support\Str::uuid()->toString();
-        $prompt = $this->buildPrompt($request, $mode, $session, $profile);
+        $displayProfile = $this->displayProfile($profile);
+        $prompt = $this->buildPrompt($request, $mode, $session, $displayProfile);
         $config = [
             'model_role' => $session['role'],
-            'system_prompt' => $this->systemPrompt($profile, (string) $session['role'], (string) $session['approval_mode']),
+            'system_prompt' => $this->systemPrompt($displayProfile, (string) $session['role'], (string) $session['approval_mode']),
             'available_tools' => $availableTools,
             // The catalog is already filtered by the active routing profile.
             // Do not let AIRouter apply a second heuristic server filter here,
@@ -1118,7 +1127,7 @@ class OfflineDevAssistCommand extends Command
                 'id' => 'local_operator',
             ],
             'policy' => [
-                'profile' => $profile,
+                'profile' => $displayProfile,
                 'tool_class' => 'read',
                 'reason_summary' => 'offline dev-assist one-shot request',
             ],
@@ -1154,7 +1163,7 @@ class OfflineDevAssistCommand extends Command
                 'id' => 'offline:dev-assist',
             ],
             'policy' => [
-                'profile' => $profile,
+                'profile' => $displayProfile,
                 'tool_class' => 'read',
             ],
             'classification' => [
@@ -1185,7 +1194,7 @@ class OfflineDevAssistCommand extends Command
             'trace_id' => $traceId,
             'trace_written' => (bool) (($requestTrace['success'] ?? false) && ($responseTrace['success'] ?? false)),
             'mode' => $mode,
-            'profile' => $profile,
+            'profile' => $displayProfile,
             'role' => $session['role'],
             'approval_mode' => $session['approval_mode'],
             'tool_count' => count($availableTools),
@@ -1279,6 +1288,8 @@ class OfflineDevAssistCommand extends Command
 
     private function renderBanner(string $profile, string $role, string $approvalMode): void
     {
+        $profile = $this->displayProfile($profile);
+
         $this->line('PLOS Offline Dev Assist');
         $this->line("profile={$profile} role={$role} approval={$approvalMode}");
         $this->line('Type /help for commands. Type /exit to leave.');
@@ -1287,6 +1298,8 @@ class OfflineDevAssistCommand extends Command
 
     private function promptLabel(string $profile, string $role, string $approvalMode): string
     {
+        $profile = $this->displayProfile($profile);
+
         return "dev-assist [{$profile}|{$role}|{$approvalMode}]";
     }
 

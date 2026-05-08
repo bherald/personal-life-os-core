@@ -133,6 +133,19 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertFalse($payload['safety']['canonical_write_allowed']);
         $this->assertTrue($payload['safety']['apply_held']);
         $this->assertFalse($payload['safety']['apply_enabled']);
+        $this->assertSame([
+            'scope' => 'typed_remediation_preview_only',
+            'execute_requested' => false,
+            'dry_run' => true,
+            'canonical_write_allowed' => false,
+            'canonical_writes_performed' => false,
+            'apply_enabled' => false,
+            'apply_held' => true,
+            'apply_performed' => false,
+            'selector_value_included' => false,
+            'raw_preview_payload_included' => false,
+            'commands_included' => false,
+        ], $payload['posture']);
         $this->assertSame('preview_only', $payload['typed_remediation_preview']['status']);
         $this->assertFalse($payload['typed_remediation_preview']['mutates_accepted_facts']);
         $this->assertSame(0, $payload['typed_remediation_preview']['accepted_fact_mutation_count']);
@@ -166,6 +179,9 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertTrue($payload['packet_summary']['validation_valid']);
         $this->assertTrue($payload['safety']['no_canonical_write']);
         $this->assertTrue($payload['safety']['apply_held']);
+        $this->assertFalse($payload['posture']['selector_value_included']);
+        $this->assertFalse($payload['posture']['raw_preview_payload_included']);
+        $this->assertFalse($payload['posture']['commands_included']);
         $this->assertSame(0, $this->packetCount());
 
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
@@ -380,6 +396,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertStringContainsString('row_touches=0', $output);
         $this->assertStringContainsString('no_canonical_write=yes', $output);
         $this->assertStringContainsString('apply_held=yes', $output);
+        $this->assertStringContainsString('posture: scope=typed_remediation_preview_only execute=no dry_run=yes canonical_write_allowed=no apply_enabled=no apply_held=yes selectors=no raw_details=no commands=no', $output);
         $this->assertStringNotContainsString('source-finding-token-1', $output);
         $this->assertStringNotContainsString('source-cleanup:smith-1', $output);
         $this->assertStringNotContainsString('https://archive.org/details/source-cleanup', $output);
@@ -406,6 +423,7 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertStringContainsString('blocker_codes=manual_source_as_evidence_blocked', $output);
         $this->assertStringContainsString('no_canonical_write=yes', $output);
         $this->assertStringContainsString('apply_held=yes', $output);
+        $this->assertStringContainsString('posture: scope=typed_remediation_preview_only execute=no dry_run=yes canonical_write_allowed=no apply_enabled=no apply_held=yes selectors=no raw_details=no commands=no', $output);
         $this->assertSame(0, $this->packetCount());
 
         foreach ([

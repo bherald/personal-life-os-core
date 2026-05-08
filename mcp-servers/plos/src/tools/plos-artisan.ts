@@ -5,7 +5,16 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-07-news-source-inventory-compact';
+export const ALLOWLIST_REVISION = '2026-05-08-capacity-checkpoint-compact';
+
+export const COMPACT_SCORECARD_COMMANDS = [
+  'ops:mcp-health --json --compact',
+  'ops:agent-doctor --json --compact --since=24',
+  'ops:agent-doctor-history --json --compact --days=7',
+  'plos:agent-trace-tail --limit=20 --since=24 --json',
+  'episodic:memory --stats --json --compact',
+  'agent:procedures --stats --json --compact',
+] as const;
 
 export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: number }> = {
   'ops:validate-sql':            { description: 'Static SQL validation (pre-deploy)', timeout: 60_000 },
@@ -29,6 +38,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:review-backlog-report --next-target --focus=typed-remediation --json': { description: 'Read-only sanitized typed-remediation review target JSON', timeout: 30_000 },
   'ops:review-backlog-report --next-target --focus=materializable-remediation --json': { description: 'Read-only sanitized materializable remediation review target JSON', timeout: 30_000 },
   'ops:review-backlog-report --next-target --focus=source-backed-packet --json': { description: 'Read-only sanitized source-backed review packet target JSON', timeout: 30_000 },
+  'ops:review-backlog-report --next-target --focus=aged-review --json': { description: 'Read-only sanitized oldest aged review target JSON', timeout: 30_000 },
   'ops:offline-status --json':   { description: 'Offline/degraded runtime status', timeout: 15_000 },
   'ops:offline-smoke --json':    { description: 'Manual read-only offline smoke report', timeout: 30_000 },
   'ops:agent-doctor --json --since=24': { description: 'Observe-only agent health diagnostics', timeout: 30_000 },
@@ -39,11 +49,13 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'plos:agent-doctor --json --compact': { description: 'Compact PLOS operator-facing agent diagnostics JSON', timeout: 30_000 },
   'ops:agent-doctor-snapshot --dry-run --json': { description: 'Dry-run aggregate Agent Doctor readiness snapshot', timeout: 30_000 },
   'ops:agent-doctor-history --json --days=7': { description: 'Read-only Agent Doctor readiness snapshot history', timeout: 30_000 },
+  'ops:agent-doctor-history --json --compact --days=7': { description: 'Compact read-only Agent Doctor readiness snapshot history', timeout: 30_000 },
   'plos:agent-trace-tail --limit=20 --since=24 --json': { description: 'Read-only redacted recent agent trace tail JSON', timeout: 30_000 },
   'ops:mcp-health --compact': { description: 'Compact observe-only MCP configuration and process health scorecard', timeout: 30_000 },
   'ops:mcp-health --json --compact': { description: 'Compact observe-only MCP configuration and process health JSON', timeout: 30_000 },
   'ops:capacity-report --json':   { description: 'Observe-only capacity evidence report', timeout: 30_000 },
   'ops:capacity-checkpoint --json': { description: 'Observe-only no-decision capacity checkpoint JSON', timeout: 60_000 },
+  'ops:capacity-checkpoint --json --compact': { description: 'Compact observe-only no-decision capacity checkpoint JSON', timeout: 60_000 },
   'ops:capacity-checkpoint --markdown': { description: 'Observe-only no-decision capacity checkpoint markdown', timeout: 60_000 },
   'ops:capacity-checkpoint --dry-run --json': { description: 'Dry-run capacity checkpoint wiring and shape JSON', timeout: 30_000 },
   'ops:runtime-diagnostics --window=60m --focus=all --json': { description: 'Read-only runtime recovery diagnostics', timeout: 30_000 },
@@ -152,7 +164,18 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
       'Available artisan commands:\n',
       `Allowlist revision: ${ALLOWLIST_REVISION}`,
       `Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}\n`,
+      'Compact scorecard commands (exact forms only):',
     ];
+
+    for (const cmd of COMPACT_SCORECARD_COMMANDS) {
+      lines.push(`  php artisan ${cmd}`);
+    }
+
+    lines.push(
+      '\nNo reordered flags, wider windows, trace ids, detail output, archive/consolidate, or writeback variants are allowlisted.\n',
+      'All allowed commands:\n',
+    );
+
     for (const [cmd, meta] of Object.entries(ALLOWED_COMMANDS)) {
       lines.push(`  php artisan ${cmd}`);
       lines.push(`    ${meta.description}\n`);
