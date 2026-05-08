@@ -430,8 +430,8 @@ RETRY_PROMPT;
                 }
             }
 
-            $entities = $extracted['entities'] ?? [];
-            $relationships = $extracted['relationships'] ?? [];
+            $entities = $this->normalizeExtractedGraphList($extracted['entities'] ?? [], 'entities');
+            $relationships = $this->normalizeExtractedGraphList($extracted['relationships'] ?? [], 'relationships');
 
             if ($scheduledBatch) {
                 $entities = array_slice($entities, 0, self::SCHEDULED_BATCH_ENTITY_OUTPUT_LIMIT);
@@ -1319,6 +1319,44 @@ RETRY_PROMPT;
 
             return [];
         }
+    }
+
+    /**
+     * Normalize an extracted graph collection before scheduled limits and filters.
+     * LLMs sometimes return scalar placeholders like "none" for entities or
+     * relationships; treating those as empty keeps the scheduled job from dying
+     * on type-sensitive array operations.
+     */
+    private function normalizeExtractedGraphList(mixed $value, string $kind): array
+    {
+        if (! is_array($value)) {
+            if ($value !== null && $value !== '') {
+                Log::debug('KnowledgeGraph: Dropping malformed extracted graph list', [
+                    'kind' => $kind,
+                    'type' => get_debug_type($value),
+                ]);
+            }
+
+            return [];
+        }
+
+        if (! array_is_list($value)) {
+            if ($kind === 'entities' && array_key_exists('name', $value)) {
+                return [$value];
+            }
+
+            if ($kind === 'relationships' && (
+                array_key_exists('subject', $value)
+                || array_key_exists('predicate', $value)
+                || array_key_exists('object', $value)
+            )) {
+                return [$value];
+            }
+
+            return [];
+        }
+
+        return array_values(array_filter($value, 'is_array'));
     }
 
     /**
