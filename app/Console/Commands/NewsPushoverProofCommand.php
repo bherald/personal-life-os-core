@@ -282,6 +282,10 @@ class NewsPushoverProofCommand extends Command
             'part_message_lengths' => $this->intMap($data['part_message_lengths'] ?? null),
             'part_message_hashes' => $this->stringMap($data['part_message_hashes'] ?? null),
             'part_response_requests' => $this->stringMap($data['part_response_requests'] ?? null),
+            'original_total_parts' => $this->intOrNull($data['original_total_parts'] ?? null),
+            'max_delivery_parts' => $this->intOrNull($data['max_delivery_parts'] ?? null),
+            'delivery_truncated' => $this->boolOrNull($data['delivery_truncated'] ?? null),
+            'truncated_parts' => $this->intOrNull($data['truncated_parts'] ?? null),
             'message_length' => $this->intOrNull($data['message_length'] ?? null),
             'has_url' => $this->boolOrNull($data['has_url'] ?? null),
             'inter_chunk_delay_seconds' => $this->intOrNull($data['inter_chunk_delay_seconds'] ?? null),
@@ -897,6 +901,21 @@ class NewsPushoverProofCommand extends Command
             ], true)) {
                 $inconclusive[] = (string) ($partContentProof['reason'] ?? 'Multipart part content proof is inconclusive.');
             }
+
+            $displayProof = $report['client_display_proof'] ?? [];
+            if (
+                ($displayProof['operator_device_check_required'] ?? false) === true
+                && ($displayProof['device_display_verified'] ?? false) !== true
+            ) {
+                $inconclusive[] = 'Pushover accepted all multipart packets, but this command cannot verify mobile or desktop client display; operator device check is required.';
+            }
+        }
+
+        if (($pushover['delivery_truncated'] ?? false) === true) {
+            $originalParts = $this->intOrNull($pushover['original_total_parts'] ?? null);
+            $sentParts = $this->intOrNull($pushover['total_parts'] ?? null);
+            $truncatedParts = $this->intOrNull($pushover['truncated_parts'] ?? null);
+            $inconclusive[] = "Pushover delivery was intentionally bounded to {$sentParts}/{$originalParts} parts; {$truncatedParts} original part(s) were not sent.";
         }
 
         $status = $fail !== [] ? 'fail' : ($inconclusive !== [] ? 'inconclusive' : 'pass');
@@ -1052,6 +1071,10 @@ class NewsPushoverProofCommand extends Command
                 'part_message_lengths' => $report['pushover']['part_message_lengths'] ?? [],
                 'part_message_hashes' => $report['pushover']['part_message_hashes'] ?? [],
                 'part_response_requests' => $report['pushover']['part_response_requests'] ?? [],
+                'original_total_parts' => $report['pushover']['original_total_parts'] ?? null,
+                'max_delivery_parts' => $report['pushover']['max_delivery_parts'] ?? null,
+                'delivery_truncated' => $report['pushover']['delivery_truncated'] ?? null,
+                'truncated_parts' => $report['pushover']['truncated_parts'] ?? null,
                 'inter_chunk_delay_seconds' => $report['pushover']['inter_chunk_delay_seconds'] ?? null,
                 'timed_out' => $report['pushover']['timed_out'] ?? null,
                 'duration_ms' => $report['pushover']['duration_ms'] ?? null,
@@ -1095,6 +1118,8 @@ class NewsPushoverProofCommand extends Command
             .' suppressed='.var_export($pushover['notification_suppressed'], true)
             .' source_group='.($pushover['source_group'] ?? 'n/a')
             .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
+            .' original_parts='.($pushover['original_total_parts'] ?? 'n/a')
+            .' truncated='.var_export($pushover['delivery_truncated'] ?? null, true)
             .' failed_parts='.implode(',', $pushover['part_numbers_failed'] ?? [])
             .' delay_s='.($pushover['inter_chunk_delay_seconds'] ?? 'n/a')
             .' part_timestamps='.var_export($pushover['part_timestamps_enabled'] ?? null, true)
@@ -1180,6 +1205,8 @@ class NewsPushoverProofCommand extends Command
             .' suppressed='.var_export($pushover['notification_suppressed'] ?? null, true)
             .' source_group='.($pushover['source_group'] ?? 'n/a')
             .' parts='.($pushover['parts_sent'] ?? 'n/a').'/'.($pushover['total_parts'] ?? 'n/a')
+            .' original_parts='.($pushover['original_total_parts'] ?? 'n/a')
+            .' truncated='.var_export($pushover['delivery_truncated'] ?? null, true)
             .' failed_parts='.implode(',', $pushover['part_numbers_failed'] ?? [])
             .' delay_s='.($pushover['inter_chunk_delay_seconds'] ?? 'n/a')
             .' part_timestamps='.var_export($pushover['part_timestamps_enabled'] ?? null, true)

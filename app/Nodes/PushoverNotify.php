@@ -66,6 +66,14 @@ class PushoverNotify extends BaseNode
             // fits after the per-part prefix is added.
             $maxLength = $partHeadersEnabled ? 1000 : 1024;
             $chunks = $this->splitMessageIntoChunks($message, $maxLength);
+            $originalTotalChunks = count($chunks);
+            $maxDeliveryParts = $this->resolveMaxDeliveryParts();
+            $deliveryTruncated = false;
+
+            if ($maxDeliveryParts !== null && $originalTotalChunks > $maxDeliveryParts) {
+                $chunks = $this->limitChunksForDelivery($chunks, $maxDeliveryParts, $maxLength);
+                $deliveryTruncated = true;
+            }
 
             $controller = new NotificationController;
             $totalChunks = count($chunks);
@@ -89,6 +97,10 @@ class PushoverNotify extends BaseNode
                     'notification_suppressed' => false,
                     'title' => $title,
                     'message_length' => strlen($message),
+                    'original_total_parts' => $originalTotalChunks,
+                    'max_delivery_parts' => $maxDeliveryParts,
+                    'delivery_truncated' => $deliveryTruncated,
+                    'truncated_parts' => max(0, $originalTotalChunks - $totalChunks),
                     'total_parts' => $totalChunks,
                     'parts_sent' => 0,
                     'parts_suppressed' => 0,
@@ -228,6 +240,10 @@ class PushoverNotify extends BaseNode
                 'notification_suppressed' => $suppressedCount > 0,
                 'title' => $title,
                 'message_length' => strlen($message),
+                'original_total_parts' => $originalTotalChunks,
+                'max_delivery_parts' => $maxDeliveryParts,
+                'delivery_truncated' => $deliveryTruncated,
+                'truncated_parts' => max(0, $originalTotalChunks - $totalChunks),
                 'total_parts' => $totalChunks,
                 'parts_sent' => $sentCount,
                 'parts_suppressed' => $suppressedCount,
@@ -446,6 +462,39 @@ class PushoverNotify extends BaseNode
         }
 
         return $chunks;
+    }
+
+    private function resolveMaxDeliveryParts(): ?int
+    {
+        $value = $this->getConfigValue('max_delivery_parts', null);
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        $value = (int) $value;
+
+        return $value > 0 ? $value : null;
+    }
+
+    private function limitChunksForDelivery(array $chunks, int $maxDeliveryParts, int $maxLength): array
+    {
+        $maxDeliveryParts = max(1, $maxDeliveryParts);
+
+        if (count($chunks) <= $maxDeliveryParts) {
+            return $chunks;
+        }
+
+        $limited = array_slice($chunks, 0, $maxDeliveryParts);
+        $omitted = count($chunks) - count($limited);
+        $suffix = "\n\n[Digest truncated: {$omitted} additional Pushover "
+            .($omitted === 1 ? 'part was' : 'parts were')
+            .' omitted.]';
+        $lastIndex = count($limited) - 1;
+        $keepLength = max(0, $maxLength - strlen($suffix));
+        $limited[$lastIndex] = rtrim(substr((string) $limited[$lastIndex], 0, $keepLength)).$suffix;
+
+        return $limited;
     }
 
     /**

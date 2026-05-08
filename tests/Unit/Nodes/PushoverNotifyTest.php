@@ -379,6 +379,89 @@ class PushoverNotifyTest extends TestCase
         }
     }
 
+    public function test_max_delivery_parts_bounds_large_multipart_news_payload(): void
+    {
+        $payloads = [];
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')
+            ->times(3)
+            ->with('pushover', Mockery::on(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return true;
+            }))
+            ->andReturn(['success' => true]);
+
+        $sections = [];
+        foreach (range(1, 5) as $part) {
+            $sections[] = sprintf('Packet %02d ', $part).str_repeat(chr(64 + $part), 980);
+        }
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", $sections),
+            'source_group' => 'workflow_routine_updates',
+            'inter_chunk_delay_seconds' => 0,
+            'max_delivery_parts' => 3,
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertTrue($result['data']['delivery_truncated']);
+        $this->assertSame(5, $result['data']['original_total_parts']);
+        $this->assertSame(3, $result['data']['max_delivery_parts']);
+        $this->assertSame(2, $result['data']['truncated_parts']);
+        $this->assertSame(3, $result['data']['total_parts']);
+        $this->assertSame([3, 2, 1], $result['data']['part_numbers_sent']);
+        $this->assertCount(3, $payloads);
+        $this->assertSame('Daily News (Part 3/3)', $payloads[0]['title']);
+        $this->assertStringStartsWith('Packet 03', $payloads[0]['message']);
+        $this->assertStringContainsString('Digest truncated: 2 additional Pushover parts were omitted.', $payloads[0]['message']);
+        $this->assertLessThanOrEqual(1024, strlen($payloads[0]['message']));
+        $this->assertSame('Daily News (Part 1/3)', $payloads[2]['title']);
+        $this->assertStringStartsWith('Packet 01', $payloads[2]['message']);
+    }
+
+    public function test_max_delivery_parts_boundary_sends_all_parts_without_truncation(): void
+    {
+        $payloads = [];
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')
+            ->times(3)
+            ->with('pushover', Mockery::on(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return true;
+            }))
+            ->andReturn(['success' => true]);
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => implode("\n\n", [
+                'First packet '.str_repeat('A', 980),
+                'Second packet '.str_repeat('B', 980),
+                'Third packet '.str_repeat('C', 980),
+            ]),
+            'inter_chunk_delay_seconds' => 0,
+            'max_delivery_parts' => 3,
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertFalse($result['data']['delivery_truncated']);
+        $this->assertSame(3, $result['data']['original_total_parts']);
+        $this->assertSame(3, $result['data']['max_delivery_parts']);
+        $this->assertSame(0, $result['data']['truncated_parts']);
+        $this->assertSame([3, 2, 1], $result['data']['part_numbers_sent']);
+        $this->assertCount(3, $payloads);
+        $this->assertStringStartsWith('Third packet', $payloads[0]['message']);
+        $this->assertStringStartsWith('First packet', $payloads[2]['message']);
+    }
+
     public function test_default_source_group_preflights_multipart_when_bucket_is_nearly_full(): void
     {
         config([
