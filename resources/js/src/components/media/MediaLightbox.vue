@@ -497,7 +497,7 @@
               <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1">
                 <div v-for="(val, key) in rag.metadata" :key="key" class="flex gap-2 text-xs">
                   <span class="text-gray-500 shrink-0">{{ key }}:</span>
-                  <span class="text-gray-300 truncate">{{ typeof val === 'object' ? JSON.stringify(val) : val }}</span>
+                  <span class="text-gray-300 truncate">{{ formatMetadataDisplayValue(val) }}</span>
                 </div>
               </div>
             </div>
@@ -991,10 +991,7 @@ function friendlyName(key) {
 
 function formatExifValue(val, key) {
   if (val === null || val === undefined) return 'N/A'
-  if (typeof val === 'object') {
-    if (Array.isArray(val)) return val.map(v => typeof v === 'object' ? JSON.stringify(v) : v).join(', ')
-    return JSON.stringify(val, null, 1)
-  }
+  if (typeof val === 'object') return formatMetadataDisplayValue(val)
   const s = String(val)
   // Contextual formatting based on key
   if (key) {
@@ -1006,6 +1003,16 @@ function formatExifValue(val, key) {
     if (key === 'Megapixels' && s.match(/^[\d.]+$/)) return s + ' MP'
   }
   return s
+}
+
+function formatMetadataDisplayValue(val) {
+  if (val === null || val === undefined || val === '') return 'N/A'
+  if (Array.isArray(val)) return val.length ? `Structured metadata (${val.length} items)` : 'No structured metadata'
+  if (typeof val === 'object') {
+    const keys = Object.keys(val)
+    return keys.length ? `Structured metadata (${keys.length} fields)` : 'Structured metadata recorded'
+  }
+  return String(val)
 }
 
 function parseFaceRegions(regionList) {
