@@ -5,7 +5,7 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-08-capacity-checkpoint-compact';
+export const ALLOWLIST_REVISION = '2026-05-08-review-backlog-compact-dry-run';
 
 export const COMPACT_SCORECARD_COMMANDS = [
   'ops:mcp-health --json --compact',
@@ -30,6 +30,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:review-backlog-report --json': { description: 'Read-only review backlog triage report', timeout: 30_000 },
   'ops:review-backlog-report --markdown': { description: 'Read-only review backlog triage markdown', timeout: 30_000 },
   'ops:review-backlog-report --dry-run': { description: 'Read-only review backlog dry-run report', timeout: 30_000 },
+  'ops:review-backlog-report --dry-run --json --compact': { description: 'Compact read-only review backlog dry-run JSON without queries', timeout: 30_000 },
   'ops:review-backlog-report --compact': { description: 'Compact read-only review backlog triage report', timeout: 30_000 },
   'ops:review-backlog-report --json --compact': { description: 'Compact read-only review backlog triage JSON', timeout: 30_000 },
   'ops:review-backlog-report --markdown --compact': { description: 'Compact read-only review backlog triage markdown', timeout: 30_000 },

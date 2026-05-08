@@ -16,6 +16,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:review-backlog-report --json',
     'ops:review-backlog-report --markdown',
     'ops:review-backlog-report --dry-run',
+    'ops:review-backlog-report --dry-run --json --compact',
     'ops:review-backlog-report --compact',
     'ops:review-backlog-report --json --compact',
     'ops:review-backlog-report --markdown --compact',
@@ -137,6 +138,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:operator-evidence --compact/);
   assert.match(listing, /php artisan ops:operator-evidence --json --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --json/);
+  assert.match(listing, /php artisan ops:review-backlog-report --dry-run --json --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --json --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --markdown --compact/);
@@ -497,6 +499,14 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(reorderedCompactResult, /Blocked:/);
   assert.match(reorderedCompactResult, /Use command "list"/);
+
+  const reorderedCompactDryRunResult = await plosArtisan({
+    command: 'ops:review-backlog-report --json --compact --dry-run',
+    on_prod: false,
+  });
+
+  assert.match(reorderedCompactDryRunResult, /Blocked:/);
+  assert.match(reorderedCompactDryRunResult, /Use command "list"/);
 
   const arbitraryNextTargetVariantResult = await plosArtisan({
     command: 'ops:review-backlog-report --next-target --include-details',

@@ -71,6 +71,7 @@ php artisan ops:review-backlog-report --next-target
 php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json
 php artisan ops:review-backlog-report --next-target --focus=aged-review --json
 php artisan ops:review-backlog-report --json --compact
+php artisan ops:review-backlog-report --dry-run --json --compact
 php artisan ops:review-backlog-report --json
 php artisan ops:review-backlog-report --markdown
 php artisan ops:review-backlog-report --dry-run
