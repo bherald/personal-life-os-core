@@ -37,6 +37,14 @@
       <div v-if="item.tree_name" class="tree-badge">
         {{ item.tree_name }}
       </div>
+      <div v-if="showReadableSummary" class="readable-summary">
+        <div class="readable-meta">
+          <span v-if="readableKind" class="readable-kind">{{ readableKind }}</span>
+          <span v-if="readableConfidence" class="readable-confidence">{{ readableConfidence }}</span>
+        </div>
+        <div v-if="readableTitle" class="readable-title">{{ readableTitle }}</div>
+        <div v-if="readableSummary" class="readable-body">{{ readableSummary }}</div>
+      </div>
       <div v-if="intakeGeneratedBadge" class="intake-badge">
         Intake Generated
       </div>
@@ -190,6 +198,41 @@ const isReviewPacket = computed(() => {
 const canBatchSelect = computed(() => {
   return props.item?.batch_enabled === true && !isReviewPacket.value
 })
+
+const readableKind = computed(() => {
+  return stringOrNull(props.item?.review_type)
+    || stringOrNull(props.item?.source)
+    || stringOrNull(props.item?.category)
+})
+
+const readableTitle = computed(() => {
+  return stringOrNull(props.item?.title) || stringOrNull(props.item?.label)
+})
+
+const readableSummary = computed(() => {
+  return compactReadableText(
+    stringOrNull(props.item?.summary)
+      || stringOrNull(props.item?.details_human)
+      || stringOrNull(props.item?.description)
+  )
+})
+
+const readableConfidence = computed(() => {
+  if (props.item?.confidence === null || props.item?.confidence === undefined) {
+    return null
+  }
+
+  const value = Number.parseFloat(props.item.confidence)
+  if (!Number.isFinite(value)) {
+    return null
+  }
+
+  const percent = value > 1 ? Math.round(value) : Math.round(value * 100)
+
+  return `${percent}%`
+})
+
+const showReadableSummary = computed(() => Boolean(readableTitle.value || readableSummary.value))
 
 const packetContextItems = computed(() => {
   if (!isReviewPacket.value) {
@@ -523,6 +566,25 @@ const compactText = (value) => {
   }
 
   return str.length <= 88 ? str : `${str.slice(0, 85)}...`
+}
+
+const compactReadableText = (value) => {
+  const str = stringOrNull(value)
+  if (!str) {
+    return null
+  }
+
+  const cleaned = str
+    .replace(/```json?\s*\n[\s\S]*?```/g, '')
+    .replace(/```json?\s*\n[\s\S]*$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  if (!cleaned) {
+    return null
+  }
+
+  return cleaned.length <= 260 ? cleaned : `${cleaned.slice(0, 257)}...`
 }
 
 const compactTargetRef = (value) => {
@@ -903,5 +965,55 @@ const getImageUrl = (source) => {
   color: var(--ops-sky, #9cf);
   opacity: 0.8;
   margin-bottom: 0.25rem;
+}
+
+.readable-summary {
+  display: grid;
+  gap: 0.32rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(255, 204, 102, 0.22);
+  border-radius: 0 12px 12px 0;
+  background: linear-gradient(90deg, rgba(255, 153, 0, 0.13), rgba(99, 179, 237, 0.06));
+}
+
+.readable-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.readable-kind,
+.readable-confidence {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: var(--card-accent, var(--ops-orange));
+  color: var(--ops-black);
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.readable-confidence {
+  background: var(--ops-green);
+}
+
+.readable-title {
+  color: var(--ops-peach);
+  font-size: 0.92rem;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.readable-body {
+  color: var(--ops-sky);
+  font-size: 0.8rem;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
 }
 </style>

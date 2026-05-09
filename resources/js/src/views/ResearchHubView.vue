@@ -95,7 +95,7 @@
       <!-- Category Tabs + Show Expired -->
       <div class="flex flex-wrap items-center gap-2 mb-4">
         <button
-          @click="activeCategory = null"
+          @click="activeCategory = null; activeType = null"
           class="ops-tab"
           :class="{ active: activeCategory === null }"
         >
@@ -104,7 +104,7 @@
         <button
           v-for="(types, category) in typesByCategory"
           :key="category"
-          @click="activeCategory = category"
+          @click="activeCategory = category; activeType = null"
           class="ops-tab"
           :class="{ active: activeCategory === category }"
         >
@@ -119,6 +119,28 @@
           />
           <span class="text-xs text-ops-text-muted uppercase">Include Expired</span>
         </label>
+      </div>
+
+      <div v-if="visibleTypeFilters.length" class="type-filter-row">
+        <button
+          type="button"
+          class="type-filter-chip"
+          :class="{ active: !activeType }"
+          @click="activeType = null"
+        >
+          All review types
+        </button>
+        <button
+          v-for="entry in visibleTypeFilters"
+          :key="entry.key"
+          type="button"
+          class="type-filter-chip"
+          :class="{ active: activeType === entry.key }"
+          @click="filterByType(entry.key)"
+        >
+          <span>{{ entry.label }}</span>
+          <strong>{{ entry.total }}</strong>
+        </button>
       </div>
 
       <!-- Phase 5: queue ergonomics — sort + confidence threshold + daily quota nudge -->
@@ -550,6 +572,7 @@ function bumpDailyReviewed() {
   try { localStorage.setItem(key, String(dailyReviewedCount.value)) } catch (e) { /* localStorage may be disabled */ }
 }
 const activeCategory = ref(null)
+const activeType = ref(null)
 const selectedItem = ref(null)
 const selectedItems = ref([])
 const inFlightDecisions = ref(new Set())
@@ -808,6 +831,7 @@ const filteredItems = computed(() => {
   if (targetRef.value) {
     return result.filter(item => itemTargetRef(item) === targetRef.value)
   }
+  if (activeType.value) result = result.filter(item => item.source === activeType.value || item.review_type === activeType.value)
   if (activeCategory.value) result = result.filter(item => item.category === activeCategory.value)
   // Phase 5: confidence threshold filter (NULL confidence always passes — system alerts etc.)
   if (confidenceThreshold.value > 0) {
@@ -922,20 +946,41 @@ const getCategoryCount = (category) => {
     .reduce((sum, s) => sum + (s.total || 0), 0)
 }
 
+const visibleTypeFilters = computed(() => {
+  return Object.entries(reviewStats.value)
+    .filter(([key, stat]) => key !== '_total' && !EXCLUDED_CATEGORIES.includes(stat.category) && (stat.total || 0) > 0)
+    .map(([key, stat]) => ({
+      key,
+      label: stat.label || key.replace(/_/g, ' '),
+      total: stat.total || 0,
+      category: stat.category || null,
+    }))
+})
+
 const filterByType = (typeName) => {
   const type = reviewTypes.value[typeName]
-  if (type) {
-    activeCategory.value = type.category
-  }
+  activeType.value = typeName
+  activeCategory.value = type?.category || null
 }
 
 const getStatCardStyle = (stat) => resolveSurfaceThemeStyle(stat?.color, 'ops-plum')
 
+const buildItemParams = (offset = 0) => {
+  const params = { limit: PAGE_SIZE, offset }
+  if (activeType.value) {
+    params.type = activeType.value
+  } else if (activeCategory.value) {
+    params.category = activeCategory.value
+  }
+  if (showExpired.value) params.include_expired = true
+
+  return params
+}
+
 const loadData = async () => {
   loading.value = true
   try {
-    const itemParams = { limit: PAGE_SIZE, offset: 0 }
-    if (showExpired.value) itemParams.include_expired = true
+    const itemParams = buildItemParams(0)
     // Item 1: also fetch agents/status to pick up reviewer_feedback rollup.
     // Done in parallel — no extra latency. Failure is non-blocking.
     const [statsResp, itemsResp, agentStatusResp] = await Promise.all([
@@ -979,9 +1024,7 @@ const loadMore = async () => {
   if (loadingMore.value || !hasMore.value) return
   loadingMore.value = true
   try {
-    const params = { limit: PAGE_SIZE, offset: items.value.length }
-    if (activeCategory.value) params.category = activeCategory.value
-    if (showExpired.value) params.include_expired = true
+    const params = buildItemParams(items.value.length)
     const resp = await api.get('/research-hub/items', { params })
     const newItems = resp.items || []
     if (newItems.length > 0) {
@@ -1599,8 +1642,8 @@ const closeRenameModal = () => {
   renameResults.value = []
 }
 
-// When category changes, reload from offset 0
-watch(activeCategory, async () => {
+// When category/type changes, reload from offset 0
+watch([activeCategory, activeType], async () => {
   if (initializingFromRoute.value) {
     return
   }
@@ -1611,9 +1654,7 @@ watch(activeCategory, async () => {
   selectedItems.value = []
   loading.value = true
   try {
-    const params = { limit: PAGE_SIZE, offset: 0 }
-    if (activeCategory.value) params.category = activeCategory.value
-    if (showExpired.value) params.include_expired = true
+    const params = buildItemParams(0)
     const resp = await api.get('/research-hub/items', { params })
     items.value = resp.items || []
     hasMore.value = resp.has_more || false
@@ -1841,6 +1882,54 @@ onBeforeUnmount(() => {
 
 .ops-tab.active {
   background: var(--ops-orange);
+  color: var(--ops-black);
+}
+
+.type-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding: 0.55rem;
+  border: 1px solid rgba(255, 204, 102, 0.16);
+  border-radius: 0 12px 12px 0;
+  background: linear-gradient(90deg, rgba(255, 153, 0, 0.12), rgba(99, 179, 237, 0.05));
+}
+
+.type-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid rgba(255, 204, 102, 0.24);
+  border-radius: 0 9px 9px 0;
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--ops-peach);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  transition: filter 0.15s, transform 0.15s, background 0.15s;
+}
+
+.type-filter-chip strong {
+  color: var(--ops-gold);
+  font-weight: 900;
+}
+
+.type-filter-chip:hover {
+  filter: brightness(1.12);
+  transform: translateX(2px);
+}
+
+.type-filter-chip.active {
+  background: var(--ops-gold);
+  color: var(--ops-black);
+  border-color: var(--ops-gold);
+}
+
+.type-filter-chip.active strong {
   color: var(--ops-black);
 }
 
