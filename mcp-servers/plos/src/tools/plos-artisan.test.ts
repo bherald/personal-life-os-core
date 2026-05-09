@@ -78,6 +78,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:media-intake-report --json --compact',
     'genealogy:media-intake-report --markdown --compact',
     'genealogy:media-intake-report --dry-run --json --compact',
+    'genealogy:media-intake-run --dry-run --json --compact',
+    'genealogy:media-intake-run --dry-run --json --compact --stage --transcribe-dry-run --enrich-dry-run --evidence-assets',
     'genealogy:enrich-media --status',
     'genealogy:transcribe-media --status',
     'genealogy:agent-triage --json',
@@ -191,6 +193,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:evidence-asset-candidates --dry-run --json --compact/);
   assert.match(listing, /php artisan genealogy:media-intake-report --json --compact/);
   assert.match(listing, /php artisan genealogy:media-intake-report --dry-run --json --compact/);
+  assert.match(listing, /php artisan genealogy:media-intake-run --dry-run --json --compact/);
   assert.match(listing, /php artisan genealogy:enrich-media --status/);
   assert.match(listing, /php artisan genealogy:transcribe-media --status/);
   assert.match(listing, /php artisan genealogy:agent-triage --json/);

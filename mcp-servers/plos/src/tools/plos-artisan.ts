@@ -5,7 +5,7 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-09-genealogy-media-intake-htr-status';
+export const ALLOWLIST_REVISION = '2026-05-09-genealogy-media-intake-run-wrapper';
 
 export const COMPACT_SCORECARD_COMMANDS = [
   'ops:mcp-health --json --compact',
@@ -97,6 +97,8 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:media-intake-report --json --compact': { description: 'Compact read-only genealogy media intake gap report JSON', timeout: 30_000 },
   'genealogy:media-intake-report --markdown --compact': { description: 'Compact read-only genealogy media intake gap markdown', timeout: 30_000 },
   'genealogy:media-intake-report --dry-run --json --compact': { description: 'Dry-run compact genealogy media intake report JSON without row queries', timeout: 30_000 },
+  'genealogy:media-intake-run --dry-run --json --compact': { description: 'Dry-run compact genealogy media intake wrapper without row queries or subcommands', timeout: 30_000 },
+  'genealogy:media-intake-run --dry-run --json --compact --stage --transcribe-dry-run --enrich-dry-run --evidence-assets': { description: 'Dry-run compact genealogy media intake wrapper with all no-write stages planned', timeout: 30_000 },
   'genealogy:enrich-media --status': { description: 'Read-only genealogy media enrichment status with aggregate eligibility blockers', timeout: 30_000 },
   'genealogy:transcribe-media --status': { description: 'Read-only genealogy HTR status with aggregate eligibility blockers', timeout: 30_000 },
   'genealogy:agent-triage --json': { description: 'Read-only genealogy agent re-enablement triage', timeout: 30_000 },
