@@ -322,10 +322,6 @@ class GenealogyEvidenceAssetCaptureReviewService
             'updated_at' => now(),
         ];
 
-        if (Schema::hasColumn('agent_review_queue', 'pending_dedup_key')) {
-            $row['pending_dedup_key'] = $payload['dedup_key'];
-        }
-
         $id = DB::table('agent_review_queue')->insertGetId($row);
 
         return (object) [
