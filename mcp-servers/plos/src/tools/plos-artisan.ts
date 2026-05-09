@@ -97,6 +97,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:evidence-asset-capture-plan --json --compact': { description: 'Compact read-only genealogy evidence asset capture plan JSON', timeout: 30_000 },
   'genealogy:evidence-asset-capture-plan --dry-run --json --compact': { description: 'Dry-run compact genealogy evidence asset capture plan JSON without queries', timeout: 30_000 },
   'genealogy:evidence-asset-capture-review --json --compact': { description: 'Compact dry-run genealogy evidence asset capture review materialization plan', timeout: 30_000 },
+  'genealogy:evidence-asset-capture-executor --json --compact': { description: 'Compact read-only genealogy evidence asset capture executor preflight', timeout: 30_000 },
   'genealogy:media-intake-report --json --compact': { description: 'Compact read-only genealogy media intake gap report JSON', timeout: 30_000 },
   'genealogy:media-intake-report --markdown --compact': { description: 'Compact read-only genealogy media intake gap markdown', timeout: 30_000 },
   'genealogy:media-intake-report --dry-run --json --compact': { description: 'Dry-run compact genealogy media intake report JSON without row queries', timeout: 30_000 },
