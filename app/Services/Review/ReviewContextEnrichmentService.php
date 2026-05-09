@@ -120,17 +120,21 @@ class ReviewContextEnrichmentService
 
     private readonly GenealogyTypedRemediationMaterializationService $typedRemediationMaterialization;
 
+    private readonly ReviewEvidenceAssetCandidateService $evidenceAssetCandidates;
+
     public function __construct(
         private readonly PersonService $personService,
         ?GenealogyReviewPacketApplyPreviewService $reviewPacketApplyPreview = null,
         ?GenealogyReviewPacketFocusService $reviewPacketFocus = null,
         ?GenealogyReviewPacketOutcomeService $reviewPacketOutcome = null,
         ?GenealogyTypedRemediationMaterializationService $typedRemediationMaterialization = null,
+        ?ReviewEvidenceAssetCandidateService $evidenceAssetCandidates = null,
     ) {
         $this->reviewPacketApplyPreview = $reviewPacketApplyPreview ?? new GenealogyReviewPacketApplyPreviewService;
         $this->reviewPacketFocus = $reviewPacketFocus ?? new GenealogyReviewPacketFocusService;
         $this->reviewPacketOutcome = $reviewPacketOutcome ?? new GenealogyReviewPacketOutcomeService;
         $this->typedRemediationMaterialization = $typedRemediationMaterialization ?? new GenealogyTypedRemediationMaterializationService;
+        $this->evidenceAssetCandidates = $evidenceAssetCandidates ?? new ReviewEvidenceAssetCandidateService;
     }
 
     /**
@@ -159,6 +163,7 @@ class ReviewContextEnrichmentService
         $details = $this->decodeDetails($row->details ?? null);
         $personId = $this->extractPersonId($details);
         $person = $personId !== null ? $this->personService->getPerson($personId) : null;
+        $evidenceAssetCandidates = $this->evidenceAssetCandidates->fromDetails($details);
 
         // Phase 4: when the review item is a proposed merge, surface BOTH
         // existing persons + impact counts so Layout B can render side-by-
@@ -209,6 +214,11 @@ class ReviewContextEnrichmentService
             // pane can surface a clickable source link instead of a
             // bare "media #13986" string.
             'media_refs' => $mediaRefs,
+            // Display-only source/evidence asset capture candidates. These
+            // normalize approval-time assets for a later downloader/linker
+            // without fetching remote content or mutating review details.
+            'evidence_asset_candidates' => $evidenceAssetCandidates,
+            'evidence_asset_candidate_count' => count($evidenceAssetCandidates),
         ];
         if ($targetRef !== null) {
             $context['item']['target_ref'] = $targetRef;
