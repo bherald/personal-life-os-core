@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-07T00:11:34Z",
+  "generated_at": "2026-05-09T10:52:56Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
       "label": "root",
       "path": ".",
       "lockfile": "package-lock.json",
-      "package_count": 998,
+      "package_count": 999,
       "buckets": {
-        "permissive": 989,
+        "permissive": 990,
         "watch": 4,
         "other": 5
       },
@@ -6187,7 +6187,7 @@
         },
         {
           "name": "fast-uri",
-          "version": "3.1.0",
+          "version": "3.1.2",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -6198,7 +6198,7 @@
         },
         {
           "name": "fast-xml-builder",
-          "version": "1.1.5",
+          "version": "1.2.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -10817,6 +10817,17 @@
           "source": "package.json"
         },
         {
+          "name": "xml-naming",
+          "version": "0.1.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/xml-naming",
+          "repository": "https://github.com/NaturalIntelligence/xml-naming",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
           "name": "xml2js",
           "version": "0.6.2",
           "license": "MIT",
@@ -11390,7 +11401,7 @@
         },
         {
           "name": "fast-uri",
-          "version": "3.1.0",
+          "version": "3.1.2",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -12567,7 +12578,7 @@
         },
         {
           "name": "fast-uri",
-          "version": "3.1.0",
+          "version": "3.1.2",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",

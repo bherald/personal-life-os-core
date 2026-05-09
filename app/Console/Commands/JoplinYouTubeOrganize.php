@@ -37,7 +37,7 @@ class JoplinYouTubeOrganize extends Command
 
             foreach ($organizer->getCategories() as $category => $keywords) {
                 $this->line("<comment>{$category}</comment>");
-                $this->line('  Keywords: ' . implode(', ', array_slice($keywords, 0, 10)) . (count($keywords) > 10 ? '...' : ''));
+                $this->line('  Keywords: '.implode(', ', array_slice($keywords, 0, 10)).(count($keywords) > 10 ? '...' : ''));
                 $this->newLine();
             }
 
@@ -70,6 +70,16 @@ class JoplinYouTubeOrganize extends Command
                 $stats = $organizer->organize($dryRun);
             }
 
+            if (! empty($stats['skipped'])) {
+                $reason = (string) ($stats['skipped_reason'] ?? 'Joplin YouTube organizer prerequisites are not configured');
+
+                $this->newLine();
+                $this->warn('Organization skipped: '.$reason);
+                $this->line('[ITEMS_PROCESSED:0]');
+
+                return self::SUCCESS;
+            }
+
             $this->newLine();
             $this->info('Organization complete!');
             $this->newLine();
@@ -91,10 +101,10 @@ class JoplinYouTubeOrganize extends Command
                     ['AI Categorized', $stats['ai_categorized']],
                 ]);
 
-                if (!empty($stats['per_source'])) {
+                if (! empty($stats['per_source'])) {
                     $this->table(
                         ['Source', 'Notes'],
-                        array_map(fn($source, $count) => [$source, $count], array_keys($stats['per_source']), array_values($stats['per_source']))
+                        array_map(fn ($source, $count) => [$source, $count], array_keys($stats['per_source']), array_values($stats['per_source']))
                     );
                     $this->newLine();
                 }
@@ -108,7 +118,7 @@ class JoplinYouTubeOrganize extends Command
                 + (int) ($stats['extra_folders_deleted'] ?? 0)
                 + (int) ($stats['ai_categorized'] ?? 0);
 
-            $this->line('[ITEMS_PROCESSED:' . max(0, $successfulOperations) . ']');
+            $this->line('[ITEMS_PROCESSED:'.max(0, $successfulOperations).']');
 
             if (($stats['failed_operations'] ?? 0) > 0) {
                 $this->warn("Completed with {$stats['failed_operations']} failed operation(s).");
@@ -120,7 +130,8 @@ class JoplinYouTubeOrganize extends Command
                 : self::SUCCESS;
 
         } catch (\Exception $e) {
-            $this->error('Error: ' . $e->getMessage());
+            $this->error('Error: '.$e->getMessage());
+
             return self::FAILURE;
         }
     }

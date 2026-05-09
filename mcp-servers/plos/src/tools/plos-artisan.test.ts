@@ -110,6 +110,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'rag:scale-review --compact',
     'rag:scale-review --json --compact',
     'graph:audit-provenance --json',
+    'graph:snapshot-provenance --dry-run --json',
     'graph:quality-metrics --stats --json',
     'agent:procedures --stats --json --compact',
     'episodic:memory --stats --json --compact',
@@ -207,6 +208,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --markdown/);
   assert.match(listing, /php artisan awo:replay --compare-scheduled --window=7d --limit=500 --json/);
   assert.match(listing, /php artisan graph:audit-provenance --json/);
+  assert.match(listing, /php artisan graph:snapshot-provenance --dry-run --json/);
   assert.match(listing, /php artisan graph:quality-metrics --stats --json/);
   assert.match(listing, /php artisan agent:procedures --stats --json --compact/);
   assert.match(listing, /php artisan episodic:memory --stats --json --compact/);
@@ -323,6 +325,22 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(capacityCompactMarkdownResult, /Blocked:/);
   assert.match(capacityCompactMarkdownResult, /Use command "list"/);
+
+  const kgProvenanceWriteResult = await plosArtisan({
+    command: 'graph:snapshot-provenance --json',
+    on_prod: false,
+  });
+
+  assert.match(kgProvenanceWriteResult, /Blocked:/);
+  assert.match(kgProvenanceWriteResult, /Use command "list"/);
+
+  const kgProvenanceReorderedDryRunResult = await plosArtisan({
+    command: 'graph:snapshot-provenance --json --dry-run',
+    on_prod: false,
+  });
+
+  assert.match(kgProvenanceReorderedDryRunResult, /Blocked:/);
+  assert.match(kgProvenanceReorderedDryRunResult, /Use command "list"/);
 
   const agentDoctorWideWindowResult = await plosArtisan({
     command: 'ops:agent-doctor --json --compact --since=168',

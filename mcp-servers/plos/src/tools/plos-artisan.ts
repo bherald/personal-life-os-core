@@ -5,7 +5,7 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-08-review-backlog-compact-dry-run';
+export const ALLOWLIST_REVISION = '2026-05-09-kg-provenance-dry-run';
 
 export const COMPACT_SCORECARD_COMMANDS = [
   'ops:mcp-health --json --compact',
@@ -132,6 +132,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'rag:scale-review --compact': { description: 'Compact read-only RAG scale review evidence without saved retrieval file', timeout: 60_000 },
   'rag:scale-review --json --compact': { description: 'Compact read-only RAG scale review JSON without saved retrieval file', timeout: 60_000 },
   'graph:audit-provenance --json': { description: 'Knowledge graph provenance audit', timeout: 60_000 },
+  'graph:snapshot-provenance --dry-run --json': { description: 'Dry-run knowledge graph provenance snapshot payload', timeout: 60_000 },
   'graph:detect-communities --stats':  { description: 'Community detection stats', timeout: 15_000 },
   'graph:quality-metrics --stats':     { description: 'Graph quality metrics', timeout: 15_000 },
   'graph:quality-metrics --stats --json': { description: 'Graph quality metrics JSON stats only', timeout: 30_000 },

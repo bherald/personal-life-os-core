@@ -89,9 +89,10 @@ class JoplinYouTubeOrganizer
             'duplicates_deleted' => 0,
             'categories_created' => 0,
             'notes_moved' => 0,
-            'failed_operations' => 1,
+            'failed_operations' => 0,
             'dry_run' => $dryRun,
-            'error' => 'JOPLIN_WATCH_LATER_FOLDER_ID is not configured',
+            'skipped' => true,
+            'skipped_reason' => 'JOPLIN_WATCH_LATER_FOLDER_ID is not configured',
         ];
 
         if ($includeConsolidationFields) {
