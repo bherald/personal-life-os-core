@@ -143,6 +143,27 @@
         </button>
       </div>
 
+      <div
+        v-if="activeType === DEFAULT_OPERATOR_REVIEW_TYPE"
+        class="mb-4 p-3 bg-ops-green/10 border border-ops-green/30 rounded text-sm text-ops-text"
+      >
+        <div class="font-bold text-ops-green uppercase tracking-wide text-xs mb-1">Operator-ready queue</div>
+        <div>
+          Showing evidence media capture approvals only. Advisory genealogy findings are hidden here because they need a
+          materialized remediation preview before approval can apply data changes.
+        </div>
+      </div>
+      <div
+        v-else-if="activeType === 'genealogy_finding'"
+        class="mb-4 p-3 bg-ops-orange/10 border border-ops-orange/30 rounded text-sm text-ops-text"
+      >
+        <div class="font-bold text-ops-orange uppercase tracking-wide text-xs mb-1">Mixed advisory queue</div>
+        <div>
+          Many research findings are not direct approvals. If a row says it needs a preview, reject it if wrong or leave
+          it pending; do not treat it as the current media-capture approval work.
+        </div>
+      </div>
+
       <!-- Phase 5: queue ergonomics — sort + confidence threshold + daily quota nudge -->
       <div class="flex flex-wrap items-center gap-3 mb-4 p-2 bg-ops-plum/10 rounded">
         <label class="flex items-center gap-1.5">
@@ -644,6 +665,16 @@ const showToast = (msg, type = 'success') => {
 
 // All categories shown — face match items (typo/nickname) are actionable in review panel
 const EXCLUDED_CATEGORIES = []
+const DEFAULT_OPERATOR_REVIEW_TYPE = 'genealogy_evidence_asset_capture'
+const PREVIEW_REQUIRED_GENEALOGY_CHANGE_TYPES = new Set([
+  'data_quality_review',
+  'source_duplicate_cleanup',
+  'source_quality_review',
+  'identity_review',
+  'date_quality_review',
+  'sex_value_review',
+  'missing_name_review',
+])
 
 const normalizeRouteString = (value) => {
   const normalized = `${value ?? ''}`.trim()
@@ -1253,6 +1284,10 @@ function isBatchSelectable(item) {
 }
 
 function approvalLabel(item) {
+  if (genealogyFindingApprovalBlockReason(item)) {
+    return 'Needs preview'
+  }
+
   return isReviewPacket(item) ? 'Open packet' : 'Approve'
 }
 
@@ -1275,11 +1310,28 @@ function packetValidationErrorCount(item) {
 }
 
 function isApproveBlocked(item) {
-  return packetApprovalBlockReason(item) !== null
+  return packetApprovalBlockReason(item) !== null || genealogyFindingApprovalBlockReason(item) !== null
 }
 
 function approveBlockedTitle(item) {
-  return packetApprovalBlockReason(item) || ''
+  return packetApprovalBlockReason(item) || genealogyFindingApprovalBlockReason(item) || ''
+}
+
+function genealogyFindingApprovalBlockReason(item) {
+  if (item?.review_type !== 'genealogy_finding' && item?.source !== 'genealogy_finding') {
+    return null
+  }
+
+  const proposals = Array.isArray(item?.details?.proposals) ? item.details.proposals : []
+  const changeTypes = proposals
+    .map(proposal => `${proposal?.change_type || ''}`.trim())
+    .filter(Boolean)
+
+  if (!changeTypes.some(type => PREVIEW_REQUIRED_GENEALOGY_CHANGE_TYPES.has(type))) {
+    return null
+  }
+
+  return 'Advisory genealogy finding: materialize a typed remediation preview before approval can apply data changes.'
 }
 
 function packetApprovalBlockReason(item) {
@@ -1702,11 +1754,17 @@ watch(
 // Lifecycle
 onMounted(async () => {
   const requestedCategory = normalizeRouteString(route.query.category)
+  const requestedType = normalizeRouteString(route.query.type)
   const includeExpired = ['1', 'true', 'yes'].includes(`${route.query.include_expired ?? ''}`.toLowerCase())
   const requestedTargetRef = normalizeRouteString(route.query.target_ref)
+  const requestedUnifiedId = normalizeRouteString(route.query.unified_id)
 
-  if (requestedCategory) {
+  if (requestedType) {
+    activeType.value = requestedType
+  } else if (requestedCategory) {
     activeCategory.value = requestedCategory
+  } else if (!requestedTargetRef && !requestedUnifiedId) {
+    activeType.value = DEFAULT_OPERATOR_REVIEW_TYPE
   }
 
   if (includeExpired) {

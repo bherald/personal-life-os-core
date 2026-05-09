@@ -108,6 +108,13 @@
         </template>
       </div>
 
+      <div
+        v-if="approvalDisabled && approvalDisabledTitle"
+        class="text-[11px] text-ops-orange bg-ops-orange/10 border border-ops-orange/30 rounded px-2 py-1 mb-2"
+      >
+        {{ approvalDisabledTitle }}
+      </div>
+
       <!-- Actions Row -->
       <div v-if="isReviewPacket" class="card-actions card-actions-inspection">
         <button
