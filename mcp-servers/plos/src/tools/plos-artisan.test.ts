@@ -71,6 +71,10 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:evidence-sprint-report --json --compact',
     'genealogy:evidence-sprint-report --markdown',
     'genealogy:evidence-sprint-report --markdown --compact',
+    'genealogy:evidence-asset-candidates --compact',
+    'genealogy:evidence-asset-candidates --json --compact',
+    'genealogy:evidence-asset-candidates --markdown --compact',
+    'genealogy:evidence-asset-candidates --dry-run --json --compact',
     'genealogy:agent-triage --json',
     'genealogy:agent-triage --compact',
     'genealogy:agent-triage --json --compact',
@@ -178,6 +182,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json --compact/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --markdown --compact/);
+  assert.match(listing, /php artisan genealogy:evidence-asset-candidates --json --compact/);
+  assert.match(listing, /php artisan genealogy:evidence-asset-candidates --dry-run --json --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json/);
   assert.match(listing, /php artisan genealogy:agent-triage --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json --compact/);

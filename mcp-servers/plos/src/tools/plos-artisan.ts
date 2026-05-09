@@ -5,7 +5,7 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-09-kg-provenance-dry-run';
+export const ALLOWLIST_REVISION = '2026-05-09-review-evidence-asset-candidates';
 
 export const COMPACT_SCORECARD_COMMANDS = [
   'ops:mcp-health --json --compact',
@@ -90,6 +90,10 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:evidence-sprint-report --json --compact': { description: 'Compact genealogy evidence sprint readiness report', timeout: 30_000 },
   'genealogy:evidence-sprint-report --markdown': { description: 'Read-only genealogy evidence sprint readiness markdown', timeout: 30_000 },
   'genealogy:evidence-sprint-report --markdown --compact': { description: 'Compact genealogy evidence sprint readiness markdown', timeout: 30_000 },
+  'genealogy:evidence-asset-candidates --compact': { description: 'Compact read-only genealogy review evidence asset candidate report', timeout: 30_000 },
+  'genealogy:evidence-asset-candidates --json --compact': { description: 'Compact read-only genealogy review evidence asset candidate JSON', timeout: 30_000 },
+  'genealogy:evidence-asset-candidates --markdown --compact': { description: 'Compact read-only genealogy review evidence asset candidate markdown', timeout: 30_000 },
+  'genealogy:evidence-asset-candidates --dry-run --json --compact': { description: 'Dry-run compact genealogy review evidence asset candidate JSON without queries', timeout: 30_000 },
   'genealogy:agent-triage --json': { description: 'Read-only genealogy agent re-enablement triage', timeout: 30_000 },
   'genealogy:agent-triage --compact': { description: 'Compact genealogy agent re-enablement triage text', timeout: 30_000 },
   'genealogy:agent-triage --json --compact': { description: 'Compact genealogy agent re-enablement triage', timeout: 30_000 },
