@@ -117,7 +117,8 @@ class GenealogyTranscribeMedia extends Command
             SELECT gm.id, gm.tree_id, gm.media_type, gm.title, gm.nextcloud_path
             FROM genealogy_media gm
             WHERE gm.media_type IN ({$typePlaceholders})
-              AND gm.transcription_text IS NULL
+              AND (gm.transcription_text IS NULL OR TRIM(gm.transcription_text) = '')
+              AND (gm.transcription IS NULL OR TRIM(gm.transcription) = '')
               AND gm.file_exists = 1
               AND (gm.analysis_status IS NULL OR gm.analysis_status != 'skipped')
               {$treeClause}
@@ -165,6 +166,7 @@ class GenealogyTranscribeMedia extends Command
 
     private function showStatus(HtrTranscriptionService $htr): int
     {
+        $missingTranscriptSql = "(transcription_text IS NULL OR TRIM(transcription_text) = '') AND (transcription IS NULL OR TRIM(transcription) = '')";
         $status = $htr->getStatus();
         $this->line('HTR Pipeline Status:');
         $this->table(['Key', 'Value'], [
@@ -177,12 +179,41 @@ class GenealogyTranscribeMedia extends Command
         ]);
 
         $pending = DB::selectOne(
-            "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE media_type IN ('document','certificate','census','military') AND transcription_text IS NULL AND file_exists = 1"
+            "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE media_type IN ('document','certificate','census','military') AND {$missingTranscriptSql} AND file_exists = 1"
         );
         $done = DB::selectOne(
-            'SELECT COUNT(*) AS cnt FROM genealogy_media WHERE transcription_text IS NOT NULL'
+            "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE NOT ({$missingTranscriptSql})"
         );
         $this->line('Pending transcription: '.($pending->cnt ?? 0).' | Already transcribed: '.($done->cnt ?? 0));
+
+        $eligibilityStats = DB::select("
+            SELECT reason, COUNT(*) AS total
+            FROM (
+                SELECT
+                    CASE
+                        WHEN media_type NOT IN ('document','certificate','census','military') THEN 'unsupported_media_type'
+                        WHEN NOT ({$missingTranscriptSql}) THEN 'already_transcribed'
+                        WHEN COALESCE(file_exists, 0) <> 1 THEN 'file_missing'
+                        WHEN nextcloud_path IS NULL OR nextcloud_path = '' THEN 'path_missing'
+                        WHEN analysis_status = 'skipped' THEN 'analysis_skipped'
+                        ELSE 'ready_for_htr'
+                    END AS reason
+                FROM genealogy_media
+            ) AS htr_eligibility
+            GROUP BY reason
+            ORDER BY total DESC, reason ASC
+        ");
+
+        $this->newLine();
+        $this->info('HTR Eligibility By Reason');
+        if ($eligibilityStats === []) {
+            $this->line('No genealogy media records found.');
+        } else {
+            $this->table(
+                ['Reason', 'Count'],
+                array_map(fn ($r) => [$r->reason, $r->total], $eligibilityStats)
+            );
+        }
 
         return 0;
     }

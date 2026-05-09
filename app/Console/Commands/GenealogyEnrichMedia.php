@@ -178,6 +178,38 @@ class GenealogyEnrichMedia extends Command
         $this->line('Total proposals created: '.($proposals->cnt ?? 0));
         $this->line('Total relationships proposed: '.($relationships->cnt ?? 0));
 
+        $eligibilityStats = DB::select("
+            SELECT reason, COUNT(*) AS total
+            FROM (
+                SELECT
+                    CASE
+                        WHEN media_type NOT IN ('obituary','census','certificate','document','military') THEN 'unsupported_media_type'
+                        WHEN COALESCE(file_exists, 0) <> 1 THEN 'file_missing'
+                        WHEN COALESCE(analysis_status, '') <> 'completed' THEN 'analysis_not_completed'
+                        WHEN enrichment_status = 'processing' THEN 'already_processing'
+                        WHEN enrichment_status = 'completed' THEN 'already_completed'
+                        WHEN enrichment_status = 'skipped' THEN 'skipped_or_quarantined'
+                        WHEN enrichment_status IS NULL THEN 'eligible_pending'
+                        WHEN enrichment_status = 'failed' THEN 'eligible_retry_failed'
+                        ELSE 'other_status'
+                    END AS reason
+                FROM genealogy_media
+            ) AS eligibility
+            GROUP BY reason
+            ORDER BY total DESC, reason ASC
+        ");
+
+        $this->newLine();
+        $this->info('Enrichment Eligibility By Reason');
+        if ($eligibilityStats === []) {
+            $this->line('No genealogy media records found.');
+        } else {
+            $this->table(
+                ['Reason', 'Count'],
+                array_map(fn ($r) => [$r->reason, $r->total], $eligibilityStats)
+            );
+        }
+
         if ($this->option('quarantined')) {
             $this->newLine();
             $this->info('Skipped / Quarantined By Reason');
