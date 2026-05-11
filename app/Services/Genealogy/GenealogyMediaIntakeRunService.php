@@ -28,6 +28,8 @@ class GenealogyMediaIntakeRunService
         $transcribeDryRun = (bool) ($options['transcribe_dry_run'] ?? false);
         $enrichDryRun = (bool) ($options['enrich_dry_run'] ?? false);
         $evidenceAssets = (bool) ($options['evidence_assets'] ?? false);
+        $capturePreflight = (bool) ($options['capture_preflight'] ?? false);
+        $postCaptureDryRun = (bool) ($options['post_capture_dry_run'] ?? false);
 
         $payload = [
             'version' => self::VERSION,
@@ -46,7 +48,6 @@ class GenealogyMediaIntakeRunService
             'limit' => $limit,
             'status' => 'planned',
             'blocked' => [],
-            'report' => $this->report->compactPayload($this->report->collect($treeId, $root, $limit, $dryRun)),
             'steps' => [],
             'posture' => $this->posture($saveRun && $confirmNoncanonicalWrite),
         ];
@@ -71,7 +72,19 @@ class GenealogyMediaIntakeRunService
             return $compact ? $this->compactPayload($payload) : $payload;
         }
 
-        $plannedSteps = $this->plannedSteps($treeId, $root, $limit, $stage, $saveRun, $transcribeDryRun, $enrichDryRun, $evidenceAssets);
+        $payload['report'] = $this->report->compactPayload($this->report->collect($treeId, $root, $limit, $dryRun));
+        $plannedSteps = $this->plannedSteps(
+            $treeId,
+            $root,
+            $limit,
+            $stage,
+            $saveRun,
+            $transcribeDryRun || $postCaptureDryRun,
+            $enrichDryRun || $postCaptureDryRun,
+            $evidenceAssets,
+            $capturePreflight || $postCaptureDryRun,
+            $postCaptureDryRun
+        );
 
         if ($dryRun || $plannedSteps === []) {
             $payload['status'] = $dryRun ? 'dry_run' : 'no_steps_selected';
@@ -121,7 +134,18 @@ class GenealogyMediaIntakeRunService
     /**
      * @return list<array<string, mixed>>
      */
-    private function plannedSteps(int $treeId, string $root, int $limit, bool $stage, bool $saveRun, bool $transcribeDryRun, bool $enrichDryRun, bool $evidenceAssets): array
+    private function plannedSteps(
+        int $treeId,
+        string $root,
+        int $limit,
+        bool $stage,
+        bool $saveRun,
+        bool $transcribeDryRun,
+        bool $enrichDryRun,
+        bool $evidenceAssets,
+        bool $capturePreflight,
+        bool $postCaptureDryRun
+    ): array
     {
         $steps = [];
 
@@ -138,6 +162,20 @@ class GenealogyMediaIntakeRunService
                 'args' => $args,
                 'command_template' => 'php artisan genealogy:ingest-documents --stage'.($saveRun ? ' --save-run' : '').' --tree={tree} --folder={root} --limit={limit} --unprocessed-only',
                 'write_required' => $saveRun,
+                'canonical_write' => false,
+            ];
+        }
+
+        if ($capturePreflight) {
+            $steps[] = [
+                'code' => $postCaptureDryRun ? 'post_capture_preflight' : 'capture_preflight',
+                'label' => $postCaptureDryRun
+                    ? 'Verify approved capture rows before downstream HTR/enrichment checks.'
+                    : 'Inspect approved evidence capture rows without downloads, storage writes, or links.',
+                'command' => 'genealogy:evidence-asset-capture-executor',
+                'args' => ['--json' => true, '--compact' => true, '--limit' => $limit],
+                'command_template' => 'php artisan genealogy:evidence-asset-capture-executor --json --compact --limit={limit}',
+                'write_required' => false,
                 'canonical_write' => false,
             ];
         }
@@ -242,6 +280,7 @@ class GenealogyMediaIntakeRunService
             'storage_writes_enabled' => false,
             'genealogy_links_enabled' => false,
             'review_decisions_enabled' => false,
+            'capture_execution_enabled' => false,
             'canonical_writes_enabled' => false,
             'noncanonical_writes_enabled' => $noncanonicalWriteAllowed,
             'ai_calls_enabled_by_wrapper' => false,

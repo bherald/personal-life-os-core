@@ -51,6 +51,7 @@ class GenealogyEvidenceAssetCapturePlanService
                 'html_snapshot_ready' => 0,
                 'already_local_reference' => 0,
                 'manual_review_required' => 0,
+                'identity_review_required' => 0,
                 'review_required' => 0,
                 'unsupported_scheme' => 0,
                 'provider_review_required' => 0,
@@ -129,7 +130,8 @@ class GenealogyEvidenceAssetCapturePlanService
                 $policy = $this->safeString($candidate['capture_policy'] ?? 'unknown');
                 $provider = $this->safeString($candidate['provider'] ?? 'unknown');
                 $assetType = $this->safeString($candidate['asset_type'] ?? 'unknown');
-                $eligible = in_array($policy, self::CAPTURE_READY_POLICIES, true);
+                $identityReady = $this->identityReady($candidate['identity_fit'] ?? null);
+                $eligible = in_array($policy, self::CAPTURE_READY_POLICIES, true) && $identityReady;
 
                 $this->increment($payload['policy_counts'], $policy);
                 $this->increment($payload['provider_counts'], $provider);
@@ -137,7 +139,11 @@ class GenealogyEvidenceAssetCapturePlanService
                 $this->incrementPolicySummary($payload, $policy);
 
                 if (! $eligible) {
-                    $payload['summary']['provider_review_required']++;
+                    if (! $identityReady) {
+                        $payload['summary']['identity_review_required']++;
+                    } else {
+                        $payload['summary']['provider_review_required']++;
+                    }
                     if ($eligibleOnly) {
                         continue;
                     }
@@ -252,6 +258,7 @@ class GenealogyEvidenceAssetCapturePlanService
             '- HTML snapshot ready: `'.($summary['html_snapshot_ready'] ?? 0).'`',
             '- Already local references: `'.($summary['already_local_reference'] ?? 0).'`',
             '- Manual/provider review required: `'.($summary['provider_review_required'] ?? 0).'`',
+            '- Identity review required: `'.($summary['identity_review_required'] ?? 0).'`',
             '- Person link ready: `'.($summary['person_link_ready'] ?? 0).'`',
             '- Person link missing: `'.($summary['person_link_missing'] ?? 0).'`',
             '',
@@ -337,6 +344,7 @@ class GenealogyEvidenceAssetCapturePlanService
             'capture_policy' => $policy,
             'capture_ready' => $eligible,
             'capture_actions' => $this->safeActions($candidate['capture_actions'] ?? []),
+            'identity_fit' => $this->safeIdentityFit($candidate['identity_fit'] ?? null),
             'locator_hash' => $this->safeHash($candidate['locator_hash'] ?? null),
             'host' => $this->safeHost($candidate['host'] ?? null),
             'extension' => $this->safeString($candidate['extension'] ?? 'unknown'),
@@ -372,6 +380,39 @@ class GenealogyEvidenceAssetCapturePlanService
         }
 
         return null;
+    }
+
+    private function identityReady(mixed $identityFit): bool
+    {
+        if (! is_array($identityFit)) {
+            return true;
+        }
+
+        return ($identityFit['approval_ready'] ?? true) === true
+            && ($identityFit['partial_name_only'] ?? false) !== true;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function safeIdentityFit(mixed $identityFit): ?array
+    {
+        if (! is_array($identityFit)) {
+            return null;
+        }
+
+        return [
+            'schema' => 'review_evidence_asset_identity_fit.v1',
+            'given_name_present' => (bool) ($identityFit['given_name_present'] ?? false),
+            'surname_present' => (bool) ($identityFit['surname_present'] ?? false),
+            'full_name_match' => (bool) ($identityFit['full_name_match'] ?? false),
+            'partial_name_only' => (bool) ($identityFit['partial_name_only'] ?? false),
+            'approval_ready' => ($identityFit['approval_ready'] ?? true) === true,
+            'supporting_signal_count' => is_numeric($identityFit['supporting_signal_count'] ?? null)
+                ? (int) $identityFit['supporting_signal_count']
+                : 0,
+            'blocker' => $this->safeString($identityFit['blocker'] ?? null),
+        ];
     }
 
     /**

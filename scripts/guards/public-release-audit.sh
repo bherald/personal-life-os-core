@@ -174,7 +174,7 @@ flag_lines "Public-candidate files referencing non-exported planning paths" \
         "${public_privacy_scan_excludes[@]}"
 
 flag_lines "Files containing private paths, LAN hosts, usernames, or machine-specific values" \
-    git grep -l -I -E '(/home/bill|192\.168\.8\.|ai-wphc-production|bill@|bherald)' -- . \
+    git grep -l -I -E '(/home/bill|192\.168\.8\.|ai-wphc-production|bill@|bherald)' -- "${public_candidate_scan_paths[@]}" \
         "${public_username_scan_excludes[@]}"
 
 flag_lines "Operator-specific Nextcloud library root literal (/MASTER)" \

@@ -13,9 +13,14 @@ class GenealogyEvidenceAssetCaptureExecutorCommand extends Command
         {--markdown : Emit Markdown}
         {--compact : Omit per-row preflight detail}
         {--save-preflight : Persist a noncanonical preflight stamp on approved capture review rows}
-        {--confirm-noncanonical-write : Required with --save-preflight}';
+        {--confirm-noncanonical-write : Required with --save-preflight}
+        {--execute-capture : Download/store approved evidence media and stamp execution metadata}
+        {--confirm-download : Required with --execute-capture before any remote download}
+        {--confirm-storage-write : Required with --execute-capture before any FT storage or media registry write}
+        {--confirm-genealogy-link : Also create approved person/family/source media links when IDs are present}
+        {--max-bytes= : Maximum bytes per captured asset}';
 
-    protected $description = 'Preflight approved genealogy evidence media capture reviews before gated capture execution';
+    protected $description = 'Preflight or execute approved genealogy evidence media capture reviews';
 
     public function handle(GenealogyEvidenceAssetCaptureExecutorService $service): int
     {
@@ -30,6 +35,11 @@ class GenealogyEvidenceAssetCaptureExecutorCommand extends Command
             savePreflight: (bool) $this->option('save-preflight'),
             confirmed: (bool) $this->option('confirm-noncanonical-write'),
             compact: (bool) $this->option('compact'),
+            executeCapture: (bool) $this->option('execute-capture'),
+            downloadConfirmed: (bool) $this->option('confirm-download'),
+            storageConfirmed: (bool) $this->option('confirm-storage-write'),
+            linkConfirmed: (bool) $this->option('confirm-genealogy-link'),
+            maxBytes: $this->option('max-bytes') !== null ? (int) $this->option('max-bytes') : null,
         );
 
         if ($this->option('compact')) {

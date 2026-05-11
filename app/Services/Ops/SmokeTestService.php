@@ -18,11 +18,13 @@ class SmokeTestService
 
     private bool $fix = false;
 
+    private bool $allowSchemaDrift = false;
+
     private string $section = '';
 
-    public function run(bool $quick = false, bool $fix = false): array
+    public function run(bool $quick = false, bool $fix = false, bool $allowSchemaDrift = false): array
     {
-        $this->reset($fix);
+        $this->reset($fix, $allowSchemaDrift);
         $startTime = microtime(true);
 
         $this->checkToolRegistry();
@@ -46,13 +48,14 @@ class SmokeTestService
         ];
     }
 
-    private function reset(bool $fix): void
+    private function reset(bool $fix, bool $allowSchemaDrift): void
     {
         $this->results = [];
         $this->pass = 0;
         $this->fail = 0;
         $this->warn = 0;
         $this->fix = $fix;
+        $this->allowSchemaDrift = $allowSchemaDrift;
         $this->section = '';
     }
 
@@ -67,7 +70,7 @@ class SmokeTestService
                 WHERE enabled = 1
             ');
         } catch (\Throwable $e) {
-            $this->record('tool_registry', 'FAIL', 'Cannot query agent_tool_registry: '.$e->getMessage());
+            $this->recordQueryFailure('tool_registry', 'Cannot query agent_tool_registry', $e);
 
             return;
         }
@@ -140,7 +143,7 @@ class SmokeTestService
                 ORDER BY name
             ');
         } catch (\Throwable $e) {
-            $this->record('scheduled_jobs', 'FAIL', 'Cannot query scheduled_jobs: '.$e->getMessage());
+            $this->recordQueryFailure('scheduled_jobs', 'Cannot query scheduled_jobs', $e);
 
             return;
         }
@@ -330,7 +333,7 @@ class SmokeTestService
                 $count = (int) ($result->c ?? -1);
                 $this->record("query_{$name}", 'PASS', "{$name} = {$count}");
             } catch (\Throwable $e) {
-                $this->record("query_{$name}", 'FAIL', "{$name} query failed: ".$e->getMessage());
+                $this->recordQueryFailure("query_{$name}", "{$name} query failed", $e);
             }
         }
 
@@ -346,7 +349,7 @@ class SmokeTestService
                 $count = (int) ($result->c ?? -1);
                 $this->record("query_{$name}", 'PASS', "{$name} = {$count}");
             } catch (\Throwable $e) {
-                $this->record("query_{$name}", 'FAIL', "{$name} (pgsql_rag) query failed: ".$e->getMessage());
+                $this->recordQueryFailure("query_{$name}", "{$name} (pgsql_rag) query failed", $e);
             }
         }
 
@@ -360,7 +363,7 @@ class SmokeTestService
             ");
             $this->record('query_throughput_join', 'PASS', "AI throughput query works (24h total: {$row->total})");
         } catch (\Throwable $e) {
-            $this->record('query_throughput_join', 'FAIL', 'Throughput query failed (scheduled_job_runs FK): '.$e->getMessage());
+            $this->recordQueryFailure('query_throughput_join', 'Throughput query failed (scheduled_job_runs FK)', $e);
         }
     }
 
@@ -391,7 +394,7 @@ class SmokeTestService
                 $this->record('llm_healthy', 'PASS', "Ollama healthy: {$stats->ollama_healthy}");
             }
         } catch (\Throwable $e) {
-            $this->record('llm_pool', 'FAIL', 'Cannot query llm_instances: '.$e->getMessage());
+            $this->recordQueryFailure('llm_pool', 'Cannot query llm_instances', $e);
         }
     }
 
@@ -532,5 +535,24 @@ class SmokeTestService
             'WARN' => $this->warn++,
             default => null,
         };
+    }
+
+    private function recordQueryFailure(string $check, string $message, \Throwable $e): void
+    {
+        $status = ($this->allowSchemaDrift && $this->isSchemaDriftException($e)) ? 'WARN' : 'FAIL';
+        $suffix = $status === 'WARN' ? ' (local schema drift tolerated)' : '';
+
+        $this->record($check, $status, $message.': '.$e->getMessage().$suffix);
+    }
+
+    private function isSchemaDriftException(\Throwable $e): bool
+    {
+        $message = $e->getMessage();
+
+        return str_contains($message, 'SQLSTATE[42S22]')
+            || str_contains($message, 'SQLSTATE[42S02]')
+            || str_contains($message, 'Unknown column')
+            || str_contains($message, 'Base table or view not found')
+            || str_contains($message, "doesn't exist");
     }
 }

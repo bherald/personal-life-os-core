@@ -28,6 +28,10 @@ class GenealogyTranscribeMedia extends Command
 
     private const DOCUMENT_TYPES = ['document', 'certificate', 'census', 'military'];
 
+    private const HTR_EXTENSIONS = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp'];
+
+    private const HTR_MIME_TYPES = ['image/jpeg', 'image/png', 'image/tiff', 'image/bmp', 'image/webp'];
+
     public function handle(HtrTranscriptionService $htr): int
     {
         if ($this->option('status')) {
@@ -114,12 +118,13 @@ class GenealogyTranscribeMedia extends Command
         $params[] = $limit;
 
         return DB::select("
-            SELECT gm.id, gm.tree_id, gm.media_type, gm.title, gm.nextcloud_path
+            SELECT gm.id, gm.tree_id, gm.media_type, gm.title, gm.nextcloud_path, gm.file_format, gm.mime_type
             FROM genealogy_media gm
             WHERE gm.media_type IN ({$typePlaceholders})
               AND (gm.transcription_text IS NULL OR TRIM(gm.transcription_text) = '')
               AND (gm.transcription IS NULL OR TRIM(gm.transcription) = '')
               AND gm.file_exists = 1
+              AND {$this->htrFormatSql('gm')}
               AND (gm.analysis_status IS NULL OR gm.analysis_status != 'skipped')
               {$treeClause}
             ORDER BY
@@ -132,7 +137,7 @@ class GenealogyTranscribeMedia extends Command
     private function handleSingle(HtrTranscriptionService $htr, int $mediaId): int
     {
         $record = DB::selectOne(
-            'SELECT id, tree_id, media_type, title, transcription_text FROM genealogy_media WHERE id = ?',
+            'SELECT id, tree_id, media_type, title, transcription_text, nextcloud_path, local_filename, file_format, mime_type FROM genealogy_media WHERE id = ?',
             [$mediaId]
         );
 
@@ -144,6 +149,12 @@ class GenealogyTranscribeMedia extends Command
 
         if ($record->transcription_text) {
             $this->warn("Media {$mediaId} already has a transcription (use --dry-run to inspect).");
+
+            return 0;
+        }
+
+        if (! $this->isHtrSupportedRecord($record)) {
+            $this->warn("Media {$mediaId} is not an HTR image format; route it through text extraction/enrichment instead.");
 
             return 0;
         }
@@ -167,6 +178,7 @@ class GenealogyTranscribeMedia extends Command
     private function showStatus(HtrTranscriptionService $htr): int
     {
         $missingTranscriptSql = "(transcription_text IS NULL OR TRIM(transcription_text) = '') AND (transcription IS NULL OR TRIM(transcription) = '')";
+        $htrFormatSql = $this->htrFormatSql();
         $status = $htr->getStatus();
         $this->line('HTR Pipeline Status:');
         $this->table(['Key', 'Value'], [
@@ -179,7 +191,7 @@ class GenealogyTranscribeMedia extends Command
         ]);
 
         $pending = DB::selectOne(
-            "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE media_type IN ('document','certificate','census','military') AND {$missingTranscriptSql} AND file_exists = 1"
+            "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE media_type IN ('document','certificate','census','military') AND {$missingTranscriptSql} AND file_exists = 1 AND {$htrFormatSql}"
         );
         $done = DB::selectOne(
             "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE NOT ({$missingTranscriptSql})"
@@ -196,6 +208,7 @@ class GenealogyTranscribeMedia extends Command
                         WHEN COALESCE(file_exists, 0) <> 1 THEN 'file_missing'
                         WHEN nextcloud_path IS NULL OR nextcloud_path = '' THEN 'path_missing'
                         WHEN analysis_status = 'skipped' THEN 'analysis_skipped'
+                        WHEN NOT ({$htrFormatSql}) THEN 'unsupported_htr_format'
                         ELSE 'ready_for_htr'
                     END AS reason
                 FROM genealogy_media
@@ -216,5 +229,24 @@ class GenealogyTranscribeMedia extends Command
         }
 
         return 0;
+    }
+
+    private function htrFormatSql(string $alias = ''): string
+    {
+        $prefix = $alias !== '' ? $alias.'.' : '';
+        $extensions = implode(',', array_map(fn (string $ext): string => "'{$ext}'", self::HTR_EXTENSIONS));
+        $mimeTypes = implode(',', array_map(fn (string $mime): string => "'{$mime}'", self::HTR_MIME_TYPES));
+
+        return "(LOWER(COALESCE({$prefix}file_format, SUBSTRING_INDEX({$prefix}local_filename, '.', -1), '')) IN ({$extensions})
+            OR LOWER(COALESCE({$prefix}mime_type, '')) IN ({$mimeTypes}))";
+    }
+
+    private function isHtrSupportedRecord(object $record): bool
+    {
+        $extension = strtolower((string) ($record->file_format ?: pathinfo((string) ($record->local_filename ?? $record->nextcloud_path ?? ''), PATHINFO_EXTENSION)));
+        $mimeType = strtolower((string) ($record->mime_type ?? ''));
+
+        return in_array($extension, self::HTR_EXTENSIONS, true)
+            || in_array($mimeType, self::HTR_MIME_TYPES, true);
     }
 }

@@ -17,6 +17,8 @@ class GenealogyMediaIntakeRunCommand extends Command
         {--transcribe-dry-run : List HTR-eligible media without writing transcripts}
         {--enrich-dry-run : List enrichment-eligible media without generating proposals or links}
         {--evidence-assets : Inspect pending review packet evidence assets without downloads or writes}
+        {--capture-preflight : Inspect approved evidence capture rows without downloads, storage writes, or links}
+        {--post-capture-dry-run : Run the read-only handoff checks needed after captures: capture preflight, HTR dry-run, and enrichment dry-run}
         {--dry-run : Plan selected steps without invoking subcommands}
         {--json : Emit machine-readable JSON}
         {--compact : Omit path/output previews for operator dashboards and MCP}';
@@ -35,6 +37,8 @@ class GenealogyMediaIntakeRunCommand extends Command
             'transcribe_dry_run' => (bool) $this->option('transcribe-dry-run'),
             'enrich_dry_run' => (bool) $this->option('enrich-dry-run'),
             'evidence_assets' => (bool) $this->option('evidence-assets'),
+            'capture_preflight' => (bool) $this->option('capture-preflight'),
+            'post_capture_dry_run' => (bool) $this->option('post-capture-dry-run'),
             'dry_run' => (bool) $this->option('dry-run'),
             'compact' => (bool) $this->option('compact'),
         ]);

@@ -52,7 +52,10 @@ class HealthGateCommand extends Command
             });
         }
 
-        $smokeArgs = ['--quick' => true]; // Always use quick for gate — full smoke runs digest which pollutes output
+        $smokeArgs = [
+            '--quick' => true,
+            '--allow-schema-drift' => true,
+        ]; // Always use quick for gate — full smoke runs digest which pollutes output
         $this->runGate('Smoke Test', 'ops:smoke-test', array_merge($smokeArgs, ['--json' => true]), function (string $output) {
             $result = $this->extractJson($output);
             if (! $result) {

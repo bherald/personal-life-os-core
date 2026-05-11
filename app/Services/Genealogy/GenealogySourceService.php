@@ -1193,14 +1193,7 @@ class GenealogySourceService
         // Extract digital objects (downloadable files)
         $digitalObjects = [];
         foreach ($record['digitalObjects'] ?? [] as $obj) {
-            $digitalObjects[] = [
-                'url' => $obj['downloadUrl'] ?? $obj['objectUrl'] ?? null,
-                'object_id' => $obj['objectId'] ?? null,
-                'filename' => $obj['fileName'] ?? null,
-                'format' => $obj['fileFormat'] ?? null,
-                'size' => $obj['size'] ?? null,
-                'thumbnail' => $obj['thumbnailUrl'] ?? null,
-            ];
+            $digitalObjects[] = $this->normalizeNaraDigitalObject($obj);
         }
 
         return [
@@ -1766,51 +1759,99 @@ class GenealogySourceService
      * Get digital objects for a NARA record by naId.
      * Returns downloadable file URLs, formats, and sizes.
      */
-    public function getNaraDigitalObjects(string $naId): array
+    public function getNaraRecord(string $naId): array
     {
+        $naId = trim($naId);
+        if ($naId === '' || ! preg_match('/^\d+$/', $naId)) {
+            return ['success' => false, 'error' => 'Invalid NARA NAID', 'record' => null, 'objects' => []];
+        }
+
         $this->rateLimit('nara');
 
         $apiKey = $this->getNaraApiKey();
         if (! $apiKey) {
-            return ['success' => false, 'error' => 'NARA API key not configured', 'objects' => []];
+            return ['success' => false, 'error' => 'NARA API key not configured', 'record' => null, 'objects' => []];
         }
 
-        // NARA v2 has no single-record JSON endpoint — use search with quoted naId
         $url = 'https://catalog.archives.gov/api/v2/records/search';
+        $attempts = [
+            ['strategy' => 'naIds', 'params' => ['naIds' => $naId, 'limit' => 1]],
+            ['strategy' => 'q_filtered', 'params' => ['q' => $naId, 'limit' => 10]],
+        ];
 
         try {
-            $response = Http::connectTimeout(5)->withHeaders([
-                'x-api-key' => $apiKey,
-                'Content-Type' => 'application/json',
-            ])->timeout(30)->get($url, [
-                'q' => '"'.$naId.'"',
-                'limit' => 1,
-            ]);
+            $lastError = null;
 
-            if (! $response->successful()) {
-                return ['success' => false, 'error' => "NARA API error: HTTP {$response->status()}", 'objects' => []];
-            }
+            foreach ($attempts as $attempt) {
+                $response = Http::connectTimeout(5)->withHeaders([
+                    'x-api-key' => $apiKey,
+                    'Content-Type' => 'application/json',
+                ])->timeout(30)->get($url, $attempt['params']);
 
-            $data = $response->json();
-            $hits = $data['body']['hits']['hits'] ?? [];
-            $record = ! empty($hits) ? ($hits[0]['_source']['record'] ?? []) : [];
+                if (! $response->successful()) {
+                    $lastError = "NARA API error: HTTP {$response->status()}";
 
-            $objects = [];
-            foreach ($record['digitalObjects'] ?? [] as $obj) {
-                $objects[] = [
-                    'url' => $obj['downloadUrl'] ?? $obj['objectUrl'] ?? null,
-                    'object_id' => $obj['objectId'] ?? null,
-                    'filename' => $obj['fileName'] ?? null,
-                    'format' => $obj['fileFormat'] ?? null,
-                    'size' => $obj['size'] ?? null,
-                    'thumbnail' => $obj['thumbnailUrl'] ?? null,
+                    continue;
+                }
+
+                $data = $response->json();
+                $hits = $data['body']['hits']['hits'] ?? [];
+                $match = $this->matchingNaraHit($hits, $naId);
+                if ($match === null) {
+                    $lastError = 'No exact NARA record found for NAID '.$naId;
+
+                    continue;
+                }
+
+                $record = $match['_source']['record'] ?? [];
+
+                return [
+                    'success' => true,
+                    'na_id' => $naId,
+                    'title' => $record['title'] ?? 'Untitled',
+                    'record' => $record,
+                    'hit' => $match,
+                    'lookup_strategy' => $attempt['strategy'],
+                    'objects' => array_values(array_map(
+                        fn (array $obj): array => $this->normalizeNaraDigitalObject($obj),
+                        $record['digitalObjects'] ?? []
+                    )),
                 ];
             }
+
+            return ['success' => false, 'error' => $lastError ?? 'NARA record not found', 'record' => null, 'objects' => []];
+        } catch (\Exception $e) {
+            Log::error('GenealogySourceService: NARA record fetch failed', [
+                'na_id' => $naId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['success' => false, 'error' => $e->getMessage(), 'record' => null, 'objects' => []];
+        }
+    }
+
+    /**
+     * Get digital objects for a NARA record by naId.
+     * Returns downloadable file URLs, formats, and sizes.
+     */
+    public function getNaraDigitalObjects(string $naId): array
+    {
+        try {
+            $recordResult = $this->getNaraRecord($naId);
+            if (! ($recordResult['success'] ?? false)) {
+                return [
+                    'success' => false,
+                    'error' => $recordResult['error'] ?? 'NARA record not found',
+                    'objects' => [],
+                ];
+            }
+
+            $objects = $recordResult['objects'] ?? [];
 
             return [
                 'success' => true,
                 'na_id' => $naId,
-                'title' => $record['title'] ?? 'Untitled',
+                'title' => $recordResult['title'] ?? 'Untitled',
                 'objects' => $objects,
                 'total' => count($objects),
             ];
@@ -1822,6 +1863,71 @@ class GenealogySourceService
 
             return ['success' => false, 'error' => $e->getMessage(), 'objects' => []];
         }
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $hits
+     */
+    private function matchingNaraHit(array $hits, string $naId): ?array
+    {
+        foreach ($hits as $hit) {
+            if (! is_array($hit)) {
+                continue;
+            }
+
+            $record = $hit['_source']['record'] ?? [];
+            $hitNaId = (string) ($record['naId'] ?? $hit['_id'] ?? '');
+            if ($hitNaId === $naId) {
+                return $hit;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $object
+     * @return array<string, mixed>
+     */
+    public function normalizeNaraDigitalObject(array $object): array
+    {
+        $url = $this->firstStringField($object, ['downloadUrl', 'objectUrl', 'url']);
+        $filename = $this->firstStringField($object, ['fileName', 'objectFilename', 'filename']);
+        if (($filename === null || $filename === '') && $url) {
+            $path = (string) parse_url($url, PHP_URL_PATH);
+            $basename = basename($path);
+            $filename = $basename !== '' && $basename !== '.' ? $basename : null;
+        }
+
+        $size = $object['size'] ?? $object['objectFileSize'] ?? null;
+        if (is_string($size) && is_numeric($size)) {
+            $size = (int) $size;
+        }
+
+        return [
+            'url' => $url,
+            'object_id' => $this->firstStringField($object, ['objectId', 'id']),
+            'filename' => $filename,
+            'format' => $this->firstStringField($object, ['fileFormat', 'objectType', 'format', 'mimeType']),
+            'size' => is_int($size) ? $size : null,
+            'thumbnail' => $this->firstStringField($object, ['thumbnailUrl', 'objectThumbnailUrl']),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     * @param  list<string>  $fields
+     */
+    private function firstStringField(array $row, array $fields): ?string
+    {
+        foreach ($fields as $field) {
+            $value = $row[$field] ?? null;
+            if (is_scalar($value) && trim((string) $value) !== '') {
+                return trim((string) $value);
+            }
+        }
+
+        return null;
     }
 
     /**

@@ -447,6 +447,17 @@ class FileCatalogSyncCommand extends Command
         if (isset($result['reindexed'])) {
             $this->line("  Re-indexed stale: {$result['reindexed']}");
         }
+        if (isset($result['limit_semantics']) && is_array($result['limit_semantics'])) {
+            $limits = $result['limit_semantics'];
+            $this->line(sprintf(
+                '  Limit evidence: requested=%s index=%s orphan_check=%s stale_reindex=%s behavior_changed=%s',
+                $limits['requested_limit'] ?? '-',
+                $limits['effective_index_limit'] ?? '-',
+                $limits['effective_orphan_check_limit'] ?? '-',
+                $limits['effective_stale_reindex_limit'] ?? '-',
+                empty($limits['behavior_changed']) ? 'no' : 'yes'
+            ));
+        }
         if (! empty($result['time_limited'])) {
             $this->warn("  Stopped early to stay within runtime budget ({$maxSeconds}s)");
         }

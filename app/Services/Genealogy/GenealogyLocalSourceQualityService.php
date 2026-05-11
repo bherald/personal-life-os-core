@@ -12,6 +12,11 @@ class GenealogyLocalSourceQualityService
 
     public function assess(array $extraction, array $media = []): array
     {
+        $preflight = $this->preflightAssessment($extraction);
+        if ($preflight !== null) {
+            return $preflight;
+        }
+
         $response = $this->aiService->process(
             $this->buildPrompt($extraction, $media),
             [
@@ -35,6 +40,31 @@ class GenealogyLocalSourceQualityService
         }
 
         return $this->parseResponse((string) ($response['response'] ?? ''));
+    }
+
+    private function preflightAssessment(array $extraction): ?array
+    {
+        $textQuality = (array) ($extraction['_text_quality'] ?? []);
+        if ($textQuality !== [] && ! ($textQuality['allow_fact_extraction'] ?? false)) {
+            return [
+                'label' => ($textQuality['label'] ?? 'noisy') === 'manual_review' ? 'weak' : 'noisy',
+                'confidence' => 'high',
+                'rationale' => 'text_quality_gate:'.implode(',', (array) ($textQuality['reasons'] ?? [])),
+                'allow_proposals' => false,
+            ];
+        }
+
+        $notes = strtolower((string) ($extraction['notes_remainder'] ?? ''));
+        if (str_contains($notes, 'field_level_review_needed')) {
+            return [
+                'label' => 'weak',
+                'confidence' => 'high',
+                'rationale' => 'field_level_review_needed',
+                'allow_proposals' => false,
+            ];
+        }
+
+        return null;
     }
 
     private function buildPrompt(array $extraction, array $media): string

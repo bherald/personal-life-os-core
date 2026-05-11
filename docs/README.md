@@ -27,6 +27,7 @@ These docs are intended to remain valid in a public extraction:
 - `native-ml-package-review.md` — optional Python/native/ML release posture
 - `research-provenance.md` — research citations and referenced-project boundaries
 - `personal-connectors.md` — local-first Nextcloud, Joplin, and Thunderbird connector boundary
+- `offgrid-genealogy-agent-cli.md` — offline/off-grid command-line genealogy agent guide
 - `FACE-RECOGNITION.md` — dlib model setup and face-recognition safety
 - `face-metadata-writeback.md` — standards-based face/person metadata writeback contract
 - `schema-reference.md` — database schema reference

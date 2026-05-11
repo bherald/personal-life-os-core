@@ -48,6 +48,22 @@ Mail is not a cloud-sync surface in the PLOS model. The operator can use
 Thunderbird locally on desktop and phone-side mail tools, while PLOS talks to a
 controlled local bridge such as `THUNDERBIRD_MCP_URL`.
 
+Thunderbird has two separate integration surfaces:
+
+- read/search/RAG indexing can use a replicated Thunderbird profile or archive
+  path, but should only parse the mbox stores under `Mail/` and `ImapMail/`;
+- sending uses a live Thunderbird instance with the PLOS extension connected, so
+  Thunderbird handles the configured accounts, OAuth/app-password state, and
+  SMTP submission instead of PLOS storing mail credentials.
+
+For private installs, point the email archive indexer at the replicated profile
+with `THUNDERBIRD_ARCHIVE_PROFILE_PATH` relative to `NEXTCLOUD_DATA_PATH`. Do not
+index the whole Thunderbird profile: files such as credential stores, cookies,
+OpenPGP state, caches, and extension storage are backup/runtime data, not RAG
+content. If a replicated profile is used to seed the sending machine, copy or
+restore it into a stable local Thunderbird profile first; do not have Windows
+and the sending host write the same synced profile concurrently.
+
 The public repository should not ship a real mailbox, profile path, or cloud
 mail dependency. It should document the endpoint placeholder and leave the
 bridge process to the operator's trusted machine or LAN.

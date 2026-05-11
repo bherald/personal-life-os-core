@@ -288,6 +288,7 @@ class GenealogyReviewEvidenceAssetCandidateReportService
             'locator_redacted' => (bool) ($candidate['locator_redacted'] ?? false),
             'host' => $this->safeCandidateScalar($candidate['host'] ?? null, null),
             'extension' => $this->safeCandidateScalar($candidate['extension'] ?? null, null),
+            'identity_fit' => $this->safeIdentityFit($candidate['identity_fit'] ?? null),
             'target_storage' => $this->safeCandidateScalar($candidate['target_storage'] ?? null, 'ft_reference_area'),
             'download_attempted' => false,
             'mutation_allowed' => false,
@@ -304,6 +305,29 @@ class GenealogyReviewEvidenceAssetCandidateReportService
         $value = trim((string) $value);
 
         return $value === '' ? null : mb_substr($value, 0, 32);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function safeIdentityFit(mixed $identityFit): ?array
+    {
+        if (! is_array($identityFit)) {
+            return null;
+        }
+
+        return [
+            'schema' => 'review_evidence_asset_identity_fit.v1',
+            'given_name_present' => (bool) ($identityFit['given_name_present'] ?? false),
+            'surname_present' => (bool) ($identityFit['surname_present'] ?? false),
+            'full_name_match' => (bool) ($identityFit['full_name_match'] ?? false),
+            'partial_name_only' => (bool) ($identityFit['partial_name_only'] ?? false),
+            'approval_ready' => ($identityFit['approval_ready'] ?? true) === true,
+            'supporting_signal_count' => is_numeric($identityFit['supporting_signal_count'] ?? null)
+                ? (int) $identityFit['supporting_signal_count']
+                : 0,
+            'blocker' => $this->safeCandidateScalar($identityFit['blocker'] ?? null, null),
+        ];
     }
 
     private function safeCandidateScalar(mixed $value, ?string $fallback): ?string

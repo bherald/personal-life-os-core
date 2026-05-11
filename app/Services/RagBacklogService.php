@@ -76,7 +76,43 @@ class RagBacklogService
                 'throughput_per_day' => $kgThroughput,
                 'eta_days' => $this->estimateEtaDays($kgPending, $kgThroughput),
             ],
+            'kg_provenance' => $this->latestKgProvenanceSnapshot(),
             'evidence_errors' => $this->evidenceErrors,
+        ];
+    }
+
+    private function latestKgProvenanceSnapshot(): ?array
+    {
+        try {
+            $row = DB::table('pipeline_metrics_snapshots')
+                ->where('pipeline', KgProvenanceSnapshotService::PIPELINE)
+                ->orderByDesc('snapshot_date')
+                ->first();
+        } catch (\Throwable $e) {
+            Log::warning('RagBacklogService: KG provenance snapshot query failed', [
+                'error' => $this->compactMessage($e->getMessage()),
+            ]);
+
+            $this->evidenceErrors[] = [
+                'code' => 'kg_provenance_snapshot_query_failed',
+                'context' => [
+                    'error' => $this->compactMessage($e->getMessage()),
+                ],
+            ];
+
+            return null;
+        }
+
+        if ($row === null) {
+            return null;
+        }
+
+        return [
+            'snapshot_date' => (string) $row->snapshot_date,
+            'pending' => max(0, (int) ($row->pending ?? 0)),
+            'total' => max(0, (int) ($row->total ?? 0)),
+            'completion_pct' => $row->completion_pct === null ? null : (float) $row->completion_pct,
+            'delta_from_prev' => $row->delta_from_prev === null ? null : (int) $row->delta_from_prev,
         ];
     }
 

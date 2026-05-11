@@ -32,6 +32,20 @@
       </div>
     </div>
 
+    <section class="packet-section operator-question-section">
+      <div class="section-heading">
+        <span>Operator question</span>
+        <span class="section-status preview">packet-level</span>
+      </div>
+      <div class="operator-question">
+        Does this source or evidence belong with the target person?
+      </div>
+      <div class="operator-question-note">
+        Packet actions affect the packet review state. They are not line-item source decisions.
+        If any candidate line is uncertain, use Reject, Clarify, or Defer rather than treating packet approval as an attach-all action.
+      </div>
+    </section>
+
     <section class="packet-section review-focus-section">
       <div class="section-heading">
         <span>Review focus</span>
@@ -2477,6 +2491,27 @@ function objectKeys(value) {
 
 .review-focus-section {
   border-color: rgba(255, 204, 102, 0.26);
+}
+
+.operator-question-section {
+  border-color: rgba(255, 204, 102, 0.35);
+  background: linear-gradient(90deg, rgba(255, 204, 102, 0.10), rgba(99, 179, 237, 0.06));
+}
+
+.operator-question {
+  color: #ffe5b3;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.operator-question-note {
+  margin-top: 0.4rem;
+  color: #d8efff;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .review-checklist-section {

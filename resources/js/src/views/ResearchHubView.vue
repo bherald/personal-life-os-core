@@ -119,6 +119,14 @@
           />
           <span class="text-xs text-ops-text-muted uppercase">Include Expired</span>
         </label>
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            v-model="showDiagnosticRows"
+            class="w-3.5 h-3.5 accent-ops-peach cursor-pointer"
+          />
+          <span class="text-xs text-ops-text-muted uppercase">Diagnostics</span>
+        </label>
       </div>
 
       <div v-if="visibleTypeFilters.length" class="type-filter-row">
@@ -151,6 +159,16 @@
         <div>
           Showing evidence media capture approvals only. Advisory genealogy findings are hidden here because they need a
           materialized remediation preview before approval can apply data changes.
+        </div>
+      </div>
+      <div
+        v-if="!showDiagnosticRows && hiddenDiagnosticCount > 0 && !targetRefActive"
+        class="mb-4 p-3 bg-ops-sky/10 border border-ops-sky/30 rounded text-sm text-ops-text"
+      >
+        <div class="font-bold text-ops-sky uppercase tracking-wide text-xs mb-1">Action-ready inbox</div>
+        <div>
+          Hiding {{ hiddenDiagnosticCount }} blocked, advisory, preview-only, or weak-identity row{{ hiddenDiagnosticCount === 1 ? '' : 's' }}.
+          Turn on Diagnostics to inspect them without mixing them into an approval pass.
         </div>
       </div>
       <div
@@ -258,6 +276,15 @@
           <div v-else-if="!loading && filteredItems.length === 0" class="text-center py-16 text-ops-text-muted">
             <div class="text-5xl mb-4">0</div>
             <div>{{ emptyStateMessage }}</div>
+            <button
+              v-if="hasMore && !showDiagnosticRows && !targetRefActive"
+              type="button"
+              class="ops-btn ops-btn-sky text-xs mt-4"
+              :disabled="loadingMore"
+              @click="loadMore"
+            >
+              {{ loadingMore ? 'Loading...' : 'Load more action-ready rows' }}
+            </button>
           </div>
 
           <!-- Item Cards -->
@@ -599,6 +626,7 @@ const selectedItems = ref([])
 const inFlightDecisions = ref(new Set())
 const showAgentPanel = ref(false)
 const showExpired = ref(false)
+const showDiagnosticRows = ref(false)
 const initializingFromRoute = ref(true)
 
 // Pagination / infinite scroll
@@ -847,6 +875,10 @@ const emptyStateMessage = computed(() => {
     return `No pending review item is available for ${requestedId} with the current filters.`
   }
 
+  if (!showDiagnosticRows.value && hiddenDiagnosticCount.value > 0) {
+    return 'No action-ready rows are visible. Diagnostics are hidden from this approval inbox.'
+  }
+
   if (activeCategory.value === 'genealogy') {
     return 'No pending genealogy review items.'
   }
@@ -864,6 +896,9 @@ const filteredItems = computed(() => {
   }
   if (activeType.value) result = result.filter(item => item.source === activeType.value || item.review_type === activeType.value)
   if (activeCategory.value) result = result.filter(item => item.category === activeCategory.value)
+  if (!showDiagnosticRows.value) {
+    result = result.filter(item => isActionReadyInboxItem(item))
+  }
   // Phase 5: confidence threshold filter (NULL confidence always passes — system alerts etc.)
   if (confidenceThreshold.value > 0) {
     const min = confidenceThreshold.value / 100
@@ -884,6 +919,18 @@ const filteredItems = computed(() => {
     })
   }
   return sorted
+})
+
+const hiddenDiagnosticCount = computed(() => {
+  if (showDiagnosticRows.value || targetRef.value) {
+    return 0
+  }
+
+  let result = items.value.filter(item => !EXCLUDED_CATEGORIES.includes(item.category))
+  if (activeType.value) result = result.filter(item => item.source === activeType.value || item.review_type === activeType.value)
+  if (activeCategory.value) result = result.filter(item => item.category === activeCategory.value)
+
+  return result.filter(item => !isActionReadyInboxItem(item)).length
 })
 
 const targetRef = computed(() => normalizeTargetRef(targetRefQuery.value))
@@ -1110,7 +1157,7 @@ const selectItem = (item) => {
   // change_proposal was added in the post-deploy gap fix after the
   // operator's screenshot showed event_add (change_proposal) items
   // not opening the pane.
-  const detailTypes = ['genealogy_finding', 'genealogy_merge', 'change_proposal', 'genealogy_review_packet']
+  const detailTypes = ['genealogy_finding', 'genealogy_merge', 'change_proposal', 'genealogy_review_packet', DEFAULT_OPERATOR_REVIEW_TYPE]
   const detailType = item?.source || item?.review_type
   if (detailType && detailTypes.includes(detailType)) {
     detailUnifiedId.value = item.unified_id
@@ -1242,7 +1289,7 @@ const handleApprove = async (item) => {
     return
   }
 
-  const blockedReason = packetApprovalBlockReason(item)
+  const blockedReason = approvalBlockReason(item)
   if (blockedReason) {
     showToast(blockedReason, 'error')
     return
@@ -1252,7 +1299,7 @@ const handleApprove = async (item) => {
   if (!unifiedId) return
 
   try {
-    const resp = await api.post(`/research-hub/approve/${unifiedId}`)
+    const resp = await api.post(`/research-hub/approve/${unifiedId}`, decisionRequestBody(item, 'approve'))
     if (resp.success === false) {
       showToast(resp.error || 'Failed to approve', 'error')
       return
@@ -1280,10 +1327,18 @@ function isReviewPacket(item) {
 }
 
 function isBatchSelectable(item) {
-  return item?.batch_enabled === true && !isReviewPacket(item)
+  return item?.batch_enabled === true && !isReviewPacket(item) && !isApproveBlocked(item)
 }
 
 function approvalLabel(item) {
+  if (!isEvidenceCaptureReview(item) && partialNameOnlyBlockReason(item)) {
+    return 'Needs identity'
+  }
+
+  if (isEvidenceCaptureReview(item)) {
+    return 'Approve capture row'
+  }
+
   if (genealogyFindingApprovalBlockReason(item)) {
     return 'Needs preview'
   }
@@ -1310,11 +1365,18 @@ function packetValidationErrorCount(item) {
 }
 
 function isApproveBlocked(item) {
-  return packetApprovalBlockReason(item) !== null || genealogyFindingApprovalBlockReason(item) !== null
+  return approvalBlockReason(item) !== null
 }
 
 function approveBlockedTitle(item) {
-  return packetApprovalBlockReason(item) || genealogyFindingApprovalBlockReason(item) || ''
+  return approvalBlockReason(item) || ''
+}
+
+function approvalBlockReason(item) {
+  return partialNameOnlyBlockReason(item)
+    || packetApprovalBlockReason(item)
+    || genealogyFindingApprovalBlockReason(item)
+    || null
 }
 
 function genealogyFindingApprovalBlockReason(item) {
@@ -1350,6 +1412,74 @@ function packetApprovalBlockReason(item) {
   return null
 }
 
+function isEvidenceCaptureReview(item) {
+  return item?.review_type === DEFAULT_OPERATOR_REVIEW_TYPE || item?.source === DEFAULT_OPERATOR_REVIEW_TYPE
+}
+
+function isActionReadyInboxItem(item) {
+  const reviewType = item?.review_type || item?.source || ''
+
+  if (isEvidenceCaptureReview(item)) {
+    return approvalBlockReason(item) === null
+  }
+
+  if (isReviewPacket(item)) {
+    return approvalBlockReason(item) === null
+      && item?.review_focus?.approval_ready !== false
+      && item?.review_focus?.preview_only === true
+  }
+
+  if (reviewType === 'genealogy_finding') {
+    return item?.review_focus?.approval_ready === true && approvalBlockReason(item) === null
+  }
+
+  if (item?.remediation?.preview_only === true || item?.remediation?.apply_held === true) {
+    return false
+  }
+
+  return approvalBlockReason(item) === null
+}
+
+function partialNameOnlyBlockReason(item) {
+  if (!item || typeof item !== 'object') {
+    return null
+  }
+
+  if (isEvidenceCaptureReview(item)) {
+    return null
+  }
+
+  const explicit = item?.review_focus?.identity_fit || item?.details?.identity_fit || item?.details?.match_quality
+  if (explicit && typeof explicit === 'object' && !Array.isArray(explicit)) {
+    const exactName = explicit.exact_name_match ?? explicit.full_name_match ?? explicit.exact_full_name_match
+    const partialOnly = explicit.partial_name_only ?? explicit.partial_only ?? explicit.given_name_only
+    const supportCount = Number(explicit.supporting_signal_count ?? explicit.support_count ?? 0)
+    if ((partialOnly === true || exactName === false) && supportCount <= 0) {
+      return 'Partial-name-only match needs date, place, family, or source support before approval'
+    }
+  }
+
+  const scan = JSON.stringify({
+    review_focus: item.review_focus || null,
+    capture: item.details?.capture || item.details?.capture_plan || item.details?.plan || null,
+    plans: item.details?.plans || null,
+    match_quality: item.details?.match_quality || null,
+    blockers: item.details?.approval_blockers || item.review_focus?.approval_blockers || null,
+  }).toLowerCase()
+
+  if (
+    scan.includes('partial-name-only')
+    || scan.includes('partial name only')
+    || scan.includes('given name only')
+    || scan.includes('full_name_match\":false')
+    || scan.includes('exact_name_match\":false')
+  ) {
+    return 'Partial-name-only match needs date, place, family, or source support before approval'
+  }
+
+  return null
+}
+
 const handleReject = async (item) => {
   if (isReviewPacket(item)) {
     selectItem(item)
@@ -1361,7 +1491,7 @@ const handleReject = async (item) => {
   if (!unifiedId) return
 
   try {
-    const resp = await api.post(`/research-hub/reject/${unifiedId}`)
+    const resp = await api.post(`/research-hub/reject/${unifiedId}`, decisionRequestBody(item, 'reject'))
     if (resp.success === false) {
       showToast(resp.error || 'Failed to reject', 'error')
       return
@@ -1382,6 +1512,22 @@ const handleReject = async (item) => {
   } finally {
     finishDecision(unifiedId)
   }
+}
+
+function decisionRequestBody(item, action) {
+  const body = {}
+  const lineDecisions = Array.isArray(item?._line_decisions) ? item._line_decisions : []
+
+  if (lineDecisions.length > 0) {
+    body.decision_scope = 'line_items'
+    body.line_decisions = lineDecisions
+  }
+
+  if (action === 'reject' && lineDecisions.length > 0) {
+    body.reason_code = 'line_item_rejections'
+  }
+
+  return body
 }
 
 const handleIgnore = async (item) => {

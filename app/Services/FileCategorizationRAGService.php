@@ -775,10 +775,13 @@ class FileCategorizationRAGService
      */
     public function syncWithRegistry(int $limit = 100, ?string $workerId = null, ?int $maxSeconds = null): array
     {
+        $limitSemantics = $this->buildSyncLimitSemantics($limit);
+
         $results = [
             'indexed' => 0,
             'removed' => 0,
             'errors' => 0,
+            'limit_semantics' => $limitSemantics,
         ];
 
         try {
@@ -786,8 +789,8 @@ class FileCategorizationRAGService
             $maxSeconds = max(60, $maxSeconds);
 
             // Index new files (90% of budget for indexing, 10% for orphan cleanup)
-            $indexLimit = max(10, (int) ($limit * 0.9));
-            $orphanCheckLimit = max(5, $limit - $indexLimit);
+            $indexLimit = $limitSemantics['effective_index_limit'];
+            $orphanCheckLimit = $limitSemantics['effective_orphan_check_limit'];
             $indexSeconds = max(45, (int) floor($maxSeconds * 0.8));
             $staleSeconds = max(30, $maxSeconds - $indexSeconds);
 
@@ -829,7 +832,7 @@ class FileCategorizationRAGService
             // Re-index stale files only if the main indexing loop did not already
             // consume the full runtime budget.
             if (empty($results['time_limited']) && $this->shouldReindexStaleFiles($limit, $workerId)) {
-                $staleResult = $this->reindexStaleFiles(max(5, (int) ($limit * 0.1)), $staleSeconds);
+                $staleResult = $this->reindexStaleFiles($limitSemantics['effective_stale_reindex_limit'], $staleSeconds);
                 $results['reindexed'] = $staleResult['reindexed'];
                 $results['errors'] += $staleResult['errors'];
                 if (! empty($staleResult['time_limited'])) {
@@ -848,6 +851,25 @@ class FileCategorizationRAGService
         Log::info('FileCategorizationRAG: Sync completed', $results);
 
         return $results;
+    }
+
+    private function buildSyncLimitSemantics(int $limit): array
+    {
+        $indexLimit = max(10, (int) ($limit * 0.9));
+        $orphanCheckLimit = max(5, $limit - $indexLimit);
+        $staleReindexLimit = max(5, (int) ($limit * 0.1));
+
+        return [
+            'requested_limit' => $limit,
+            'effective_index_limit' => $indexLimit,
+            'effective_orphan_check_limit' => $orphanCheckLimit,
+            'effective_stale_reindex_limit' => $staleReindexLimit,
+            'index_limit_expanded' => $limit > 0 && $indexLimit > $limit,
+            'orphan_check_minimum_applied' => $orphanCheckLimit > max(0, $limit - $indexLimit),
+            'stale_reindex_minimum_applied' => $staleReindexLimit > (int) ($limit * 0.1),
+            'stale_reindex_runs_conditionally' => true,
+            'behavior_changed' => false,
+        ];
     }
 
     /**

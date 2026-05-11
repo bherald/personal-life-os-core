@@ -274,7 +274,8 @@ class ResearchHubController extends Controller
         $result = $this->registry->approveItem(
             $unifiedId,
             is_string($notes) ? $notes : null,
-            $this->optionalRequestString($request, 'reason_code')
+            $this->optionalRequestString($request, 'reason_code'),
+            $this->decisionMetaFromRequest($request)
         );
         $status = $result['success']
             ? 200
@@ -292,7 +293,8 @@ class ResearchHubController extends Controller
         $result = $this->registry->rejectItem(
             $unifiedId,
             is_string($reason) ? $reason : null,
-            $this->optionalRequestString($request, 'reason_code')
+            $this->optionalRequestString($request, 'reason_code'),
+            $this->decisionMetaFromRequest($request)
         );
 
         return response()->json($result, $result['success'] ? 200 : 400);
@@ -307,7 +309,8 @@ class ResearchHubController extends Controller
         $result = $this->registry->clarifyItem(
             $unifiedId,
             is_string($notes) ? $notes : null,
-            $this->optionalRequestString($request, 'reason_code')
+            $this->optionalRequestString($request, 'reason_code'),
+            $this->decisionMetaFromRequest($request)
         );
 
         return response()->json($result, $result['success'] ? 200 : 400);
@@ -322,7 +325,8 @@ class ResearchHubController extends Controller
         $result = $this->registry->deferItem(
             $unifiedId,
             is_string($notes) ? $notes : null,
-            $this->optionalRequestString($request, 'reason_code')
+            $this->optionalRequestString($request, 'reason_code'),
+            $this->decisionMetaFromRequest($request)
         );
 
         return response()->json($result, $result['success'] ? 200 : 400);
@@ -333,6 +337,26 @@ class ResearchHubController extends Controller
         $value = $request->input($key);
 
         return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decisionMetaFromRequest(Request $request): array
+    {
+        $meta = [];
+        $scope = $request->input('decision_scope');
+
+        if (is_string($scope) && preg_match('/^[a-z0-9_-]{1,80}$/', $scope) === 1) {
+            $meta['decision_scope'] = $scope;
+        }
+
+        $lineDecisions = $request->input('line_decisions');
+        if (is_array($lineDecisions)) {
+            $meta['line_decisions'] = array_slice($lineDecisions, 0, 50);
+        }
+
+        return $meta;
     }
 
     private function normalizeGenealogyPacketTargetRef(mixed $value): ?string

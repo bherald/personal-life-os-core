@@ -99,6 +99,7 @@ class RagBacklogReportCommand extends Command
                 'stale' => (int) ($metrics['kg']['stale'] ?? 0),
                 'entities' => (int) ($metrics['kg']['entities'] ?? 0),
             ],
+            'kg_provenance' => $this->compactKgProvenance($metrics['kg_provenance'] ?? null),
             'net_burn' => [
                 'window_days' => (int) ($netBurn['window_days'] ?? 7),
                 'kg_net_burn_per_day' => $kgNetBurn['net_burn_per_day'] ?? null,
@@ -108,6 +109,21 @@ class RagBacklogReportCommand extends Command
                 'sentence_trend' => $sentenceNetBurn['trend'] ?? null,
             ],
             'evidence_error_count' => $evidenceErrorCount,
+        ];
+    }
+
+    private function compactKgProvenance(mixed $provenance): ?array
+    {
+        if (! is_array($provenance)) {
+            return null;
+        }
+
+        return [
+            'snapshot_date' => $provenance['snapshot_date'] ?? null,
+            'pending' => (int) ($provenance['pending'] ?? 0),
+            'total' => (int) ($provenance['total'] ?? 0),
+            'completion_pct' => $provenance['completion_pct'] ?? null,
+            'delta_from_prev' => $provenance['delta_from_prev'] ?? null,
         ];
     }
 
@@ -141,6 +157,18 @@ class RagBacklogReportCommand extends Command
             $payload['kg']['throughput_per_day'] ?? 0,
             $payload['kg']['eta_days'] ?? 'n/a',
         ));
+
+        if (is_array($payload['kg_provenance'] ?? null)) {
+            $provenance = $payload['kg_provenance'];
+            $this->line(sprintf(
+                'kg_provenance: date=%s pending=%s total=%s completion_pct=%s delta=%s',
+                $provenance['snapshot_date'] ?? 'n/a',
+                $provenance['pending'] ?? 0,
+                $provenance['total'] ?? 0,
+                $provenance['completion_pct'] ?? 'n/a',
+                $provenance['delta_from_prev'] ?? 'n/a',
+            ));
+        }
 
         $netBurn = is_array($payload['net_burn'] ?? null) ? $payload['net_burn'] : [];
         $this->line(sprintf(

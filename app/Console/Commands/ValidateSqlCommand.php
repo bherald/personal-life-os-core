@@ -10,14 +10,16 @@ use Illuminate\Support\Facades\DB;
  *
  * Two modes:
  *   --static  (DEV, pre-deploy): Scans all PHP for DB:: calls, extracts SQL,
- *             validates table/column references against live DESCRIBE output.
+ *             validates table/column references against docs/schema-reference.md
+ *             by default. Use --schema-source=live to validate against local DBs.
  *   --explain (PROD, post-deploy): Runs EXPLAIN on extracted SQL against the
  *             live database to catch runtime schema errors.
  *
  * Run --static before every PROD1 deploy. Run --explain after deploy.
  *
  * Usage:
- *   php artisan ops:validate-sql                    # Static mode (default)
+ *   php artisan ops:validate-sql                    # Static mode using schema reference
+ *   php artisan ops:validate-sql --schema-source=live # Static mode using local DBs
  *   php artisan ops:validate-sql --explain          # EXPLAIN mode
  *   php artisan ops:validate-sql --file=SomeService # Scan specific file pattern
  *   php artisan ops:validate-sql --json             # Machine-readable output
@@ -30,6 +32,7 @@ class ValidateSqlCommand extends Command
                             {--file= : Filter to files matching this pattern}
                             {--json : Output results as JSON}
                             {--fix-report : Write detailed report to storage/logs/sql-validation.log}
+                            {--schema-source=reference : Schema source for static mode: reference or live}
                             {--schema-lock-timeout=30 : Seconds to wait for schema-preservation tests before reading MySQL schema}';
 
     protected $description = 'Validate SQL statements in codebase against database schema';
@@ -52,6 +55,10 @@ class ValidateSqlCommand extends Command
 
     private ?string $schemaReadLockName = null;
 
+    private string $schemaSource = 'reference';
+
+    private ?array $schemaReference = null;
+
     // Tables that may not exist in dev but are referenced with try/catch or conditional logic
     private array $optionalTables = [
         'pg_tables',
@@ -73,6 +80,16 @@ class ValidateSqlCommand extends Command
 
     private function withSchemaReadLock(float $startTime, callable $callback): int
     {
+        $this->schemaSource = $this->resolveSchemaSource();
+
+        if (! empty($this->errors)) {
+            return $this->outputResults($startTime);
+        }
+
+        if (! $this->option('explain') && $this->schemaSource === 'reference') {
+            return $callback();
+        }
+
         if (! $this->usesMysqlConnection()) {
             return $callback();
         }
@@ -97,6 +114,28 @@ class ValidateSqlCommand extends Command
         } finally {
             $this->releaseSchemaReadLock();
         }
+    }
+
+    private function resolveSchemaSource(): string
+    {
+        if ($this->option('explain')) {
+            return 'live';
+        }
+
+        $source = strtolower(trim((string) $this->option('schema-source')));
+        if (! in_array($source, ['reference', 'live'], true)) {
+            $this->errors[] = [
+                'file' => 'N/A',
+                'line' => 0,
+                'sql' => '--schema-source',
+                'error' => 'Invalid --schema-source value; expected reference or live',
+                'severity' => 'fatal',
+            ];
+
+            return 'reference';
+        }
+
+        return $source;
     }
 
     private function acquireSchemaReadLock(): bool
@@ -141,7 +180,11 @@ class ValidateSqlCommand extends Command
     {
         if (! $this->option('json')) {
             $this->info("=== SQL Static Validation ===\n");
-            $this->info('Loading schema from MySQL and PostgreSQL...');
+            if ($this->schemaSource === 'reference') {
+                $this->info('Loading schema from docs/schema-reference.md...');
+            } else {
+                $this->info('Loading schema from MySQL and PostgreSQL...');
+            }
         }
 
         $this->loadMysqlSchema();
@@ -166,6 +209,12 @@ class ValidateSqlCommand extends Command
 
     private function loadMysqlSchema(): void
     {
+        if (! $this->option('explain') && $this->schemaSource === 'reference') {
+            $this->mysqlSchema = $this->loadSchemaReference()['mysql'];
+
+            return;
+        }
+
         try {
             $tables = DB::select('SHOW TABLES');
             $dbName = config('database.connections.mysql.database');
@@ -201,6 +250,12 @@ class ValidateSqlCommand extends Command
 
     private function loadPgsqlSchema(): void
     {
+        if (! $this->option('explain') && $this->schemaSource === 'reference') {
+            $this->pgsqlSchema = $this->loadSchemaReference()['pgsql'];
+
+            return;
+        }
+
         try {
             $tables = DB::connection('pgsql_rag')->select("
                 SELECT table_name FROM information_schema.tables
@@ -248,6 +303,127 @@ class ValidateSqlCommand extends Command
         }
 
         return $this->mysqlSchema;
+    }
+
+    private function loadSchemaReference(): array
+    {
+        if ($this->schemaReference !== null) {
+            return $this->schemaReference;
+        }
+
+        $schema = [
+            'mysql' => [],
+            'pgsql' => [],
+        ];
+        $path = base_path('docs/schema-reference.md');
+
+        if (! is_file($path)) {
+            $this->errors[] = [
+                'file' => 'docs/schema-reference.md',
+                'line' => 0,
+                'sql' => 'schema-reference',
+                'error' => 'Schema reference file is missing',
+                'severity' => 'fatal',
+            ];
+            $this->schemaReference = $schema;
+
+            return $schema;
+        }
+
+        $section = null;
+        foreach (file($path, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
+            if (preg_match('/^##+\s+MySQL/i', $line)) {
+                $section = 'mysql';
+
+                continue;
+            }
+
+            if (preg_match('/^##+\s+PostgreSQL/i', $line)) {
+                $section = 'pgsql';
+
+                continue;
+            }
+
+            if ($section === null) {
+                continue;
+            }
+
+            $trimmed = trim($line);
+            if (! preg_match('/^(?:[-*]\s*)?(?:`([^`]+)`|\*\*([^*]+)\*\*|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*(.+)$/', $trimmed, $matches)) {
+                continue;
+            }
+
+            $table = $matches[1] ?: ($matches[2] ?: $matches[3]);
+            $columnText = $matches[4];
+            $schema[$section][$table] = [];
+
+            foreach ($this->parseSchemaReferenceColumns($columnText) as $column) {
+                $schema[$section][$table][$column['name']] = [
+                    'type' => $column['type'],
+                    'null' => null,
+                    'key' => null,
+                    'default' => null,
+                ];
+            }
+        }
+
+        $this->schemaReference = $schema;
+
+        return $schema;
+    }
+
+    private function parseSchemaReferenceColumns(string $columnText): array
+    {
+        $columns = [];
+
+        foreach ($this->splitSchemaReferenceColumns($columnText) as $definition) {
+            $definition = trim($definition);
+            if ($definition === '') {
+                continue;
+            }
+
+            if (preg_match('/^`?([A-Za-z_][A-Za-z0-9_]*)`?\s*\((.*?)\)/', $definition, $matches)) {
+                $columns[] = [
+                    'name' => $matches[1],
+                    'type' => $matches[2],
+                ];
+            }
+        }
+
+        return $columns;
+    }
+
+    private function splitSchemaReferenceColumns(string $columnText): array
+    {
+        $parts = [];
+        $current = '';
+        $depth = 0;
+
+        $length = strlen($columnText);
+        for ($i = 0; $i < $length; $i++) {
+            $char = $columnText[$i];
+
+            if ($char === '(') {
+                $depth++;
+            } elseif ($char === ')') {
+                $depth = max(0, $depth - 1);
+            }
+
+            if ($char === ',' && $depth === 0) {
+                $parts[] = $current;
+                $current = '';
+
+                continue;
+            }
+
+            $current .= $char;
+        }
+
+        if (trim($current) !== '') {
+            $parts[] = $current;
+        }
+
+        return $parts;
     }
 
     private function findPhpFiles(): array
@@ -889,6 +1065,7 @@ class ValidateSqlCommand extends Command
         if ($this->option('json')) {
             $this->line(json_encode([
                 'mode' => $mode,
+                'schema_source' => $this->schemaSource,
                 'files_scanned' => $this->filesScanned,
                 'statements_checked' => $this->statementsChecked,
                 'statements_skipped' => $this->statementsSkipped,
@@ -929,6 +1106,7 @@ class ValidateSqlCommand extends Command
 
             $this->newLine();
             $this->info("--- {$mode} Validation Summary ---");
+            $this->info("Schema source: {$this->schemaSource}");
             $this->info("Files: {$this->filesScanned} | Checked: {$this->statementsChecked} | Skipped: {$this->statementsSkipped}");
 
             $errorCount = count($this->errors);

@@ -49,6 +49,8 @@ class OperatorEvidenceService
 
     private const GENEALOGY_EVIDENCE_SPRINT_CACHE_KEY = 'operator_evidence:genealogy_evidence_sprint:v1';
 
+    private const FILE_LIFECYCLE_RECONCILIATION_CACHE_KEY = 'operator_evidence:file_lifecycle_reconciliation:v1';
+
     private const FACE_LINK_WEEKLY_REPORT_JOB = 'face_link_weekly_report';
 
     private const GENEALOGY_AUTOMATION_TARGETS = [
@@ -75,6 +77,7 @@ class OperatorEvidenceService
         private readonly ?GenealogyEvidenceSprintReadinessService $genealogyEvidenceSprint = null,
         private readonly ?AgentRecursionCallsRetentionService $arcRetention = null,
         private readonly ?SchedulerOptimizeReportService $schedulerOptimize = null,
+        private readonly ?FileRegistryReconciliationReportService $fileReconciliation = null,
     ) {}
 
     public function collect(): array
@@ -89,6 +92,7 @@ class OperatorEvidenceService
             'queue_health' => $this->collectQueueHealth($sampledAt),
             'scheduler_optimization' => $this->collectSchedulerOptimization($sampledAt),
             'dba_telemetry' => $this->collectDbaTelemetry($sampledAt),
+            'file_lifecycle_reconciliation' => $this->collectFileLifecycleReconciliation($sampledAt),
             'kg_backlog' => $this->collectKgBacklog($sampledAt, $ragMetrics, $ragNetBurn),
             'raptor_sentence_drained' => $this->collectRaptorSentenceDrained($sampledAt, $ragMetrics, $ragNetBurn),
             'rag_scale_baseline' => $this->collectRagScaleBaseline($sampledAt),
@@ -140,6 +144,7 @@ class OperatorEvidenceService
             'offline_runtime' => $this->compactOfflineRuntimeHeadline($sections),
             'scheduler' => $this->compactSchedulerHeadline($sections),
             'dba_arc' => $this->compactDbaArcHeadline($sections),
+            'file_lifecycle' => $this->compactFileLifecycleHeadline($sections),
             'genealogy_evidence_sprint' => $this->compactGenealogyEvidenceSprintHeadline($sections),
             'awo_replay' => $this->compactAwoReplayHeadline($sections),
             'genealogy_agent_triage' => $this->compactGenealogyAgentTriageHeadline($sections),
@@ -204,6 +209,11 @@ class OperatorEvidenceService
             'kg_eta_days' => $kgCounts['eta_days'] ?? null,
             'kg_net_burn_per_day' => $kgCounts['kg_net_burn_per_day'] ?? null,
             'kg_net_burn_trend' => $this->nullableString($kgCounts['kg_net_burn_trend'] ?? null),
+            'kg_provenance_snapshot_date' => $this->nullableString($kgCounts['kg_provenance_snapshot_date'] ?? null),
+            'kg_provenance_pending' => $kgCounts['kg_provenance_pending'] ?? null,
+            'kg_provenance_total' => $kgCounts['kg_provenance_total'] ?? null,
+            'kg_provenance_completion_pct' => $kgCounts['kg_provenance_completion_pct'] ?? null,
+            'kg_provenance_delta_from_prev' => $kgCounts['kg_provenance_delta_from_prev'] ?? null,
             'raptor_pending' => (int) ($drainCounts['raptor_pending'] ?? 0),
             'sentence_pending' => (int) ($drainCounts['sentence_pending'] ?? 0),
             'drained' => (bool) ($drainCounts['drained'] ?? false),
@@ -409,6 +419,30 @@ class OperatorEvidenceService
             'redis_used_memory_mb' => (float) ($counts['redis_used_memory_mb'] ?? 0.0),
             'redis_fragmentation_ratio' => $counts['redis_fragmentation_ratio'] ?? null,
             'redis_key_count' => (int) ($counts['redis_key_count'] ?? 0),
+        ];
+    }
+
+    private function compactFileLifecycleHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'file_lifecycle_reconciliation');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'active_files' => (int) ($counts['active_files'] ?? 0),
+            'move_or_duplicate_candidate_groups' => (int) ($counts['same_filename_content_multi_path_groups'] ?? 0),
+            'identity_conflict_groups' => (int) ($counts['duplicate_asset_groups'] ?? $counts['duplicate_asset_uuid_groups'] ?? 0)
+                + (int) ($counts['duplicate_fileid_groups'] ?? $counts['duplicate_nextcloud_fileid_groups'] ?? 0),
+            'missing_identity_or_path' => (int) ($counts['active_missing_identity_or_path'] ?? 0),
+            'mysql_downstream_orphan_rows' => (int) ($counts['mysql_downstream_orphan_rows'] ?? 0),
+            'rag_checked_sample' => (int) ($counts['rag_source_id_checked_sample'] ?? 0)
+                + (int) ($counts['rag_uuid_checked_sample'] ?? $counts['rag_asset_uuid_checked_sample'] ?? 0),
+            'rag_missing_registry_in_sample' => (int) ($counts['rag_source_id_missing_registry_in_sample'] ?? 0)
+                + (int) ($counts['rag_uuid_missing_registry_in_sample'] ?? $counts['rag_asset_uuid_missing_registry_in_sample'] ?? 0),
+            'writes_enabled' => (bool) ($counts['writes_enabled'] ?? false),
+            'move_apply_enabled' => (bool) ($counts['move_apply_enabled'] ?? false),
+            'delete_apply_enabled' => (bool) ($counts['delete_apply_enabled'] ?? false),
+            'canonical_writeback_enabled' => (bool) ($counts['canonical_writeback_enabled'] ?? false),
         ];
     }
 
@@ -1540,6 +1574,66 @@ class OperatorEvidenceService
         }
     }
 
+    private function collectFileLifecycleReconciliation(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::FILE_LIFECYCLE_RECONCILIATION_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->fileReconciliation ?? app(FileRegistryReconciliationReportService::class))->collect(
+                    sampleLimit: 10,
+                    includeSamples: false
+                )
+            );
+
+            $counts = is_array($payload['counts'] ?? null) ? $payload['counts'] : [];
+            $posture = is_array($payload['posture'] ?? null) ? $payload['posture'] : [];
+            $sectionCounts = [
+                'active_files' => (int) ($counts['active_files'] ?? 0),
+                'active_missing_identity_or_path' => (int) ($counts['active_missing_identity_or_path'] ?? 0),
+                'duplicate_asset_groups' => (int) ($counts['duplicate_asset_uuid_groups'] ?? 0),
+                'duplicate_fileid_groups' => (int) ($counts['duplicate_nextcloud_fileid_groups'] ?? 0),
+                'same_content_multi_path_groups' => (int) ($counts['same_content_multi_path_groups'] ?? 0),
+                'same_filename_content_multi_path_groups' => (int) ($counts['same_filename_content_multi_path_groups'] ?? 0),
+                'mysql_downstream_orphan_rows' => (int) ($counts['mysql_downstream_orphan_rows'] ?? 0),
+                'rag_file_documents' => (int) ($counts['rag_file_documents'] ?? 0),
+                'rag_source_id_checked_sample' => (int) ($counts['rag_source_id_checked_sample'] ?? 0),
+                'rag_source_id_missing_registry_in_sample' => (int) ($counts['rag_source_id_missing_registry_in_sample'] ?? 0),
+                'rag_uuid_checked_sample' => (int) ($counts['rag_asset_uuid_checked_sample'] ?? 0),
+                'rag_uuid_missing_registry_in_sample' => (int) ($counts['rag_asset_uuid_missing_registry_in_sample'] ?? 0),
+                'writes_enabled' => (bool) ($posture['writes_enabled'] ?? false),
+                'move_apply_enabled' => (bool) ($posture['move_apply_enabled'] ?? false),
+                'delete_apply_enabled' => (bool) ($posture['delete_apply_enabled'] ?? false),
+                'rag_cleanup_enabled' => (bool) ($posture['rag_cleanup_enabled'] ?? false),
+                'face_cleanup_enabled' => (bool) ($posture['face_cleanup_enabled'] ?? false),
+                'canonical_writeback_enabled' => (bool) ($posture['canonical_writeback_enabled'] ?? false),
+            ];
+
+            $attentionCount = $sectionCounts['active_missing_identity_or_path']
+                + $sectionCounts['duplicate_asset_groups']
+                + $sectionCounts['duplicate_fileid_groups']
+                + $sectionCounts['same_content_multi_path_groups']
+                + $sectionCounts['mysql_downstream_orphan_rows']
+                + $sectionCounts['rag_source_id_missing_registry_in_sample']
+                + $sectionCounts['rag_uuid_missing_registry_in_sample'];
+
+            return $this->section(
+                $attentionCount > 0 ? 'watch' : 'healthy',
+                $sampledAt,
+                ['FileRegistryReconciliationReportService', 'file_registry', 'pgsql_rag.rag_documents'],
+                $sectionCounts,
+                $attentionCount > 0 ? 'Review files:reconcile-lifecycle --compact before designing any move/delete cleanup.' : null,
+                [
+                    'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                    'samples_included' => (bool) ($payload['samples_included'] ?? false),
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['FileRegistryReconciliationReportService'], $e, 'File lifecycle reconciliation query failed.');
+        }
+    }
+
     private function collectArcRetentionDryRun(): array
     {
         try {
@@ -1925,6 +2019,14 @@ class OperatorEvidenceService
             'throughput_per_day' => $throughput,
             'eta_days' => $kg['eta_days'] ?? null,
         ];
+        if (is_array($metrics['kg_provenance'] ?? null)) {
+            $provenance = $metrics['kg_provenance'];
+            $counts['kg_provenance_snapshot_date'] = $this->nullableString($provenance['snapshot_date'] ?? null);
+            $counts['kg_provenance_pending'] = (int) ($provenance['pending'] ?? 0);
+            $counts['kg_provenance_total'] = (int) ($provenance['total'] ?? 0);
+            $counts['kg_provenance_completion_pct'] = $provenance['completion_pct'] ?? null;
+            $counts['kg_provenance_delta_from_prev'] = $provenance['delta_from_prev'] ?? null;
+        }
         $this->appendNetBurnCounts($counts, 'kg', $ragNetBurn['lanes']['kg'] ?? null, $ragNetBurn);
 
         $status = match (true) {

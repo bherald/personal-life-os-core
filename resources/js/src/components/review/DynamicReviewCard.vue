@@ -114,6 +114,60 @@
       >
         {{ approvalDisabledTitle }}
       </div>
+      <div v-if="decisionObjectLine" class="decision-object-line">
+        {{ decisionObjectLine }}
+      </div>
+
+      <div v-if="capturePlans.length" class="capture-line-decisions" @click.stop>
+        <div class="capture-line-header">
+          Media candidates require one decision per line before approval.
+        </div>
+        <div
+          v-for="(plan, index) in capturePlans"
+          :key="`${item.unified_id || 'capture'}:${index}`"
+          class="capture-line"
+          :class="{ 'needs-identity': planNeedsIdentityReview(plan) }"
+        >
+          <div class="capture-line-copy">
+            <div class="capture-line-title">{{ index + 1 }}. {{ planTitle(plan, index) }}</div>
+            <div v-if="planMeta(plan)" class="capture-line-meta">{{ planMeta(plan) }}</div>
+            <div v-if="planNeedsIdentityReview(plan)" class="capture-line-warning">
+              Weak identity match: do not attach unless later evidence supports the full person.
+            </div>
+          </div>
+          <div class="capture-line-controls">
+            <select
+              class="capture-line-select"
+              :value="captureLineValue(index, 'action')"
+              @change="setCaptureLineDecision(index, 'action', $event.target.value)"
+            >
+              <option value="">Decision</option>
+              <option value="attach" :disabled="planNeedsIdentityReview(plan)">Attach to tree</option>
+              <option value="reject">Reject</option>
+              <option value="needs_research">Needs research</option>
+              <option value="ignore_for_now">Ignore for now</option>
+            </select>
+            <select
+              class="capture-line-select"
+              :value="captureLineValue(index, 'reason_code')"
+              @change="setCaptureLineDecision(index, 'reason_code', $event.target.value)"
+            >
+              <option value="">Reason</option>
+              <option value="source_verified">Source verified</option>
+              <option value="wrong_person">Wrong person</option>
+              <option value="partial_name_only">Partial name only</option>
+              <option value="date_conflict">Date conflict</option>
+              <option value="place_conflict">Place conflict</option>
+              <option value="duplicate">Duplicate</option>
+              <option value="insufficient_evidence">Insufficient evidence</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+        </div>
+        <div v-if="captureApproveHint" class="capture-approve-hint">
+          {{ captureApproveHint }}
+        </div>
+      </div>
 
       <!-- Actions Row -->
       <div v-if="isReviewPacket" class="card-actions card-actions-inspection">
@@ -128,14 +182,14 @@
       </div>
       <div v-else class="card-actions">
         <button
-          @click.stop="$emit('approve', item)"
+          @click.stop="$emit('approve', approvalEmitItem)"
           class="btn-approve"
-          :disabled="inFlight || approvalDisabled"
-          :title="approvalDisabledTitle"
+          :disabled="inFlight || approvalDisabled || captureApproveDisabled"
+          :title="captureApproveHint || approvalDisabledTitle"
         >
           {{ approvalLabel }}
         </button>
-        <button @click.stop="$emit('reject', item)" class="btn-reject" :disabled="inFlight">
+        <button @click.stop="$emit('reject', approvalEmitItem)" class="btn-reject" :disabled="inFlight">
           Reject
         </button>
         <!-- INF-10d: Remediation execute button -->
@@ -363,6 +417,134 @@ const packetOutcomeLine = computed(() => {
   }
 })
 
+const decisionObjectLine = computed(() => {
+  if (isReviewPacket.value) {
+    return 'Decision object: packet. Open detail before marking reviewed, rejecting, clarifying, or deferring.'
+  }
+
+  if (props.item?.review_type === 'genealogy_evidence_asset_capture' || props.item?.source === 'genealogy_evidence_asset_capture') {
+    return 'Decision object: one media-capture approval row. This does not approve every source in the packet.'
+  }
+
+  if (props.item?.review_type === 'genealogy_finding' || props.item?.source === 'genealogy_finding') {
+    return 'Decision object: advisory genealogy finding. Use Diagnostics unless it is explicitly approval-ready.'
+  }
+
+  return null
+})
+
+const capturePlans = computed(() => {
+  if (props.item?.review_type !== 'genealogy_evidence_asset_capture' && props.item?.source !== 'genealogy_evidence_asset_capture') {
+    return []
+  }
+
+  const plans = props.item?.details?.plans
+  return Array.isArray(plans) ? plans : []
+})
+
+const capturePlanCount = computed(() => {
+  if (capturePlans.value.length) {
+    return capturePlans.value.length
+  }
+
+  const raw = Number(props.item?.details?.capture_plan_count)
+  return Number.isFinite(raw) && raw > 0 ? raw : 0
+})
+
+const captureLineDecisions = ref({})
+
+const captureLineDecisionPayload = computed(() => {
+  return capturePlans.value
+    .map((plan, index) => {
+      const line = captureLineDecisions.value[index] || {}
+      const action = typeof line.action === 'string' ? line.action.trim() : ''
+
+      if (!action) {
+        return null
+      }
+
+      const payload = {
+        plan_index: index,
+        action,
+      }
+
+      if (typeof line.reason_code === 'string' && line.reason_code.trim()) {
+        payload.reason_code = line.reason_code.trim()
+      }
+
+      if (typeof line.notes === 'string' && line.notes.trim()) {
+        payload.notes = line.notes.trim().slice(0, 240)
+      }
+
+      return payload
+    })
+    .filter(Boolean)
+})
+
+const captureUnresolvedCount = computed(() => {
+  if (!capturePlanCount.value) {
+    return 0
+  }
+
+  return Math.max(0, capturePlanCount.value - captureLineDecisionPayload.value.length)
+})
+
+const captureAttachCount = computed(() => captureLineDecisionPayload.value.filter(line => line.action === 'attach').length)
+
+const captureBlockedAttachCount = computed(() => {
+  return captureLineDecisionPayload.value.filter((line) => {
+    if (line.action !== 'attach') {
+      return false
+    }
+
+    const plan = capturePlans.value[line.plan_index] || {}
+    return planNeedsIdentityReview(plan)
+  }).length
+})
+
+const captureApproveDisabled = computed(() => {
+  if (!capturePlanCount.value) {
+    return false
+  }
+
+  return captureUnresolvedCount.value > 0 || captureAttachCount.value < 1 || captureBlockedAttachCount.value > 0
+})
+
+const captureApproveHint = computed(() => {
+  if (!capturePlanCount.value) {
+    return ''
+  }
+
+  if (!capturePlans.value.length) {
+    return 'Capture plan details are missing. Refresh or regenerate this review row before approving.'
+  }
+
+  if (captureUnresolvedCount.value > 0) {
+    return `Choose a line decision for ${captureUnresolvedCount.value} remaining candidate${captureUnresolvedCount.value === 1 ? '' : 's'}.`
+  }
+
+  if (captureAttachCount.value < 1) {
+    return 'Select at least one candidate to attach, or reject the capture row.'
+  }
+
+  if (captureBlockedAttachCount.value > 0) {
+    return 'Weak identity candidates cannot be attached. Reject, ignore, or mark those lines as needing research.'
+  }
+
+  return ''
+})
+
+const approvalEmitItem = computed(() => {
+  if (!capturePlans.value.length) {
+    return props.item
+  }
+
+  return {
+    ...props.item,
+    _line_decisions: captureLineDecisionPayload.value,
+  }
+})
+
 const intakeGeneratedBadge = computed(() => {
   return props.item.category === 'genealogy'
     && typeof props.item.agent_id === 'string'
@@ -413,6 +595,43 @@ const remediationHoldTitle = (remediation) => {
   }
 
   return remediation?.risk_level === 'destructive' ? 'Requires escalation' : 'In cooldown'
+}
+
+function captureLineValue(index, key) {
+  const line = captureLineDecisions.value[index] || {}
+  return typeof line[key] === 'string' ? line[key] : ''
+}
+
+function setCaptureLineDecision(index, key, value) {
+  captureLineDecisions.value = {
+    ...captureLineDecisions.value,
+    [index]: {
+      ...(captureLineDecisions.value[index] || {}),
+      [key]: value,
+    },
+  }
+}
+
+function planTitle(plan, index) {
+  return stringOrNull(plan?.title)
+    || stringOrNull(plan?.label)
+    || stringOrNull(plan?.source_title)
+    || stringOrNull(plan?.url)
+    || `Media candidate ${index + 1}`
+}
+
+function planMeta(plan) {
+  return [
+    stringOrNull(plan?.provider),
+    stringOrNull(plan?.asset_type),
+    stringOrNull(plan?.capture_policy),
+    stringOrNull(plan?.person_key || plan?.family_key),
+  ].filter(Boolean).join(' | ')
+}
+
+function planNeedsIdentityReview(plan) {
+  const identityFit = plan?.identity_fit || {}
+  return identityFit.approval_ready === false || identityFit.partial_name_only === true
 }
 
 const cacheBuster = Date.now()
@@ -864,12 +1083,101 @@ const getImageUrl = (source) => {
   margin-top: auto;
 }
 
+.capture-line-decisions {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.7rem;
+  border: 1px solid rgba(255, 204, 102, 0.26);
+  border-radius: 0 12px 12px 0;
+  background: rgba(255, 204, 102, 0.06);
+}
+
+.capture-line-header {
+  color: var(--ops-gold);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.capture-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(14rem, 0.45fr);
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.55rem;
+  border-left: 3px solid var(--ops-sky);
+  background: rgba(99, 179, 237, 0.07);
+}
+
+.capture-line.needs-identity {
+  border-left-color: var(--ops-orange);
+  background: rgba(255, 153, 0, 0.08);
+}
+
+.capture-line-title {
+  color: var(--ops-peach);
+  font-size: 0.82rem;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.capture-line-meta,
+.capture-line-warning,
+.capture-approve-hint {
+  color: var(--ops-sky);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.capture-line-warning,
+.capture-approve-hint {
+  color: var(--ops-gold);
+}
+
+.capture-line-controls {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.capture-line-select {
+  width: 100%;
+  min-height: 2rem;
+  border: 1px solid rgba(255, 204, 102, 0.28);
+  border-radius: 0 8px 8px 0;
+  background: var(--ops-black);
+  color: var(--ops-peach);
+  font-size: 0.72rem;
+  padding: 0.25rem 0.45rem;
+}
+
+@media (max-width: 760px) {
+  .capture-line {
+    grid-template-columns: 1fr;
+  }
+}
+
 .card-actions {
   display: flex;
   gap: 0.5rem;
   margin-top: 0.75rem;
   padding-top: 0.75rem;
   border-top: 1px solid var(--ops-black);
+}
+
+.decision-object-line {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.28rem 0.55rem;
+  border: 1px solid rgba(99, 179, 237, 0.28);
+  border-radius: 0 8px 8px 0;
+  background: rgba(99, 179, 237, 0.09);
+  color: var(--ops-sky);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.3;
 }
 
 .btn-approve {

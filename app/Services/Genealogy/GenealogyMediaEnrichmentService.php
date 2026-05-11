@@ -68,6 +68,8 @@ class GenealogyMediaEnrichmentService
 
     private ?GenealogyPacketIntakeOrchestratorService $packetIntakeOrchestrator = null;
 
+    private ?GenealogyDocumentTextQualityGateService $textQualityGate = null;
+
     private ?NameVariantService $nameVariantService = null;
 
     private ?SearchCoverageService $coverageService = null;
@@ -146,6 +148,11 @@ class GenealogyMediaEnrichmentService
         }
 
         return $this->packetIntakeOrchestrator;
+    }
+
+    private function textQualityGate(): GenealogyDocumentTextQualityGateService
+    {
+        return $this->textQualityGate ??= app(GenealogyDocumentTextQualityGateService::class);
     }
 
     // -------------------------------------------------------------------------
@@ -505,13 +512,30 @@ class GenealogyMediaEnrichmentService
             return [];
         }
 
+        $quality = $this->assessTranscriptQuality($text, $media, $method);
+        if (! ($quality['allow_fact_extraction'] ?? false)) {
+            Log::info('GenealogyMediaEnrichmentService: skipped low-quality content extraction text', [
+                'media_id' => $media['id'] ?? null,
+                'media_type' => $media['media_type'] ?? 'document',
+                'extraction_method' => $method,
+                'quality' => $quality,
+            ]);
+
+            return [];
+        }
+
         $extraction = $this->localWorker()->extractStructuredFactsFromText($text, [
             'media_id' => $media['id'] ?? null,
             'media_type' => $media['media_type'] ?? 'document',
             'title' => $media['title'] ?? 'Genealogy document',
+            'source_method' => $method,
+            'text_quality' => $quality,
         ]);
 
         if ($extraction !== []) {
+            $extraction['_source_method'] = $method;
+            $extraction['_text_quality'] = $quality;
+
             Log::info('GenealogyMediaEnrichmentService: used ContentExtractionService text extraction', [
                 'media_id' => $media['id'] ?? null,
                 'media_type' => $media['media_type'] ?? 'document',
@@ -531,13 +555,29 @@ class GenealogyMediaEnrichmentService
             return [];
         }
 
+        $quality = $this->assessTranscriptQuality($text, $media, 'genealogy_media_transcription');
+        if (! ($quality['allow_fact_extraction'] ?? false)) {
+            Log::info('GenealogyMediaEnrichmentService: skipped low-quality stored transcript', [
+                'media_id' => $media['id'] ?? null,
+                'media_type' => $media['media_type'] ?? 'document',
+                'quality' => $quality,
+            ]);
+
+            return [];
+        }
+
         $result = $this->localWorker()->extractStructuredFactsFromText($text, [
             'media_id' => $media['id'] ?? null,
             'media_type' => $media['media_type'] ?? 'document',
             'title' => $media['title'] ?? 'Genealogy document',
+            'source_method' => 'genealogy_media_transcription',
+            'text_quality' => $quality,
         ]);
 
         if ($result !== []) {
+            $result['_source_method'] = 'genealogy_media_transcription';
+            $result['_text_quality'] = $quality;
+
             Log::info('GenealogyMediaEnrichmentService: used text-first extraction', [
                 'media_id' => $media['id'] ?? null,
                 'media_type' => $media['media_type'] ?? 'document',
@@ -545,6 +585,16 @@ class GenealogyMediaEnrichmentService
         }
 
         return $result;
+    }
+
+    private function assessTranscriptQuality(string $text, array $media, ?string $sourceMethod = null): array
+    {
+        return $this->textQualityGate()->assess($text, [
+            'media_id' => $media['id'] ?? null,
+            'media_type' => $media['media_type'] ?? 'document',
+            'title' => $media['title'] ?? 'Genealogy document',
+            'source_method' => $sourceMethod,
+        ]);
     }
 
     private function buildExtractionPrompt(string $docType, string $title, string $aiDescription): string
@@ -588,7 +638,9 @@ Rules:
 3. For "other" field facts, put a descriptive label in the value: "field_name: value"
 4. notes_remainder: genealogical narrative style for remaining context
 5. If you cannot read a field clearly, omit it rather than guess
-6. Return ONLY the JSON object, no other text
+6. For certificates and vital records, extract only field values that are visually readable; do not infer values from the title, filename, nearby tree person, or form labels alone.
+7. If a certificate is hard to read, return lower confidence and put "field_level_review_needed" in notes_remainder.
+8. Return ONLY the JSON object, no other text
 PROMPT;
     }
 

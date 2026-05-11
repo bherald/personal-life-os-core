@@ -6114,6 +6114,7 @@ PROMPT;
             // For PDFs, convert to image first
             $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
             $tempPdfPath = null;
+            $origin = $filePath ?: $filename;
 
             if ($extension === 'pdf') {
                 // Save content to temp file if needed (pdfToImage needs a file path)
@@ -6146,7 +6147,9 @@ PROMPT;
 
             return [
                 'success' => $result['success'],
-                'text' => $result['response'] ?? '',
+                'text' => ! empty($result['response'])
+                    ? $this->formatVisionExtractionText((string) $result['response'], $origin)
+                    : '',
                 'provider' => $result['provider'] ?? 'unknown',
             ];
 
@@ -6308,6 +6311,16 @@ PROMPT;
             contentType: 'text/plain',
             origin: $origin,
             payload: $transcription,
+        ));
+    }
+
+    private function formatVisionExtractionText(string $text, string $origin): string
+    {
+        return $this->trustBoundaryFormatter()->format(new TrustEnvelope(
+            sourceType: 'vision_image',
+            contentType: 'text/plain',
+            origin: $origin,
+            payload: $text,
         ));
     }
 

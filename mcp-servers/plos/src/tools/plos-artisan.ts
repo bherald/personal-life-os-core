@@ -5,7 +5,7 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-09-genealogy-media-intake-run-wrapper';
+export const ALLOWLIST_REVISION = '2026-05-09-file-reconcile-evidence';
 
 export const COMPACT_SCORECARD_COMMANDS = [
   'ops:mcp-health --json --compact',
@@ -75,6 +75,9 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:sync-schema-reference':   { description: 'Regenerate schema-reference.md from live DB', timeout: 30_000 },
   'ops:sync-schema-reference --diff': { description: 'Show schema drift without writing', timeout: 30_000 },
   'files:registry --status':     { description: 'File registry status', timeout: 15_000 },
+  'files:reconcile-lifecycle --compact': { description: 'Compact read-only file lifecycle reconciliation evidence', timeout: 30_000 },
+  'files:reconcile-lifecycle --json --compact': { description: 'Compact JSON read-only file lifecycle reconciliation evidence', timeout: 30_000 },
+  'files:reconcile-lifecycle --markdown --compact': { description: 'Compact markdown read-only file lifecycle reconciliation evidence', timeout: 30_000 },
   'files:thumbnails --stats':    { description: 'Thumbnail pipeline stats', timeout: 15_000 },
   'genealogy:reject-codes --json': { description: 'Genealogy reviewer reject-code rollup', timeout: 30_000 },
   'genealogy:reject-codes --json --days=30': { description: 'Genealogy reviewer reject-code 30-day rollup', timeout: 30_000 },

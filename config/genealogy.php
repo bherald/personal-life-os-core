@@ -26,6 +26,16 @@ return [
     'legacy_media_root' => $legacyMediaRoot,
     'media_scan_roots' => array_values(array_filter(array_map('trim', explode(',', $mediaScanRoots)))),
 
+    'evidence_asset_capture' => [
+        'downloads_enabled' => (bool) env('GENEALOGY_EVIDENCE_ASSET_CAPTURE_DOWNLOADS_ENABLED', true),
+        'storage_writes_enabled' => (bool) env('GENEALOGY_EVIDENCE_ASSET_CAPTURE_STORAGE_WRITES_ENABLED', true),
+        'genealogy_links_enabled' => (bool) env('GENEALOGY_EVIDENCE_ASSET_CAPTURE_LINKS_ENABLED', true),
+        'max_bytes' => (int) env('GENEALOGY_EVIDENCE_ASSET_CAPTURE_MAX_BYTES', 26214400),
+        'blocked_remote_host_suffixes' => array_values(array_filter([
+            env('GENEALOGY_EVIDENCE_CAPTURE_BLOCK_BILLIONGRAVES', true) ? 'billiongraves.com' : null,
+        ])),
+    ],
+
     // HTR (TrOCR) path-scoped policy — reserves the GTX 1060 for genealogy
     // trees. HtrTranscriptionService::transcribe() skips work when the
     // image path is not under any enabled prefix, unless the caller opts

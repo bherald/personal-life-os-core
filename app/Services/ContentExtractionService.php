@@ -830,9 +830,13 @@ class ContentExtractionService
             }
         }
 
+        $formattedTranscription = ! empty($transcription)
+            ? $this->formatMediaTranscriptionAsExternalData($transcription, $filePath, 'audio_transcript')
+            : '';
+
         // Combine metadata and transcription
         if (! empty($transcription)) {
-            $text = "**Transcription:**\n".$transcription;
+            $text = "**Transcription:**\n".$formattedTranscription;
             if (! empty($metaText)) {
                 $text .= "\n\n---\n**Audio Metadata:**\n".$metaText;
             }
@@ -845,7 +849,7 @@ class ContentExtractionService
             'text' => $text,
             'method' => $method,
             'metadata' => $metadata,
-            'transcription' => $transcription,
+            'transcription' => $formattedTranscription,
         ];
     }
 
@@ -879,9 +883,13 @@ class ContentExtractionService
             }
         }
 
+        $formattedTranscription = ! empty($transcription)
+            ? $this->formatMediaTranscriptionAsExternalData($transcription, $filePath, 'video_transcript')
+            : '';
+
         // Combine metadata and transcription
         if (! empty($transcription)) {
-            $text = "**Transcription:**\n".$transcription;
+            $text = "**Transcription:**\n".$formattedTranscription;
             if (! empty($metaText)) {
                 $text .= "\n\n---\n**Video Metadata:**\n".$metaText;
             }
@@ -894,7 +902,7 @@ class ContentExtractionService
             'text' => $text,
             'method' => $method,
             'metadata' => $metadata,
-            'transcription' => $transcription,
+            'transcription' => $formattedTranscription,
         ];
     }
 
@@ -1430,6 +1438,16 @@ class ContentExtractionService
         @rmdir(dirname($images[0] ?? ''));
 
         return implode("\n\n", $allText);
+    }
+
+    protected function formatMediaTranscriptionAsExternalData(string $transcription, string $filePath, string $sourceType): string
+    {
+        return $this->trustBoundaryFormatter()->format(new TrustEnvelope(
+            sourceType: $sourceType,
+            contentType: 'text/plain',
+            origin: $filePath,
+            payload: $transcription,
+        ));
     }
 
     protected function extractImageWithVision(string $imagePath): string

@@ -1578,6 +1578,7 @@ class PublicExportPackagingTest extends TestCase
             $section = substr($script, $start, $next === false ? null : $next - $start);
 
             if ($title === 'Files containing private paths, LAN hosts, usernames, or machine-specific values') {
+                $this->assertStringContainsString('public_candidate_scan_paths', $section, "{$title} must stay scoped to the public export candidate set.");
                 $this->assertStringContainsString('public_username_scan_excludes', $section, "{$title} must use the shared username exclusions.");
                 $this->assertStringContainsString(':!.github/FUNDING.yml', $script, 'GitHub Sponsors username is allowed only in FUNDING.yml.');
 

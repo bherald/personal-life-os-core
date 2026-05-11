@@ -13,6 +13,10 @@ class GenealogyMediaIntakeReportService
 
     private const HTR_TYPES = ['document', 'certificate', 'census', 'military'];
 
+    private const HTR_EXTENSIONS = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp'];
+
+    private const HTR_MIME_TYPES = ['image/jpeg', 'image/png', 'image/tiff', 'image/bmp', 'image/webp'];
+
     public function collect(int $treeId, ?string $root, int $limit, bool $dryRun = false): array
     {
         $root = $this->normalizeRoot($root);
@@ -201,6 +205,7 @@ class GenealogyMediaIntakeReportService
         $enrichmentTypes = $this->sqlStringList(self::ENRICHMENT_TYPES);
         $htrTypes = $this->sqlStringList(self::HTR_TYPES);
         $hasTranscript = $this->hasTranscriptSql();
+        $htrFormatSql = $this->htrFormatSql();
 
         $row = DB::selectOne("
             SELECT
@@ -208,7 +213,7 @@ class GenealogyMediaIntakeReportService
                 SUM(CASE WHEN file_exists = 1 THEN 1 ELSE 0 END) AS file_exists,
                 SUM(CASE WHEN file_exists = 1 THEN 0 ELSE 1 END) AS missing_file,
                 SUM(CASE WHEN {$hasTranscript} THEN 1 ELSE 0 END) AS has_transcription,
-                SUM(CASE WHEN media_type IN ({$htrTypes}) AND NOT ({$hasTranscript}) AND file_exists = 1 THEN 1 ELSE 0 END) AS htr_pending,
+                SUM(CASE WHEN media_type IN ({$htrTypes}) AND NOT ({$hasTranscript}) AND file_exists = 1 AND {$htrFormatSql} THEN 1 ELSE 0 END) AS htr_pending,
                 SUM(CASE WHEN media_type IN ({$htrTypes}) AND NOT ({$hasTranscript}) AND (COALESCE(file_exists, 0) <> 1 OR nextcloud_path IS NULL OR nextcloud_path = '') THEN 1 ELSE 0 END) AS htr_blocked_path,
                 SUM(CASE WHEN media_type IN ({$enrichmentTypes}) AND file_exists = 1 AND analysis_status = 'completed' AND (enrichment_status IS NULL OR enrichment_status = 'failed') THEN 1 ELSE 0 END) AS enrich_eligible,
                 SUM(CASE WHEN enrichment_status = 'completed' THEN 1 ELSE 0 END) AS enrichment_completed,
@@ -530,6 +535,15 @@ class GenealogyMediaIntakeReportService
     private function hasTranscriptSql(): string
     {
         return "(LENGTH(TRIM(COALESCE(transcription_text, ''))) > 0 OR LENGTH(TRIM(COALESCE(transcription, ''))) > 0)";
+    }
+
+    private function htrFormatSql(): string
+    {
+        $extensions = $this->sqlStringList(self::HTR_EXTENSIONS);
+        $mimeTypes = $this->sqlStringList(self::HTR_MIME_TYPES);
+
+        return "(LOWER(COALESCE(file_format, SUBSTRING_INDEX(local_filename, '.', -1), '')) IN ({$extensions})
+            OR LOWER(COALESCE(mime_type, '')) IN ({$mimeTypes}))";
     }
 
     /**

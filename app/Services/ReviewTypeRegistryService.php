@@ -230,7 +230,7 @@ class ReviewTypeRegistryService
     /**
      * Approve an item by unified ID
      */
-    public function approveItem(string $unifiedId, ?string $notes = null, ?string $reasonCode = null): array
+    public function approveItem(string $unifiedId, ?string $notes = null, ?string $reasonCode = null, array $decisionMeta = []): array
     {
         [$typeName, $id] = $this->parseUnifiedId($unifiedId);
         $type = $this->getType($typeName);
@@ -246,7 +246,7 @@ class ReviewTypeRegistryService
                 $type['approve_method'],
                 $id,
                 $notes,
-                $this->decisionMeta($reasonCode)
+                $this->decisionMeta($reasonCode, $decisionMeta)
             );
         }
 
@@ -269,7 +269,7 @@ class ReviewTypeRegistryService
     /**
      * Reject an item by unified ID
      */
-    public function rejectItem(string $unifiedId, ?string $reason = null, ?string $reasonCode = null): array
+    public function rejectItem(string $unifiedId, ?string $reason = null, ?string $reasonCode = null, array $decisionMeta = []): array
     {
         [$typeName, $id] = $this->parseUnifiedId($unifiedId);
         $type = $this->getType($typeName);
@@ -285,7 +285,7 @@ class ReviewTypeRegistryService
                 $type['reject_method'],
                 $id,
                 $reason,
-                $this->decisionMeta($reasonCode)
+                $this->decisionMeta($reasonCode, $decisionMeta)
             );
         }
 
@@ -312,17 +312,17 @@ class ReviewTypeRegistryService
     /**
      * Request clarification for an item by unified ID.
      */
-    public function clarifyItem(string $unifiedId, ?string $notes = null, ?string $reasonCode = null): array
+    public function clarifyItem(string $unifiedId, ?string $notes = null, ?string $reasonCode = null, array $decisionMeta = []): array
     {
-        return $this->callServiceActionItem($unifiedId, 'clarify', $notes, 'clarification', $reasonCode);
+        return $this->callServiceActionItem($unifiedId, 'clarify', $notes, 'clarification', $reasonCode, $decisionMeta);
     }
 
     /**
      * Defer an item by unified ID.
      */
-    public function deferItem(string $unifiedId, ?string $notes = null, ?string $reasonCode = null): array
+    public function deferItem(string $unifiedId, ?string $notes = null, ?string $reasonCode = null, array $decisionMeta = []): array
     {
-        return $this->callServiceActionItem($unifiedId, 'defer', $notes, 'defer', $reasonCode);
+        return $this->callServiceActionItem($unifiedId, 'defer', $notes, 'defer', $reasonCode, $decisionMeta);
     }
 
     /**
@@ -375,7 +375,8 @@ class ReviewTypeRegistryService
         string $method,
         ?string $notes,
         string $label,
-        ?string $reasonCode = null
+        ?string $reasonCode = null,
+        array $decisionMeta = []
     ): array {
         [$typeName, $id] = $this->parseUnifiedId($unifiedId);
         $type = $this->getType($typeName);
@@ -390,7 +391,7 @@ class ReviewTypeRegistryService
                 $method,
                 $id,
                 $notes,
-                $this->decisionMeta($reasonCode)
+                $this->decisionMeta($reasonCode, $decisionMeta)
             );
         }
 
@@ -1353,18 +1354,20 @@ class ReviewTypeRegistryService
     }
 
     /**
-     * @return array<string, string>
+     * @param  array<string, mixed>  $extra
+     * @return array<string, mixed>
      */
-    private function decisionMeta(?string $reasonCode): array
+    private function decisionMeta(?string $reasonCode, array $extra = []): array
     {
+        $meta = $extra;
         $reasonCode = trim((string) $reasonCode);
-        if ($reasonCode === '') {
-            return [];
+        if ($reasonCode !== '') {
+            // Target decision services own reason-code normalization because their
+            // vocabularies are review-type specific.
+            $meta['reason_code'] = $reasonCode;
         }
 
-        // Target decision services own reason-code normalization because their
-        // vocabularies are review-type specific.
-        return ['reason_code' => $reasonCode];
+        return $meta;
     }
 
     private function thirdParameterAcceptsDecisionMeta(\ReflectionParameter $parameter): bool

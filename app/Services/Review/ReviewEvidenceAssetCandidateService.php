@@ -15,12 +15,13 @@ class ReviewEvidenceAssetCandidateService
             ?? $this->positiveInt($details['target_person_id'] ?? null)
             ?? $this->positiveInt($details['identity']['person_id'] ?? null)
             ?? $this->positiveInt($details['identity']['target_person_id'] ?? null);
+        $targetName = $this->targetNameParts($details);
 
         $candidates = [];
 
         foreach (['evidence_assets', 'source_assets', 'media_assets', 'assets'] as $key) {
             foreach ($this->arrayItems($details[$key] ?? null) as $asset) {
-                $candidate = $this->candidateFromValue($asset, $personId, $key);
+                $candidate = $this->candidateFromValue($asset, $personId, $key, null, $targetName);
                 if ($candidate !== null) {
                     $candidates[] = $candidate;
                 }
@@ -33,25 +34,25 @@ class ReviewEvidenceAssetCandidateService
             }
 
             foreach ($this->arrayItems($source['assets'] ?? null) as $asset) {
-                $candidate = $this->candidateFromValue($asset, $personId, 'sources.assets', $source);
+                $candidate = $this->candidateFromValue($asset, $personId, 'sources.assets', $source, $targetName);
                 if ($candidate !== null) {
                     $candidates[] = $candidate;
                 }
             }
 
-            $candidate = $this->candidateFromValue($source, $personId, 'sources', $source);
+            $candidate = $this->candidateFromValue($source, $personId, 'sources', $source, $targetName);
             if ($candidate !== null) {
                 $candidates[] = $candidate;
             }
         }
 
-        $sourceLocator = $this->candidateFromValue($details['source_locator'] ?? null, $personId, 'source_locator');
+        $sourceLocator = $this->candidateFromValue($details['source_locator'] ?? null, $personId, 'source_locator', null, $targetName);
         if ($sourceLocator !== null) {
             $candidates[] = $sourceLocator;
         }
 
         foreach ($this->arrayItems($details['source_locators'] ?? null) as $locator) {
-            $candidate = $this->candidateFromValue($locator, $personId, 'source_locators');
+            $candidate = $this->candidateFromValue($locator, $personId, 'source_locators', null, $targetName);
             if ($candidate !== null) {
                 $candidates[] = $candidate;
             }
@@ -62,9 +63,10 @@ class ReviewEvidenceAssetCandidateService
 
     /**
      * @param  array<string, mixed>|null  $sourceContext
+     * @param  array<string, string>|null  $targetName
      * @return array<string, mixed>|null
      */
-    private function candidateFromValue(mixed $value, ?int $personId, string $origin, ?array $sourceContext = null): ?array
+    private function candidateFromValue(mixed $value, ?int $personId, string $origin, ?array $sourceContext = null, ?array $targetName = null): ?array
     {
         $asset = is_array($value) ? $value : ['url' => $value];
         $locator = $this->firstScalar($asset, [
@@ -110,6 +112,7 @@ class ReviewEvidenceAssetCandidateService
             'host' => $parsed['host'],
             'extension' => $parsed['extension'],
             'person_id' => $personId,
+            'identity_fit' => $this->identityFit($asset, $sourceContext, $targetName),
             'target_storage' => 'ft_reference_area',
             'download_attempted' => false,
             'mutation_allowed' => false,
@@ -186,7 +189,7 @@ class ReviewEvidenceAssetCandidateService
     private function assetType(array $asset, array $parsed): string
     {
         $explicit = strtolower((string) ($this->firstScalar($asset, ['asset_type', 'type', 'media_type']) ?? ''));
-        if (in_array($explicit, ['image', 'pdf', 'audio', 'html', 'webpage'], true)) {
+        if (in_array($explicit, ['image', 'pdf', 'audio', 'video', 'html', 'webpage'], true)) {
             return $explicit === 'webpage' ? 'html' : $explicit;
         }
 
@@ -199,6 +202,9 @@ class ReviewEvidenceAssetCandidateService
         }
         if (str_contains($contentType, 'audio/')) {
             return 'audio';
+        }
+        if (str_contains($contentType, 'video/')) {
+            return 'video';
         }
         if (str_contains($contentType, 'text/html')) {
             return 'html';
@@ -213,6 +219,9 @@ class ReviewEvidenceAssetCandidateService
         }
         if (in_array($extension, ['mp3', 'wav', 'ogg', 'flac', 'm4a'], true)) {
             return 'audio';
+        }
+        if (in_array($extension, ['mp4', 'm4v', 'mov', 'webm'], true)) {
+            return 'video';
         }
         if (in_array($extension, ['html', 'htm'], true)) {
             return 'html';
@@ -354,6 +363,142 @@ class ReviewEvidenceAssetCandidateService
     private function positiveInt(mixed $value): ?int
     {
         return is_numeric($value) && (int) $value > 0 ? (int) $value : null;
+    }
+
+    /**
+     * @return array<string, string>|null
+     */
+    private function targetNameParts(array $details): ?array
+    {
+        $identity = is_array($details['identity'] ?? null) ? $details['identity'] : [];
+        $label = $this->firstScalar($details, ['person_label', 'target_person_label', 'target_name'])
+            ?? $this->firstScalar($identity, ['person_label', 'target_person_label', 'name', 'full_name']);
+        $given = $this->firstScalar($details, ['given_name', 'target_given_name'])
+            ?? $this->firstScalar($identity, ['given_name', 'target_given_name']);
+        $surname = $this->firstScalar($details, ['surname', 'target_surname'])
+            ?? $this->firstScalar($identity, ['surname', 'target_surname']);
+
+        if ($label !== null && ($given === null || $surname === null)) {
+            $parts = preg_split('/\s+/', trim($label)) ?: [];
+            if ($given === null && count($parts) >= 1) {
+                $given = $parts[0];
+            }
+            if ($surname === null && count($parts) >= 2) {
+                $surname = $parts[count($parts) - 1];
+            }
+        }
+
+        $given = $this->safeNameToken($given);
+        $surname = $this->safeNameToken($surname);
+        $full = trim(implode(' ', array_filter([$given, $surname])));
+
+        if ($given === null && $surname === null) {
+            return null;
+        }
+
+        return [
+            'given' => $given ?? '',
+            'surname' => $surname ?? '',
+            'full' => $full,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $sourceContext
+     * @param  array<string, string>|null  $targetName
+     * @return array<string, mixed>|null
+     */
+    private function identityFit(array $asset, ?array $sourceContext, ?array $targetName): ?array
+    {
+        if ($targetName === null) {
+            return null;
+        }
+
+        $given = $targetName['given'] ?? '';
+        $surname = $targetName['surname'] ?? '';
+        if ($given === '' && $surname === '') {
+            return null;
+        }
+
+        $text = $this->identityText($asset, $sourceContext);
+        if ($text === '') {
+            return [
+                'schema' => 'review_evidence_asset_identity_fit.v1',
+                'given_name_present' => false,
+                'surname_present' => false,
+                'full_name_match' => false,
+                'partial_name_only' => false,
+                'approval_ready' => true,
+                'supporting_signal_count' => 0,
+            ];
+        }
+
+        $givenPresent = $given !== '' && $this->containsNameToken($text, $given);
+        $surnamePresent = $surname !== '' && $this->containsNameToken($text, $surname);
+        $fullNameMatch = ($targetName['full'] ?? '') !== '' && str_contains($text, $this->normalizeNameText($targetName['full']));
+        $supportingSignalCount = ($surnamePresent ? 1 : 0) + ($fullNameMatch ? 1 : 0);
+        $partialNameOnly = $givenPresent && $surname !== '' && ! $surnamePresent && ! $fullNameMatch;
+
+        return [
+            'schema' => 'review_evidence_asset_identity_fit.v1',
+            'given_name_present' => $givenPresent,
+            'surname_present' => $surnamePresent,
+            'full_name_match' => $fullNameMatch,
+            'partial_name_only' => $partialNameOnly,
+            'approval_ready' => ! $partialNameOnly,
+            'supporting_signal_count' => $supportingSignalCount,
+            'blocker' => $partialNameOnly ? 'partial_name_only_without_surname_or_full_name_support' : null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $sourceContext
+     */
+    private function identityText(array $asset, ?array $sourceContext): string
+    {
+        $parts = [];
+        foreach ([$asset, $sourceContext ?? []] as $values) {
+            foreach (['label', 'title', 'name', 'filename', 'summary', 'description', 'claim_summary', 'extract'] as $key) {
+                $value = $values[$key] ?? null;
+                if (is_scalar($value) && trim((string) $value) !== '') {
+                    $parts[] = (string) $value;
+                }
+            }
+        }
+
+        return $this->normalizeNameText(implode(' ', $parts));
+    }
+
+    private function containsNameToken(string $haystack, string $needle): bool
+    {
+        $needle = $this->normalizeNameText($needle);
+        if ($needle === '') {
+            return false;
+        }
+
+        return preg_match('/(?:^|[^a-z0-9])'.preg_quote($needle, '/').'(?:$|[^a-z0-9])/', $haystack) === 1;
+    }
+
+    private function normalizeNameText(string $value): string
+    {
+        $value = strtolower(strip_tags($value));
+        $value = preg_replace('/[^a-z0-9]+/', ' ', $value) ?? '';
+
+        return trim(preg_replace('/\s+/', ' ', $value) ?? '');
+    }
+
+    private function safeNameToken(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+
+        return mb_substr($value, 0, 80);
     }
 
     /**

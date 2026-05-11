@@ -21,6 +21,7 @@ use Illuminate\Console\Command;
  * Usage:
  *   php artisan ops:smoke-test              # Full test suite
  *   php artisan ops:smoke-test --quick      # Registry + jobs only (10s)
+ *   php artisan ops:smoke-test --allow-schema-drift # Downgrade local schema drift to warnings
  *   php artisan ops:smoke-test --fix        # Auto-disable broken registry entries
  *   php artisan ops:smoke-test --json       # Machine-readable output
  */
@@ -29,6 +30,7 @@ class SmokeTestCommand extends Command
     protected $signature = 'ops:smoke-test
                             {--quick : Run only fast checks (registry + jobs)}
                             {--fix : Auto-disable broken tool registry entries}
+                            {--allow-schema-drift : Downgrade local schema drift failures to warnings}
                             {--json : Output results as JSON}';
 
     protected $description = 'Validate tool registry, scheduled jobs, SKILL.md, pipeline queries, and LLM pool';
@@ -41,7 +43,8 @@ class SmokeTestCommand extends Command
 
         $report = $smokeTest->run(
             quick: (bool) $this->option('quick'),
-            fix: (bool) $this->option('fix')
+            fix: (bool) $this->option('fix'),
+            allowSchemaDrift: (bool) $this->option('allow-schema-drift')
         );
 
         if ($this->option('json')) {

@@ -83,14 +83,16 @@ class OperatorEvidenceCommand extends Command
 
         $kgRag = is_array($headlines['kg_rag'] ?? null) ? $headlines['kg_rag'] : [];
         $this->line(sprintf(
-            'kg-rag: kg=%s drain=%s scale=%s kg_pending=%s raptor=%s sentence=%s documents=%s',
+            'kg-rag: kg=%s drain=%s scale=%s kg_pending=%s raptor=%s sentence=%s documents=%s provenance_pending=%s provenance_completion=%s',
             $kgRag['kg_status'] ?? 'unavailable',
             $kgRag['rag_drain_status'] ?? 'unavailable',
             $kgRag['rag_scale_status'] ?? 'unavailable',
             $kgRag['kg_pending'] ?? '-',
             $kgRag['raptor_pending'] ?? '-',
             $kgRag['sentence_pending'] ?? '-',
-            $kgRag['documents'] ?? '-'
+            $kgRag['documents'] ?? '-',
+            $kgRag['kg_provenance_pending'] ?? '-',
+            $kgRag['kg_provenance_completion_pct'] ?? '-'
         ));
 
         $review = is_array($headlines['review_backlog'] ?? null) ? $headlines['review_backlog'] : [];
@@ -166,6 +168,22 @@ class OperatorEvidenceCommand extends Command
             $dba['arc_rows_total_estimate'] ?? '-',
             $dba['arc_total_gb'] ?? '-',
             $dba['arc_retention_dry_run_status'] ?? '-'
+        ));
+
+        $fileLifecycle = is_array($headlines['file_lifecycle'] ?? null) ? $headlines['file_lifecycle'] : [];
+        $this->line(sprintf(
+            'file-lifecycle: %s active=%s move_or_duplicate_groups=%s identity_conflicts=%s mysql_orphans=%s rag_checked=%s rag_missing=%s writes=%s move_apply=%s delete_apply=%s canonical_writeback=%s',
+            $fileLifecycle['status'] ?? 'unavailable',
+            $fileLifecycle['active_files'] ?? '-',
+            $fileLifecycle['move_or_duplicate_candidate_groups'] ?? '-',
+            $fileLifecycle['identity_conflict_groups'] ?? '-',
+            $fileLifecycle['mysql_downstream_orphan_rows'] ?? '-',
+            $fileLifecycle['rag_checked_sample'] ?? '-',
+            $fileLifecycle['rag_missing_registry_in_sample'] ?? '-',
+            $this->yesNo($fileLifecycle['writes_enabled'] ?? null),
+            $this->yesNo($fileLifecycle['move_apply_enabled'] ?? null),
+            $this->yesNo($fileLifecycle['delete_apply_enabled'] ?? null),
+            $this->yesNo($fileLifecycle['canonical_writeback_enabled'] ?? null)
         ));
 
         $genealogyTriage = is_array($headlines['genealogy_agent_triage'] ?? null)

@@ -2,6 +2,7 @@
 
 namespace App\Engine;
 
+use App\DTOs\TrustEnvelope;
 use App\Exceptions\AI\AIExceptionFactory;
 use App\Exceptions\AI\RateLimitException;
 use App\Exceptions\AI\TransientException;
@@ -9,6 +10,7 @@ use App\Services\CircuitBreaker;
 use App\Services\LLMPoolManagerService;
 use App\Services\RetryService;
 use App\Services\TimeoutManager;
+use App\Services\TrustBoundaryFormatterService;
 use Exception;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
@@ -55,6 +57,8 @@ class AIRouter
 
     private MCPRouter $mcpRouter;
 
+    private ?TrustBoundaryFormatterService $trustBoundaryFormatter = null;
+
     private string $agentProxyUrl;
 
     public function __construct()
@@ -100,6 +104,33 @@ class AIRouter
         } catch (\Throwable $e) {
             return [];
         }
+    }
+
+    private function trustBoundaryFormatter(): TrustBoundaryFormatterService
+    {
+        return $this->trustBoundaryFormatter ??= app(TrustBoundaryFormatterService::class);
+    }
+
+    private function formatMcpToolResultForPrompt(string $server, string $tool, mixed $payload, bool $isError = false): string
+    {
+        $encoded = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if (! is_string($encoded)) {
+            $encoded = $isError ? '{"error":"Unable to encode MCP tool error."}' : '{"error":"Unable to encode MCP tool result."}';
+        }
+
+        $wrapped = $this->trustBoundaryFormatter()->format(new TrustEnvelope(
+            sourceType: $isError ? 'mcp_tool_error' : 'mcp_tool_result',
+            contentType: 'application/json',
+            origin: $server.'.'.$tool,
+            payload: $encoded,
+            maxChars: (int) config('mcp.ollama_tool_calling.tool_result_max_chars', 6000),
+        ));
+
+        $instruction = $isError
+            ? 'Explain this error to the user in natural language.'
+            : 'Summarize this information in natural language for the user. Do not output raw JSON.';
+
+        return $wrapped."\n\n[{$instruction}]";
     }
 
     /**
@@ -2057,13 +2088,10 @@ class AIRouter
                         try {
                             $result = $this->mcpRouter->callTool($server, $tool, $arguments);
 
-                            // Add tool result to message history with instruction to summarize
-                            $toolResultContent = json_encode($result, JSON_PRETTY_PRINT);
-
-                            // Add a hint to help the LLM understand it should summarize
+                            // Add tool result to message history with instruction to summarize.
                             $messages[] = [
                                 'role' => 'tool',
-                                'content' => $toolResultContent."\n\n[Summarize this information in natural language for the user. Do not output raw JSON.]",
+                                'content' => $this->formatMcpToolResultForPrompt($server, $tool, $result),
                                 'name' => $functionName,
                             ];
 
@@ -2077,7 +2105,7 @@ class AIRouter
                             // Add error to message history
                             $messages[] = [
                                 'role' => 'tool',
-                                'content' => json_encode(['error' => $e->getMessage()]),
+                                'content' => $this->formatMcpToolResultForPrompt($server, $tool, ['error' => $e->getMessage()], true),
                                 'name' => $functionName,
                             ];
                         }
@@ -2321,11 +2349,10 @@ class AIRouter
                         try {
                             $toolResult = $this->mcpRouter->callTool($server, $tool, $arguments);
 
-                            // Add tool result to conversation with instruction to summarize
-                            $toolResultContent = json_encode($toolResult, JSON_PRETTY_PRINT);
+                            // Add tool result to conversation with instruction to summarize.
                             $messages[] = [
                                 'role' => 'tool',
-                                'content' => $toolResultContent."\n\n[Summarize this information in natural language for the user. Do not output raw JSON.]",
+                                'content' => $this->formatMcpToolResultForPrompt($server, $tool, $toolResult),
                             ];
 
                             yield json_encode(['type' => 'tool_result', 'server' => $server, 'tool' => $tool])."\n";
@@ -2339,7 +2366,7 @@ class AIRouter
 
                             $messages[] = [
                                 'role' => 'tool',
-                                'content' => json_encode(['error' => $e->getMessage()])."\n\n[Explain this error to the user in natural language.]",
+                                'content' => $this->formatMcpToolResultForPrompt($server, $tool, ['error' => $e->getMessage()], true),
                             ];
 
                             yield json_encode(['type' => 'tool_error', 'server' => $server, 'tool' => $tool, 'error' => $e->getMessage()])."\n";

@@ -118,6 +118,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'rag:backlog-report --json',
     'rag:backlog-report --compact',
     'rag:backlog-report --json --compact',
+    'files:reconcile-lifecycle --compact',
+    'files:reconcile-lifecycle --json --compact',
+    'files:reconcile-lifecycle --markdown --compact',
     'rag:scale-baseline --json',
     'rag:scale-baseline --markdown',
     'rag:scale-review --json',
@@ -185,6 +188,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:face-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --markdown --dry-run/);
+  assert.match(listing, /php artisan files:reconcile-lifecycle --compact/);
+  assert.match(listing, /php artisan files:reconcile-lifecycle --json --compact/);
+  assert.match(listing, /php artisan files:reconcile-lifecycle --markdown --compact/);
   assert.match(listing, /php artisan rag:scale-baseline --json/);
   assert.match(listing, /php artisan rag:scale-review --json/);
   assert.match(listing, /php artisan rag:scale-review --markdown/);
@@ -270,6 +276,20 @@ test('next-target focus variants stay blocked unless they are canonical allowlis
 });
 
 test('near-miss write commands remain blocked by exact allowlist matching', async () => {
+  for (const command of [
+    'files:reconcile-lifecycle --samples --json',
+    'files:reconcile-lifecycle --json --samples',
+    'files:reconcile-lifecycle --limit=100 --json --compact',
+    'files:reconcile-lifecycle --execute',
+    'files:reconcile-lifecycle --compact --json',
+  ]) {
+    const result = await plosArtisan({ command, on_prod: false });
+
+    assert.match(result, /Blocked:/, `${command} should be blocked`);
+    assert.match(result, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
+    assert.match(result, /Use command "list"/);
+  }
+
   const notifyResult = await plosArtisan({
     command: 'ops:face-telemetry-report --markdown --hours=168 --notify',
     on_prod: false,

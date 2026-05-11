@@ -11,7 +11,8 @@ class GenealogyIntakePageTextExtractionService
     public function __construct(
         private readonly ContentExtractionService $contentExtraction,
         private readonly NextcloudFileApiService $nextcloud,
-        private readonly ?HtrTranscriptionService $htr = null
+        private readonly ?HtrTranscriptionService $htr = null,
+        private readonly ?GenealogyDocumentTextQualityGateService $qualityGate = null
     ) {}
 
     public function extractDocumentText(array $document): array
@@ -33,25 +34,35 @@ class GenealogyIntakePageTextExtractionService
 
         $text = $this->normalizeText((string) ($result['text'] ?? ''));
         if (($result['success'] ?? false) && $text !== '') {
-            return [
-                'success' => true,
-                'summary_base' => $this->summarizeText($text),
-                'raw_text' => $text,
-                'source_method' => (string) ($result['method'] ?? 'unknown'),
-            ];
+            $sourceMethod = (string) ($result['method'] ?? 'unknown');
+            $quality = $this->assessQuality($text, $document, $sourceMethod);
+            if (($quality['allow_fact_extraction'] ?? false) || ! $this->shouldQuarantinePrimaryExtraction($document, $sourceMethod)) {
+                return $this->successResult($text, $sourceMethod, $quality);
+            }
         }
 
         $storedTranscript = $this->lookupStoredTranscript($sourcePath);
         if ($storedTranscript !== '') {
-            return $this->successResult($storedTranscript, 'genealogy_media_transcription');
+            $quality = $this->assessQuality($storedTranscript, $document, 'genealogy_media_transcription');
+            if ($quality['allow_fact_extraction'] ?? false) {
+                return $this->successResult($storedTranscript, 'genealogy_media_transcription', $quality);
+            }
         }
 
         $htrTranscript = $this->extractHandwrittenText($document, $localPath);
         if ($htrTranscript !== '') {
-            return $this->successResult($htrTranscript, 'htr_transcription');
+            $quality = $this->assessQuality($htrTranscript, $document, 'htr_transcription');
+            if ($quality['allow_fact_extraction'] ?? false) {
+                return $this->successResult($htrTranscript, 'htr_transcription', $quality);
+            }
         }
 
-        return $this->emptyResult((string) ($result['error'] ?? 'no_text_extracted'));
+        $reason = (string) ($result['error'] ?? 'no_text_extracted');
+        if (($result['success'] ?? false) && $text !== '') {
+            $reason = 'low_quality_text_requires_field_review';
+        }
+
+        return $this->emptyResult($reason);
     }
 
     private function resolveReadablePath(string $sourcePath): ?string
@@ -126,19 +137,48 @@ class GenealogyIntakePageTextExtractionService
         return in_array($extension, ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp', 'gif'], true);
     }
 
-    private function successResult(string $text, string $sourceMethod): array
+    private function successResult(string $text, string $sourceMethod, ?array $quality = null): array
     {
-        return [
+        $result = [
             'success' => true,
             'summary_base' => $this->summarizeText($text),
             'raw_text' => $text,
             'source_method' => $sourceMethod,
         ];
+
+        if ($quality !== null) {
+            $result['text_quality'] = $quality;
+        }
+
+        return $result;
     }
 
     private function htr(): HtrTranscriptionService
     {
         return $this->htr ?? app(HtrTranscriptionService::class);
+    }
+
+    private function qualityGate(): GenealogyDocumentTextQualityGateService
+    {
+        return $this->qualityGate ?? app(GenealogyDocumentTextQualityGateService::class);
+    }
+
+    private function assessQuality(string $text, array $document, string $sourceMethod): array
+    {
+        return $this->qualityGate()->assess($text, [
+            'document_type' => (string) ($document['document_type'] ?? 'document'),
+            'title' => (string) ($document['source_name'] ?? $document['name'] ?? ''),
+            'source_method' => $sourceMethod,
+        ]);
+    }
+
+    private function shouldQuarantinePrimaryExtraction(array $document, string $sourceMethod): bool
+    {
+        $documentType = strtolower(trim((string) ($document['document_type'] ?? '')));
+        $method = strtolower(trim($sourceMethod));
+
+        return in_array($method, ['tesseract', 'ocr', 'htr', 'htr_transcription', 'vision'], true)
+            || in_array($documentType, ['image', 'certificate', 'vital_record'], true);
     }
 
     private function emptyResult(string $reason): array
