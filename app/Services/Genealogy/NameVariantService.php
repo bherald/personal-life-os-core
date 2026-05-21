@@ -3,9 +3,9 @@
 namespace App\Services\Genealogy;
 
 use App\Support\PgVector;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Name Variant Service
@@ -15,6 +15,28 @@ use Exception;
  */
 class NameVariantService
 {
+    private const NAME_TYPES = [
+        'birth',
+        'married',
+        'maiden',
+        'alias',
+        'nickname',
+        'religious',
+        'phonetic',
+    ];
+
+    private const NAME_TYPE_ALIASES = [
+        'aka' => 'alias',
+        'census_error' => 'alias',
+        'common' => 'alias',
+        'immigration' => 'alias',
+        'native' => 'alias',
+        'official' => 'birth',
+        'other' => 'alias',
+        'translation' => 'alias',
+        'variant' => 'alias',
+    ];
+
     private ?AIService $aiService = null;
 
     private function getAIService(): \App\Services\AIService
@@ -22,6 +44,7 @@ class NameVariantService
         if ($this->aiService === null) {
             $this->aiService = app(\App\Services\AIService::class);
         }
+
         return $this->aiService;
     }
 
@@ -33,41 +56,59 @@ class NameVariantService
         ?int $sourceId = null,
         ?string $notes = null
     ): int {
-        $fullName = trim(($givenNames ?? '') . ' ' . ($surname ?? ''));
+        $fullName = trim(($givenNames ?? '').' '.($surname ?? ''));
+        $normalizedType = $this->normalizeNameType($nameType);
+        $rawType = strtolower(trim($nameType));
+
+        if ($rawType !== $normalizedType) {
+            $notes = trim((string) $notes);
+            $notes = trim($notes.($notes !== '' ? "\n" : '')."Original variant type: {$nameType}.");
+        }
 
         DB::insert(
-            "INSERT INTO genealogy_name_variants (person_id, name_type, given_names, surname, full_name, source_id, notes, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, NOW())",
-            [$personId, $nameType, $givenNames, $surname, $fullName ?: null, $sourceId, $notes]
+            'INSERT INTO genealogy_name_variants (person_id, name_type, given_names, surname, full_name, source_id, notes, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NOW())',
+            [$personId, $normalizedType, $givenNames, $surname, $fullName ?: null, $sourceId, $notes]
         );
 
         return (int) DB::getPdo()->lastInsertId();
     }
 
+    private function normalizeNameType(string $nameType): string
+    {
+        $value = strtolower(trim($nameType));
+
+        if (in_array($value, self::NAME_TYPES, true)) {
+            return $value;
+        }
+
+        return self::NAME_TYPE_ALIASES[$value] ?? 'alias';
+    }
+
     public function getVariants(int $personId): array
     {
         return DB::select(
-            "SELECT gnv.*, gs.title as source_title
+            'SELECT gnv.*, gs.title as source_title
              FROM genealogy_name_variants gnv
              LEFT JOIN genealogy_sources gs ON gs.id = gnv.source_id
              WHERE gnv.person_id = ?
-             ORDER BY gnv.name_type ASC, gnv.created_at ASC",
+             ORDER BY gnv.name_type ASC, gnv.created_at ASC',
             [$personId]
         );
     }
 
     public function searchByVariant(string $name, int $treeId): array
     {
-        $searchTerm = '%' . $name . '%';
+        $searchTerm = '%'.$name.'%';
 
         return DB::select(
-            "SELECT DISTINCT gp.id, gp.given_name, gp.surname, gp.sex, gp.birth_date,
+            'SELECT DISTINCT gp.id, gp.given_name, gp.surname, gp.sex, gp.birth_date,
                     gnv.name_type, gnv.full_name as variant_name
              FROM genealogy_name_variants gnv
              JOIN genealogy_persons gp ON gp.id = gnv.person_id
              WHERE gp.tree_id = ?
              AND (gnv.full_name LIKE ? OR gnv.given_names LIKE ? OR gnv.surname LIKE ?)
-             ORDER BY gp.surname, gp.given_name",
+             ORDER BY gp.surname, gp.given_name',
             [$treeId, $searchTerm, $searchTerm, $searchTerm]
         );
     }
@@ -75,13 +116,13 @@ class NameVariantService
     public function suggestVariants(int $personId): array
     {
         $person = DB::selectOne(
-            "SELECT gp.*, gp.given_name, gp.surname, gp.sex
+            'SELECT gp.*, gp.given_name, gp.surname, gp.sex
              FROM genealogy_persons gp
-             WHERE gp.id = ?",
+             WHERE gp.id = ?',
             [$personId]
         );
 
-        if (!$person) {
+        if (! $person) {
             return [];
         }
 
@@ -90,12 +131,12 @@ class NameVariantService
         $existingTypes = array_column($existingVariants, 'name_type');
 
         // 1. Maiden name from marriage records (for females)
-        if ($person->sex === 'F' && !in_array('maiden', $existingTypes)) {
+        if ($person->sex === 'F' && ! in_array('maiden', $existingTypes)) {
             $families = DB::select(
-                "SELECT gf.* FROM genealogy_families gf WHERE gf.wife_id = ?",
+                'SELECT gf.* FROM genealogy_families gf WHERE gf.wife_id = ?',
                 [$personId]
             );
-            if (!empty($families)) {
+            if (! empty($families)) {
                 $suggestions[] = [
                     'type' => 'maiden',
                     'reason' => 'Person has marriage records - maiden name may differ',
@@ -130,7 +171,7 @@ class NameVariantService
         ];
 
         $firstName = explode(' ', $person->given_name ?? '')[0] ?? '';
-        if (!in_array('nickname', $existingTypes)) {
+        if (! in_array('nickname', $existingTypes)) {
             foreach ($nicknameMap as $formal => $nicknames) {
                 if (strcasecmp($firstName, $formal) === 0) {
                     foreach ($nicknames as $nick) {
@@ -159,12 +200,12 @@ class NameVariantService
         }
 
         // 3. Soundex variants for surname
-        if ($person->surname && !in_array('phonetic', $existingTypes)) {
+        if ($person->surname && ! in_array('phonetic', $existingTypes)) {
             $soundex = soundex($person->surname);
             $phonetic = DB::select(
-                "SELECT DISTINCT surname FROM genealogy_persons
+                'SELECT DISTINCT surname FROM genealogy_persons
                  WHERE SOUNDEX(surname) = ? AND surname != ? AND tree_id = (SELECT tree_id FROM genealogy_persons WHERE id = ?)
-                 LIMIT 5",
+                 LIMIT 5',
                 [$soundex, $person->surname, $personId]
             );
 
@@ -194,9 +235,9 @@ class NameVariantService
                 [$primaryPersonId, $variant->name_type, $variant->surname]
             );
 
-            if (!$exists) {
+            if (! $exists) {
                 DB::update(
-                    "UPDATE genealogy_name_variants SET person_id = ? WHERE id = ?",
+                    'UPDATE genealogy_name_variants SET person_id = ? WHERE id = ?',
                     [$primaryPersonId, $variant->id]
                 );
                 $merged++;
@@ -214,7 +255,7 @@ class NameVariantService
 
     public function deleteVariant(int $variantId): bool
     {
-        return DB::delete("DELETE FROM genealogy_name_variants WHERE id = ?", [$variantId]) > 0;
+        return DB::delete('DELETE FROM genealogy_name_variants WHERE id = ?', [$variantId]) > 0;
     }
 
     // ========================================================================
@@ -224,7 +265,7 @@ class NameVariantService
     /**
      * Generate all phonetic variants for a surname using multiple algorithms
      *
-     * @param string $surname Surname to analyze
+     * @param  string  $surname  Surname to analyze
      * @return array Phonetic codes and similar surnames
      */
     public function generatePhoneticVariants(string $surname): array
@@ -247,7 +288,7 @@ class NameVariantService
      * Double Metaphone algorithm implementation
      * More accurate than standard Metaphone for European names
      *
-     * @param string $string Input string
+     * @param  string  $string  Input string
      * @return array Primary and secondary codes
      */
     public function doubleMetaphone(string $string): array
@@ -478,7 +519,7 @@ class NameVariantService
      * NYSIIS (New York State Identification and Intelligence System) phonetic algorithm
      * Better for American names, especially multi-ethnic
      *
-     * @param string $string Input string
+     * @param  string  $string  Input string
      * @return string NYSIIS code
      */
     public function nysiis(string $string): string
@@ -497,7 +538,7 @@ class NameVariantService
 
         foreach ($replacements as $search => $replace) {
             if (strpos($string, $search) === 0) {
-                $string = $replace . substr($string, strlen($search));
+                $string = $replace.substr($string, strlen($search));
                 break;
             }
         }
@@ -510,7 +551,7 @@ class NameVariantService
 
         foreach ($lastReplacements as $search => $replace) {
             if (substr($string, -strlen($search)) === $search) {
-                $string = substr($string, 0, -strlen($search)) . $replace;
+                $string = substr($string, 0, -strlen($search)).$replace;
                 break;
             }
         }
@@ -538,16 +579,16 @@ class NameVariantService
 
         // Remove trailing AY -> Y
         if (substr($string, -2) === 'AY') {
-            $string = substr($string, 0, -2) . 'Y';
+            $string = substr($string, 0, -2).'Y';
         }
 
-        return substr($key . $string, 0, 6);
+        return substr($key.$string, 0, 6);
     }
 
     /**
      * Cologne Phonetic algorithm - excellent for German names
      *
-     * @param string $string Input string
+     * @param  string  $string  Input string
      * @return string Cologne phonetic code
      */
     public function colognePhonetic(string $string): string
@@ -568,8 +609,8 @@ class NameVariantService
             $digit = match ($char) {
                 'A', 'E', 'I', 'J', 'O', 'U', 'Y' => '0',
                 'B' => '1',
-                'P' => !in_array($next, ['H']) ? '1' : '3',
-                'D', 'T' => !in_array($next, ['C', 'S', 'Z']) ? '2' : '8',
+                'P' => ! in_array($next, ['H']) ? '1' : '3',
+                'D', 'T' => ! in_array($next, ['C', 'S', 'Z']) ? '2' : '8',
                 'F', 'V', 'W' => '3',
                 'G', 'K', 'Q' => '4',
                 'X' => in_array($prev, ['C', 'K', 'Q']) ? '8' : '48',
@@ -592,7 +633,7 @@ class NameVariantService
         if ($code === '') {
             return '';
         }
-        $code = $code[0] . ltrim(substr($code, 1), '0');
+        $code = $code[0].ltrim(substr($code, 1), '0');
 
         return $code;
     }
@@ -600,9 +641,9 @@ class NameVariantService
     /**
      * Find similar surnames across the tree using multiple phonetic algorithms
      *
-     * @param int $treeId Tree ID
-     * @param string $surname Surname to match
-     * @param int $limit Max results
+     * @param  int  $treeId  Tree ID
+     * @param  string  $surname  Surname to match
+     * @param  int  $limit  Max results
      * @return array Matching surnames with scores
      */
     /**
@@ -613,10 +654,10 @@ class NameVariantService
      * cross-script, transliteration, and semantic name similarities that
      * phonetic algorithms miss.
      *
-     * @param int $treeId Tree to search
-     * @param string $name Name to find matches for
-     * @param int $limit Max results
-     * @param float $minSimilarity Minimum cosine similarity threshold
+     * @param  int  $treeId  Tree to search
+     * @param  string  $name  Name to find matches for
+     * @param  int  $limit  Max results
+     * @param  float  $minSimilarity  Minimum cosine similarity threshold
      * @return array Matched names with similarity scores
      */
     public function findEmbeddingSimilarNames(int $treeId, string $name, int $limit = 10, float $minSimilarity = 0.7): array
@@ -628,7 +669,7 @@ class NameVariantService
             $embeddingText = "Person name: {$name}";
             $result = $aiService->generateEmbedding($embeddingText);
 
-            if (!($result['success'] ?? false) || empty($result['embedding'])) {
+            if (! ($result['success'] ?? false) || empty($result['embedding'])) {
                 return [];
             }
 
@@ -637,7 +678,7 @@ class NameVariantService
             // Search against pre-computed name embeddings if table exists,
             // otherwise fall back to on-the-fly comparison
             try {
-                $matches = \Illuminate\Support\Facades\DB::connection('pgsql_rag')->select("
+                $matches = \Illuminate\Support\Facades\DB::connection('pgsql_rag')->select('
                     SELECT name, tree_id, person_count,
                            1 - (embedding <=> ?::vector) as similarity
                     FROM genealogy_name_embeddings
@@ -645,9 +686,9 @@ class NameVariantService
                       AND 1 - (embedding <=> ?::vector) >= ?
                     ORDER BY embedding <=> ?::vector ASC
                     LIMIT ?
-                ", [$embeddingStr, $treeId, $embeddingStr, $minSimilarity, $embeddingStr, $limit]);
+                ', [$embeddingStr, $treeId, $embeddingStr, $minSimilarity, $embeddingStr, $limit]);
 
-                return array_map(fn($m) => [
+                return array_map(fn ($m) => [
                     'name' => $m->name,
                     'similarity' => round((float) $m->similarity, 4),
                     'person_count' => (int) $m->person_count,
@@ -670,10 +711,14 @@ class NameVariantService
 
                 $matches = [];
                 foreach ($surnames as $row) {
-                    if (strcasecmp($row->surname, $name) === 0) continue;
+                    if (strcasecmp($row->surname, $name) === 0) {
+                        continue;
+                    }
 
                     $targetResult = $aiService->generateEmbedding("Person name: {$row->surname}");
-                    if (!($targetResult['success'] ?? false) || empty($targetResult['embedding'])) continue;
+                    if (! ($targetResult['success'] ?? false) || empty($targetResult['embedding'])) {
+                        continue;
+                    }
 
                     // Cosine similarity
                     $sim = $this->cosineSimilarity($result['embedding'], $targetResult['embedding']);
@@ -687,11 +732,13 @@ class NameVariantService
                     }
                 }
 
-                usort($matches, fn($a, $b) => $b['similarity'] <=> $a['similarity']);
+                usort($matches, fn ($a, $b) => $b['similarity'] <=> $a['similarity']);
+
                 return array_slice($matches, 0, $limit);
             }
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::debug('NameVariant: Embedding similarity failed', ['name' => $name, 'error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -712,6 +759,7 @@ class NameVariantService
         }
 
         $denom = sqrt($normA) * sqrt($normB);
+
         return $denom > 0 ? $dotProduct / $denom : 0;
     }
 
@@ -764,13 +812,13 @@ class NameVariantService
                 $matchedAlgorithms[] = 'cologne';
             }
             // N92: Daitch-Mokotoff — strong for Eastern European/Jewish surnames
-            if (!empty($phonetics['dm_soundex']) && !empty($targetPhonetics['dm_soundex'])
+            if (! empty($phonetics['dm_soundex']) && ! empty($targetPhonetics['dm_soundex'])
                 && array_intersect($phonetics['dm_soundex'], $targetPhonetics['dm_soundex'])) {
                 $score += 35;
                 $matchedAlgorithms[] = 'daitch_mokotoff';
             }
             // N92: Beider-Morse approximation — broad international coverage
-            if (!empty($phonetics['beider_morse']) && !empty($targetPhonetics['beider_morse'])
+            if (! empty($phonetics['beider_morse']) && ! empty($targetPhonetics['beider_morse'])
                 && array_intersect($phonetics['beider_morse'], $targetPhonetics['beider_morse'])) {
                 $score += 30;
                 $matchedAlgorithms[] = 'beider_morse';
@@ -795,7 +843,7 @@ class NameVariantService
         }
 
         // Sort by score descending
-        usort($matches, fn($a, $b) => $b['score'] <=> $a['score']);
+        usort($matches, fn ($a, $b) => $b['score'] <=> $a['score']);
 
         return array_slice($matches, 0, $limit);
     }
@@ -804,7 +852,7 @@ class NameVariantService
      * Generate historical spelling variants for a surname
      * Based on common historical spelling patterns and immigration changes
      *
-     * @param string $surname Surname
+     * @param  string  $surname  Surname
      * @return array Historical variants with explanations
      */
     public function generateHistoricalVariants(string $surname): array
@@ -920,7 +968,7 @@ class NameVariantService
         $unique = [];
         foreach ($variants as $variant) {
             $key = strtolower($variant['variant']);
-            if (!isset($seen[$key]) && $key !== $lower) {
+            if (! isset($seen[$key]) && $key !== $lower) {
                 $seen[$key] = true;
                 $unique[] = $variant;
             }
@@ -932,22 +980,22 @@ class NameVariantService
     /**
      * Use AI to generate intelligent name variants
      *
-     * @param int $personId Person ID
-     * @param array $context Additional context (birth place, time period, ethnicity)
+     * @param  int  $personId  Person ID
+     * @param  array  $context  Additional context (birth place, time period, ethnicity)
      * @return array AI-generated variants with explanations
      */
     public function generateAIVariants(int $personId, array $context = []): array
     {
         try {
             $person = DB::selectOne(
-                "SELECT gp.*, gt.name as tree_name
+                'SELECT gp.*, gt.name as tree_name
                  FROM genealogy_persons gp
                  JOIN genealogy_trees gt ON gt.id = gp.tree_id
-                 WHERE gp.id = ?",
+                 WHERE gp.id = ?',
                 [$personId]
             );
 
-            if (!$person) {
+            if (! $person) {
                 return ['error' => 'Person not found'];
             }
 
@@ -956,19 +1004,19 @@ class NameVariantService
             $prompt = "Generate historical name variants for genealogy research.
 
 Person: {$person->given_name} {$person->surname}
-Sex: " . ($person->sex === 'M' ? 'Male' : ($person->sex === 'F' ? 'Female' : 'Unknown')) . "
-Birth Date: " . ($person->birth_date ?? 'Unknown') . "
-Birth Place: " . ($context['birth_place'] ?? $person->birth_place ?? 'Unknown') . "
-Time Period: " . ($context['time_period'] ?? '19th-20th century') . "
-Ethnicity/Origin: " . ($context['ethnicity'] ?? 'Unknown') . "
+Sex: ".($person->sex === 'M' ? 'Male' : ($person->sex === 'F' ? 'Female' : 'Unknown')).'
+Birth Date: '.($person->birth_date ?? 'Unknown').'
+Birth Place: '.($context['birth_place'] ?? $person->birth_place ?? 'Unknown').'
+Time Period: '.($context['time_period'] ?? '19th-20th century').'
+Ethnicity/Origin: '.($context['ethnicity'] ?? 'Unknown').'
 
-Existing variants: " . implode(', ', array_map(fn($v) => "{$v->name_type}: {$v->full_name}", $existingVariants)) . "
+Existing variants: '.implode(', ', array_map(fn ($v) => "{$v->name_type}: {$v->full_name}", $existingVariants)).'
 
 Generate 5-10 NEW name variants this person might appear under in historical records.
 Consider: immigration name changes, phonetic spellings, nickname forms, maiden/married names, Americanization, census errors, illiterate recordings.
 
 Return JSON array with format:
-[{\"type\": \"nickname|maiden|married|immigration|phonetic|census_error|translation\", \"given_names\": \"...\", \"surname\": \"...\", \"explanation\": \"why this variant might exist\"}]";
+[{"type": "nickname|maiden|married|immigration|phonetic|census_error|translation", "given_names": "...", "surname": "...", "explanation": "why this variant might exist"}]';
 
             $response = $this->getAIService()->process($prompt, [
                 'temperature' => 0.7,
@@ -977,7 +1025,7 @@ Return JSON array with format:
             ]);
 
             // Parse JSON from response
-            if (!($response['success'] ?? false) || empty($response['response'])) {
+            if (! ($response['success'] ?? false) || empty($response['response'])) {
                 return ['error' => 'AI call failed', 'raw' => $response['error'] ?? 'unknown'];
             }
 
@@ -989,6 +1037,7 @@ Return JSON array with format:
                         'person_id' => $personId,
                         'count' => count($variants),
                     ]);
+
                     return $variants;
                 }
             }
@@ -999,6 +1048,7 @@ Return JSON array with format:
                 'person_id' => $personId,
                 'error' => $e->getMessage(),
             ]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -1006,9 +1056,9 @@ Return JSON array with format:
     /**
      * Bulk add variants from AI suggestions
      *
-     * @param int $personId Person ID
-     * @param array $variants Variants from generateAIVariants
-     * @param int|null $sourceId Optional source ID
+     * @param  int  $personId  Person ID
+     * @param  array  $variants  Variants from generateAIVariants
+     * @param  int|null  $sourceId  Optional source ID
      * @return int Number of variants added
      */
     public function bulkAddVariants(int $personId, array $variants, ?int $sourceId = null): int
@@ -1048,34 +1098,34 @@ Return JSON array with format:
     /**
      * Get comprehensive variant statistics for a tree
      *
-     * @param int $treeId Tree ID
+     * @param  int  $treeId  Tree ID
      * @return array Statistics
      */
     public function getTreeStatistics(int $treeId): array
     {
         $stats = DB::selectOne(
-            "SELECT
+            'SELECT
                 COUNT(DISTINCT gnv.person_id) as persons_with_variants,
                 COUNT(*) as total_variants,
                 COUNT(DISTINCT gnv.name_type) as variant_types_used
              FROM genealogy_name_variants gnv
              JOIN genealogy_persons gp ON gp.id = gnv.person_id
-             WHERE gp.tree_id = ?",
+             WHERE gp.tree_id = ?',
             [$treeId]
         );
 
         $byType = DB::select(
-            "SELECT gnv.name_type, COUNT(*) as count
+            'SELECT gnv.name_type, COUNT(*) as count
              FROM genealogy_name_variants gnv
              JOIN genealogy_persons gp ON gp.id = gnv.person_id
              WHERE gp.tree_id = ?
              GROUP BY gnv.name_type
-             ORDER BY count DESC",
+             ORDER BY count DESC',
             [$treeId]
         );
 
         $totalPersons = DB::selectOne(
-            "SELECT COUNT(*) as count FROM genealogy_persons WHERE tree_id = ?",
+            'SELECT COUNT(*) as count FROM genealogy_persons WHERE tree_id = ?',
             [$treeId]
         );
 
@@ -1088,7 +1138,7 @@ Return JSON array with format:
                 ? round(($stats->persons_with_variants / $totalPersons->count) * 100, 1)
                 : 0,
             'by_type' => array_column(
-                array_map(fn($r) => ['type' => $r->name_type, 'count' => $r->count], $byType),
+                array_map(fn ($r) => ['type' => $r->name_type, 'count' => $r->count], $byType),
                 'count', 'type'
             ),
         ];
@@ -1172,7 +1222,7 @@ Return JSON array with format:
                     }
 
                     if ($code !== null && $code !== $lastCode) {
-                        $codes = array_map(fn($c) => $c . $code, $codes);
+                        $codes = array_map(fn ($c) => $c.$code, $codes);
                         $lastCode = $code;
                     }
 
@@ -1181,16 +1231,16 @@ Return JSON array with format:
                     break;
                 }
             }
-            if (!$matched) {
+            if (! $matched) {
                 $pos++;
             }
 
             // Limit code length to 6 digits
-            $codes = array_map(fn($c) => substr($c, 0, 6), $codes);
+            $codes = array_map(fn ($c) => substr($c, 0, 6), $codes);
         }
 
         // Pad to 6 digits
-        $codes = array_map(fn($c) => str_pad($c, 6, '0'), $codes);
+        $codes = array_map(fn ($c) => str_pad($c, 6, '0'), $codes);
 
         return array_unique($codes);
     }

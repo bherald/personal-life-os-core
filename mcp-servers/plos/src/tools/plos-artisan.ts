@@ -5,7 +5,7 @@ import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-09-file-reconcile-evidence';
+export const ALLOWLIST_REVISION = '2026-05-21-codex-exec-connector';
 
 export const COMPACT_SCORECARD_COMMANDS = [
   'ops:mcp-health --json --compact',
@@ -14,6 +14,10 @@ export const COMPACT_SCORECARD_COMMANDS = [
   'plos:agent-trace-tail --limit=20 --since=24 --json',
   'episodic:memory --stats --json --compact',
   'agent:procedures --stats --json --compact',
+  'llm:sync-providers --json --compact',
+  'codex:exec-smoke --json',
+  'ollama:drift-check --json --compact --no-fail',
+  'ollama:eval-scorecard --json --compact',
 ] as const;
 
 export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: number }> = {
@@ -54,6 +58,11 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'plos:agent-trace-tail --limit=20 --since=24 --json': { description: 'Read-only redacted recent agent trace tail JSON', timeout: 30_000 },
   'ops:mcp-health --compact': { description: 'Compact observe-only MCP configuration and process health scorecard', timeout: 30_000 },
   'ops:mcp-health --json --compact': { description: 'Compact observe-only MCP configuration and process health JSON', timeout: 30_000 },
+  'llm:sync-providers --json --compact': { description: 'Compact read-only LLM provider model diff and role/capability review', timeout: 60_000 },
+  'llm:sync-providers --json --compact --no-live': { description: 'Compact read-only LLM provider role/capability review without network probes', timeout: 30_000 },
+  'codex:exec-smoke --json': { description: 'Dry-run table-backed Codex Exec connector smoke without invoking Codex', timeout: 30_000 },
+  'ollama:drift-check --json --compact --no-fail': { description: 'Compact read-only Ollama live-vs-DB model drift summary without model names or host URLs', timeout: 60_000 },
+  'ollama:eval-scorecard --json --compact': { description: 'Compact read-only Ollama Sprint A routing, candidate, and compression scorecard', timeout: 30_000 },
   'ops:capacity-report --json':   { description: 'Observe-only capacity evidence report', timeout: 30_000 },
   'ops:capacity-checkpoint --json': { description: 'Observe-only no-decision capacity checkpoint JSON', timeout: 60_000 },
   'ops:capacity-checkpoint --json --compact': { description: 'Compact observe-only no-decision capacity checkpoint JSON', timeout: 60_000 },
@@ -108,6 +117,9 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:media-intake-run --dry-run --json --compact --stage --transcribe-dry-run --enrich-dry-run --evidence-assets': { description: 'Dry-run compact genealogy media intake wrapper with all no-write stages planned', timeout: 30_000 },
   'genealogy:enrich-media --status': { description: 'Read-only genealogy media enrichment status with aggregate eligibility blockers', timeout: 30_000 },
   'genealogy:transcribe-media --status': { description: 'Read-only genealogy HTR status with aggregate eligibility blockers', timeout: 30_000 },
+  'genealogy:media-rag-index --tree=4 --stats': { description: 'Read-only FT4 genealogy media RAG indexing status', timeout: 30_000 },
+  'genealogy:media-rag-index --tree=4 --limit=20 --dry-run': { description: 'Dry-run FT4 genealogy media RAG indexing preview', timeout: 30_000 },
+  'genealogy:media-rag-index --tree=4 --limit=20 --max-seconds=45': { description: 'Bounded FT4 genealogy media RAG indexing batch', timeout: 60_000 },
   'genealogy:agent-triage --json': { description: 'Read-only genealogy agent re-enablement triage', timeout: 30_000 },
   'genealogy:agent-triage --compact': { description: 'Compact genealogy agent re-enablement triage text', timeout: 30_000 },
   'genealogy:agent-triage --json --compact': { description: 'Compact genealogy agent re-enablement triage', timeout: 30_000 },

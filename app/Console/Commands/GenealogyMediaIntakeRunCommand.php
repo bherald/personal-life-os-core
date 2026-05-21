@@ -9,7 +9,7 @@ class GenealogyMediaIntakeRunCommand extends Command
 {
     protected $signature = 'genealogy:media-intake-run
         {--tree=4 : Tree ID to operate on}
-        {--root= : File registry / Nextcloud root; defaults to genealogy.nextcloud_root}
+        {--root= : File registry / Nextcloud root; defaults to tree-inferred media root}
         {--limit=50 : Max rows passed to subcommands}
         {--stage : Run intake staging preview}
         {--save-run : Persist staged intake snapshot; requires --stage and --confirm-noncanonical-write}

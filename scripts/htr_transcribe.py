@@ -2,8 +2,8 @@
 """
 N102 — Local HTR (Handwritten Text Recognition) pipeline using TrOCR.
 
-Model: microsoft/trocr-base-handwritten (~340 MB, fits GTX 1060 6GB VRAM)
-Fallback: microsoft/trocr-small-handwritten (~65 MB, CPU-only mode)
+Model: microsoft/trocr-base-handwritten (~340 MB)
+Fallback: same model on CPU when CUDA is unavailable or incompatible
 
 Usage:
     echo '{"image_path": "/path/to/scan.jpg"}' | python3 htr_transcribe.py
@@ -21,16 +21,26 @@ On error:
     {"error": "error message"}
 
 To install:
-    pip install torch torchvision transformers Pillow
+    pip install torch torchvision transformers Pillow tiktoken sentencepiece
 
 Model cache: ~/.cache/huggingface/hub/  (auto-downloaded on first use)
 """
 
-import sys
 import json
 import os
+import sys
 
-def transcribe(image_path: str) -> dict:
+
+def is_cuda_compatibility_error(error: str) -> bool:
+    error = error.lower()
+    return (
+        "no kernel image is available" in error
+        or "cuda error" in error
+        or "cudaerrornokernelimagefordevice" in error
+    )
+
+
+def transcribe(image_path: str, force_cpu: bool = False) -> dict:
     try:
         import torch
         from transformers import TrOCRProcessor, VisionEncoderDecoderModel
@@ -45,9 +55,9 @@ def transcribe(image_path: str) -> dict:
     # On shared 6 GB GPUs, low free VRAM can still OOM even with the smaller model,
     # so force CPU fallback unless there is comfortable headroom.
     device = "cpu"
-    model_name = "microsoft/trocr-small-handwritten"
+    model_name = "microsoft/trocr-base-handwritten"
 
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and not force_cpu:
         try:
             free_vram, _total_vram = torch.cuda.mem_get_info(0)
             if free_vram > 2 * 1024 * 1024 * 1024:
@@ -55,13 +65,15 @@ def transcribe(image_path: str) -> dict:
                 model_name = "microsoft/trocr-base-handwritten"
         except Exception:
             device = "cpu"
-            model_name = "microsoft/trocr-small-handwritten"
+            model_name = "microsoft/trocr-base-handwritten"
 
     try:
         processor = TrOCRProcessor.from_pretrained(model_name)
         model = VisionEncoderDecoderModel.from_pretrained(model_name).to(device)
         model.eval()
     except Exception as e:
+        if device == "cuda" and is_cuda_compatibility_error(str(e)):
+            return transcribe(image_path, force_cpu=True)
         return {"error": f"model_load_failed: {e}"}
 
     try:
@@ -121,8 +133,15 @@ def transcribe(image_path: str) -> dict:
                 confidences.append(min(conf, 1.0))
 
         except Exception as e:
-            lines.append(f"[transcription error: {e}]")
-            confidences.append(0.0)
+            if device == "cuda" and is_cuda_compatibility_error(str(e)):
+                try:
+                    del model
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+                return transcribe(image_path, force_cpu=True)
+            return {"error": f"strip_transcription_failed: {e}"}
 
     full_text = "\n".join(lines)
     avg_conf = sum(confidences) / len(confidences) if confidences else 0.0

@@ -437,7 +437,7 @@ class GenealogyReviewPacketValidatorService
             }
         }
 
-        foreach (['sources', 'source_locators', 'evidence_sources', 'citations', 'media'] as $key) {
+        foreach (['sources', 'source_links', 'source_locators', 'evidence_sources', 'citations', 'media'] as $key) {
             foreach ((array) ($packet[$key] ?? []) as $source) {
                 $sources = array_merge($sources, $this->normalizeSourceValue($source, $key));
             }
@@ -698,7 +698,7 @@ class GenealogyReviewPacketValidatorService
             || str_starts_with($value, '../')
             || str_starts_with($value, '~')
             || preg_match('/^[A-Za-z]:[\/\\\\]/', $value) === 1
-            || preg_match('/\.(pdf|jpg|jpeg|png|tif|tiff|txt|md|csv|json|xml|ged|gedcom|html?)($|[?#])/i', $value) === 1;
+            || preg_match('/\.(pdf|jpg|jpeg|jfif|png|tif|tiff|jp2|j2k|jpf|jpx|txt|rtf|md|csv|json|xml|ged|gedcom|html?)($|[?#])/i', $value) === 1;
     }
 
     /**

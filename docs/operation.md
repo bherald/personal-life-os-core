@@ -445,9 +445,8 @@ php artisan ops:arc-retention --execute --max-rows=50000 --batch=5000 --sleep-ms
 
 The command defaults to dry-run, requires `--execute` to delete rows, uses the
 `created_at` retention index, avoids count-first cleanup, caps each execution,
-and preserves `recursion_effectiveness`. See
-`docs/todo-012-arc-retention-cleanup-plan-2026-05-01.md` before running larger
-off-peak chunks.
+and preserves `recursion_effectiveness`. Larger off-peak chunks require the same
+bounded operator approval recorded in `docs/active-priority-list.md`.
 
 Relevant docs:
 

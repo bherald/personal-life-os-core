@@ -43,8 +43,9 @@ return [
     // fallback, the audit command, tests). Empty list = fail-open
     // (HTR runs everywhere; preserves current behavior).
     'htr_enabled_paths' => array_values(array_filter([
-        env('GENEALOGY_HTR_ROOT', $libraryRoot.'/Genealogy'),
-        env('GENEALOGY_HTR_FT_ROOT', $libraryRoot.'/FamilyTree'),
+        env('GENEALOGY_HTR_ROOT', $genealogyRoot),
+        env('GENEALOGY_HTR_FT_ROOT', $ftReferenceRoot),
+        env('GENEALOGY_HTR_MASTER_ROOT'),
     ])),
 
     // N135 ingest pipeline config.

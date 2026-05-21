@@ -2,9 +2,9 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
 
 /**
  * UnifiedSearchService - Cross-domain semantic search
@@ -29,6 +29,7 @@ use Illuminate\Support\Facades\Cache;
 class UnifiedSearchService
 {
     private RAGService $ragService;
+
     private AIService $aiService;
 
     // RRF constant - higher values reduce impact of ranking position
@@ -39,14 +40,23 @@ class UnifiedSearchService
 
     // Content type constants
     public const TYPE_ALL = 'all';
+
     public const TYPE_MEDIA = 'media';
+
     public const TYPE_DOCUMENTS = 'documents';
+
     public const TYPE_PHOTOS = 'photos';
+
     public const TYPE_VIDEOS = 'videos';
+
     public const TYPE_NOTES = 'notes';
+
     public const TYPE_FILES = 'files';  // All files in registry (not just media)
+
     public const TYPE_TRANSCRIPTS = 'transcripts';
+
     public const TYPE_RESEARCH = 'research';
+
     public const TYPE_CHAT = 'chat';
 
     public function __construct(RAGService $ragService, AIService $aiService)
@@ -58,15 +68,15 @@ class UnifiedSearchService
     /**
      * Unified search across all content types
      *
-     * @param string $query Natural language search query
-     * @param array $options Search options:
-     *   - type: 'all', 'media', 'documents', 'photos', 'videos', 'notes'
-     *   - limit: Max results (default 30)
-     *   - date_from: Filter by date (YYYY-MM-DD)
-     *   - date_to: Filter by date (YYYY-MM-DD)
-     *   - person_id: Filter by genealogy person (media only)
-     *   - folder: Filter by folder path (media only)
-     *   - alpha: Hybrid search weight (0-1, default 0.6)
+     * @param  string  $query  Natural language search query
+     * @param  array  $options  Search options:
+     *                          - type: 'all', 'media', 'documents', 'photos', 'videos', 'notes'
+     *                          - limit: Max results (default 30)
+     *                          - date_from: Filter by date (YYYY-MM-DD)
+     *                          - date_to: Filter by date (YYYY-MM-DD)
+     *                          - person_id: Filter by genealogy person (media only)
+     *                          - folder: Filter by folder path (media only)
+     *                          - alpha: Hybrid search weight (0-1, default 0.6)
      * @return array Search results with metadata
      */
     public function search(string $query, array $options = []): array
@@ -131,7 +141,7 @@ class UnifiedSearchService
                         'document', 'spreadsheet', 'presentation', 'code', 'archive', 'ebook' => $mediaSubtype,
                         default => $fileTypeFilter,
                     }
-                    : $fileTypeFilter;
+                : $fileTypeFilter;
 
                 $mediaResults = $this->searchMedia($query, $limit * 2, [
                     'type' => $effectiveFileType,
@@ -151,7 +161,7 @@ class UnifiedSearchService
                 $counts['media'] = count($mediaResults);
 
                 // Semantic RAG search for files (skip in browse mode)
-                if (!$isBrowseMode) {
+                if (! $isBrowseMode) {
                     $semanticResults = $this->searchMediaSemantic($query, $limit);
                     foreach ($semanticResults as $rank => $result) {
                         $result['_source'] = 'media_semantic';
@@ -236,14 +246,14 @@ class UnifiedSearchService
     {
         $results = [];
         $params = [];
-        $browseMode = !empty($filters['browse_mode']);
+        $browseMode = ! empty($filters['browse_mode']);
         $offset = (int) ($filters['offset'] ?? 0);
 
         // Check if date_taken columns exist (they may not in all environments)
         $hasDateTaken = $this->hasColumn('file_registry', 'date_taken');
 
         // Build dynamic column list
-        $selectCols = "
+        $selectCols = '
                 fr.id,
                 fr.asset_uuid,
                 fr.filename,
@@ -253,14 +263,14 @@ class UnifiedSearchService
                 fr.file_size,
                 fr.nextcloud_modified_at,
                 fr.title,
-                fr.tags";
+                fr.tags';
 
         if ($hasDateTaken) {
-            $selectCols .= ",
+            $selectCols .= ',
                 fr.date_taken,
                 fr.date_taken_source,
                 fr.date_taken_confidence,
-                fr.date_taken_reasoning";
+                fr.date_taken_reasoning';
         }
 
         $selectCols .= ",
@@ -274,9 +284,9 @@ class UnifiedSearchService
         $sql = "SELECT {$selectCols} FROM file_registry fr WHERE fr.status = 'active'";
 
         // Type filter
-        if (!empty($filters['type'])) {
+        if (! empty($filters['type'])) {
             if ($filters['type'] === 'image') {
-                $sql .= " AND fr.extension IN ('jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp')";
+                $sql .= " AND fr.extension IN ('jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp', 'jp2', 'j2k', 'jpf', 'jpx')";
             } elseif ($filters['type'] === 'video') {
                 $sql .= " AND fr.extension IN ('mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v')";
             } elseif ($filters['type'] === 'audio') {
@@ -298,29 +308,29 @@ class UnifiedSearchService
             }
         } else {
             // Default: images and videos only (media)
-            $sql .= " AND fr.extension IN ('jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp', 'mp4', 'mov', 'avi', 'mkv', 'webm')";
+            $sql .= " AND fr.extension IN ('jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp', 'jp2', 'j2k', 'jpf', 'jpx', 'mp4', 'mov', 'avi', 'mkv', 'webm')";
         }
 
         // Text search - skip in browse mode (return all items)
-        if (!$browseMode) {
-            $searchTerms = '%' . $query . '%';
+        if (! $browseMode) {
+            $searchTerms = '%'.$query.'%';
             // Note: current_path excluded from text search — matching folder names
             // (e.g. a person name in a path) produces massive false positives.
             // Folder filtering is handled via the folder browser sidebar.
-            $searchConditions = "fr.filename LIKE ? OR fr.title LIKE ? OR fr.tags LIKE ?";
+            $searchConditions = 'fr.filename LIKE ? OR fr.title LIKE ? OR fr.tags LIKE ?';
             $params = [$searchTerms, $searchTerms, $searchTerms];
 
             if ($hasDateTaken) {
-                $searchConditions .= " OR fr.date_taken_reasoning LIKE ?";
+                $searchConditions .= ' OR fr.date_taken_reasoning LIKE ?';
                 $params[] = $searchTerms;
             }
 
             // FULLTEXT search on AI descriptions and OCR-extracted text
-            $searchConditions .= " OR MATCH(fr.ai_description, fr.ai_detected_text) AGAINST(? IN BOOLEAN MODE)";
+            $searchConditions .= ' OR MATCH(fr.ai_description, fr.ai_detected_text) AGAINST(? IN BOOLEAN MODE)';
             $params[] = $query; // raw query, not LIKE-wrapped — BOOLEAN MODE handles tokenization
 
             // Also search person names from face tags
-            $searchConditions .= " OR EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.person_name LIKE ?)";
+            $searchConditions .= ' OR EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.person_name LIKE ?)';
             $params[] = $searchTerms;
 
             // Also search genealogy person links (person name → person_media → media → file_registry)
@@ -346,8 +356,8 @@ class UnifiedSearchService
                 WHERE CONCAT(gp.given_name, ' ', gp.surname) LIKE ? OR gp.given_name LIKE ? OR gp.surname LIKE ?
             ", [$searchTerms, $searchTerms, $searchTerms]);
 
-            if (!empty($personFilenames)) {
-                $filenames = array_column(array_map(fn($r) => (array) $r, $personFilenames), 'filename');
+            if (! empty($personFilenames)) {
+                $filenames = array_column(array_map(fn ($r) => (array) $r, $personFilenames), 'filename');
                 $placeholders = implode(',', array_fill(0, count($filenames), '?'));
                 $searchConditions .= " OR fr.filename IN ({$placeholders})";
                 $params = array_merge($params, $filenames);
@@ -357,34 +367,34 @@ class UnifiedSearchService
         }
 
         // Date filters - use date_taken if available, fallback to nextcloud_modified_at
-        $dateCol = $hasDateTaken ? "COALESCE(fr.date_taken, fr.nextcloud_modified_at)" : "fr.nextcloud_modified_at";
-        if (!empty($filters['date_from'])) {
+        $dateCol = $hasDateTaken ? 'COALESCE(fr.date_taken, fr.nextcloud_modified_at)' : 'fr.nextcloud_modified_at';
+        if (! empty($filters['date_from'])) {
             $sql .= " AND {$dateCol} >= ?";
             $params[] = $filters['date_from'];
         }
-        if (!empty($filters['date_to'])) {
+        if (! empty($filters['date_to'])) {
             $sql .= " AND {$dateCol} <= ?";
-            $params[] = $filters['date_to'] . ' 23:59:59';
+            $params[] = $filters['date_to'].' 23:59:59';
         }
 
         // Person filter (by ID or name)
-        if (!empty($filters['person_id'])) {
-            $sql .= " AND EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.genealogy_person_id = ?)";
+        if (! empty($filters['person_id'])) {
+            $sql .= ' AND EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.genealogy_person_id = ?)';
             $params[] = $filters['person_id'];
-        } elseif (!empty($filters['person_name'])) {
-            $sql .= " AND EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.person_name = ?)";
+        } elseif (! empty($filters['person_name'])) {
+            $sql .= ' AND EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.person_name = ?)';
             $params[] = $filters['person_name'];
         }
 
         // Folder filter — paths in file_registry have leading slash
-        if (!empty($filters['folder'])) {
+        if (! empty($filters['folder'])) {
             $folder = $filters['folder'];
             // Ensure leading slash to match file_registry paths
-            if (!str_starts_with($folder, '/')) {
-                $folder = '/' . $folder;
+            if (! str_starts_with($folder, '/')) {
+                $folder = '/'.$folder;
             }
-            $sql .= " AND fr.current_path LIKE ?";
-            $params[] = $folder . '%';
+            $sql .= ' AND fr.current_path LIKE ?';
+            $params[] = $folder.'%';
         }
 
         // Order by date with offset pagination
@@ -396,15 +406,15 @@ class UnifiedSearchService
 
         foreach ($rows as $row) {
             $results[] = [
-                'id' => 'media_' . $row->id,
+                'id' => 'media_'.$row->id,
                 'type' => $this->getMediaType($row->extension),
                 'content_type' => 'media',
                 'title' => $row->title ?: $row->filename,
                 'filename' => $row->filename,
                 'path' => $row->current_path,
                 'asset_uuid' => $row->asset_uuid,
-                'thumbnail_url' => '/api/media/' . $row->asset_uuid . '/thumbnail/medium',
-                'preview_url' => '/api/media/' . $row->asset_uuid,
+                'thumbnail_url' => '/api/media/'.$row->asset_uuid.'/thumbnail/medium',
+                'preview_url' => '/api/media/'.$row->asset_uuid,
                 'date' => $hasDateTaken ? ($row->date_taken ?: $row->nextcloud_modified_at) : $row->nextcloud_modified_at,
                 'date_source' => $hasDateTaken ? ($row->date_taken_source ?? null) : null,
                 'date_confidence' => $hasDateTaken ? ($row->date_taken_confidence ?? null) : null,
@@ -437,7 +447,7 @@ class UnifiedSearchService
             $ragService = app(FileCategorizationRAGService::class);
             $result = $ragService->searchFiles($query, $limit);
 
-            if (!$result['success'] || empty($result['files'])) {
+            if (! $result['success'] || empty($result['files'])) {
                 return [];
             }
 
@@ -461,20 +471,20 @@ class UnifiedSearchService
                     WHERE fr.asset_uuid = ? AND fr.status = 'active'
                 ", [$ragFile['asset_uuid']]);
 
-                if (!$file) {
+                if (! $file) {
                     continue;
                 }
 
                 $results[] = [
-                    'id' => 'media_' . $file->id,
+                    'id' => 'media_'.$file->id,
                     'type' => $this->getMediaType($file->extension),
                     'content_type' => 'media',
                     'title' => $file->title ?: $file->filename,
                     'filename' => $file->filename,
                     'path' => $file->current_path,
                     'asset_uuid' => $file->asset_uuid,
-                    'thumbnail_url' => '/api/media/' . $file->asset_uuid . '/thumbnail/medium',
-                    'preview_url' => '/api/media/' . $file->asset_uuid,
+                    'thumbnail_url' => '/api/media/'.$file->asset_uuid.'/thumbnail/medium',
+                    'preview_url' => '/api/media/'.$file->asset_uuid,
                     'date' => $file->date_taken ?: $file->nextcloud_modified_at,
                     'date_source' => $file->date_taken_source ?? null,
                     'date_confidence' => $file->date_taken_confidence ?? null,
@@ -499,6 +509,7 @@ class UnifiedSearchService
             return $results;
         } catch (\Exception $e) {
             Log::debug('UnifiedSearch: semantic media search failed', ['error' => $e->getMessage()]);
+
             return []; // Graceful degradation — keyword search still works
         }
     }
@@ -513,9 +524,11 @@ class UnifiedSearchService
         return Cache::remember($cacheKey, 3600, function () use ($table, $column) {
             try {
                 $result = DB::select("SHOW COLUMNS FROM `{$table}` LIKE ?", [$column]);
-                return !empty($result);
+
+                return ! empty($result);
             } catch (\Exception $e) {
                 Log::debug('UnifiedSearchService: schema column check failed', ['table' => $table, 'column' => $column, 'error' => $e->getMessage()]);
+
                 return false;
             }
         });
@@ -527,12 +540,12 @@ class UnifiedSearchService
     private function searchDocuments(string $query, int $limit, array $filters = []): array
     {
         $results = [];
-        $browseMode = !empty($filters['browse_mode']);
+        $browseMode = ! empty($filters['browse_mode']);
         $offset = (int) ($filters['offset'] ?? 0);
 
         // Resolve notebook filter to note IDs (cross-DB: MySQL → PostgreSQL)
         $notebookNoteIds = null;
-        if (!empty($filters['notebook'])) {
+        if (! empty($filters['notebook'])) {
             $notebookNoteIds = $this->getNotebookNoteIds($filters['notebook']);
             if (empty($notebookNoteIds)) {
                 return []; // Notebook has no notes
@@ -561,7 +574,7 @@ class UnifiedSearchService
 
                 // Notebook filter: skip docs not from the selected notebook
                 if ($notebookNoteIds !== null) {
-                    if (($doc->source_type ?? '') !== 'joplin' || !in_array($doc->source_id ?? '', $notebookNoteIds, true)) {
+                    if (($doc->source_type ?? '') !== 'joplin' || ! in_array($doc->source_id ?? '', $notebookNoteIds, true)) {
                         continue;
                     }
                 }
@@ -571,10 +584,10 @@ class UnifiedSearchService
                 $date = $metadata['created_at'] ?? $metadata['date'] ?? $doc->created_at ?? null;
 
                 // Apply date filters
-                if (!empty($filters['date_from']) && $date && $date < $filters['date_from']) {
+                if (! empty($filters['date_from']) && $date && $date < $filters['date_from']) {
                     continue;
                 }
-                if (!empty($filters['date_to']) && $date && $date > $filters['date_to'] . ' 23:59:59') {
+                if (! empty($filters['date_to']) && $date && $date > $filters['date_to'].' 23:59:59') {
                     continue;
                 }
 
@@ -582,7 +595,7 @@ class UnifiedSearchService
                 $snippet = $this->generateSnippet($doc->content ?? '', $query, 200);
 
                 $results[] = [
-                    'id' => 'doc_' . $doc->id,
+                    'id' => 'doc_'.$doc->id,
                     'type' => $this->mapDocumentType($doc->document_type ?? 'document'),
                     'content_type' => 'document',
                     'title' => $doc->title ?? 'Untitled',
@@ -593,8 +606,8 @@ class UnifiedSearchService
                     'similarity' => $similarity,
                     'metadata' => $metadata,
                     'asset_uuid' => $metadata['asset_uuid'] ?? null,
-                    'thumbnail_url' => !empty($metadata['asset_uuid'])
-                        ? '/api/media/' . $metadata['asset_uuid'] . '/thumbnail/medium'
+                    'thumbnail_url' => ! empty($metadata['asset_uuid'])
+                        ? '/api/media/'.$metadata['asset_uuid'].'/thumbnail/medium'
                         : null,
                     'preview_url' => $this->getDocumentPreviewUrl($doc),
                 ];
@@ -627,7 +640,7 @@ SQL;
             // Document type filter
             $docType = $filters['type'] ?? null;
             if ($docType) {
-                $sql .= " AND document_type = ?";
+                $sql .= ' AND document_type = ?';
                 $params[] = $docType;
             }
 
@@ -639,16 +652,16 @@ SQL;
             }
 
             // Date filters
-            if (!empty($filters['date_from'])) {
-                $sql .= " AND COALESCE(updated_at, created_at) >= ?";
+            if (! empty($filters['date_from'])) {
+                $sql .= ' AND COALESCE(updated_at, created_at) >= ?';
                 $params[] = $filters['date_from'];
             }
-            if (!empty($filters['date_to'])) {
-                $sql .= " AND COALESCE(updated_at, created_at) <= ?";
-                $params[] = $filters['date_to'] . ' 23:59:59';
+            if (! empty($filters['date_to'])) {
+                $sql .= ' AND COALESCE(updated_at, created_at) <= ?';
+                $params[] = $filters['date_to'].' 23:59:59';
             }
 
-            $sql .= " ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT ? OFFSET ?";
+            $sql .= ' ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST LIMIT ? OFFSET ?';
             $params[] = $limit;
             $params[] = $offset;
 
@@ -659,7 +672,7 @@ SQL;
                 $date = $metadata['created_at'] ?? $metadata['date'] ?? $doc->updated_at ?? $doc->created_at ?? null;
 
                 $results[] = [
-                    'id' => 'doc_' . $doc->id,
+                    'id' => 'doc_'.$doc->id,
                     'type' => $this->mapDocumentType($doc->document_type ?? 'document'),
                     'content_type' => 'document',
                     'title' => $doc->title ?? 'Untitled',
@@ -670,8 +683,8 @@ SQL;
                     'similarity' => null,
                     'metadata' => $metadata,
                     'asset_uuid' => $metadata['asset_uuid'] ?? null,
-                    'thumbnail_url' => !empty($metadata['asset_uuid'])
-                        ? '/api/media/' . $metadata['asset_uuid'] . '/thumbnail/medium'
+                    'thumbnail_url' => ! empty($metadata['asset_uuid'])
+                        ? '/api/media/'.$metadata['asset_uuid'].'/thumbnail/medium'
                         : null,
                     'preview_url' => $this->getDocumentPreviewUrl($doc),
                 ];
@@ -703,7 +716,7 @@ SQL;
             // Calculate RRF contribution from this ranking
             $rrfScore = 1 / (self::RRF_K + $rank + 1);
 
-            if (!isset($scores[$id])) {
+            if (! isset($scores[$id])) {
                 $scores[$id] = 0;
                 $items[$id] = $result;
             }
@@ -717,7 +730,9 @@ SQL;
         $results = [];
         $count = 0;
         foreach ($scores as $id => $score) {
-            if ($count >= $limit) break;
+            if ($count >= $limit) {
+                break;
+            }
 
             $item = $items[$id];
             $item['rrf_score'] = $score;
@@ -737,7 +752,7 @@ SQL;
         $ext = strtolower($extension);
 
         // Images
-        if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp', 'svg', 'ico', 'raw', 'cr2', 'nef', 'arw'])) {
+        if (in_array($ext, ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp', 'jp2', 'j2k', 'jpf', 'jpx', 'svg', 'ico', 'raw', 'cr2', 'nef', 'arw'])) {
             return 'photo';
         }
         // Videos
@@ -817,7 +832,9 @@ SQL;
 
         // Find position with most query term matches
         foreach ($queryTerms as $term) {
-            if (strlen($term) < 3) continue;
+            if (strlen($term) < 3) {
+                continue;
+            }
 
             $pos = strpos($lowerContent, $term);
             if ($pos !== false) {
@@ -843,14 +860,14 @@ SQL;
         if ($bestPos > 0) {
             $firstSpace = strpos($snippet, ' ');
             if ($firstSpace !== false && $firstSpace < 30) {
-                $snippet = '...' . substr($snippet, $firstSpace + 1);
+                $snippet = '...'.substr($snippet, $firstSpace + 1);
             }
         }
 
         // End at word boundary
         $lastSpace = strrpos($snippet, ' ');
         if ($lastSpace !== false && $lastSpace > $maxLength - 30) {
-            $snippet = substr($snippet, 0, $lastSpace) . '...';
+            $snippet = substr($snippet, 0, $lastSpace).'...';
         } elseif (strlen($content) > $bestPos + $maxLength) {
             $snippet .= '...';
         }
@@ -867,11 +884,11 @@ SQL;
         $sourceId = $doc->source_id ?? null;
 
         if ($sourceType === 'joplin' && $sourceId) {
-            return '/api/joplin/notes/' . $sourceId;
+            return '/api/joplin/notes/'.$sourceId;
         }
 
         if ($sourceType === 'youtube' && $sourceId) {
-            return 'https://youtube.com/watch?v=' . $sourceId;
+            return 'https://youtube.com/watch?v='.$sourceId;
         }
 
         return null;
@@ -887,10 +904,10 @@ SQL;
         $notebookIds = [$notebookId];
         $queue = [$notebookId];
 
-        while (!empty($queue)) {
+        while (! empty($queue)) {
             $currentId = array_shift($queue);
             $childNotebooks = DB::select(
-                "SELECT id FROM joplin_metadata_cache WHERE type = 2 AND is_deleted = 0 AND parent_id = ?",
+                'SELECT id FROM joplin_metadata_cache WHERE type = 2 AND is_deleted = 0 AND parent_id = ?',
                 [$currentId]
             );
             foreach ($childNotebooks as $child) {
@@ -906,7 +923,7 @@ SQL;
             $notebookIds
         );
 
-        return array_map(fn($n) => $n->id, $notes);
+        return array_map(fn ($n) => $n->id, $notes);
     }
 
     /**
@@ -922,7 +939,7 @@ SQL;
         }
 
         // Cache key for suggestions
-        $cacheKey = 'unified_search_suggestions:' . md5($prefix);
+        $cacheKey = 'unified_search_suggestions:'.md5($prefix);
 
         return Cache::remember($cacheKey, 300, function () use ($prefix, $limit) {
             $suggestions = [];
@@ -934,7 +951,7 @@ SQL;
                 WHERE status = 'active'
                 AND filename LIKE ?
                 LIMIT ?
-            ", [$prefix . '%', $limit]);
+            ", [$prefix.'%', $limit]);
 
             foreach ($mediaFiles as $file) {
                 $suggestions[] = [
@@ -952,7 +969,7 @@ SQL;
                 AND current_path LIKE ?
                 GROUP BY folder
                 LIMIT ?
-            ", ['%' . $prefix . '%', $limit]);
+            ", ['%'.$prefix.'%', $limit]);
 
             foreach ($folders as $folder) {
                 $suggestions[] = [
@@ -962,13 +979,13 @@ SQL;
             }
 
             // Get person name suggestions
-            $people = DB::select("
+            $people = DB::select('
                 SELECT DISTINCT person_name
                 FROM file_registry_faces
                 WHERE person_name IS NOT NULL
                 AND person_name LIKE ?
                 LIMIT ?
-            ", [$prefix . '%', $limit]);
+            ', [$prefix.'%', $limit]);
 
             foreach ($people as $person) {
                 $suggestions[] = [
@@ -982,7 +999,7 @@ SQL;
             $unique = [];
             foreach ($suggestions as $s) {
                 $key = strtolower($s['text']);
-                if (!isset($seen[$key])) {
+                if (! isset($seen[$key])) {
                     $seen[$key] = true;
                     $unique[] = $s;
                 }
@@ -1006,17 +1023,17 @@ SQL;
 
         $hasDateTaken = $this->hasColumn('file_registry', 'date_taken');
         $isBrowseMode = ($query === '*');
-        $searchTerm = '%' . $query . '%';
+        $searchTerm = '%'.$query.'%';
 
         // Get type counts
         try {
-            $searchFilter = $isBrowseMode ? "" : "AND (filename LIKE ? OR current_path LIKE ?)";
+            $searchFilter = $isBrowseMode ? '' : 'AND (filename LIKE ? OR current_path LIKE ?)';
             $searchParams = $isBrowseMode ? [] : [$searchTerm, $searchTerm];
 
             $typeCounts = DB::select("
                 SELECT
                     CASE
-                        WHEN extension IN ('jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp', 'svg', 'raw', 'cr2', 'nef', 'arw') THEN 'photo'
+                        WHEN extension IN ('jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'heic', 'tiff', 'bmp', 'jp2', 'j2k', 'jpf', 'jpx', 'svg', 'raw', 'cr2', 'nef', 'arw') THEN 'photo'
                         WHEN extension IN ('mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'm4v', 'wmv', 'mpg', 'mpeg') THEN 'video'
                         WHEN extension IN ('mp3', 'wav', 'flac', 'm4a', 'ogg', 'aac', 'wma') THEN 'audio'
                         WHEN extension IN ('pdf', 'doc', 'docx', 'odt', 'rtf', 'txt') THEN 'document'
@@ -1043,7 +1060,7 @@ SQL;
 
         // Get year facets
         try {
-            $dateCol = $hasDateTaken ? "COALESCE(date_taken, nextcloud_modified_at)" : "nextcloud_modified_at";
+            $dateCol = $hasDateTaken ? 'COALESCE(date_taken, nextcloud_modified_at)' : 'nextcloud_modified_at';
             $yearCounts = DB::select("
                 SELECT
                     YEAR({$dateCol}) as year,
@@ -1089,14 +1106,14 @@ SQL;
         // Add RAG document type counts
         try {
             $ragSql = $isBrowseMode
-                ? "SELECT document_type, COUNT(*) as count FROM rag_documents GROUP BY document_type"
-                : "SELECT document_type, COUNT(*) as count FROM rag_documents WHERE title ILIKE ? OR content ILIKE ? GROUP BY document_type";
+                ? 'SELECT document_type, COUNT(*) as count FROM rag_documents GROUP BY document_type'
+                : 'SELECT document_type, COUNT(*) as count FROM rag_documents WHERE title ILIKE ? OR content ILIKE ? GROUP BY document_type';
             $ragParams = $isBrowseMode ? [] : [$searchTerm, $searchTerm];
             $ragCounts = DB::connection('pgsql_rag')->select($ragSql, $ragParams);
 
             foreach ($ragCounts as $rc) {
                 $mappedType = $this->mapDocumentType($rc->document_type);
-                $key = 'rag_' . $mappedType;
+                $key = 'rag_'.$mappedType;
                 $facets['types'][$key] = ($facets['types'][$key] ?? 0) + $rc->count;
             }
         } catch (\Exception $e) {
@@ -1145,7 +1162,7 @@ SQL;
                     'mime_type' => $f->mime_type,
                     'file_size' => $f->file_size,
                     'date' => $f->nextcloud_modified_at,
-                    'has_thumbnail' => !empty($f->thumbnail_sizes),
+                    'has_thumbnail' => ! empty($f->thumbnail_sizes),
                     'thumbnail_url' => "/api/media/{$f->asset_uuid}/thumbnail/medium",
                 ];
             }, $recentFiles);
@@ -1198,9 +1215,9 @@ SQL;
         }
 
         try {
-            $data['stats']['total_docs'] = (int) (DB::connection('pgsql_rag')->selectOne("
+            $data['stats']['total_docs'] = (int) (DB::connection('pgsql_rag')->selectOne('
                 SELECT COUNT(*) as cnt FROM rag_documents
-            ")->cnt ?? 0);
+            ')->cnt ?? 0);
         } catch (\Exception $e) {
             Log::debug('UnifiedSearchService: landing stats total_docs query failed', ['error' => $e->getMessage()]);
         }
@@ -1228,30 +1245,30 @@ SQL;
                 WHERE id = ? AND status = 'active'
             ", [$fileRegistryId]);
 
-            if (!$file) {
+            if (! $file) {
                 return false;
             }
 
             // Build searchable content from metadata
             $content = implode(' | ', array_filter([
-                'Filename: ' . $file->filename,
-                $file->title ? 'Title: ' . $file->title : null,
-                $file->tags ? 'Tags: ' . $file->tags : null,
-                $file->date_taken_reasoning ? 'Date context: ' . $file->date_taken_reasoning : null,
-                'Path: ' . $file->current_path,
-                $file->date_taken ? 'Date: ' . substr($file->date_taken, 0, 10) : null,
+                'Filename: '.$file->filename,
+                $file->title ? 'Title: '.$file->title : null,
+                $file->tags ? 'Tags: '.$file->tags : null,
+                $file->date_taken_reasoning ? 'Date context: '.$file->date_taken_reasoning : null,
+                'Path: '.$file->current_path,
+                $file->date_taken ? 'Date: '.substr($file->date_taken, 0, 10) : null,
             ]));
 
             // Add face/people info
-            $faces = DB::select("
+            $faces = DB::select('
                 SELECT person_name
                 FROM file_registry_faces
                 WHERE file_registry_id = ? AND person_name IS NOT NULL
-            ", [$fileRegistryId]);
+            ', [$fileRegistryId]);
 
-            if (!empty($faces)) {
+            if (! empty($faces)) {
                 $names = array_column($faces, 'person_name');
-                $content .= ' | People: ' . implode(', ', $names);
+                $content .= ' | People: '.implode(', ', $names);
             }
 
             // Index to RAG
@@ -1281,6 +1298,7 @@ SQL;
                 'file_id' => $fileRegistryId,
                 'error' => $e->getMessage(),
             ]);
+
             return false;
         }
     }

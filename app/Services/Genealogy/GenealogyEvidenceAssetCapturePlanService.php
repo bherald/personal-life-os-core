@@ -23,7 +23,7 @@ class GenealogyEvidenceAssetCapturePlanService
     /**
      * @return array<string, mixed>
      */
-    public function collect(int $limit = 50, bool $dryRun = false, bool $compact = false, bool $eligibleOnly = false): array
+    public function collect(int $limit = 50, bool $dryRun = false, bool $compact = false, bool $eligibleOnly = false, ?int $treeId = null): array
     {
         $limit = max(1, min($limit, 200));
         $payload = [
@@ -40,10 +40,12 @@ class GenealogyEvidenceAssetCapturePlanService
             'noncanonical_write_allowed' => false,
             'review_decision_required' => true,
             'captured_at' => now()->toIso8601String(),
+            'tree_id' => $treeId,
             'limit' => $limit,
             'status' => 'observe_ok',
             'summary' => [
                 'scanned_rows' => 0,
+                'tree_filtered_rows' => 0,
                 'rows_with_candidates' => 0,
                 'candidate_count' => 0,
                 'planned_capture_count' => 0,
@@ -112,6 +114,13 @@ class GenealogyEvidenceAssetCapturePlanService
         foreach ($rows as $row) {
             $payload['summary']['scanned_rows']++;
             $details = $this->decodeDetails($row->details ?? null);
+
+            if ($treeId !== null && ! $this->reviewDetailsBelongToTree($details, $treeId)) {
+                $payload['summary']['tree_filtered_rows']++;
+
+                continue;
+            }
+
             $familyReady = $this->positiveInt($details['family_id'] ?? null) !== null
                 || $this->positiveInt($details['target_family_id'] ?? null) !== null
                 || $this->positiveInt($details['identity']['family_id'] ?? null) !== null
@@ -390,6 +399,105 @@ class GenealogyEvidenceAssetCapturePlanService
 
         return ($identityFit['approval_ready'] ?? true) === true
             && ($identityFit['partial_name_only'] ?? false) !== true;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     */
+    private function reviewDetailsBelongToTree(array $details, int $treeId): bool
+    {
+        foreach (['tree_id', 'target_tree_id'] as $key) {
+            if ($this->positiveInt($details[$key] ?? null) === $treeId) {
+                return true;
+            }
+        }
+
+        if (is_array($details['identity'] ?? null)) {
+            foreach (['tree_id', 'target_tree_id'] as $key) {
+                if ($this->positiveInt($details['identity'][$key] ?? null) === $treeId) {
+                    return true;
+                }
+            }
+        }
+
+        $personIds = $this->detailIds($details, ['person_id', 'target_person_id']);
+        if ($personIds !== [] && $this->anyPersonInTree($personIds, $treeId)) {
+            return true;
+        }
+
+        $familyIds = $this->detailIds($details, ['family_id', 'target_family_id']);
+        if ($familyIds !== [] && $this->anyFamilyInTree($familyIds, $treeId)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  list<string>  $keys
+     * @return list<int>
+     */
+    private function detailIds(array $details, array $keys): array
+    {
+        $ids = [];
+
+        foreach ($keys as $key) {
+            $id = $this->positiveInt($details[$key] ?? null);
+            if ($id !== null) {
+                $ids[] = $id;
+            }
+
+            $plural = $key.'s';
+            if (is_array($details[$plural] ?? null)) {
+                foreach ($details[$plural] as $value) {
+                    $id = $this->positiveInt($value);
+                    if ($id !== null) {
+                        $ids[] = $id;
+                    }
+                }
+            }
+
+            if (is_array($details['identity'] ?? null)) {
+                $id = $this->positiveInt($details['identity'][$key] ?? null);
+                if ($id !== null) {
+                    $ids[] = $id;
+                }
+
+                if (is_array($details['identity'][$plural] ?? null)) {
+                    foreach ($details['identity'][$plural] as $value) {
+                        $id = $this->positiveInt($value);
+                        if ($id !== null) {
+                            $ids[] = $id;
+                        }
+                    }
+                }
+            }
+        }
+
+        return array_values(array_unique($ids));
+    }
+
+    /**
+     * @param  list<int>  $personIds
+     */
+    private function anyPersonInTree(array $personIds, int $treeId): bool
+    {
+        return (int) DB::table('genealogy_persons')
+            ->where('tree_id', $treeId)
+            ->whereIn('id', $personIds)
+            ->count() > 0;
+    }
+
+    /**
+     * @param  list<int>  $familyIds
+     */
+    private function anyFamilyInTree(array $familyIds, int $treeId): bool
+    {
+        return (int) DB::table('genealogy_families')
+            ->where('tree_id', $treeId)
+            ->whereIn('id', $familyIds)
+            ->count() > 0;
     }
 
     /**

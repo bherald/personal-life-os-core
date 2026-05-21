@@ -39,6 +39,11 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'plos:agent-trace-tail --limit=20 --since=24 --json',
     'ops:mcp-health --compact',
     'ops:mcp-health --json --compact',
+    'llm:sync-providers --json --compact',
+    'llm:sync-providers --json --compact --no-live',
+    'codex:exec-smoke --json',
+    'ollama:drift-check --json --compact --no-fail',
+    'ollama:eval-scorecard --json --compact',
     'ops:capacity-report --json',
     'ops:capacity-checkpoint --json',
     'ops:capacity-checkpoint --json --compact',
@@ -86,6 +91,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:media-intake-run --dry-run --json --compact --stage --transcribe-dry-run --enrich-dry-run --evidence-assets',
     'genealogy:enrich-media --status',
     'genealogy:transcribe-media --status',
+    'genealogy:media-rag-index --tree=4 --stats',
+    'genealogy:media-rag-index --tree=4 --limit=20 --dry-run',
+    'genealogy:media-rag-index --tree=4 --limit=20 --max-seconds=45',
     'genealogy:agent-triage --json',
     'genealogy:agent-triage --compact',
     'genealogy:agent-triage --json --compact',
@@ -180,6 +188,11 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan plos:agent-trace-tail --limit=20 --since=24 --json/);
   assert.match(listing, /php artisan ops:mcp-health --compact/);
   assert.match(listing, /php artisan ops:mcp-health --json --compact/);
+  assert.match(listing, /php artisan llm:sync-providers --json --compact/);
+  assert.match(listing, /php artisan llm:sync-providers --json --compact --no-live/);
+  assert.match(listing, /php artisan codex:exec-smoke --json/);
+  assert.match(listing, /php artisan ollama:drift-check --json --compact --no-fail/);
+  assert.match(listing, /php artisan ollama:eval-scorecard --json --compact/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --json/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --json --compact/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --markdown/);
@@ -210,6 +223,9 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:media-intake-run --dry-run --json --compact/);
   assert.match(listing, /php artisan genealogy:enrich-media --status/);
   assert.match(listing, /php artisan genealogy:transcribe-media --status/);
+  assert.match(listing, /php artisan genealogy:media-rag-index --tree=4 --stats/);
+  assert.match(listing, /php artisan genealogy:media-rag-index --tree=4 --limit=20 --dry-run/);
+  assert.match(listing, /php artisan genealogy:media-rag-index --tree=4 --limit=20 --max-seconds=45/);
   assert.match(listing, /php artisan genealogy:agent-triage --json/);
   assert.match(listing, /php artisan genealogy:agent-triage --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json --compact/);
@@ -692,6 +708,22 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(materializeExecuteResult, /Blocked:/);
   assert.match(materializeExecuteResult, /Use command "list"/);
 
+  for (const command of [
+    'genealogy:media-rag-index --tree=4 --limit=40 --max-seconds=90',
+    'genealogy:media-rag-index --tree=4 --max-seconds=45 --limit=20',
+    'genealogy:media-rag-index --limit=20 --tree=4 --max-seconds=45',
+    'genealogy:media-rag-index --tree=5 --limit=20 --max-seconds=45',
+    'genealogy:media-rag-index --tree=4 --limit=20 --max-seconds=45 --reindex',
+    'genealogy:media-rag-index --tree=4 --limit=20',
+    'genealogy:media-rag-index --stats',
+  ]) {
+    const result = await plosArtisan({ command, on_prod: false });
+
+    assert.match(result, /Blocked:/, `${command} should be blocked`);
+    assert.match(result, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
+    assert.match(result, /Use command "list"/);
+  }
+
   const packetReasonReorderedCompactResult = await plosArtisan({
     command: 'genealogy:packet-reason-codes --compact --json',
     on_prod: false,
@@ -771,6 +803,54 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(mcpHealthProcessDetailsResult, /Blocked:/);
   assert.match(mcpHealthProcessDetailsResult, /Use command "list"/);
+
+  const llmSyncReorderedResult = await plosArtisan({
+    command: 'llm:sync-providers --compact --json',
+    on_prod: false,
+  });
+
+  assert.match(llmSyncReorderedResult, /Blocked:/);
+  assert.match(llmSyncReorderedResult, /Use command "list"/);
+
+  const llmSyncStrictResult = await plosArtisan({
+    command: 'llm:sync-providers --json --compact --strict',
+    on_prod: false,
+  });
+
+  assert.match(llmSyncStrictResult, /Blocked:/);
+  assert.match(llmSyncStrictResult, /Use command "list"/);
+
+  const ollamaDriftReorderedResult = await plosArtisan({
+    command: 'ollama:drift-check --compact --json --no-fail',
+    on_prod: false,
+  });
+
+  assert.match(ollamaDriftReorderedResult, /Blocked:/);
+  assert.match(ollamaDriftReorderedResult, /Use command "list"/);
+
+  const ollamaDriftFullJsonResult = await plosArtisan({
+    command: 'ollama:drift-check --json --no-fail',
+    on_prod: false,
+  });
+
+  assert.match(ollamaDriftFullJsonResult, /Blocked:/);
+  assert.match(ollamaDriftFullJsonResult, /Use command "list"/);
+
+  const ollamaScorecardFullJsonResult = await plosArtisan({
+    command: 'ollama:eval-scorecard --json',
+    on_prod: false,
+  });
+
+  assert.match(ollamaScorecardFullJsonResult, /Blocked:/);
+  assert.match(ollamaScorecardFullJsonResult, /Use command "list"/);
+
+  const ollamaScorecardModelResult = await plosArtisan({
+    command: 'ollama:eval-scorecard qwen3:8b --json --compact',
+    on_prod: false,
+  });
+
+  assert.match(ollamaScorecardModelResult, /Blocked:/);
+  assert.match(ollamaScorecardModelResult, /Use command "list"/);
 
   const graphQualityRunResult = await plosArtisan({
     command: 'graph:quality-metrics --run --json',

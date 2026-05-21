@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Log;
 
 class GenealogyLocalDocumentWorkerService
 {
+    private ?GenealogyLessonPromptContextService $lessonPromptContext = null;
+
     private ?TrustBoundaryFormatterService $trustBoundaryFormatter = null;
 
     public function __construct(
@@ -20,6 +22,11 @@ class GenealogyLocalDocumentWorkerService
     private function trustBoundaryFormatter(): TrustBoundaryFormatterService
     {
         return $this->trustBoundaryFormatter ??= app(TrustBoundaryFormatterService::class);
+    }
+
+    private function lessonContext(): GenealogyLessonPromptContextService
+    {
+        return $this->lessonPromptContext ??= app(GenealogyLessonPromptContextService::class);
     }
 
     public function extractStructuredFactsFromText(string $text, array $context = []): array
@@ -50,6 +57,7 @@ class GenealogyLocalDocumentWorkerService
                     'context' => $context,
                     'error' => $response['error'] ?? 'unknown',
                 ]);
+
                 continue;
             }
 
@@ -72,6 +80,13 @@ class GenealogyLocalDocumentWorkerService
     {
         $documentType = (string) ($context['media_type'] ?? 'document');
         $title = (string) ($context['title'] ?? 'Untitled genealogy document');
+        $lessonContext = $this->lessonContext()->build(
+            $context,
+            $this->lessonSearchTerms($context),
+            4,
+            'Reusable Genea lessons:',
+            ['lesson_limit' => 260, 'title_limit' => 100, 'fallback_limit' => 2],
+        );
         $formattedChunkText = $this->trustBoundaryFormatter()->format(new TrustEnvelope(
             sourceType: 'genealogy_document',
             contentType: 'text/plain',
@@ -83,6 +98,7 @@ class GenealogyLocalDocumentWorkerService
 You are a professional genealogist extracting structured facts from a {$documentType} transcript.
 
 Document title: {$title}
+{$lessonContext}
 
 Transcript chunk:
 {$formattedChunkText}
@@ -118,6 +134,33 @@ Rules:
 2. If unclear, omit rather than guess
 3. Return JSON only
 PROMPT;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function lessonSearchTerms(array $context): array
+    {
+        $terms = [
+            $context['title'] ?? null,
+            $context['media_type'] ?? null,
+            $context['document_type'] ?? null,
+            $context['source_type'] ?? null,
+            'document',
+            'ocr',
+            'htr',
+            'vision',
+            'source media',
+        ];
+
+        foreach ((array) ($context['tags'] ?? []) as $tag) {
+            $terms[] = $tag;
+        }
+
+        return array_values(array_unique(array_filter(
+            array_map(static fn (mixed $term): string => trim((string) $term), $terms),
+            static fn (string $term): bool => $term !== '' && mb_strlen($term) >= 3
+        )));
     }
 
     private function parseExtractionResponse(string $response): array

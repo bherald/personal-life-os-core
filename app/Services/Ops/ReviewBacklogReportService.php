@@ -26,9 +26,12 @@ class ReviewBacklogReportService
      */
     private const REMEDIATION_FINDING_TYPES = [
         'data_quality_review',
+        'date_quality_review',
         'genealogy_data_quality',
         'genealogy_source_cleanup',
+        'genealogy_source_quality',
         'source_duplicate_cleanup',
+        'source_quality_review',
     ];
 
     /**
@@ -2250,9 +2253,12 @@ class ReviewBacklogReportService
         if ($reviewType === 'genealogy_finding'
             && in_array($findingType, [
                 'data_quality_review',
+                'date_quality_review',
                 'genealogy_data_quality',
                 'genealogy_source_cleanup',
+                'genealogy_source_quality',
                 'source_duplicate_cleanup',
+                'source_quality_review',
             ], true)) {
             return [
                 'typed_remediation_preview_needed',
@@ -2299,9 +2305,12 @@ class ReviewBacklogReportService
         if ($reviewType === 'genealogy_finding'
             && in_array($findingType, [
                 'data_quality_review',
+                'date_quality_review',
                 'genealogy_data_quality',
                 'genealogy_source_cleanup',
+                'genealogy_source_quality',
                 'source_duplicate_cleanup',
+                'source_quality_review',
             ], true)) {
             return [
                 'typed_preview_needed',
@@ -3551,8 +3560,8 @@ class ReviewBacklogReportService
         return match ($type) {
             'family_duplicate_mark', 'family_duplicate_mark_preview' => 'family_duplicate_mark',
             'family_child_unlink', 'family_child_unlink_preview' => 'family_child_unlink',
-            'source_duplicate_mark', 'source_duplicate_mark_preview', 'source_duplicate_cleanup' => 'source_duplicate_mark',
-            'genealogy_todo_create', 'genealogy_todo_create_preview', 'data_quality_review', 'genealogy_data_quality' => 'genealogy_todo_create',
+            'source_duplicate_mark', 'source_duplicate_mark_preview', 'source_duplicate_cleanup', 'genealogy_source_cleanup' => 'source_duplicate_mark',
+            'genealogy_todo_create', 'genealogy_todo_create_preview', 'data_quality_review', 'date_quality_review', 'genealogy_data_quality', 'genealogy_source_quality', 'source_quality_review' => 'genealogy_todo_create',
             default => null,
         };
     }

@@ -1,5 +1,5 @@
 # Safety Card: genealogy-assessor
-**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-04-12
+**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-05-12
 
 | Field | Value |
 |-------|-------|
@@ -11,13 +11,14 @@
 | **Permissions** | genealogy:read, genealogy:write, system:read |
 | **Notifications** | Pushover |
 
-**Capabilities:** Survey tree health, missing-data backlog, recent searches, source coverage, and open tasks. Prioritize persons for follow-up research and create research tasks.
+**Capabilities:** Survey tree health, missing-data backlog, recent searches, source coverage, and open tasks. Prioritize persons for follow-up research, create research tasks, and save queueing procedures.
 
 **Constraints:**
 - Cannot directly modify person facts, relationships, or sources
 - Cannot approve genealogy findings
 - Task creation must stay within queue-management scope
 - Must prioritize across the tree fairly, not lock onto one line indefinitely
+- Local PLOS may use owned private/living FT data internally; export/publish/share workflows own privacy and redaction gates
 
 **Failure Modes:**
 - Empty or stale queue metrics produce no-op runs

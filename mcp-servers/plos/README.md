@@ -21,6 +21,12 @@ confirmation fields are supplied.
   flushes or worker restarts.
 - `plos_tinker` and `plos_ssh` provide operator tools with command filtering.
 - `plos_decompose` routes large prompts through the PLOS AI service.
+- `genealogy_context` returns compact genealogy snapshots for selected IDs.
+- `genealogy_batch_apply` batches guarded genealogy updates with a dry-run
+  default, `confirm=true` for writes, and tree-scoped write checks for
+  sources, persons, families, child links, media links, citations, and RAG
+  touch targets. Child links can also carry natural/adopted/step/foster/
+  unknown parent-relationship qualifiers.
 - `ollama_*` tools delegate summarization, error triage, diff explanation, code
   description, commit drafting, and content drafting to local Ollama models.
 
@@ -82,6 +88,11 @@ smaller. The explicit form above is easier to debug during a public install.
 
 - SQL is read-only by default, rejects multiple statements, blocks destructive
   DDL/DML, and auto-limits unbounded reads.
+- Genealogy context reads are scoped to selected IDs and truncated text fields;
+  they do not mutate data.
+- Genealogy batch writes default to dry-run and require `confirm=true` before
+  mutating the selected tree after tree membership checks for sources, persons,
+  families, children, media links, citations, and RAG touch targets.
 - Config writes require `confirm_write=true`, only allow selected sections, and
   reject secret-like keys.
 - Cache clearing requires `confirm_disruptive=true` for Redis flushes or worker

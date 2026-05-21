@@ -15,18 +15,20 @@ use Illuminate\Support\Facades\Log;
  *
  * Usage:
  *   php artisan genealogy:rag-index --limit=50           # Index unindexed persons
- *   php artisan genealogy:rag-index --reindex --limit=20  # Re-index all (force)
+ *   php artisan genealogy:rag-index --reindex --limit=0   # Re-index all persons
  *   php artisan genealogy:rag-index --stats               # Show indexing stats
  *   php artisan genealogy:rag-index --dry-run --limit=5   # Preview without indexing
+ *   php artisan genealogy:rag-index --exclude-living      # Optional privacy filter
  */
 class GenealogyRagIndexCommand extends Command
 {
     protected $signature = 'genealogy:rag-index
-                            {--limit=50 : Max items to index per run}
+                            {--limit=50 : Max items to index per run; 0 means all}
                             {--type=persons : Type: persons, places, sources, all}
                             {--reindex : Re-index already indexed items}
                             {--stats : Show indexing statistics}
                             {--dry-run : Preview without indexing}
+                            {--exclude-living : Exclude persons explicitly marked living}
                             {--tree= : Limit to specific tree_id}';
 
     protected $description = 'DI-3/DI-9: Index genealogy data into RAG (persons, places, sources)';
@@ -34,7 +36,7 @@ class GenealogyRagIndexCommand extends Command
     public function handle(): int
     {
         if ($this->option('stats')) {
-            return $this->showStats();
+            return $this->showStats($this->option('tree'));
         }
 
         $type = $this->option('type');
@@ -42,6 +44,7 @@ class GenealogyRagIndexCommand extends Command
         $reindex = $this->option('reindex');
         $dryRun = $this->option('dry-run');
         $treeId = $this->option('tree');
+        $excludeLiving = (bool) $this->option('exclude-living');
 
         $totalIndexed = 0;
 
@@ -61,14 +64,33 @@ class GenealogyRagIndexCommand extends Command
             return 0;
         }
 
-        $this->info("Genealogy RAG indexing persons (limit: {$limit}, reindex: ".($reindex ? 'yes' : 'no').')');
+        $limitLabel = $limit <= 0 ? 'all' : (string) $limit;
+        $this->info("Genealogy RAG indexing persons (limit: {$limitLabel}, reindex: ".($reindex ? 'yes' : 'no').', exclude living: '.($excludeLiving ? 'yes' : 'no').')');
 
-        $persons = $this->getPersonsToIndex($limit, $reindex, $treeId);
+        $persons = $this->getPersonsToIndex($limit, $reindex, $treeId, $excludeLiving);
 
         if (empty($persons)) {
             $this->info('No persons to index.');
+            if (! $dryRun) {
+                $this->syncPersonRagMarkersFromPg($treeId);
+            }
 
             return 0;
+        }
+
+        if (! $dryRun) {
+            $selectedPersonIds = array_map(
+                static fn (object $person): int => (int) $person->id,
+                $persons
+            );
+            $existingSelectedPersonIds = $reindex
+                ? $selectedPersonIds
+                : array_values(array_intersect($selectedPersonIds, $this->getExistingRagPersonIds($treeId)));
+
+            if ($existingSelectedPersonIds !== []) {
+                $deleted = $this->removeExistingPersonDocuments($existingSelectedPersonIds);
+                $this->info("Removed {$deleted} existing person RAG document(s) for selected batch.");
+            }
         }
 
         $this->info('Found '.count($persons).' persons to index.');
@@ -101,20 +123,16 @@ class GenealogyRagIndexCommand extends Command
                     'genealogy_person',
                     $content,
                     $name,
-                    [
-                        'person_id' => $person->id,
-                        'tree_id' => $person->tree_id,
-                        'birth_year' => $this->extractYear($person->birth_date),
-                        'death_year' => $this->extractYear($person->death_date),
-                        'birth_place' => $person->birth_place,
-                    ],
+                    $this->buildPersonMetadata($person),
                     $person->id,
                     'genealogy_person',
-                    'genealogy'
+                    'genealogy',
+                    null,
+                    ['skip_dedup' => true]
                 );
 
                 if ($doc) {
-                    DB::update('UPDATE genealogy_persons SET rag_indexed_at = NOW() WHERE id = ?', [$person->id]);
+                    DB::update('UPDATE genealogy_persons SET rag_indexed_at = NOW(), updated_at = updated_at WHERE id = ?', [$person->id]);
                     $indexed++;
                     $this->line("  OK: {$name} (doc #{$doc->id})");
                 } else {
@@ -131,11 +149,15 @@ class GenealogyRagIndexCommand extends Command
                 ]);
             }
 
-            // Wall-clock limit: 10 minutes
-            if ((microtime(true) - $startTime) > 600) {
+            // Bounded incremental runs self-stop; unlimited full rebuilds rely on the scheduled job timeout.
+            if ($limit > 0 && (microtime(true) - $startTime) > 600) {
                 $this->warn('Wall-clock limit reached (10 min).');
                 break;
             }
+        }
+
+        if (! $dryRun) {
+            $this->syncPersonRagMarkersFromPg($treeId);
         }
 
         $this->newLine();
@@ -148,19 +170,16 @@ class GenealogyRagIndexCommand extends Command
         return $failed > 0 && $indexed === 0 ? self::FAILURE : self::SUCCESS;
     }
 
-    private function getPersonsToIndex(int $limit, bool $reindex, ?string $treeId): array
+    private function getPersonsToIndex(int $limit, bool $reindex, ?string $treeId, bool $excludeLiving): array
     {
-        $sql = 'SELECT p.id, p.tree_id, p.given_name, p.surname, p.suffix, p.nickname,
-                       p.sex, p.birth_date, p.birth_place, p.death_date, p.death_place,
-                       p.burial_date, p.burial_place, p.occupation, p.religion,
-                       p.nationality, p.notes, p.cause_of_death
+        $sql = 'SELECT p.*
                 FROM genealogy_persons p
-                WHERE p.living = 0';
+                WHERE 1=1';
 
         $params = [];
 
-        if (! $reindex) {
-            $sql .= ' AND p.rag_indexed_at IS NULL';
+        if ($excludeLiving) {
+            $sql .= ' AND (p.living IS NULL OR p.living = 0)';
         }
 
         if ($treeId) {
@@ -168,10 +187,253 @@ class GenealogyRagIndexCommand extends Command
             $params[] = $treeId;
         }
 
-        $sql .= ' ORDER BY p.updated_at DESC LIMIT ?';
-        $params[] = $limit;
+        if (! $reindex) {
+            $existingIds = $this->getExistingRagPersonIds($treeId);
+
+            if (! empty($existingIds)) {
+                $placeholders = implode(',', array_fill(0, count($existingIds), '?'));
+                $sql .= " AND (
+                    p.id NOT IN ({$placeholders})
+                    OR p.rag_indexed_at IS NULL
+                    OR (
+                        p.rag_indexed_at IS NOT NULL
+                        AND p.updated_at IS NOT NULL
+                        AND p.updated_at > p.rag_indexed_at
+                    )
+                )";
+                array_push($params, ...$existingIds);
+            }
+        }
+
+        $sql .= ' ORDER BY p.updated_at DESC';
+
+        if ($limit > 0) {
+            $sql .= ' LIMIT ?';
+            $params[] = $limit;
+        }
 
         return DB::select($sql, $params);
+    }
+
+    /**
+     * The MySQL rag_indexed_at marker can drift from PostgreSQL after old imports
+     * or dedup behavior. Use the actual RAG source rows as the coverage source of truth.
+     */
+    private function getExistingRagPersonIds(?string $treeId): array
+    {
+        return array_map(
+            static fn ($row) => (int) $row->source_id,
+            $this->getExistingRagPersonRows($treeId)
+        );
+    }
+
+    private function getExistingRagPersonRows(?string $treeId): array
+    {
+        $params = [];
+        $treeClause = '';
+
+        if ($treeId) {
+            $treeClause = " AND metadata->>'tree_id' = ?";
+            $params[] = (string) $treeId;
+        }
+
+        $sql = "SELECT source_id
+                , MAX(updated_at) AS indexed_at
+                FROM rag_documents
+                WHERE document_type = 'genealogy_person'
+                  AND source_type = 'genealogy_person'
+                  AND source_id IS NOT NULL
+                  {$treeClause}
+                GROUP BY source_id";
+
+        return DB::connection('pgsql_rag')->select($sql, $params);
+    }
+
+    private function removeExistingPersonDocuments(array $personIds): int
+    {
+        return $this->removeExistingRagDocuments('genealogy_person', 'genealogy_person', $personIds);
+    }
+
+    private function removeExistingRagDocuments(string $documentType, string $sourceType, array $sourceIds): int
+    {
+        $sourceIds = array_values(array_unique(array_filter(array_map(
+            static fn ($sourceId): string => (string) (int) $sourceId,
+            $sourceIds
+        ))));
+
+        if ($sourceIds === []) {
+            return 0;
+        }
+
+        $db = DB::connection('pgsql_rag');
+        $sourcePlaceholders = implode(',', array_fill(0, count($sourceIds), '?'));
+
+        $sql = "SELECT id
+                FROM rag_documents
+                WHERE document_type = ?
+                  AND source_type = ?
+                  AND source_id::text IN ({$sourcePlaceholders})";
+        $params = array_merge([$documentType, $sourceType], $sourceIds);
+
+        $documentIds = array_map(
+            static fn ($row) => (int) $row->id,
+            $db->select($sql, $params)
+        );
+
+        if (empty($documentIds)) {
+            return 0;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($documentIds), '?'));
+        $db->delete("DELETE FROM rag_sentence_embeddings WHERE document_id IN ({$placeholders})", $documentIds);
+        $db->delete("DELETE FROM rag_chunk_hypotheticals WHERE document_id IN ({$placeholders})", $documentIds);
+
+        return $db->delete("DELETE FROM rag_documents WHERE id IN ({$placeholders})", $documentIds);
+    }
+
+    /**
+     * MySQL markers are an operational cache; PostgreSQL RAG docs are the source of truth.
+     * Reconcile after each run so failed or partial indexing does not leave false coverage.
+     */
+    private function syncPersonRagMarkersFromPg(?string $treeId): void
+    {
+        $indexedAtByPersonId = [];
+        $existingRows = $this->getExistingRagPersonRows($treeId);
+
+        foreach ($existingRows as $row) {
+            $personId = (int) ($row->source_id ?? 0);
+            if ($personId <= 0) {
+                continue;
+            }
+
+            $indexedAtByPersonId[$personId] = (string) ($row->indexed_at ?? now()->toDateTimeString());
+        }
+
+        $personSql = 'SELECT id, updated_at, rag_indexed_at
+                      FROM genealogy_persons
+                      WHERE 1=1';
+        $personParams = [];
+
+        if ($treeId) {
+            $personSql .= ' AND tree_id = ?';
+            $personParams[] = $treeId;
+        }
+
+        $markersToClear = [];
+        $markersToSet = [];
+
+        foreach (DB::select($personSql, $personParams) as $person) {
+            $personId = (int) $person->id;
+            $indexedAt = $indexedAtByPersonId[$personId] ?? null;
+
+            if ($indexedAt === null) {
+                if ($person->rag_indexed_at !== null) {
+                    $markersToClear[] = $personId;
+                }
+
+                continue;
+            }
+
+            if (! $this->personRagDocumentIsCurrent($person->updated_at ?? null, $indexedAt)) {
+                if ($person->rag_indexed_at !== null) {
+                    $markersToClear[] = $personId;
+                }
+
+                continue;
+            }
+
+            if ((string) ($person->rag_indexed_at ?? '') !== $indexedAt) {
+                $markersToSet[$personId] = $indexedAt;
+            }
+        }
+
+        $this->clearPersonRagMarkers($markersToClear, $treeId);
+        $this->setPersonRagMarkers($markersToSet, $treeId);
+    }
+
+    private function personRagDocumentIsCurrent(mixed $personUpdatedAt, string $indexedAt): bool
+    {
+        if ($personUpdatedAt === null || $personUpdatedAt === '') {
+            return true;
+        }
+
+        $updatedTimestamp = strtotime((string) $personUpdatedAt);
+        $indexedTimestamp = strtotime($indexedAt);
+
+        if ($updatedTimestamp === false || $indexedTimestamp === false) {
+            return true;
+        }
+
+        return $updatedTimestamp <= $indexedTimestamp;
+    }
+
+    private function clearPersonRagMarkers(array $personIds, ?string $treeId): void
+    {
+        foreach (array_chunk(array_values(array_unique($personIds)), 500) as $chunk) {
+            if ($chunk === []) {
+                continue;
+            }
+
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $sql = "UPDATE genealogy_persons
+                    SET rag_indexed_at = NULL, updated_at = updated_at
+                    WHERE rag_indexed_at IS NOT NULL
+                      AND id IN ({$placeholders})";
+            $params = $chunk;
+
+            if ($treeId) {
+                $sql .= ' AND tree_id = ?';
+                $params[] = $treeId;
+            }
+
+            DB::update($sql, $params);
+        }
+    }
+
+    private function setPersonRagMarkers(array $markersByPersonId, ?string $treeId): void
+    {
+        foreach ($markersByPersonId as $personId => $indexedAt) {
+            $sql = 'UPDATE genealogy_persons
+                    SET rag_indexed_at = ?, updated_at = updated_at
+                    WHERE id = ?
+                      AND (updated_at IS NULL OR updated_at <= ?)';
+            $params = [$indexedAt, $personId, $indexedAt];
+
+            if ($treeId) {
+                $sql .= ' AND tree_id = ?';
+                $params[] = $treeId;
+            }
+
+            DB::update($sql, $params);
+        }
+    }
+
+    private function buildPersonMetadata(object $person): array
+    {
+        return [
+            'person_id' => $person->id,
+            'tree_id' => $person->tree_id,
+            'gedcom_id' => $person->gedcom_id ?? null,
+            'uid' => $person->uid ?? null,
+            'birth_year' => $this->extractYear($person->birth_date ?? null),
+            'death_year' => $this->extractYear($person->death_date ?? null),
+            'birth_place' => $person->birth_place ?? null,
+            'death_place' => $person->death_place ?? null,
+            'living' => isset($person->living) ? (bool) $person->living : null,
+            'all_person_fields_included' => true,
+            'person_record' => $this->personRecord($person),
+        ];
+    }
+
+    private function personRecord(object $person): array
+    {
+        $record = [];
+
+        foreach ((array) $person as $key => $value) {
+            $record[$key] = $this->normalizePersonValue($value);
+        }
+
+        return $record;
     }
 
     private function buildPersonContent(object $person): string
@@ -183,36 +445,15 @@ class GenealogyRagIndexCommand extends Command
         }
 
         $parts[] = "Person: {$name}";
-        if ($person->nickname) {
-            $parts[] = "Also known as: {$person->nickname}";
-        }
-        if ($person->sex) {
-            $parts[] = 'Sex: '.match ($person->sex) {
-                'M' => 'Male', 'F' => 'Female', default => $person->sex
-            };
-        }
 
-        if ($person->birth_date) {
-            $parts[] = "Born: {$person->birth_date}".($person->birth_place ? " in {$person->birth_place}" : '');
-        }
-        if ($person->death_date) {
-            $parts[] = "Died: {$person->death_date}".($person->death_place ? " in {$person->death_place}" : '');
-        }
-        if ($person->burial_place) {
-            $parts[] = 'Buried: '.($person->burial_date ? "{$person->burial_date} " : '')."at {$person->burial_place}";
-        }
+        $parts[] = "\nPerson record fields:";
+        foreach ($this->personFieldLabels() as $field => $label) {
+            $value = $this->normalizePersonValue($person->{$field} ?? null);
+            if ($value === null || $value === '') {
+                continue;
+            }
 
-        if ($person->occupation) {
-            $parts[] = "Occupation: {$person->occupation}";
-        }
-        if ($person->religion) {
-            $parts[] = "Religion: {$person->religion}";
-        }
-        if ($person->nationality) {
-            $parts[] = "Nationality: {$person->nationality}";
-        }
-        if ($person->cause_of_death) {
-            $parts[] = "Cause of death: {$person->cause_of_death}";
+            $parts[] = "- {$label}: {$value}";
         }
 
         // Family relationships
@@ -242,11 +483,78 @@ class GenealogyRagIndexCommand extends Command
             }
         }
 
-        if ($person->notes) {
-            $parts[] = "\nNotes: ".mb_substr($person->notes, 0, 500);
+        return implode("\n", $parts);
+    }
+
+    private function personFieldLabels(): array
+    {
+        return [
+            'id' => 'Person database ID',
+            'tree_id' => 'Tree ID',
+            'gedcom_id' => 'GEDCOM ID',
+            'uid' => 'UID',
+            'title' => 'Title',
+            'given_name' => 'Given name',
+            'surname' => 'Surname',
+            'suffix' => 'Suffix',
+            'nickname' => 'Nickname or also known as',
+            'sex' => 'Sex',
+            'birth_date' => 'Birth date',
+            'birth_place' => 'Birth place',
+            'birth_lat' => 'Birth latitude',
+            'birth_lon' => 'Birth longitude',
+            'birth_place_id' => 'Birth place ID',
+            'death_date' => 'Death date',
+            'death_place' => 'Death place',
+            'death_lat' => 'Death latitude',
+            'death_lon' => 'Death longitude',
+            'death_place_id' => 'Death place ID',
+            'burial_date' => 'Burial date',
+            'burial_place' => 'Burial place',
+            'burial_lat' => 'Burial latitude',
+            'burial_lon' => 'Burial longitude',
+            'burial_place_id' => 'Burial place ID',
+            'occupation' => 'Occupation',
+            'education' => 'Education',
+            'religion' => 'Religion',
+            'primary_photo_id' => 'Primary photo media ID',
+            'notes' => 'Notes',
+            'primary_language' => 'Primary language',
+            'living' => 'Living status',
+            'privacy_override' => 'Privacy override',
+            'physical_description' => 'Physical description',
+            'nationality' => 'Nationality',
+            'ssn' => 'SSN',
+            'id_number' => 'ID number',
+            'property' => 'Property',
+            'cause_of_death' => 'Cause of death',
+            'created_at' => 'Record created at',
+            'updated_at' => 'Record updated at',
+            'rag_indexed_at' => 'RAG indexed at before this run',
+        ];
+    }
+
+    private function normalizePersonValue(mixed $value): mixed
+    {
+        if ($value === null) {
+            return null;
         }
 
-        return implode("\n", $parts);
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if (is_numeric($value)) {
+            return $value;
+        }
+
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        return $value;
     }
 
     private function getPersonFamilies(int $personId): array
@@ -369,22 +677,31 @@ class GenealogyRagIndexCommand extends Command
         }
     }
 
-    private function showStats(): int
+    private function showStats(?string $treeId): int
     {
-        $stats = DB::selectOne('
+        $where = $treeId ? ' WHERE tree_id = ?' : '';
+        $params = $treeId ? [$treeId] : [];
+
+        $stats = DB::selectOne("
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN rag_indexed_at IS NOT NULL THEN 1 ELSE 0 END) as indexed,
-                SUM(CASE WHEN rag_indexed_at IS NULL AND living = 0 THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN living = 1 THEN 1 ELSE 0 END) as living_excluded
+                COALESCE(SUM(CASE WHEN rag_indexed_at IS NOT NULL THEN 1 ELSE 0 END), 0) as indexed,
+                COALESCE(SUM(CASE WHEN rag_indexed_at IS NULL THEN 1 ELSE 0 END), 0) as pending,
+                COALESCE(SUM(CASE WHEN living = 1 THEN 1 ELSE 0 END), 0) as living
             FROM genealogy_persons
-        ');
+            {$where}
+        ", $params);
+
+        $ragDocumentCount = count($this->getExistingRagPersonIds($treeId));
+        $missingRagDocuments = max(0, (int) $stats->total - $ragDocumentCount);
 
         $this->table(['Metric', 'Value'], [
             ['Total persons', $stats->total],
-            ['RAG indexed', $stats->indexed],
-            ['Pending (non-living)', $stats->pending],
-            ['Living (excluded)', $stats->living_excluded],
+            ['MySQL rag_indexed_at set', $stats->indexed],
+            ['MySQL rag_indexed_at pending', $stats->pending],
+            ['PostgreSQL person RAG docs', $ragDocumentCount],
+            ['Missing PostgreSQL person RAG docs', $missingRagDocuments],
+            ['Living persons', $stats->living],
         ]);
 
         return 0;
@@ -407,14 +724,17 @@ class GenealogyRagIndexCommand extends Command
      */
     private function indexPlaces(int $limit, bool $reindex, bool $dryRun, ?string $treeId): int
     {
-        $sql = 'SELECT id, name, normalized_name, place_type, latitude, longitude
+        $sql = 'SELECT id, name, normalized_name, place_type, latitude, longitude, rag_indexed_at, updated_at
                 FROM genealogy_places WHERE 1=1';
         $params = [];
         if (! $reindex) {
-            $sql .= ' AND rag_indexed_at IS NULL';
+            $sql .= ' AND (rag_indexed_at IS NULL OR (updated_at IS NOT NULL AND updated_at > rag_indexed_at))';
         }
-        $sql .= ' ORDER BY id ASC LIMIT ?';
-        $params[] = $limit;
+        $sql .= ' ORDER BY id ASC';
+        if ($limit > 0) {
+            $sql .= ' LIMIT ?';
+            $params[] = $limit;
+        }
 
         try {
             $places = DB::select($sql, $params);
@@ -434,6 +754,14 @@ class GenealogyRagIndexCommand extends Command
         $this->info('Found '.count($places).' places to index.');
         $ragService = app(RAGService::class);
         $indexed = 0;
+        $selectedPlaceIds = array_map(static fn (object $place): int => (int) $place->id, $places);
+
+        if (! $dryRun) {
+            $deleted = $this->removeExistingRagDocuments('genealogy_place', 'genealogy_place', $selectedPlaceIds);
+            if ($deleted > 0) {
+                $this->info("Removed {$deleted} existing place RAG document(s) for selected batch.");
+            }
+        }
 
         foreach ($places as $place) {
             $content = "Place: {$place->name}";
@@ -459,15 +787,25 @@ class GenealogyRagIndexCommand extends Command
             }
 
             try {
-                $ragService->indexDocument([
-                    'title' => "Place: {$place->name}",
-                    'content' => $content,
-                    'source' => 'genealogy_place',
-                    'source_id' => (string) $place->id,
-                    'metadata' => json_encode(['type' => $place->place_type]),
-                ]);
-                DB::update('UPDATE genealogy_places SET rag_indexed_at = NOW() WHERE id = ?', [$place->id]);
-                $indexed++;
+                $doc = $ragService->indexDocument(
+                    'genealogy_place',
+                    $content,
+                    "Place: {$place->name}",
+                    [
+                        'place_id' => (int) $place->id,
+                        'type' => $place->place_type,
+                    ],
+                    $place->id,
+                    'genealogy_place',
+                    'genealogy',
+                    null,
+                    ['skip_dedup' => true]
+                );
+
+                if ($doc) {
+                    DB::update('UPDATE genealogy_places SET rag_indexed_at = NOW(), updated_at = updated_at WHERE id = ?', [$place->id]);
+                    $indexed++;
+                }
             } catch (\Throwable $e) {
                 Log::warning('GenealogyRagIndex: Place indexing failed', ['id' => $place->id, 'error' => $e->getMessage()]);
             }
@@ -484,7 +822,8 @@ class GenealogyRagIndexCommand extends Command
     private function indexSources(int $limit, bool $reindex, bool $dryRun, ?string $treeId): int
     {
         $sql = 'SELECT gs.id, gs.tree_id, gs.title, gs.author, gs.publication,
-                       gs.source_category, gs.repository, gs.url, gs.notes
+                       gs.source_category, gs.repository, gs.url, gs.notes,
+                       gs.rag_indexed_at, gs.updated_at
                 FROM genealogy_sources gs WHERE 1=1';
         $params = [];
 
@@ -493,10 +832,13 @@ class GenealogyRagIndexCommand extends Command
             $params[] = $treeId;
         }
         if (! $reindex) {
-            $sql .= ' AND gs.rag_indexed_at IS NULL';
+            $sql .= ' AND (gs.rag_indexed_at IS NULL OR (gs.updated_at IS NOT NULL AND gs.updated_at > gs.rag_indexed_at))';
         }
-        $sql .= ' ORDER BY gs.id ASC LIMIT ?';
-        $params[] = $limit;
+        $sql .= ' ORDER BY gs.id ASC';
+        if ($limit > 0) {
+            $sql .= ' LIMIT ?';
+            $params[] = $limit;
+        }
 
         try {
             $sources = DB::select($sql, $params);
@@ -515,6 +857,14 @@ class GenealogyRagIndexCommand extends Command
         $this->info('Found '.count($sources).' sources to index.');
         $ragService = app(RAGService::class);
         $indexed = 0;
+        $selectedSourceIds = array_map(static fn (object $source): int => (int) $source->id, $sources);
+
+        if (! $dryRun) {
+            $deleted = $this->removeExistingRagDocuments('genealogy_source', 'genealogy_source', $selectedSourceIds);
+            if ($deleted > 0) {
+                $this->info("Removed {$deleted} existing source RAG document(s) for selected batch.");
+            }
+        }
 
         foreach ($sources as $src) {
             $parts = ["Source: {$src->title}"];
@@ -550,15 +900,26 @@ class GenealogyRagIndexCommand extends Command
             }
 
             try {
-                $ragService->indexDocument([
-                    'title' => "Source: {$src->title}",
-                    'content' => $content,
-                    'source' => 'genealogy_source',
-                    'source_id' => (string) $src->id,
-                    'metadata' => json_encode(['tree_id' => $src->tree_id, 'category' => $src->source_category]),
-                ]);
-                DB::update('UPDATE genealogy_sources SET rag_indexed_at = NOW() WHERE id = ?', [$src->id]);
-                $indexed++;
+                $doc = $ragService->indexDocument(
+                    'genealogy_source',
+                    $content,
+                    "Source: {$src->title}",
+                    [
+                        'source_id' => (int) $src->id,
+                        'tree_id' => (int) $src->tree_id,
+                        'category' => $src->source_category,
+                    ],
+                    $src->id,
+                    'genealogy_source',
+                    'genealogy',
+                    null,
+                    ['skip_dedup' => true]
+                );
+
+                if ($doc) {
+                    DB::update('UPDATE genealogy_sources SET rag_indexed_at = NOW(), updated_at = updated_at WHERE id = ?', [$src->id]);
+                    $indexed++;
+                }
             } catch (\Throwable $e) {
                 Log::warning('GenealogyRagIndex: Source indexing failed', ['id' => $src->id, 'error' => $e->getMessage()]);
             }

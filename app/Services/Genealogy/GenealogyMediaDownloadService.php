@@ -819,6 +819,9 @@ class GenealogyMediaDownloadService
             'image/png' => 'png',
             'image/gif' => 'gif',
             'image/webp' => 'webp',
+            'image/jp2' => 'jp2',
+            'image/jpx' => 'jp2',
+            'image/j2k' => 'jp2',
             'application/pdf' => 'pdf',
             'text/html' => 'html',
         ];
@@ -842,7 +845,7 @@ class GenealogyMediaDownloadService
 
         // Determine media type
         $mediaType = 'document';
-        if (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'])) {
+        if (in_array($ext, ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'bmp', 'jp2', 'j2k', 'jpf', 'jpx'])) {
             $mediaType = 'photo';
         } elseif ($ext === 'pdf') {
             $mediaType = 'document';
@@ -1005,7 +1008,7 @@ class GenealogyMediaDownloadService
             }
 
             // Only download images and PDFs
-            $allowedMimes = ['image/jpeg', 'image/png', 'image/tiff', 'image/gif', 'application/pdf'];
+            $allowedMimes = ['image/jpeg', 'image/png', 'image/tiff', 'image/gif', 'image/jp2', 'image/jpx', 'image/j2k', 'application/pdf'];
             $mimeMatch = false;
             foreach ($allowedMimes as $allowed) {
                 if (stripos($mime, $allowed) !== false) {
@@ -1014,7 +1017,7 @@ class GenealogyMediaDownloadService
                 }
             }
             // Also accept if no mime but URL looks like an image/PDF
-            if (! $mimeMatch && ! preg_match('/\.(jpg|jpeg|png|tiff?|gif|pdf)$/i', $fileUrl)) {
+            if (! $mimeMatch && ! preg_match('/\.(jpg|jpeg|jfif|png|tiff?|gif|jp2|j2k|jpf|jpx|pdf)$/i', $fileUrl)) {
                 $result['skipped']++;
 
                 continue;

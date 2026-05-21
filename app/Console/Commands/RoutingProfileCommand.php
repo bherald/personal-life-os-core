@@ -17,7 +17,9 @@ use Illuminate\Support\Facades\Log;
  * It does NOT enforce profile restrictions at runtime — that is a follow-up
  * slice that will touch LLMPoolManagerService / AIService::buildFallbackChain().
  *
- * Hard whitelist of profile names: default | offline_review | offline_dev_assist.
+ * Hard whitelist of profile names: default | offline_review | offline_dev_assist |
+ * offline_genealogy_assist | hybrid_review | hybrid_dev_assist |
+ * cloud_escalation_only.
  * Anything else is rejected with exit code 2.
  *
  * Usage:
@@ -30,7 +32,7 @@ class RoutingProfileCommand extends Command
 {
     protected $signature = 'routing:profile
         {action : status|activate|list}
-        {name? : default|offline_review|offline_dev_assist|hybrid_review|hybrid_dev_assist|cloud_escalation_only (required for activate)}';
+        {name? : default|offline_review|offline_dev_assist|offline_genealogy_assist|hybrid_review|hybrid_dev_assist|cloud_escalation_only (required for activate)}';
 
     protected $description = 'Inspect or switch the active operator routing profile (system_configs routing.* rows). Human-controlled only — connectivity regain never changes the active profile.';
 
@@ -44,6 +46,7 @@ class RoutingProfileCommand extends Command
         'default',
         'offline_review',
         'offline_dev_assist',
+        'offline_genealogy_assist',
         'hybrid_review',
         'hybrid_dev_assist',
         'cloud_escalation_only',
@@ -125,7 +128,7 @@ class RoutingProfileCommand extends Command
         $name = strtolower(trim($name));
 
         if ($name === '') {
-            $this->error("activate requires a profile name: default | offline_review | offline_dev_assist");
+            $this->error('activate requires a profile name: '.implode(' | ', self::VALID_PROFILES));
 
             return 2;
         }
@@ -152,7 +155,7 @@ class RoutingProfileCommand extends Command
                     'active_profile',
                     $name,
                     'string',
-                    'Active routing profile. default=no restrictions beyond offline_mode. Values: default | offline_review | offline_dev_assist.',
+                    'Active routing profile. default=no restrictions beyond offline_mode. Values: '.implode(' | ', self::VALID_PROFILES).'.',
                 ]
             );
         } else {

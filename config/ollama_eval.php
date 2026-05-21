@@ -175,7 +175,7 @@ return [
             'model' => 'gemma3:4b',
             'status' => 'active',
             'intended_use' => 'fast extraction / cleanup',
-            'notes' => 'Current bounded local worker candidate.',
+            'notes' => 'Current bounded local worker candidate. 2026-05-20 prompt-injection eval caveat: echoed hostile payload phrases; do not use to widen trust-boundary claims without retest.',
         ],
         [
             'model' => 'qwen3:8b',
@@ -196,10 +196,40 @@ return [
             'notes' => 'Current embedding path.',
         ],
         [
+            'model' => 'dolphin-llama3:8b',
+            'status' => 'bench',
+            'intended_use' => 'private uncensored chat fallback',
+            'notes' => '2026-05-20 UNCENSORED-REFRESH: superseded as the .87 default by dolphin3:8b after bounded private-chat bakeoff. Keep as legacy fallback on .87/primary; duplicate primary latest alias was retired, not this model.',
+        ],
+        [
+            'model' => 'dolphin3:8b',
+            'status' => 'active',
+            'intended_use' => 'private uncensored chat',
+            'notes' => '2026-05-20 UNCENSORED-REFRESH: promoted as .87 uncensored role. Official Dolphin 3.0 Llama 3.1 8B, Q4_K_M, 128K context, full GPU offload around 6.28GB at 8K runtime context. Private-chat probes were appropriate and direct; JSON-only probe still used a markdown fence, so avoid strict structured-output use.',
+        ],
+        [
+            'model' => 'hf.co/mradermacher/Dolphin-X1-8B-GGUF:Q4_K_M',
+            'status' => 'testing',
+            'intended_use' => 'private uncensored chat candidate',
+            'notes' => '2026-05-20 UNCENSORED-REFRESH: newer direct-uncensor Dolphin X1 candidate pulled to .87. It was direct and fast enough, but invented unnecessary specifics in the private-journal probe and Ollama metadata lacks embedded license/clean quant detail. Keep testing rather than default.',
+        ],
+        [
             'model' => 'qwen3:30b-a3b',
             'status' => 'bench',
             'intended_use' => 'higher-quality local reasoning',
             'notes' => 'Only if latency and fit are acceptable on secondary.',
+        ],
+        [
+            'model' => 'frob/nuextract-2.0:8b-q4_K_M',
+            'status' => 'testing',
+            'intended_use' => 'structured genealogy extraction',
+            'notes' => '2026-05-20: pulled to .87 for bench testing. Native template-role JSON tests were strong for Genea extraction, wrong-subject rejection, and hostile-payload classification, but Ollama 0.18.3 loaded it CPU-only with size_vram=0 and high cold-load latency. Do not promote to active routing until GPU/offload and timeout posture are proven.',
+        ],
+        [
+            'model' => 'granite3.3:8b',
+            'status' => 'testing',
+            'intended_use' => 'long-context Genea triage / multilingual research',
+            'notes' => '2026-05-20: pulled to .87 for bench testing. GPU-offloaded at about 6.85GB VRAM with 8K context and passed basic Genea extraction plus cautious wrong-subject classification, but the prompt-injection probe rationale failed to identify the hostile instruction. Keep out of trust-boundary-sensitive roles.',
         ],
         [
             'model' => 'deepseek-r1:14b',
@@ -211,7 +241,13 @@ return [
             'model' => 'qwen2.5-coder:14b',
             'status' => 'active',
             'intended_use' => 'quality reasoning / coding',
-            'notes' => 'Active quality-role model on the secondary local Ollama role (promoted 2026-04-20 on public-benchmark evidence).',
+            'notes' => 'Active secondary coding model. 2026-05-20 local repair probe was useful, but JSON-only output still needs post-processing guardrails.',
+        ],
+        [
+            'model' => 'qwen3-coder:30b',
+            'status' => 'watch',
+            'intended_use' => 'offline coding upgrade candidate',
+            'notes' => '2026-05-20 web-vetted as current stronger coding candidate, but the official Ollama tag is about 19GB with 256K context, so it is likely CPU/offload-heavy on ada_12gb. Pull only as an explicit bench run, not as a default offline model.',
         ],
         [
             'model' => 'codestral:22b',

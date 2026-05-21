@@ -143,7 +143,7 @@ class GenealogySourceRemediationPreviewService
             }
 
             $type = trim((string) $value);
-            if (in_array($type, ['source_duplicate_mark', 'source_duplicate_cleanup'], true)) {
+            if (in_array($type, ['source_duplicate_mark', 'source_duplicate_cleanup', 'genealogy_source_cleanup'], true)) {
                 return 'source_duplicate_mark';
             }
         }

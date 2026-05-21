@@ -213,7 +213,7 @@ class GenealogyPacketTextSignalService
         $sourceName = (string) ($context['source_name'] ?? '');
         if ($sourceName !== '') {
             $ext = strtolower(pathinfo($sourceName, PATHINFO_EXTENSION));
-            if (in_array($ext, ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'gif'], true)) {
+            if (in_array($ext, ['jpg', 'jpeg', 'jfif', 'png', 'tif', 'tiff', 'gif', 'jp2', 'j2k', 'jpf', 'jpx'], true)) {
                 if (! $this->hasSourceType('photograph', $signals)) {
                     $signals[] = [
                         'document_type_hint' => 'photograph',

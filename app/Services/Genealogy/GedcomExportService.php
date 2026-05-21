@@ -28,6 +28,8 @@ class GedcomExportService
 {
     protected PrivacyService $privacyService;
 
+    protected GenealogyExportPrivacyPolicyService $privacyPolicyService;
+
     /**
      * GEDCOM line length limit (255 characters)
      */
@@ -38,9 +40,12 @@ class GedcomExportService
      */
     protected const ENCODING = 'UTF-8';
 
-    public function __construct(PrivacyService $privacyService)
-    {
+    public function __construct(
+        PrivacyService $privacyService,
+        ?GenealogyExportPrivacyPolicyService $privacyPolicyService = null
+    ) {
         $this->privacyService = $privacyService;
+        $this->privacyPolicyService = $privacyPolicyService ?: app(GenealogyExportPrivacyPolicyService::class);
     }
 
     /**
@@ -53,7 +58,6 @@ class GedcomExportService
     public function exportTree(int $treeId, ?int $userId = null, array $options = []): string
     {
         $options = array_merge([
-            'include_living' => false, // Exclude living persons by default
             'include_media' => true,
             'include_sources' => true,
             'include_notes' => true,
@@ -61,6 +65,7 @@ class GedcomExportService
             'submitter_address' => null,
             'gedcom_version' => '5.5.1', // GEN-4: '5.5.1' or '7.0'
         ], $options);
+        $options = $this->privacyPolicyService->normalizeExportOptions($options);
 
         $tree = DB::selectOne('SELECT * FROM genealogy_trees WHERE id = ?', [$treeId]);
         if (! $tree) {
@@ -162,17 +167,15 @@ class GedcomExportService
         $lines = [];
 
         $persons = DB::select('
-            SELECT p.*
+            SELECT p.*, t.living_years_threshold
             FROM genealogy_persons p
+            LEFT JOIN genealogy_trees t ON t.id = p.tree_id
             WHERE p.tree_id = ?
             ORDER BY p.id
         ', [$treeId]);
 
         foreach ($persons as $person) {
-            // Check privacy - skip living persons if not included
-            $isLiving = $this->privacyService->isPersonLiving($person->id);
-
-            if ($isLiving && ! $options['include_living']) {
+            if (! $this->privacyPolicyService->includePersonInExport($person, (bool) $options['include_living'])) {
                 // Add minimal record for living person
                 $lines = array_merge($lines, $this->buildLivingPersonStub($person));
 
@@ -838,7 +841,7 @@ class GedcomExportService
         // Generate GEDCOM content
         $gedcomContent = $this->exportTree($treeId, $userId, $options);
         $treeName = $this->sanitizeFileName($tree->name);
-        $zipFilename = $treeName.'_'.date('Y-m-d_His').'.gdz';
+        $zipFilename = $treeName.'_'.date('Y-m-d_His').'_'.bin2hex(random_bytes(4)).'.gdz';
         $zipPath = storage_path('app/genealogy/exports/'.$zipFilename);
 
         $dir = dirname($zipPath);
@@ -858,7 +861,7 @@ class GedcomExportService
         if ($options['include_media'] ?? true) {
             // Add media files referenced by this tree
             $mediaFiles = DB::select(
-                'SELECT gm.nextcloud_path, gm.local_filename
+                'SELECT gm.id, gm.nextcloud_path, gm.local_filename
                  FROM genealogy_media gm
                  WHERE gm.tree_id = ? AND gm.nextcloud_path IS NOT NULL',
                 [$treeId]
@@ -878,7 +881,7 @@ class GedcomExportService
                 }
 
                 if ($fullPath) {
-                    $archiveName = 'media/'.($media->local_filename ?: basename($media->nextcloud_path));
+                    $archiveName = $this->gedZipMediaArchiveName($media);
                     $zip->addFile($fullPath, $archiveName);
                     $mediaCount++;
                 }
@@ -896,5 +899,161 @@ class GedcomExportService
         ]);
 
         return $zipPath;
+    }
+
+    private function gedZipMediaArchiveName(object $media): string
+    {
+        $filename = $media->local_filename ?: basename((string) $media->nextcloud_path);
+
+        return 'media/M'.$media->id.'-'.$this->sanitizeArchiveFileName($filename);
+    }
+
+    private function sanitizeArchiveFileName(string $name): string
+    {
+        $filename = basename($name);
+        $sanitized = preg_replace('/[^a-zA-Z0-9._-]/', '_', $filename);
+
+        return $sanitized ?: 'media';
+    }
+
+    /**
+     * List media rows that may make a tree export non-self-contained.
+     */
+    public function listNonSelfContainedMediaPaths(int $treeId, ?string $root = null, int $limit = 200): array
+    {
+        $limit = max(1, min(1000, $limit));
+        $root = $root ?: app(GenealogyTreeRootResolver::class)->mediaRoot($treeId);
+        $rootLike = rtrim($root, '/').'/%';
+
+        $where = "
+            tree_id = ?
+            AND (
+                nextcloud_path IS NULL
+                OR nextcloud_path = ''
+                OR nextcloud_path LIKE 'Z:%'
+                OR nextcloud_path LIKE 'http://%'
+                OR nextcloud_path LIKE 'https://%'
+                OR (
+                    nextcloud_path NOT LIKE 'Z:%'
+                    AND nextcloud_path NOT LIKE 'http://%'
+                    AND nextcloud_path NOT LIKE 'https://%'
+                    AND nextcloud_path NOT LIKE ?
+                )
+            )
+        ";
+
+        $rows = DB::select("
+            SELECT id AS media_id, media_type, title, local_filename, nextcloud_path, original_path
+            FROM genealogy_media
+            WHERE {$where}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+        ", [$treeId, $rootLike, $limit]);
+
+        $count = DB::selectOne("
+            SELECT COUNT(*) AS count
+            FROM genealogy_media
+            WHERE {$where}
+        ", [$treeId, $rootLike]);
+
+        foreach ($rows as $row) {
+            $row->path_issue = $this->exportPathIssue($row->nextcloud_path ?? null, $root);
+        }
+
+        return [
+            'tree_id' => $treeId,
+            'root' => $root,
+            'count' => (int) ($count->count ?? count($rows)),
+            'rows' => $rows,
+        ];
+    }
+
+    /**
+     * List media rows that block a portable export because no local file is verified.
+     */
+    public function listMissingMediaFilesForExport(int $treeId, int $limit = 200): array
+    {
+        $limit = max(1, min(1000, $limit));
+
+        $rows = DB::select('
+            SELECT id AS media_id, media_type, title, local_filename, nextcloud_path, original_path, file_exists
+            FROM genealogy_media
+            WHERE tree_id = ? AND COALESCE(file_exists, 0) <> 1
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+        ', [$treeId, $limit]);
+
+        $count = DB::selectOne('
+            SELECT COUNT(*) AS count
+            FROM genealogy_media
+            WHERE tree_id = ? AND COALESCE(file_exists, 0) <> 1
+        ', [$treeId]);
+
+        return [
+            'tree_id' => $treeId,
+            'count' => (int) ($count->count ?? count($rows)),
+            'rows' => $rows,
+        ];
+    }
+
+    /**
+     * Machine-readable policy used by export readiness, agents, and scheduled checks.
+     */
+    public function exportPathPolicy(int $treeId, ?string $root = null): array
+    {
+        $root = $root ?: app(GenealogyTreeRootResolver::class)->mediaRoot($treeId);
+
+        return [
+            'tree_id' => $treeId,
+            'required_local_root' => $root,
+            'allowed_media_path_prefixes' => [
+                rtrim($root, '/').'/',
+            ],
+            'valid_media_reference' => [
+                'nextcloud_path must be non-empty',
+                'nextcloud_path must be inside required_local_root',
+                'file_exists must be verified before portable export',
+            ],
+            'invalid_media_reference' => [
+                'blank or null nextcloud_path',
+                'http or https URL without a captured FT-local file',
+                'legacy drive path such as Z: without a captured FT-local nextcloud_path',
+                'absolute or relative path outside required_local_root',
+                'file_exists false or unknown',
+            ],
+            'repair_policy' => [
+                'capture_or_copy_media_into_required_local_root_before_repointing',
+                'drop stale references only after source review confirms the file is invalid or out of tree',
+                'ignore legacy original_path when nextcloud_path is FT-local and file_exists is verified',
+            ],
+            'portable_export' => [
+                'format' => 'GEDZip',
+                'gedcom_included' => true,
+                'supporting_media_included_when_file_verified' => true,
+                'ready_when_blocking_counts_are_zero' => true,
+            ],
+        ];
+    }
+
+    private function exportPathIssue(?string $path, string $root): string
+    {
+        $path = trim((string) $path);
+        if ($path === '') {
+            return 'blank_nextcloud_path';
+        }
+
+        if (preg_match('~^https?://~i', $path) === 1) {
+            return 'external_url';
+        }
+
+        if (preg_match('~^[A-Za-z]:[\\\\/]~', $path) === 1) {
+            return 'legacy_drive_path';
+        }
+
+        if (! str_starts_with(str_replace('\\', '/', $path), rtrim($root, '/').'/')) {
+            return 'outside_tree_root';
+        }
+
+        return 'unknown';
     }
 }

@@ -3,9 +3,9 @@
 namespace App\Services;
 
 use App\DTOs\TrustEnvelope;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * AI Auto-Tagging Service
@@ -22,8 +22,11 @@ use Exception;
 class AIAutoTagService
 {
     private AIService $aiService;
+
     private ?ContentExtractionService $contentExtraction = null;
+
     private ?NextcloudFileApiService $nextcloudApi = null;
+
     private ?TrustBoundaryFormatterService $trustBoundaryFormatter = null;
 
     /** Current analysis version - increment when prompts/models change significantly */
@@ -37,6 +40,8 @@ class AIAutoTagService
         'invoice', 'receipt', 'letter', 'contract', 'report', 'resume',
         'tax_document', 'bank_statement', 'bill', 'legal_document',
         'medical_record', 'insurance', 'certificate', 'license', 'id_card',
+        'obituary', 'census_record', 'vital_record', 'military_record',
+        'headstone', 'cemetery_record', 'genealogy_record', 'newspaper_clipping',
         'photo', 'screenshot', 'diagram', 'chart', 'presentation',
         'spreadsheet', 'form', 'manual', 'article', 'book_page',
         'handwritten_note', 'email', 'memo', 'other',
@@ -50,7 +55,7 @@ class AIAutoTagService
         $this->aiService = $aiService;
         $this->tempDir = storage_path('app/temp/ai-auto-tag');
 
-        if (!is_dir($this->tempDir)) {
+        if (! is_dir($this->tempDir)) {
             mkdir($this->tempDir, 0755, true);
         }
     }
@@ -68,9 +73,10 @@ class AIAutoTagService
      */
     private function getContentExtractionService(): ContentExtractionService
     {
-        if (!$this->contentExtraction) {
+        if (! $this->contentExtraction) {
             $this->contentExtraction = app(ContentExtractionService::class);
         }
+
         return $this->contentExtraction;
     }
 
@@ -87,9 +93,10 @@ class AIAutoTagService
      */
     private function getNextcloudApi(): NextcloudFileApiService
     {
-        if (!$this->nextcloudApi) {
+        if (! $this->nextcloudApi) {
             $this->nextcloudApi = app(NextcloudFileApiService::class);
         }
+
         return $this->nextcloudApi;
     }
 
@@ -105,20 +112,20 @@ class AIAutoTagService
     /**
      * Analyze a file from the registry and update with AI tags
      *
-     * @param int $fileRegistryId The file_registry.id to analyze
-     * @param bool $forceRefresh Re-analyze even if already done
+     * @param  int  $fileRegistryId  The file_registry.id to analyze
+     * @param  bool  $forceRefresh  Re-analyze even if already done
      * @return array Analysis result with tags, description, etc.
      */
     public function analyzeFile(int $fileRegistryId, bool $forceRefresh = false): array
     {
-        $file = DB::selectOne("
+        $file = DB::selectOne('
             SELECT id, asset_uuid, current_path, filename, extension, mime_type,
                    ai_analyzed_at, ai_analysis_version, status
             FROM file_registry
             WHERE id = ?
-        ", [$fileRegistryId]);
+        ', [$fileRegistryId]);
 
-        if (!$file) {
+        if (! $file) {
             return ['success' => false, 'error' => 'File not found in registry'];
         }
 
@@ -127,7 +134,7 @@ class AIAutoTagService
         }
 
         // Skip if already analyzed (unless force refresh)
-        if (!$forceRefresh && $file->ai_analyzed_at && $file->ai_analysis_version === self::ANALYSIS_VERSION) {
+        if (! $forceRefresh && $file->ai_analyzed_at && $file->ai_analysis_version === self::ANALYSIS_VERSION) {
             return [
                 'success' => true,
                 'skipped' => true,
@@ -140,9 +147,10 @@ class AIAutoTagService
         $isImage = in_array($extension, config('file_types.image'));
         $isDocument = in_array($extension, config('file_types.document'));
 
-        if (!$isImage && !$isDocument) {
+        if (! $isImage && ! $isDocument) {
             // Permanent skip — mark so file is never re-selected
             $this->markSkipped($fileRegistryId, "unsupported_type:{$extension}");
+
             return [
                 'success' => false,
                 'skipped' => true,
@@ -152,9 +160,10 @@ class AIAutoTagService
 
         // Download file from Nextcloud to temp
         $tempPath = $this->downloadToTemp($file->current_path);
-        if (!$tempPath) {
+        if (! $tempPath) {
             // Track download failures — permanent skip after 3 attempts
             $this->trackFailure($fileRegistryId, 'download_failed', 3);
+
             return ['success' => false, 'error' => 'Failed to download file from Nextcloud'];
         }
 
@@ -166,9 +175,10 @@ class AIAutoTagService
                 ? $this->analyzeImage($tempPath, $file->filename, $folderPath)
                 : $this->analyzeDocument($tempPath, $file->filename, $folderPath);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 // Track AI analysis failures — permanent skip after 5 attempts
                 $this->trackFailure($fileRegistryId, $result['error'] ?? 'analysis_failed', 5);
+
                 return $result;
             }
 
@@ -176,7 +186,7 @@ class AIAutoTagService
             $this->updateFileWithAnalysis($fileRegistryId, $result);
 
             // Invalidate RAG index so backfill job re-indexes with new AI data
-            DB::update("UPDATE file_registry SET rag_indexed_at = NULL WHERE id = ?", [$fileRegistryId]);
+            DB::update('UPDATE file_registry SET rag_indexed_at = NULL WHERE id = ?', [$fileRegistryId]);
 
             $result['file_registry_id'] = $fileRegistryId;
             $result['asset_uuid'] = $file->asset_uuid;
@@ -201,20 +211,20 @@ class AIAutoTagService
     /**
      * Analyze an image file
      *
-     * @param string $filePath Local path to image file
-     * @param string|null $filename Original filename for context
+     * @param  string  $filePath  Local path to image file
+     * @param  string|null  $filename  Original filename for context
      * @return array Analysis result with tags, objects, scenes, OCR text
      */
     public function analyzeImage(string $filePath, ?string $filename = null, ?string $folderPath = null): array
     {
-        if (!file_exists($filePath)) {
+        if (! file_exists($filePath)) {
             return ['success' => false, 'error' => 'Image file not found'];
         }
 
         $filename = $filename ?? basename($filePath);
         $imageContent = file_get_contents($filePath);
 
-        if (!$imageContent) {
+        if (! $imageContent) {
             return ['success' => false, 'error' => 'Failed to read image file'];
         }
 
@@ -227,10 +237,10 @@ class AIAutoTagService
             'skip_if_busy' => true,
         ]);
 
-        if (!$visionResult['success']) {
+        if (! $visionResult['success']) {
             return [
                 'success' => false,
-                'error' => 'Vision analysis failed: ' . ($visionResult['error'] ?? 'unknown'),
+                'error' => 'Vision analysis failed: '.($visionResult['error'] ?? 'unknown'),
             ];
         }
 
@@ -256,13 +266,13 @@ class AIAutoTagService
     /**
      * Analyze a document file
      *
-     * @param string $filePath Local path to document file
-     * @param string|null $filename Original filename for context
+     * @param  string  $filePath  Local path to document file
+     * @param  string|null  $filename  Original filename for context
      * @return array Analysis result with type, entities, summary
      */
     public function analyzeDocument(string $filePath, ?string $filename = null, ?string $folderPath = null): array
     {
-        if (!file_exists($filePath)) {
+        if (! file_exists($filePath)) {
             return ['success' => false, 'error' => 'Document file not found'];
         }
 
@@ -294,7 +304,7 @@ class AIAutoTagService
             'skip_if_busy' => true,
         ]);
 
-        if (!$aiResult['success']) {
+        if (! $aiResult['success']) {
             // Still return extraction results even if AI analysis fails
             return [
                 'success' => true,
@@ -335,9 +345,9 @@ class AIAutoTagService
     /**
      * Process multiple files in batch
      *
-     * @param array $fileRegistryIds Array of file_registry IDs to analyze
-     * @param int $batchSize Process in chunks of this size
-     * @param bool $forceRefresh Re-analyze even if already done
+     * @param  array  $fileRegistryIds  Array of file_registry IDs to analyze
+     * @param  int  $batchSize  Process in chunks of this size
+     * @param  bool  $forceRefresh  Re-analyze even if already done
      * @return array Batch results summary
      */
     public function batchAnalyze(array $fileRegistryIds, int $batchSize = 10, bool $forceRefresh = false): array
@@ -379,6 +389,7 @@ class AIAutoTagService
                                 'files_in_batch' => count($fileRegistryIds),
                             ]);
                             pcntl_alarm($remaining); // Re-arm
+
                             return $results;
                         }
                         pcntl_alarm($remaining); // Re-arm
@@ -404,7 +415,7 @@ class AIAutoTagService
                 } catch (Exception $e) {
                     $results['failed']++;
                     $results['errors'][$id] = $e->getMessage();
-                    $this->trackFailure($id, 'exception:' . mb_substr($e->getMessage(), 0, 80), 5);
+                    $this->trackFailure($id, 'exception:'.mb_substr($e->getMessage(), 0, 80), 5);
 
                     Log::error('AIAutoTagService: Batch analysis failed for file', [
                         'file_registry_id' => $id,
@@ -432,6 +443,7 @@ class AIAutoTagService
                             'processed_so_far' => $results['processed'],
                         ]);
                         pcntl_alarm($remaining); // Re-arm what was left
+
                         return $results;
                     }
                     if ($remaining > 0) {
@@ -450,8 +462,8 @@ class AIAutoTagService
     /**
      * Get files that haven't been analyzed yet
      *
-     * @param int $limit Max files to return
-     * @param string|null $extensionFilter Filter by extension (e.g., 'jpg', 'pdf')
+     * @param  int  $limit  Max files to return
+     * @param  string|null  $extensionFilter  Filter by extension (e.g., 'jpg', 'pdf')
      * @return array Array of file registry records
      */
     public function getUnanalyzedFiles(int $limit = 100, ?string $extensionFilter = null): array
@@ -474,11 +486,11 @@ class AIAutoTagService
         $params = [self::ANALYSIS_VERSION, ...$supportedExtensions];
 
         if ($extensionFilter) {
-            $sql .= " AND extension = ?";
+            $sql .= ' AND extension = ?';
             $params[] = strtolower($extensionFilter);
         }
 
-        $sql .= " ORDER BY created_at DESC LIMIT ?";
+        $sql .= ' ORDER BY created_at DESC LIMIT ?';
         $params[] = $limit;
 
         return DB::select($sql, $params);
@@ -491,9 +503,9 @@ class AIAutoTagService
     /**
      * Search files by AI-generated tags
      *
-     * @param array $tags Tags to search for
-     * @param string $matchMode 'any' (OR) or 'all' (AND)
-     * @param int $limit Max results
+     * @param  array  $tags  Tags to search for
+     * @param  string  $matchMode  'any' (OR) or 'all' (AND)
+     * @param  int  $limit  Max results
      * @return array Matching files
      */
     public function searchByTags(array $tags, string $matchMode = 'any', int $limit = 50): array
@@ -508,7 +520,9 @@ class AIAutoTagService
 
         foreach ($tags as $tag) {
             $tag = strtolower(trim($tag));
-            if (empty($tag)) continue;
+            if (empty($tag)) {
+                continue;
+            }
 
             // Search in ai_tags JSON array for tag name
             $conditions[] = "JSON_SEARCH(LOWER(ai_tags), 'one', ?, NULL, '\$[*].tag') IS NOT NULL";
@@ -520,7 +534,7 @@ class AIAutoTagService
         }
 
         $operator = $matchMode === 'all' ? ' AND ' : ' OR ';
-        $whereClause = '(' . implode($operator, $conditions) . ')';
+        $whereClause = '('.implode($operator, $conditions).')';
 
         $sql = "
             SELECT id, asset_uuid, current_path, filename, extension, mime_type,
@@ -539,6 +553,7 @@ class AIAutoTagService
         // Decode JSON tags for each result
         return array_map(function ($row) {
             $row->ai_tags = $row->ai_tags ? json_decode($row->ai_tags, true) : null;
+
             return $row;
         }, $results);
     }
@@ -546,8 +561,8 @@ class AIAutoTagService
     /**
      * Search files by document type
      *
-     * @param string $documentType Document type to search for
-     * @param int $limit Max results
+     * @param  string  $documentType  Document type to search for
+     * @param  int  $limit  Max results
      * @return array Matching files
      */
     public function searchByDocumentType(string $documentType, int $limit = 50): array
@@ -566,6 +581,7 @@ class AIAutoTagService
 
         return array_map(function ($row) {
             $row->ai_tags = $row->ai_tags ? json_decode($row->ai_tags, true) : null;
+
             return $row;
         }, $results);
     }
@@ -573,13 +589,13 @@ class AIAutoTagService
     /**
      * Full-text search in AI descriptions and detected text
      *
-     * @param string $query Search query
-     * @param int $limit Max results
+     * @param  string  $query  Search query
+     * @param  int  $limit  Max results
      * @return array Matching files
      */
     public function searchByContent(string $query, int $limit = 50): array
     {
-        $searchTerm = '%' . $query . '%';
+        $searchTerm = '%'.$query.'%';
 
         $sql = "
             SELECT id, asset_uuid, current_path, filename, extension, mime_type,
@@ -601,8 +617,9 @@ class AIAutoTagService
             $row->ai_tags = $row->ai_tags ? json_decode($row->ai_tags, true) : null;
             // Truncate detected_text for display
             if ($row->ai_detected_text && strlen($row->ai_detected_text) > 500) {
-                $row->ai_detected_text = substr($row->ai_detected_text, 0, 500) . '...';
+                $row->ai_detected_text = substr($row->ai_detected_text, 0, 500).'...';
             }
+
             return $row;
         }, $results);
     }
@@ -645,12 +662,12 @@ class AIAutoTagService
         ");
 
         return [
-            'total_files' => (int)$stats->total_files,
-            'analyzed_count' => (int)$stats->analyzed_count,
-            'pending_count' => (int)$stats->pending_count,
+            'total_files' => (int) $stats->total_files,
+            'analyzed_count' => (int) $stats->analyzed_count,
+            'pending_count' => (int) $stats->pending_count,
             'analysis_version' => self::ANALYSIS_VERSION,
-            'document_types' => array_map(fn($r) => ['type' => $r->ai_document_type, 'count' => (int)$r->count], $typeBreakdown),
-            'top_tags' => array_map(fn($r) => ['tag' => $r->tag_name, 'count' => (int)$r->count], $topTags),
+            'document_types' => array_map(fn ($r) => ['type' => $r->ai_document_type, 'count' => (int) $r->count], $typeBreakdown),
+            'top_tags' => array_map(fn ($r) => ['tag' => $r->tag_name, 'count' => (int) $r->count], $topTags),
         ];
     }
 
@@ -666,28 +683,31 @@ class AIAutoTagService
     {
         try {
             $extension = pathinfo($nextcloudPath, PATHINFO_EXTENSION);
-            $tempPath = $this->tempDir . '/' . uniqid('ai_tag_') . '.' . $extension;
+            $tempPath = $this->tempDir.'/'.uniqid('ai_tag_').'.'.$extension;
 
             // Filesystem-first: skip WebDAV if local path is available
             $localPath = $this->getNextcloudApi()->localPath($nextcloudPath);
             if ($localPath) {
-                if (!copy($localPath, $tempPath)) {
+                if (! copy($localPath, $tempPath)) {
                     Log::warning('AIAutoTagService: Failed to copy local file to temp', [
                         'local_path' => $localPath,
                         'temp_path' => $tempPath,
                     ]);
+
                     return null;
                 }
+
                 return $tempPath;
             }
 
             $result = $this->getNextcloudApi()->downloadFile($nextcloudPath);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 Log::warning('AIAutoTagService: Failed to download file', [
                     'path' => $nextcloudPath,
                     'error' => $result['error'] ?? 'Unknown',
                 ]);
+
                 return null;
             }
 
@@ -698,6 +718,7 @@ class AIAutoTagService
                     'path' => $nextcloudPath,
                     'temp_path' => $tempPath,
                 ]);
+
                 return null;
             }
 
@@ -707,6 +728,7 @@ class AIAutoTagService
                 'path' => $nextcloudPath,
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
     }
@@ -721,7 +743,7 @@ class AIAutoTagService
         // Ensure tags is a proper JSON string (ai_tags is JSON column)
         if (is_string($tags)) {
             $tagsJson = $tags;
-        } elseif (is_array($tags) && !empty($tags)) {
+        } elseif (is_array($tags) && ! empty($tags)) {
             $tagsJson = json_encode($tags, JSON_UNESCAPED_UNICODE);
         } else {
             $tagsJson = null;
@@ -740,6 +762,7 @@ class AIAutoTagService
                 'file_id' => $fileRegistryId,
                 'response_preview' => mb_substr($description, 0, 200),
             ]);
+
             return; // Don't overwrite existing data with error text
         }
 
@@ -773,7 +796,7 @@ class AIAutoTagService
         // ai_analysis_version is VARCHAR(20) — truncate safety
         $analysisVersion = mb_substr(self::ANALYSIS_VERSION, 0, 20);
 
-        DB::update("
+        DB::update('
             UPDATE file_registry
             SET ai_tags = ?,
                 ai_description = ?,
@@ -783,7 +806,7 @@ class AIAutoTagService
                 ai_analysis_version = ?,
                 updated_at = NOW()
             WHERE id = ?
-        ", [
+        ', [
             $tagsJson,
             $description,
             $documentType,
@@ -842,7 +865,7 @@ class AIAutoTagService
      */
     private function trackFailure(int $fileRegistryId, string $reason, int $maxRetries = 5): void
     {
-        $file = DB::selectOne("SELECT ai_analysis_version FROM file_registry WHERE id = ?", [$fileRegistryId]);
+        $file = DB::selectOne('SELECT ai_analysis_version FROM file_registry WHERE id = ?', [$fileRegistryId]);
         $failCount = 0;
 
         if ($file && $file->ai_analysis_version && str_starts_with($file->ai_analysis_version, 'fail:')) {
@@ -861,9 +884,9 @@ class AIAutoTagService
             ]);
         } else {
             // Increment counter but keep file eligible
-            DB::update("
+            DB::update('
                 UPDATE file_registry SET ai_analysis_version = ?, updated_at = NOW() WHERE id = ?
-            ", ["fail:{$failCount}", $fileRegistryId]);
+            ', ["fail:{$failCount}", $fileRegistryId]);
         }
     }
 
@@ -1026,9 +1049,10 @@ PROMPT;
                         if (is_array($tag) && isset($tag['tag'])) {
                             return [
                                 'tag' => strtolower($tag['tag']),
-                                'confidence' => (float)($tag['confidence'] ?? 0.8),
+                                'confidence' => (float) ($tag['confidence'] ?? 0.8),
                             ];
                         }
+
                         return null;
                     }, $json['tags']);
 
@@ -1165,7 +1189,9 @@ PROMPT;
 
         foreach ($files as $f) {
             $tags = json_decode($f->ai_tags, true);
-            if (!is_array($tags)) continue;
+            if (! is_array($tags)) {
+                continue;
+            }
 
             $fileScore = 1.0;
             $fileGenericTags = [];
@@ -1175,7 +1201,9 @@ PROMPT;
                 $confidence = is_array($tagEntry) ? ($tagEntry['confidence'] ?? 1.0) : 1.0;
                 $tagName = strtolower(trim($tagName));
 
-                if (empty($tagName)) continue;
+                if (empty($tagName)) {
+                    continue;
+                }
 
                 $tagCounts[$tagName] = ($tagCounts[$tagName] ?? 0) + 1;
 
@@ -1197,7 +1225,7 @@ PROMPT;
                 }
             }
 
-            if (!empty($fileGenericTags)) {
+            if (! empty($fileGenericTags)) {
                 $genericTagFiles[] = [
                     'uuid' => $f->asset_uuid,
                     'filename' => $f->filename,
@@ -1212,7 +1240,7 @@ PROMPT;
             $qualityScores[] = max(0, $fileScore);
         }
 
-        $avgQuality = !empty($qualityScores) ? round(array_sum($qualityScores) / count($qualityScores), 2) : 0;
+        $avgQuality = ! empty($qualityScores) ? round(array_sum($qualityScores) / count($qualityScores), 2) : 0;
 
         // Tag distribution (top 20)
         arsort($tagCounts);
@@ -1230,10 +1258,10 @@ PROMPT;
             $recommendations[] = "Document type 'other' accounts for {$otherPct}% of typed files — AI classification may need prompt tuning";
         }
         if (count($genericTagFiles) > count($files) * 0.3) {
-            $recommendations[] = count($genericTagFiles) . ' files have generic/unhelpful tags — consider re-analysis with improved prompts';
+            $recommendations[] = count($genericTagFiles).' files have generic/unhelpful tags — consider re-analysis with improved prompts';
         }
         if (count($lowConfidenceFiles) > count($files) * 0.2) {
-            $recommendations[] = count($lowConfidenceFiles) . ' files have low-confidence tags — candidates for re-analysis';
+            $recommendations[] = count($lowConfidenceFiles).' files have low-confidence tags — candidates for re-analysis';
         }
 
         return [
@@ -1271,7 +1299,9 @@ PROMPT;
 
         foreach ($files as $f) {
             $tags = json_decode($f->ai_tags, true);
-            if (!is_array($tags)) continue;
+            if (! is_array($tags)) {
+                continue;
+            }
 
             $hasOnlyGeneric = true;
             $hasLowConf = false;
@@ -1280,7 +1310,7 @@ PROMPT;
                 $tagName = strtolower(is_array($tagEntry) ? ($tagEntry['tag'] ?? $tagEntry[0] ?? '') : (string) $tagEntry);
                 $confidence = is_array($tagEntry) ? ($tagEntry['confidence'] ?? 1.0) : 1.0;
 
-                if (!empty($tagName) && !in_array($tagName, $genericTags)) {
+                if (! empty($tagName) && ! in_array($tagName, $genericTags)) {
                     $hasOnlyGeneric = false;
                 }
                 if ($confidence < 0.4) {
@@ -1358,7 +1388,7 @@ PROMPT;
             if (count($types) > 3 && count($extFiles) > 5) {
                 $inconsistencies[] = [
                     'extension' => $ext,
-                    'issue' => "Extension '.{$ext}' classified as " . count($types) . " different document types",
+                    'issue' => "Extension '.{$ext}' classified as ".count($types).' different document types',
                     'type_distribution' => $types,
                     'sample_count' => count($extFiles),
                 ];

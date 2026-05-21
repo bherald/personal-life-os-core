@@ -1118,7 +1118,7 @@ const itemExtension = computed(() => {
   return ''
 })
 
-const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'tiff', 'tif', 'bmp']
+const imageExtensions = ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'heic', 'tiff', 'tif', 'bmp', 'jp2', 'j2k', 'jpf', 'jpx']
 const videoExtensions = ['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'm4v']
 const audioExtensions = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'wma']
 

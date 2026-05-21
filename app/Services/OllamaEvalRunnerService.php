@@ -37,8 +37,11 @@ class OllamaEvalRunnerService
             $startedAt = microtime(true);
 
             $response = $this->aiService->process($prompt, [
-                'model' => $targetRef,
-                'model_role' => $profile['model_role'],
+                // Force the explicit eval target. Supplying model_role here
+                // lets AIService route by role and can silently test a
+                // different local model than the operator requested.
+                'model' => $targetProvider === 'ollama' ? $targetModel : $targetRef,
+                'model_override' => $targetModel,
                 'max_tokens' => 700,
                 'temperature' => 0.0,
                 'use_cache' => false,

@@ -25,6 +25,8 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->queueTableExistedBeforeTest = Schema::hasTable('agent_review_queue');
         $this->preserveTables(['agent_review_queue']);
         $this->createCompatibleQueueTable();
+        $this->createCompatibleProposedChangesTable();
+        $this->createCompatibleSourcesTable();
     }
 
     protected function tearDown(): void
@@ -260,10 +262,9 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertSame('packet_validation_failed', $payload['error']);
         $this->assertSame([
             'valid' => false,
-            'blocker_count' => 2,
+            'blocker_count' => 1,
             'blocker_codes' => [
                 'source_locator_required',
-                'privacy_clearance_required',
             ],
         ], $payload['validation']);
         $this->assertSame(0, $this->packetCount());
@@ -667,6 +668,257 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
         $this->assertStringNotContainsString('data-quality-source-token', $encoded);
         $this->assertStringNotContainsString('Family 610 appears', $encoded);
         $this->assertStringNotContainsString('https://archive.org/details/data-quality-review', $encoded);
+    }
+
+    public function test_legacy_source_quality_advisory_uses_source_links_and_internal_preview_privacy(): void
+    {
+        $sourceId = $this->insertFinding(
+            [
+                'dedup_key' => 'source-quality:john-markle',
+                'tree_id' => 4,
+                'person_id' => 2610,
+                'person_name' => 'John Markle',
+                'source_links' => [
+                    'https://www.findagrave.com/memorial/105597438',
+                    'https://www.loc.gov/resource/sn85042591/1869-10-22/ed-1/?sp=3&q=john+markle',
+                ],
+                'proposals' => [[
+                    'person_id' => 2610,
+                    'change_type' => 'source_quality_review',
+                    'proposed_value' => 'Review applied source_add proposals before treating them as person evidence.',
+                    'evidence_summary' => 'FindAGrave may be useful, but broad LOC OCR hits need identity review.',
+                ]],
+            ],
+            token: 'source-quality-legacy-token',
+            findingType: 'genealogy_source_quality',
+        );
+
+        $payload = $this->callJson([
+            '--id' => $sourceId,
+            '--json' => true,
+            '--compact' => true,
+        ], 0);
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('would_create_packet', $payload['action']);
+        $this->assertSame('genealogy_source_quality', $payload['source']['finding_type']);
+        $this->assertSame(['genealogy_todo_create'], $payload['operation_types']);
+        $this->assertSame(2, $payload['packet_summary']['source_locator_count']);
+        $this->assertTrue($payload['packet_summary']['privacy_present']);
+        $this->assertTrue($payload['packet_summary']['validation_valid']);
+        $this->assertSame(['genealogy_todo_create' => 1], $payload['typed_remediation_preview']['operation_type_counts']);
+        $this->assertSame(['preview_only' => 1], $payload['typed_remediation_preview']['operation_status_counts']);
+        $this->assertSame(['pass' => 2], $payload['typed_remediation_preview']['guard_status_counts']);
+        $this->assertSame(0, $this->packetCount());
+
+        $encoded = json_encode($payload, JSON_THROW_ON_ERROR);
+        foreach ([
+            'source-quality-legacy-token',
+            'source-quality:john-markle',
+            'John Markle',
+            'https://www.findagrave.com/memorial/105597438',
+            'https://www.loc.gov/resource/sn85042591/1869-10-22/ed-1/?sp=3&q=john+markle',
+            'FindAGrave may be useful',
+        ] as $sensitive) {
+            $this->assertStringNotContainsString($sensitive, $encoded);
+        }
+    }
+
+    public function test_legacy_date_quality_advisory_materializes_as_data_quality_task_preview(): void
+    {
+        $sourceId = $this->insertFinding(
+            [
+                'dedup_key' => 'date-quality:thomas-fuller',
+                'tree_id' => 4,
+                'person_id' => 2222,
+                'source_links' => ['https://archive.org/details/thomas-fuller-date-review'],
+                'proposals' => [[
+                    'person_id' => 2222,
+                    'field_name' => 'birth_date',
+                    'change_type' => 'date_quality_review',
+                    'proposed_value' => 'Verify Thomas R. Fuller birth date; avoid partial day/month-only date.',
+                    'evidence_summary' => 'birth_date is stored as 1 JAN without a year.',
+                ]],
+            ],
+            token: 'date-quality-legacy-token',
+            findingType: 'genealogy_data_quality',
+        );
+
+        $payload = $this->callJson([
+            '--id' => $sourceId,
+            '--execute' => true,
+            '--json' => true,
+        ], 0);
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('execute', $payload['mode']);
+        $this->assertSame('created_packet', $payload['action']);
+        $this->assertSame(['genealogy_todo_create'], $payload['operation_types']);
+        $this->assertSame(1, $payload['packet_summary']['source_locator_count']);
+        $this->assertTrue($payload['packet_summary']['privacy_present']);
+        $this->assertTrue($payload['packet_summary']['validation_valid']);
+        $this->assertTrue($payload['safety']['no_canonical_write']);
+        $this->assertTrue($payload['safety']['apply_held']);
+        $this->assertSame(1, $this->packetCount());
+
+        $packet = DB::table('agent_review_queue')
+            ->where('review_type', 'genealogy_review_packet')
+            ->first();
+        $this->assertNotNull($packet);
+        $details = json_decode((string) $packet->details, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(['genealogy_todo_create'], $details['packet']['materialization']['operation_types']);
+        $this->assertSame('internal_typed_remediation_preview', $details['packet']['privacy']['scope']);
+        $this->assertFalse($details['packet']['materialization']['writeback']);
+        $this->assertFalse($details['packet']['materialization']['apply_enabled']);
+    }
+
+    public function test_data_quality_advisory_without_source_links_uses_internal_audit_locator(): void
+    {
+        $sourceId = $this->insertFinding(
+            [
+                'dedup_key' => 'date-quality:internal-audit',
+                'tree_id' => 4,
+                'person_id' => 2222,
+                'proposals' => [[
+                    'person_id' => 2222,
+                    'field_name' => 'birth_date',
+                    'change_type' => 'date_quality_review',
+                    'proposed_value' => 'Verify partial birth date from stronger evidence.',
+                    'evidence_summary' => 'The existing date has no year.',
+                ]],
+            ],
+            token: 'date-quality-internal-audit-token',
+            findingType: 'genealogy_data_quality',
+        );
+
+        $payload = $this->callJson([
+            '--id' => $sourceId,
+            '--execute' => true,
+            '--json' => true,
+        ], 0);
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('created_packet', $payload['action']);
+        $this->assertSame(['genealogy_todo_create'], $payload['operation_types']);
+        $this->assertSame(1, $payload['packet_summary']['source_locator_count']);
+        $this->assertTrue($payload['packet_summary']['validation_valid']);
+        $this->assertSame(1, $this->packetCount());
+
+        $packet = DB::table('agent_review_queue')
+            ->where('review_type', 'genealogy_review_packet')
+            ->first();
+        $details = json_decode((string) $packet->details, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('agent_review_queue:genealogy_finding:'.$sourceId, $details['packet']['sources'][0]['locator']);
+        $this->assertSame('internal_audit_finding', $details['packet']['sources'][0]['type']);
+    }
+
+    public function test_mixed_manual_and_public_source_links_keep_public_locator(): void
+    {
+        config()->set('scraping.manual_only_domains', ['ancestry.com']);
+        $sourceId = $this->insertFinding(
+            [
+                'dedup_key' => 'source-quality:mixed-source-links',
+                'tree_id' => 4,
+                'person_id' => 2662,
+                'source_links' => [
+                    'https://www.ancestry.com/genealogy/records/anna-margaretha-eberhardt-24-1yk23lp',
+                    'https://familysearch.org/pal:/MM9.3.1/TH-1942-22098-10130-72',
+                ],
+                'proposals' => [[
+                    'person_id' => 2662,
+                    'change_type' => 'source_quality_review',
+                    'proposed_value' => 'Review duplicate source links and keep the strongest supported locator.',
+                ]],
+            ],
+            token: 'source-quality-mixed-token',
+            findingType: 'genealogy_source_quality',
+        );
+
+        $payload = $this->callJson([
+            '--id' => $sourceId,
+            '--execute' => true,
+            '--json' => true,
+        ], 0);
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('created_packet', $payload['action']);
+        $this->assertSame(1, $payload['packet_summary']['source_locator_count']);
+        $this->assertTrue($payload['packet_summary']['validation_valid']);
+
+        $packet = DB::table('agent_review_queue')
+            ->where('review_type', 'genealogy_review_packet')
+            ->first();
+        $details = json_decode((string) $packet->details, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(['https://familysearch.org/pal:/MM9.3.1/TH-1942-22098-10130-72'], array_column($details['packet']['sources'], 'locator'));
+    }
+
+    public function test_manual_only_source_cleanup_advisory_uses_internal_audit_locator(): void
+    {
+        config()->set('scraping.manual_only_domains', ['ancestry.com', 'familysearch.org']);
+        DB::table('genealogy_proposed_changes')->insert([
+            [
+                'id' => 228,
+                'tree_id' => 4,
+                'person_id' => 2662,
+                'change_type' => 'source_add',
+                'proposed_value' => 'https://www.ancestry.com/genealogy/records/manual-only',
+                'status' => 'applied',
+            ],
+            [
+                'id' => 239,
+                'tree_id' => 4,
+                'person_id' => 2662,
+                'change_type' => 'source_add',
+                'proposed_value' => 'https://familysearch.org/pal:/MM9.3.1/manual-only',
+                'status' => 'applied',
+            ],
+            [
+                'id' => 383,
+                'tree_id' => 4,
+                'person_id' => 2662,
+                'change_type' => 'source_add',
+                'proposed_value' => 'https://www.ancestry.com/genealogy/records/manual-only',
+                'status' => 'applied',
+            ],
+        ]);
+        $sourceId = $this->insertFinding(
+            [
+                'dedup_key' => 'source-cleanup:manual-only',
+                'tree_id' => 4,
+                'person_id' => 2662,
+                'source_links' => [
+                    'https://www.ancestry.com/genealogy/records/manual-only',
+                    'https://familysearch.org/pal:/MM9.3.1/manual-only',
+                ],
+                'proposed_change_ids' => [228, 239, 383],
+                'proposals' => [[
+                    'person_id' => 2662,
+                    'change_type' => 'source_duplicate_cleanup',
+                    'proposed_value' => 'Collapse repeated manual-only source approvals into a cleanup task.',
+                ]],
+            ],
+            token: 'source-cleanup-manual-only-token',
+            findingType: 'genealogy_source_cleanup',
+        );
+
+        $payload = $this->callJson([
+            '--id' => $sourceId,
+            '--execute' => true,
+            '--json' => true,
+        ], 0);
+
+        $this->assertTrue($payload['success']);
+        $this->assertSame('created_packet', $payload['action']);
+        $this->assertSame(['source_duplicate_cleanup'], $payload['operation_types']);
+        $this->assertSame(1, $payload['packet_summary']['source_locator_count']);
+        $this->assertTrue($payload['packet_summary']['validation_valid']);
+
+        $packet = DB::table('agent_review_queue')
+            ->where('review_type', 'genealogy_review_packet')
+            ->first();
+        $details = json_decode((string) $packet->details, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame('agent_review_queue:genealogy_finding:'.$sourceId, $details['packet']['sources'][0]['locator']);
+        $this->assertSame('internal_audit_finding', $details['packet']['sources'][0]['type']);
     }
 
     public function test_family_scoped_data_quality_advisory_compact_dry_run_does_not_require_person_identity(): void
@@ -1097,6 +1349,27 @@ class GenealogyTypedRemediationMaterializeCommandTest extends TestCase
             $table->string('token', 64)->nullable();
             $table->timestamp('expires_at')->nullable();
             $table->timestamps();
+        });
+    }
+
+    private function createCompatibleProposedChangesTable(): void
+    {
+        Schema::create('genealogy_proposed_changes', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedInteger('tree_id')->nullable();
+            $table->unsignedInteger('person_id')->nullable();
+            $table->string('change_type')->nullable();
+            $table->text('proposed_value')->nullable();
+            $table->string('status')->nullable();
+        });
+    }
+
+    private function createCompatibleSourcesTable(): void
+    {
+        Schema::create('genealogy_sources', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedInteger('tree_id')->nullable();
+            $table->text('url')->nullable();
         });
     }
 }

@@ -12,8 +12,8 @@ namespace App\Services\Genealogy;
  * `config/file_types.php`; keyword heuristics live here (by design — this
  * data is a genealogy-domain signal, not a file-system signal).
  *
- * Priority order if multiple keyword families hit: obituary > census >
- * certificate > military > document. Matches earliest keyword wins —
+ * Priority order if multiple keyword families hit: headstone > obituary >
+ * census > certificate > military > document. Matches earliest keyword wins —
  * `matched_keywords` returns every keyword that triggered, so callers
  * can audit why a classification landed where it did.
  *
@@ -30,6 +30,10 @@ final class GenealogyEvidenceClassifierService
      * @var array<string, array<int, string>>
      */
     private const TYPE_KEYWORDS = [
+        'headstone' => [
+            'headstone', 'tombstone', 'grave marker', 'gravemarker', 'grave stone',
+            'gravestone', 'cemetery', 'memorial stone', 'monument', 'grave',
+        ],
         'obituary' => [
             'obituary', 'obit', 'death_notice', 'death notice', 'memorial', 'funeral home',
         ],
@@ -52,7 +56,7 @@ final class GenealogyEvidenceClassifierService
      *
      * @var array<int, string>
      */
-    public const VALID_TYPES = ['obituary', 'census', 'certificate', 'military', 'document'];
+    public const VALID_TYPES = ['headstone', 'obituary', 'census', 'certificate', 'military', 'document'];
 
     /**
      * Classify a file by path + filename into a media_type.
@@ -61,7 +65,7 @@ final class GenealogyEvidenceClassifierService
      */
     public function classify(string $path, string $filename): array
     {
-        $haystack = strtolower($path . ' ' . $filename);
+        $haystack = strtolower($path.' '.$filename);
         $allMatches = [];
 
         foreach (self::TYPE_KEYWORDS as $type => $keywords) {

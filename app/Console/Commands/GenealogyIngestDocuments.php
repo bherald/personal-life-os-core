@@ -8,6 +8,7 @@ use App\Services\Genealogy\GenealogyIntakeRunStoreService;
 use App\Services\Genealogy\GenealogyIntakeRunSummaryService;
 use App\Services\Genealogy\GenealogyIntakeStagingService;
 use App\Services\Genealogy\GenealogyStagedPacketPreviewService;
+use App\Services\Genealogy\GenealogyTreeRootResolver;
 use App\Services\Genealogy\TreeManagementService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -40,6 +41,8 @@ class GenealogyIngestDocuments extends Command
 
     protected $description = 'N135: Scan Nextcloud for genealogy documents and seed genealogy_media for N140 enrichment';
 
+    private ?GenealogyTreeRootResolver $treeRootResolver = null;
+
     public function handle(
         GenealogyDocumentIngestionService $ingester,
         GenealogyIntakeRunStoreService $runStore,
@@ -47,10 +50,12 @@ class GenealogyIngestDocuments extends Command
         GenealogyIntakeStagingService $staging,
         GenealogyStagedPacketPreviewService $packetPreview,
         GenealogyIntakeRunSummaryService $runSummary,
-        TreeManagementService $trees
+        TreeManagementService $trees,
+        GenealogyTreeRootResolver $treeRootResolver
     ): int {
+        $this->treeRootResolver = $treeRootResolver;
         $treeId = (int) $this->option('tree');
-        $folder = $this->option('folder') ?: config('genealogy.nextcloud_root', '/Library/Genealogy');
+        $folderOption = $this->option('folder') ? (string) $this->option('folder') : null;
         $limit = max(1, (int) $this->option('limit'));
         $dryRun = $this->option('dry-run');
         $aiClassify = $this->option('ai-classify');
@@ -91,6 +96,8 @@ class GenealogyIngestDocuments extends Command
 
             return Command::FAILURE;
         }
+
+        $folder = $treeRootResolver->mediaRoot($treeId, $folderOption);
 
         $this->info("N135: Document ingestion — tree #{$treeId} ({$tree->name})");
         $this->info("  Folder : {$folder}");
@@ -535,7 +542,9 @@ class GenealogyIngestDocuments extends Command
      */
     private function loadPipelineCounts(int $treeId): array
     {
-        $rootPrefix = (string) ($this->option('folder') ?: config('genealogy.nextcloud_root', '/Library/Genealogy'));
+        $rootPrefix = $this->treeRootResolver instanceof GenealogyTreeRootResolver
+            ? $this->treeRootResolver->mediaRoot($treeId, $this->option('folder') ? (string) $this->option('folder') : null)
+            : '/'.trim((string) ($this->option('folder') ?: config('genealogy.nextcloud_root', '/Library/Genealogy')), '/');
         $like = rtrim($rootPrefix, '/').'/%';
 
         $registryCount = (int) (DB::selectOne(

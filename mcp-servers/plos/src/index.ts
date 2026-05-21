@@ -29,6 +29,8 @@ import { plosJobDiagnostic, plosJobDiagnosticInput } from './tools/plos-job-diag
 import { plosTinker, plosTinkerInput } from './tools/plos-tinker.js';
 import { plosSsh, plosSshInput } from './tools/plos-ssh.js';
 import { plosDecompose, plosDecomposeInput } from './tools/plos-decompose.js';
+import { genealogyContext, genealogyContextInput } from './tools/genealogy-context.js';
+import { genealogyBatchApply, genealogyBatchApplyInput } from './tools/genealogy-batch-apply.js';
 
 // Tools - Ollama delegation
 import { ollamaSummarize, ollamaSummarizeInput } from './tools/ollama-summarize.js';
@@ -200,6 +202,20 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosDecomposeInput),
     zodSchema: plosDecomposeInput,
     handler: plosDecompose,
+  },
+  {
+    name: 'genealogy_context',
+    description: 'Return compact genealogy context for selected person, family, media, source, and citation IDs.',
+    inputSchema: zodToJsonSchema(genealogyContextInput),
+    zodSchema: genealogyContextInput,
+    handler: genealogyContext,
+  },
+  {
+    name: 'genealogy_batch_apply',
+    description: 'Apply guarded tree-scoped genealogy batches for sources, persons, families, child links, media links, citations, media metadata, and RAG reindex touches. Defaults to dry_run.',
+    inputSchema: zodToJsonSchema(genealogyBatchApplyInput),
+    zodSchema: genealogyBatchApplyInput,
+    handler: genealogyBatchApply,
   },
   {
     name: 'ollama_summarize',

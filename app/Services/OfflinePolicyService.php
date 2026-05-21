@@ -556,6 +556,21 @@ class OfflinePolicyService
             return $decision;
         }
 
+        if ($profile === 'offline_genealogy_assist' && $toolClass === 'bounded-write') {
+            $geneaDenial = $this->evaluateOfflineGenealogyAssistWrite($serverName, $toolName, $context);
+            if ($geneaDenial !== null) {
+                $decision = PolicyDecision::deny(
+                    $geneaDenial,
+                    $profile,
+                    toolClass: $toolClass,
+                    mcpTrustBoundary: $serverDecision->mcpTrustBoundary,
+                );
+                $this->auditOperation($decision, "mcp:{$serverName}.{$toolName}", $context);
+
+                return $decision;
+            }
+        }
+
         // Honor path gate for filesystem-like tools whose params include a path.
         if (! empty($context['path']) && $profile !== 'default') {
             $writeLikeClasses = ['bounded-write', 'command-safe', 'command-dangerous', 'deploy'];
@@ -675,8 +690,12 @@ class OfflinePolicyService
         $offlineAllowed = (array) ($server['offline_profiles_allowed'] ?? []);
         $hybridAllowed = (array) ($server['hybrid_profiles_allowed'] ?? []);
 
-        if (in_array($profile, ['offline_review', 'offline_dev_assist'], true)
-            && ! in_array($profile, $offlineAllowed, true)
+        $offlineProfileMatches = $profile === 'offline_genealogy_assist'
+            ? ['offline_genealogy_assist', 'offline_review']
+            : [$profile];
+
+        if (in_array($profile, ['offline_review', 'offline_dev_assist', 'offline_genealogy_assist'], true)
+            && count(array_intersect($offlineProfileMatches, $offlineAllowed)) === 0
         ) {
             $decision = PolicyDecision::deny(
                 "MCP server '{$serverName}' not in offline_profiles_allowed for profile '{$profile}'",
@@ -712,6 +731,99 @@ class OfflinePolicyService
         }
 
         return $decision;
+    }
+
+    private function evaluateOfflineGenealogyAssistWrite(string $serverName, string $toolName, array $context): ?string
+    {
+        $isGenealogyServer = $serverName === 'genealogy';
+        $isPlosGenealogyTool = $serverName === 'plos' && str_starts_with($toolName, 'genealogy_');
+
+        if (! $isGenealogyServer && ! $isPlosGenealogyTool) {
+            return "Profile 'offline_genealogy_assist' allows bounded writes only on the genealogy MCP server or PLOS genealogy MCP tools";
+        }
+
+        $allowedTools = (array) config('offline_policy.offline_genealogy_assist_write_tools', []);
+        if (! in_array($toolName, $allowedTools, true)) {
+            return "Genealogy write tool '{$toolName}' is not in offline_genealogy_assist_write_tools";
+        }
+
+        if ($this->policyBool($context['_catalog'] ?? false)) {
+            return null;
+        }
+
+        $treeId = $context['tree_id'] ?? null;
+        if (! is_int($treeId) && ! (is_string($treeId) && ctype_digit($treeId))) {
+            return "Genealogy write tool '{$toolName}' requires a positive tree_id under offline_genealogy_assist";
+        }
+
+        if ((int) $treeId <= 0) {
+            return "Genealogy write tool '{$toolName}' requires a positive tree_id under offline_genealogy_assist";
+        }
+
+        if ($toolName === 'evidence_capture_review') {
+            if ($this->policyBool($context['execute'] ?? false) && ! $this->policyBool($context['confirm'] ?? false)) {
+                return "Genealogy write tool '{$toolName}' requires confirm=true when execute=true under offline_genealogy_assist";
+            }
+
+            return null;
+        }
+
+        if ($toolName === 'evidence_capture_execute') {
+            if ($this->policyBool($context['save_preflight'] ?? false)
+                && ! $this->policyBool($context['confirm_noncanonical_write'] ?? false)) {
+                return "Genealogy write tool '{$toolName}' requires confirm_noncanonical_write=true when save_preflight=true under offline_genealogy_assist";
+            }
+
+            if ($this->policyBool($context['execute_capture'] ?? false)
+                && (! $this->policyBool($context['confirm_download'] ?? false)
+                    || ! $this->policyBool($context['confirm_storage_write'] ?? false))) {
+                return "Genealogy write tool '{$toolName}' requires confirm_download=true and confirm_storage_write=true when execute_capture=true under offline_genealogy_assist";
+            }
+
+            return null;
+        }
+
+        if ($toolName === 'evidence_capture_direct') {
+            $dryRun = array_key_exists('dry_run', $context)
+                ? $this->policyBool($context['dry_run'])
+                : true;
+
+            if (! $dryRun
+                && (! $this->policyBool($context['confirm'] ?? false)
+                    || ! $this->policyBool($context['confirm_download'] ?? false)
+                    || ! $this->policyBool($context['confirm_storage_write'] ?? false))) {
+                return "Genealogy write tool '{$toolName}' requires confirm=true, confirm_download=true, and confirm_storage_write=true when dry_run=false under offline_genealogy_assist";
+            }
+
+            return null;
+        }
+
+        $dryRun = array_key_exists('dry_run', $context)
+            ? $this->policyBool($context['dry_run'])
+            : true;
+
+        if (! $dryRun && ! $this->policyBool($context['confirm'] ?? false)) {
+            return "Genealogy write tool '{$toolName}' requires confirm=true when dry_run=false under offline_genealogy_assist";
+        }
+
+        return null;
+    }
+
+    private function policyBool(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value)) {
+            return $value === 1;
+        }
+
+        if (is_string($value)) {
+            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return false;
     }
 
     /**

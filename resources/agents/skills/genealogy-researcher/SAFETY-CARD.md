@@ -1,5 +1,5 @@
 # Safety Card: genealogy-researcher
-**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-03-10
+**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-05-12
 
 | Field | Value |
 |-------|-------|
@@ -11,7 +11,7 @@
 | **Permissions** | genealogy:read, genealogy:write, rag:read, rag:write, system:read, system:write |
 | **Notifications** | Pushover |
 
-**Capabilities:** Survey tree health and missing data. Process pending research hints (RecordHintService). Search supported external repositories (NARA, WikiTree, Ellis Island, Freedmens Bureau public sources, configured private Newspapers.com, Internet Archive, and other active sources). Transcribe handwritten documents (TrOCR). Analyze FAN clusters and co-occurrences. Detect source conflicts. Generate GPS-standard proof summaries. Log negative-result searches. Propose relationship/data changes for human review. Index findings in RAG for future retrieval.
+**Capabilities:** Survey tree health and missing data. Process pending research hints (RecordHintService). Search supported external repositories (NARA, WikiTree, Ellis Island, Freedmens Bureau public sources, configured private Newspapers.com, Internet Archive, and other active sources). Transcribe handwritten documents (TrOCR). Analyze FAN clusters and co-occurrences. Detect source conflicts. Generate GPS-standard proof summaries. Log negative-result searches. Propose relationship/data changes for human review. Index findings in RAG for future retrieval. Save successful and failed genealogy procedures for future expert recall.
 
 **Constraints:**
 - Cannot directly modify genealogy data — all changes go through propose_change / propose_relationship → human review queue
@@ -22,6 +22,7 @@
 - FamilySearch, Ancestry, Fold3, NEHGS/AmericanAncestors, FindMyPast, and default MyHeritage automation are manual/browser-only sources; no automated API, OAuth, login, or scraping tools are available
 - Newspapers.com automation is private/personal-only and requires explicit local configuration
 - Negative results MUST be documented via log_research_search — silent skips prohibited
+- Local PLOS may use owned private/living FT data internally; export/publish/share workflows own privacy and redaction gates
 
 **Tool Phases:**
 
@@ -30,7 +31,7 @@
 | assess (13) | recall_procedures, recall_episodes, list_trees, get_research_landscape, get_recent_searches, get_tree_statistics, get_missing_data_report, get_research_hints, get_open_research_tasks, mcp_genealogy_stats, list_persons, get_search_coverage, get_source_metrics | Survey tree state; select research targets; output next_phase_targets |
 | research (27) | get_repositories_for_person, source_search_all, wikitree_*, ellis_island_search, freedmens_bureau_search, dar_search, german_church_records_search, europeana_search, htr_status, transcribe_*, generate_record_hints, generate_tree_hints, newspaper_*, internet_archive_search, nara_*, mcp_searxng_search, mcp_genealogy_search, rag_search, graph_*_search, ai_research_* | Per-person external source searches |
 | analyze (21) | get_person, get_person_full, get_person_events, get_person_sources, get_siblings, evidence_build_chain, assess_gps_compliance, surname_phonetic_matches, resolve_place, search_places, source_search, detect_duplicates, fan_*, map_*, detect_source_conflicts, get_source_conflicts, find_graph_duplicates, generate_gps_proof, update_search_coverage | Evidence analysis; GPS compliance; FAN/geographic context |
-| report (8) | update_hint_status, create_research_task, log_research_search, submit_for_review, propose_relationship, propose_change, post_agent_message, rag_index | Document findings; propose changes; log searches (including negative results) |
+| report (9) | update_hint_status, create_research_task, log_research_search, submit_for_review, propose_relationship, propose_change, post_agent_message, rag_index, save_procedure | Document findings; propose changes; log searches (including negative results); save reusable procedures |
 
 **Failure Modes:**
 - Disabled tools should not appear in the active genealogy skill/tool surface during this period

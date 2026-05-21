@@ -19,10 +19,10 @@ class GenealogyEvidenceAssetCaptureReviewService
     /**
      * @return array<string, mixed>
      */
-    public function collect(int $limit = 50, bool $execute = false, bool $confirmed = false, bool $compact = false, bool $eligibleOnly = false): array
+    public function collect(int $limit = 50, bool $execute = false, bool $confirmed = false, bool $compact = false, bool $eligibleOnly = false, ?int $treeId = null): array
     {
         $limit = max(1, min($limit, 200));
-        $payload = $this->basePayload($limit, $execute, $confirmed, $compact, $eligibleOnly);
+        $payload = $this->basePayload($limit, $execute, $confirmed, $compact, $eligibleOnly, $treeId);
 
         if ($execute && ! $confirmed) {
             $payload['status'] = 'blocked';
@@ -44,6 +44,7 @@ class GenealogyEvidenceAssetCaptureReviewService
             dryRun: false,
             compact: false,
             eligibleOnly: $eligibleOnly,
+            treeId: $treeId,
         );
 
         $payload['source_plan_status'] = $plan['status'] ?? 'unknown';
@@ -72,7 +73,7 @@ class GenealogyEvidenceAssetCaptureReviewService
             }
 
             $payload['summary']['review_items_planned']++;
-            $reviewPayload = $this->reviewPayload($row, $plans);
+            $reviewPayload = $this->reviewPayload($row, $plans, $treeId);
             $existing = $this->findExistingPending($reviewPayload['title']);
 
             if ($existing !== null) {
@@ -80,6 +81,7 @@ class GenealogyEvidenceAssetCaptureReviewService
                 if (! $compact) {
                     $payload['items'][] = $this->itemPayload($reviewPayload, 'would_reuse_existing_review', $existing);
                 }
+
                 continue;
             }
 
@@ -88,6 +90,7 @@ class GenealogyEvidenceAssetCaptureReviewService
                 if (! $compact) {
                     $payload['items'][] = $this->itemPayload($reviewPayload, 'would_create_review', null);
                 }
+
                 continue;
             }
 
@@ -170,7 +173,7 @@ class GenealogyEvidenceAssetCaptureReviewService
     /**
      * @return array<string, mixed>
      */
-    private function basePayload(int $limit, bool $execute, bool $confirmed, bool $compact, bool $eligibleOnly): array
+    private function basePayload(int $limit, bool $execute, bool $confirmed, bool $compact, bool $eligibleOnly, ?int $treeId): array
     {
         return [
             'version' => 1,
@@ -190,6 +193,7 @@ class GenealogyEvidenceAssetCaptureReviewService
             'review_decision_attempted' => false,
             'genealogy_link_attempted' => false,
             'captured_at' => now()->toIso8601String(),
+            'tree_id' => $treeId,
             'limit' => $limit,
             'status' => 'dry_run',
             'blockers' => [],
@@ -222,7 +226,6 @@ class GenealogyEvidenceAssetCaptureReviewService
     }
 
     /**
-     * @param  mixed  $plans
      * @return list<array<string, mixed>>
      */
     private function eligiblePlans(mixed $plans): array
@@ -247,7 +250,7 @@ class GenealogyEvidenceAssetCaptureReviewService
      * @param  list<array<string, mixed>>  $plans
      * @return array<string, mixed>
      */
-    private function reviewPayload(array $row, array $plans): array
+    private function reviewPayload(array $row, array $plans, ?int $treeId): array
     {
         $targetRef = $this->safeText($row['target_ref'] ?? 'unknown-target', 120);
         $hash = substr(sha1(json_encode([$targetRef, $plans])), 0, 16);
@@ -267,6 +270,7 @@ class GenealogyEvidenceAssetCaptureReviewService
             'details' => [
                 'schema' => 'genealogy_evidence_asset_capture_review.v1',
                 'dedup_key' => 'genealogy-evidence-asset-capture-'.$hash,
+                'tree_id' => $treeId,
                 'source_target_ref' => $targetRef,
                 'capture_plan_count' => count($plans),
                 'target_storage' => 'ft_reference_area',

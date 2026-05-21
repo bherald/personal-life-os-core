@@ -2,9 +2,9 @@
 
 namespace App\Services\Genealogy;
 
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Duplicate Detection Service
@@ -19,8 +19,8 @@ class DuplicateDetectionService
     /**
      * Find potential duplicate persons in a tree
      *
-     * @param int $treeId Tree ID
-     * @param array $options Options: minScore (float), limit (int), includeResolved (bool)
+     * @param  int  $treeId  Tree ID
+     * @param  array  $options  Options: minScore (float), limit (int), includeResolved (bool)
      * @return array List of potential duplicate pairs with scores
      */
     public function findDuplicatePersons(int $treeId, array $options = []): array
@@ -30,7 +30,7 @@ class DuplicateDetectionService
         $includeResolved = $options['includeResolved'] ?? false;
 
         // Get all persons with relevant data
-        $sql = "
+        $sql = '
             SELECT
                 p.id,
                 p.gedcom_id,
@@ -46,13 +46,14 @@ class DuplicateDetectionService
             FROM genealogy_persons p
             WHERE p.tree_id = ?
             ORDER BY p.surname, p.given_name
-        ";
+        ';
 
         $persons = DB::select($sql, [$treeId]);
+        $this->attachParentSignatures($persons);
 
         // Get already-resolved duplicate pairs to exclude
         $resolvedPairs = [];
-        if (!$includeResolved) {
+        if (! $includeResolved) {
             $resolvedSql = "
                 SELECT person1_id, person2_id
                 FROM genealogy_duplicate_pairs
@@ -60,7 +61,7 @@ class DuplicateDetectionService
             ";
             $resolved = DB::select($resolvedSql, [$treeId]);
             foreach ($resolved as $r) {
-                $key = min($r->person1_id, $r->person2_id) . '-' . max($r->person1_id, $r->person2_id);
+                $key = min($r->person1_id, $r->person2_id).'-'.max($r->person1_id, $r->person2_id);
                 $resolvedPairs[$key] = true;
             }
         }
@@ -75,7 +76,7 @@ class DuplicateDetectionService
                 $p2 = $persons[$j];
 
                 // Skip if already resolved
-                $pairKey = min($p1->id, $p2->id) . '-' . max($p1->id, $p2->id);
+                $pairKey = min($p1->id, $p2->id).'-'.max($p1->id, $p2->id);
                 if (isset($resolvedPairs[$pairKey])) {
                     continue;
                 }
@@ -88,7 +89,7 @@ class DuplicateDetectionService
                         'person1' => [
                             'id' => $p1->id,
                             'gedcom_id' => $p1->gedcom_id,
-                            'name' => trim(($p1->given_name ?? '') . ' ' . ($p1->surname ?? '')),
+                            'name' => trim(($p1->given_name ?? '').' '.($p1->surname ?? '')),
                             'birth_date' => $p1->birth_date,
                             'birth_place' => $p1->birth_place,
                             'death_date' => $p1->death_date,
@@ -98,7 +99,7 @@ class DuplicateDetectionService
                         'person2' => [
                             'id' => $p2->id,
                             'gedcom_id' => $p2->gedcom_id,
-                            'name' => trim(($p2->given_name ?? '') . ' ' . ($p2->surname ?? '')),
+                            'name' => trim(($p2->given_name ?? '').' '.($p2->surname ?? '')),
                             'birth_date' => $p2->birth_date,
                             'birth_place' => $p2->birth_place,
                             'death_date' => $p2->death_date,
@@ -113,10 +114,73 @@ class DuplicateDetectionService
         }
 
         // Sort by score descending
-        usort($duplicates, fn($a, $b) => $b['score'] <=> $a['score']);
+        usort($duplicates, fn ($a, $b) => $b['score'] <=> $a['score']);
 
         // Apply limit
         return array_slice($duplicates, 0, $limit);
+    }
+
+    /**
+     * Preload parent-family context once so the O(n²) scan does not run
+     * relationship SQL for every candidate pair.
+     *
+     * @param  array<int, object>  $persons
+     */
+    private function attachParentSignatures(array $persons): void
+    {
+        $personIds = array_values(array_unique(array_filter(array_map(
+            static fn (object $person): int => (int) ($person->id ?? 0),
+            $persons
+        ))));
+
+        foreach ($persons as $person) {
+            $person->parent_context_preloaded = true;
+            $person->parent_family_ids = [];
+            $person->parent_father_ids = [];
+            $person->parent_mother_ids = [];
+        }
+
+        if ($personIds === []) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($personIds), '?'));
+        $rows = DB::select("
+            SELECT c.person_id,
+                   c.family_id,
+                   f.husband_id,
+                   f.wife_id
+            FROM genealogy_children c
+            LEFT JOIN genealogy_families f ON f.id = c.family_id
+            WHERE c.person_id IN ({$placeholders})
+        ", $personIds);
+
+        $context = [];
+        foreach ($rows as $row) {
+            $personId = (int) $row->person_id;
+            $context[$personId] ??= [
+                'family_ids' => [],
+                'father_ids' => [],
+                'mother_ids' => [],
+            ];
+
+            if ($row->family_id !== null) {
+                $context[$personId]['family_ids'][(int) $row->family_id] = true;
+            }
+            if ($row->husband_id !== null) {
+                $context[$personId]['father_ids'][(int) $row->husband_id] = true;
+            }
+            if ($row->wife_id !== null) {
+                $context[$personId]['mother_ids'][(int) $row->wife_id] = true;
+            }
+        }
+
+        foreach ($persons as $person) {
+            $personId = (int) ($person->id ?? 0);
+            $person->parent_family_ids = array_keys($context[$personId]['family_ids'] ?? []);
+            $person->parent_father_ids = array_keys($context[$personId]['father_ids'] ?? []);
+            $person->parent_mother_ids = array_keys($context[$personId]['mother_ids'] ?? []);
+        }
     }
 
     /**
@@ -146,7 +210,7 @@ class DuplicateDetectionService
         ];
 
         // Surname comparison with multiple matching methods
-        if (!empty($p1->surname) && !empty($p2->surname)) {
+        if (! empty($p1->surname) && ! empty($p2->surname)) {
             $s1 = strtolower(trim($p1->surname));
             $s2 = strtolower(trim($p2->surname));
 
@@ -168,7 +232,7 @@ class DuplicateDetectionService
         }
 
         // Given name comparison with multiple matching methods
-        if (!empty($p1->given_name) && !empty($p2->given_name)) {
+        if (! empty($p1->given_name) && ! empty($p2->given_name)) {
             $g1 = strtolower(trim($p1->given_name));
             $g2 = strtolower(trim($p2->given_name));
 
@@ -203,25 +267,25 @@ class DuplicateDetectionService
         }
 
         // Birth date comparison
-        if (!empty($p1->birth_date) && !empty($p2->birth_date)) {
+        if (! empty($p1->birth_date) && ! empty($p2->birth_date)) {
             $dateScore = $this->compareDates($p1->birth_date, $p2->birth_date);
             $score += $weights['birth_date'] * $dateScore;
         }
 
         // Death date comparison
-        if (!empty($p1->death_date) && !empty($p2->death_date)) {
+        if (! empty($p1->death_date) && ! empty($p2->death_date)) {
             $dateScore = $this->compareDates($p1->death_date, $p2->death_date);
             $score += $weights['death_date'] * $dateScore;
         }
 
         // Birth place comparison
-        if (!empty($p1->birth_place) && !empty($p2->birth_place)) {
+        if (! empty($p1->birth_place) && ! empty($p2->birth_place)) {
             $placeScore = $this->comparePlaces($p1->birth_place, $p2->birth_place);
             $score += $weights['birth_place'] * $placeScore;
         }
 
         // Gender match
-        if (!empty($p1->gender) && !empty($p2->gender)) {
+        if (! empty($p1->gender) && ! empty($p2->gender)) {
             if ($p1->gender === $p2->gender) {
                 $score += $weights['gender'];
             }
@@ -229,7 +293,7 @@ class DuplicateDetectionService
 
         // Same parents check (relationship context) - strong indicator
         if (isset($p1->id) && isset($p2->id)) {
-            if ($this->haveSameParents($p1->id, $p2->id)) {
+            if ($this->shareParentContext($p1, $p2)) {
                 $score += $weights['same_parents'];
             }
         }
@@ -240,8 +304,8 @@ class DuplicateDetectionService
     /**
      * Calculate phonetic similarity using multiple algorithms
      *
-     * @param string $s1 First string
-     * @param string $s2 Second string
+     * @param  string  $s1  First string
+     * @param  string  $s2  Second string
      * @return float Score between 0 and 1
      */
     private function phoneticMatch(string $s1, string $s2): float
@@ -265,8 +329,8 @@ class DuplicateDetectionService
     /**
      * Calculate Levenshtein similarity as a ratio
      *
-     * @param string $s1 First string
-     * @param string $s2 Second string
+     * @param  string  $s1  First string
+     * @param  string  $s2  Second string
      * @return float Similarity ratio between 0 and 1
      */
     private function levenshteinSimilarity(string $s1, string $s2): float
@@ -277,14 +341,15 @@ class DuplicateDetectionService
         }
 
         $distance = levenshtein($s1, $s2);
+
         return 1 - ($distance / $maxLen);
     }
 
     /**
      * Check if two names are common nickname variants
      *
-     * @param string $name1 First name
-     * @param string $name2 Second name
+     * @param  string  $name1  First name
+     * @param  string  $name2  Second name
      * @return bool True if they are nickname variants
      */
     private function areNicknameVariants(string $name1, string $name2): bool
@@ -386,8 +451,8 @@ class DuplicateDetectionService
     /**
      * Compare two dates and return a similarity score
      *
-     * @param string $date1 First date
-     * @param string $date2 Second date
+     * @param  string  $date1  First date
+     * @param  string  $date2  Second date
      * @return float Score between 0 and 1
      */
     private function compareDates(string $date1, string $date2): float
@@ -421,23 +486,24 @@ class DuplicateDetectionService
     /**
      * Extract year from various date formats
      *
-     * @param string $date Date string
+     * @param  string  $date  Date string
      * @return int|null Year or null if not found
      */
     private function extractYear(string $date): ?int
     {
         // Match 4-digit year
         if (preg_match('/\b(1[0-9]{3}|20[0-2][0-9])\b/', $date, $matches)) {
-            return (int)$matches[1];
+            return (int) $matches[1];
         }
+
         return null;
     }
 
     /**
      * Compare two place names and return a similarity score
      *
-     * @param string $place1 First place
-     * @param string $place2 Second place
+     * @param  string  $place1  First place
+     * @param  string  $place2  Second place
      * @return float Score between 0 and 1
      */
     private function comparePlaces(string $place1, string $place2): float
@@ -487,20 +553,20 @@ class DuplicateDetectionService
     /**
      * Check if two persons have the same parents
      *
-     * @param int $person1Id First person ID
-     * @param int $person2Id Second person ID
+     * @param  int  $person1Id  First person ID
+     * @param  int  $person2Id  Second person ID
      * @return bool True if they share at least one parent
      */
     private function haveSameParents(int $person1Id, int $person2Id): bool
     {
         try {
             // Get family IDs where each person is a child
-            $sql = "
+            $sql = '
                 SELECT DISTINCT f.id, f.husband_id, f.wife_id
                 FROM genealogy_families f
                 JOIN genealogy_children c ON c.family_id = f.id
                 WHERE c.person_id = ?
-            ";
+            ';
 
             $families1 = DB::select($sql, [$person1Id]);
             $families2 = DB::select($sql, [$person2Id]);
@@ -530,6 +596,34 @@ class DuplicateDetectionService
         return false;
     }
 
+    private function shareParentContext(object $p1, object $p2): bool
+    {
+        if (($p1->parent_context_preloaded ?? false) && ($p2->parent_context_preloaded ?? false)) {
+            return $this->overlaps((array) ($p1->parent_family_ids ?? []), (array) ($p2->parent_family_ids ?? []))
+                || $this->overlaps((array) ($p1->parent_father_ids ?? []), (array) ($p2->parent_father_ids ?? []))
+                || $this->overlaps((array) ($p1->parent_mother_ids ?? []), (array) ($p2->parent_mother_ids ?? []));
+        }
+
+        if (isset($p1->id) && isset($p2->id)) {
+            return $this->haveSameParents((int) $p1->id, (int) $p2->id);
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<int, int|string>  $left
+     * @param  array<int, int|string>  $right
+     */
+    private function overlaps(array $left, array $right): bool
+    {
+        if ($left === [] || $right === []) {
+            return false;
+        }
+
+        return array_intersect($left, $right) !== [];
+    }
+
     /**
      * Get human-readable reasons for duplicate match
      */
@@ -538,7 +632,7 @@ class DuplicateDetectionService
         $reasons = [];
 
         // Surname matching reasons
-        if (!empty($p1->surname) && !empty($p2->surname)) {
+        if (! empty($p1->surname) && ! empty($p2->surname)) {
             $s1 = strtolower(trim($p1->surname));
             $s2 = strtolower(trim($p2->surname));
 
@@ -556,7 +650,7 @@ class DuplicateDetectionService
         }
 
         // Given name matching reasons
-        if (!empty($p1->given_name) && !empty($p2->given_name)) {
+        if (! empty($p1->given_name) && ! empty($p2->given_name)) {
             $g1 = strtolower(trim($p1->given_name));
             $g2 = strtolower(trim($p2->given_name));
 
@@ -582,7 +676,7 @@ class DuplicateDetectionService
         }
 
         // Date matching reasons
-        if (!empty($p1->birth_date) && !empty($p2->birth_date)) {
+        if (! empty($p1->birth_date) && ! empty($p2->birth_date)) {
             if ($p1->birth_date === $p2->birth_date) {
                 $reasons[] = 'Same birth date';
             } else {
@@ -599,7 +693,7 @@ class DuplicateDetectionService
             }
         }
 
-        if (!empty($p1->death_date) && !empty($p2->death_date)) {
+        if (! empty($p1->death_date) && ! empty($p2->death_date)) {
             if ($p1->death_date === $p2->death_date) {
                 $reasons[] = 'Same death date';
             } else {
@@ -612,7 +706,7 @@ class DuplicateDetectionService
         }
 
         // Place matching reasons
-        if (!empty($p1->birth_place) && !empty($p2->birth_place)) {
+        if (! empty($p1->birth_place) && ! empty($p2->birth_place)) {
             $placeScore = $this->comparePlaces($p1->birth_place, $p2->birth_place);
             if ($placeScore >= 0.8) {
                 $reasons[] = 'Similar birth place';
@@ -622,12 +716,12 @@ class DuplicateDetectionService
         }
 
         // Gender matching reason
-        if (!empty($p1->gender) && $p1->gender === $p2->gender) {
+        if (! empty($p1->gender) && $p1->gender === $p2->gender) {
             $reasons[] = 'Same gender';
         }
 
         // Same parents check
-        if (isset($p1->id) && isset($p2->id) && $this->haveSameParents($p1->id, $p2->id)) {
+        if (isset($p1->id) && isset($p2->id) && $this->shareParentContext($p1, $p2)) {
             $reasons[] = 'Share same parent(s)';
         }
 
@@ -637,10 +731,10 @@ class DuplicateDetectionService
     /**
      * Mark a duplicate pair as resolved (not duplicates) or to be merged
      *
-     * @param int $treeId Tree ID
-     * @param int $person1Id First person ID
-     * @param int $person2Id Second person ID
-     * @param string $status Status: 'rejected' (not duplicates), 'pending_merge', 'merged'
+     * @param  int  $treeId  Tree ID
+     * @param  int  $person1Id  First person ID
+     * @param  int  $person2Id  Second person ID
+     * @param  string  $status  Status: 'rejected' (not duplicates), 'pending_merge', 'merged'
      * @return bool Success
      */
     public function resolveDuplicatePair(int $treeId, int $person1Id, int $person2Id, string $status): bool
@@ -650,23 +744,23 @@ class DuplicateDetectionService
         $maxId = max($person1Id, $person2Id);
 
         // Check if pair exists
-        $existing = DB::selectOne("
+        $existing = DB::selectOne('
             SELECT id FROM genealogy_duplicate_pairs
             WHERE tree_id = ? AND person1_id = ? AND person2_id = ?
-        ", [$treeId, $minId, $maxId]);
+        ', [$treeId, $minId, $maxId]);
 
         if ($existing) {
-            DB::update("
+            DB::update('
                 UPDATE genealogy_duplicate_pairs
                 SET status = ?, updated_at = NOW()
                 WHERE id = ?
-            ", [$status, $existing->id]);
+            ', [$status, $existing->id]);
         } else {
-            DB::insert("
+            DB::insert('
                 INSERT INTO genealogy_duplicate_pairs
                 (tree_id, person1_id, person2_id, status, created_at, updated_at)
                 VALUES (?, ?, ?, ?, NOW(), NOW())
-            ", [$treeId, $minId, $maxId, $status]);
+            ', [$treeId, $minId, $maxId, $status]);
         }
 
         return true;
@@ -675,10 +769,10 @@ class DuplicateDetectionService
     /**
      * Merge two persons, keeping primary and transferring data from secondary
      *
-     * @param int $treeId Tree ID
-     * @param int $primaryId Person to keep (primary)
-     * @param int $secondaryId Person to merge into primary (will be deleted)
-     * @param array $options Merge options (keepSecondaryNames, keepSecondaryDates, etc.)
+     * @param  int  $treeId  Tree ID
+     * @param  int  $primaryId  Person to keep (primary)
+     * @param  int  $secondaryId  Person to merge into primary (will be deleted)
+     * @param  array  $options  Merge options (keepSecondaryNames, keepSecondaryDates, etc.)
      * @return array Merge result with transferred data counts
      */
     public function mergePersons(int $treeId, int $primaryId, int $secondaryId, array $options = []): array
@@ -704,17 +798,17 @@ class DuplicateDetectionService
             DB::beginTransaction();
 
             // Verify both persons exist in tree
-            $primary = DB::selectOne("SELECT * FROM genealogy_persons WHERE id = ? AND tree_id = ?", [$primaryId, $treeId]);
-            $secondary = DB::selectOne("SELECT * FROM genealogy_persons WHERE id = ? AND tree_id = ?", [$secondaryId, $treeId]);
+            $primary = DB::selectOne('SELECT * FROM genealogy_persons WHERE id = ? AND tree_id = ?', [$primaryId, $treeId]);
+            $secondary = DB::selectOne('SELECT * FROM genealogy_persons WHERE id = ? AND tree_id = ?', [$secondaryId, $treeId]);
 
-            if (!$primary || !$secondary) {
+            if (! $primary || ! $secondary) {
                 throw new Exception('One or both persons not found in tree');
             }
 
             // Transfer events from secondary to primary
-            $eventsUpdated = DB::update("
+            $eventsUpdated = DB::update('
                 UPDATE genealogy_events SET person_id = ? WHERE person_id = ?
-            ", [$primaryId, $secondaryId]);
+            ', [$primaryId, $secondaryId]);
             $result['transferred']['events'] = $eventsUpdated;
 
             // genealogy_person_facts table does not exist — skip
@@ -722,30 +816,30 @@ class DuplicateDetectionService
 
             // Transfer alternate names if option enabled
             if ($options['keepSecondaryNames'] ?? true) {
-                $secondaryName = trim(($secondary->given_name ?? '') . ' ' . ($secondary->surname ?? ''));
-                $primaryName = trim(($primary->given_name ?? '') . ' ' . ($primary->surname ?? ''));
+                $secondaryName = trim(($secondary->given_name ?? '').' '.($secondary->surname ?? ''));
+                $primaryName = trim(($primary->given_name ?? '').' '.($primary->surname ?? ''));
                 if ($secondaryName && $secondaryName !== $primaryName) {
                     // Store secondary name as nickname if primary doesn't have one
-                    if (empty($primary->nickname) && !empty($secondaryName)) {
-                        DB::update("UPDATE genealogy_persons SET nickname = ? WHERE id = ?", [$secondaryName, $primaryId]);
+                    if (empty($primary->nickname) && ! empty($secondaryName)) {
+                        DB::update('UPDATE genealogy_persons SET nickname = ? WHERE id = ?', [$secondaryName, $primaryId]);
                         $result['transferred']['names']++;
                     }
                 }
             }
 
             // Transfer media links via genealogy_person_media junction table
-            $mediaUpdated = DB::update("
+            $mediaUpdated = DB::update('
                 UPDATE genealogy_person_media SET person_id = ?
                 WHERE person_id = ? AND media_id NOT IN (
                     SELECT media_id FROM genealogy_person_media WHERE person_id = ?
                 )
-            ", [$primaryId, $secondaryId, $primaryId]);
+            ', [$primaryId, $secondaryId, $primaryId]);
             $result['transferred']['media'] = $mediaUpdated;
 
             // Transfer citations
-            $citationsUpdated = DB::update("
+            $citationsUpdated = DB::update('
                 UPDATE genealogy_citations SET person_id = ? WHERE person_id = ?
-            ", [$primaryId, $secondaryId]);
+            ', [$primaryId, $secondaryId]);
             $result['transferred']['citations'] = $citationsUpdated;
 
             // Transfer shared note references from secondary to primary
@@ -756,81 +850,81 @@ class DuplicateDetectionService
             $result['transferred']['notes'] = $notesUpdated;
 
             // Update family relationships - child
-            $childFamilies = DB::update("
+            $childFamilies = DB::update('
                 UPDATE genealogy_children SET person_id = ?
                 WHERE person_id = ?
-            ", [$primaryId, $secondaryId]);
+            ', [$primaryId, $secondaryId]);
             $result['transferred']['families_as_child'] = $childFamilies;
 
             // Update family relationships - spouse (husband)
-            $husbandFamilies = DB::update("
+            $husbandFamilies = DB::update('
                 UPDATE genealogy_families SET husband_id = ?
                 WHERE husband_id = ? AND tree_id = ?
-            ", [$primaryId, $secondaryId, $treeId]);
+            ', [$primaryId, $secondaryId, $treeId]);
 
             // Update family relationships - spouse (wife)
-            $wifeFamilies = DB::update("
+            $wifeFamilies = DB::update('
                 UPDATE genealogy_families SET wife_id = ?
                 WHERE wife_id = ? AND tree_id = ?
-            ", [$primaryId, $secondaryId, $treeId]);
+            ', [$primaryId, $secondaryId, $treeId]);
             $result['transferred']['families_as_spouse'] = $husbandFamilies + $wifeFamilies;
 
             // Update research hints
-            DB::update("
+            DB::update('
                 UPDATE genealogy_research_hints SET person_id = ? WHERE person_id = ?
-            ", [$primaryId, $secondaryId]);
+            ', [$primaryId, $secondaryId]);
 
             // Update external links
-            DB::update("
+            DB::update('
                 UPDATE genealogy_person_external_links SET person_id = ?
                 WHERE person_id = ? AND service_type NOT IN (
                     SELECT service_type FROM genealogy_person_external_links WHERE person_id = ?
                 )
-            ", [$primaryId, $secondaryId, $primaryId]);
+            ', [$primaryId, $secondaryId, $primaryId]);
 
             // Optionally merge dates if primary is missing them
             if ($options['fillMissingDates'] ?? true) {
                 $updates = [];
                 $params = [];
 
-                if (empty($primary->birth_date) && !empty($secondary->birth_date)) {
+                if (empty($primary->birth_date) && ! empty($secondary->birth_date)) {
                     $updates[] = 'birth_date = ?';
                     $params[] = $secondary->birth_date;
                 }
-                if (empty($primary->birth_place) && !empty($secondary->birth_place)) {
+                if (empty($primary->birth_place) && ! empty($secondary->birth_place)) {
                     $updates[] = 'birth_place = ?';
                     $params[] = $secondary->birth_place;
                 }
-                if (empty($primary->death_date) && !empty($secondary->death_date)) {
+                if (empty($primary->death_date) && ! empty($secondary->death_date)) {
                     $updates[] = 'death_date = ?';
                     $params[] = $secondary->death_date;
                 }
-                if (empty($primary->death_place) && !empty($secondary->death_place)) {
+                if (empty($primary->death_place) && ! empty($secondary->death_place)) {
                     $updates[] = 'death_place = ?';
                     $params[] = $secondary->death_place;
                 }
 
-                if (!empty($updates)) {
+                if (! empty($updates)) {
                     $params[] = $primaryId;
-                    DB::update("UPDATE genealogy_persons SET " . implode(', ', $updates) . " WHERE id = ?", $params);
+                    DB::update('UPDATE genealogy_persons SET '.implode(', ', $updates).' WHERE id = ?', $params);
                 }
             }
 
             // Delete secondary person
-            DB::delete("DELETE FROM genealogy_persons WHERE id = ?", [$secondaryId]);
+            DB::delete('DELETE FROM genealogy_persons WHERE id = ?', [$secondaryId]);
 
             // Mark duplicate pair as merged
             $this->resolveDuplicatePair($treeId, $primaryId, $secondaryId, 'merged');
 
             DB::commit();
 
-            Log::info("Merged persons", ['primary' => $primaryId, 'secondary' => $secondaryId, 'result' => $result]);
+            Log::info('Merged persons', ['primary' => $primaryId, 'secondary' => $secondaryId, 'result' => $result]);
 
         } catch (Exception $e) {
             DB::rollBack();
             $result['success'] = false;
             $result['errors'][] = $e->getMessage();
-            Log::error("Person merge failed", ['error' => $e->getMessage()]);
+            Log::error('Person merge failed', ['error' => $e->getMessage()]);
         }
 
         return $result;
@@ -854,11 +948,11 @@ class DuplicateDetectionService
         ", [$treeId]);
 
         return [
-            'total_pairs' => (int)($stats->total_pairs ?? 0),
-            'pending' => (int)($stats->pending ?? 0),
-            'pending_merge' => (int)($stats->pending_merge ?? 0),
-            'merged' => (int)($stats->merged ?? 0),
-            'rejected' => (int)($stats->rejected ?? 0),
+            'total_pairs' => (int) ($stats->total_pairs ?? 0),
+            'pending' => (int) ($stats->pending ?? 0),
+            'pending_merge' => (int) ($stats->pending_merge ?? 0),
+            'merged' => (int) ($stats->merged ?? 0),
+            'rejected' => (int) ($stats->rejected ?? 0),
         ];
     }
 }

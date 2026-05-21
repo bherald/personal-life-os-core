@@ -7,10 +7,17 @@ use App\Services\OllamaBoundedPayloadService;
 
 class GenealogyPacketSynthesisService
 {
+    private ?GenealogyLessonPromptContextService $lessonPromptContext = null;
+
     public function __construct(
         private readonly AIService $aiService,
         private readonly OllamaBoundedPayloadService $payloads
     ) {}
+
+    private function lessonContext(): GenealogyLessonPromptContextService
+    {
+        return $this->lessonPromptContext ??= app(GenealogyLessonPromptContextService::class);
+    }
 
     public function synthesizeFromPageSummaries(array $pages, array $context = []): array
     {
@@ -64,11 +71,13 @@ class GenealogyPacketSynthesisService
             static fn (array $chunk): string => "Pages {$chunk['page_start']}-{$chunk['page_end']}:\n".$chunk['text'],
             $chunks
         ));
+        $lessonContext = $this->lessonContext()->build($context, $this->lessonSearchTerms($chunks, $context), 4);
 
         return <<<PROMPT
 Synthesize these page-level genealogy packet summaries into one bounded packet summary.
 
 Packet title: {$title}
+{$lessonContext}
 
 Return ONLY valid JSON:
 {
@@ -90,6 +99,42 @@ Rules:
 Packet content:
 {$chunkText}
 PROMPT;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function lessonSearchTerms(array $chunks, array $context): array
+    {
+        $terms = [
+            $context['title'] ?? null,
+            $context['media_type'] ?? null,
+            'packet synthesis',
+            'multi-page packet',
+            'source packet',
+            'unresolved questions',
+            'page anchors',
+            'proposal readiness',
+        ];
+
+        foreach (array_slice((array) ($context['ft_candidates'] ?? []), 0, 5) as $candidate) {
+            $candidate = (array) $candidate;
+            $terms[] = $candidate['display_name'] ?? null;
+            $terms[] = $candidate['name'] ?? null;
+        }
+
+        foreach (array_slice($chunks, 0, 3) as $chunk) {
+            foreach (preg_split('/[^A-Za-z0-9]+/', (string) ($chunk['text'] ?? ''), -1, PREG_SPLIT_NO_EMPTY) ?: [] as $word) {
+                if (strlen($word) >= 5) {
+                    $terms[] = $word;
+                }
+            }
+        }
+
+        return array_values(array_filter(
+            array_map(static fn (mixed $term): string => trim((string) $term), $terms),
+            static fn (string $term): bool => $term !== ''
+        ));
     }
 
     private function parseResponse(string $response): array

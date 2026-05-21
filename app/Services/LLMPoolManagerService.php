@@ -1018,6 +1018,7 @@ class LLMPoolManagerService
             $healthy = match ($instance->instance_type) {
                 'ollama' => $this->healthCheckOllama($instance),
                 'claude_cli' => $this->healthCheckClaudeCli($instance),
+                'codex_cli' => $this->healthCheckCodexCli($instance),
                 default => $this->healthCheckGeneric($instance),
             };
 
@@ -1086,7 +1087,9 @@ class LLMPoolManagerService
             return false;
         }
 
-        // Check OAuth token expiry (cached for 5 minutes)
+        // Check OAuth token expiry (cached for 5 minutes). The credentials file
+        // can contain a stale expiresAt even when `claude auth status` is valid,
+        // so checkClaudeTokenExpiry verifies the CLI before returning expired.
         $tokenStatus = $this->checkClaudeTokenExpiry();
         if ($tokenStatus === 'expired') {
             Log::warning('LLMPoolManagerService: Claude CLI OAuth token is expired — marking unhealthy', [
@@ -1106,56 +1109,171 @@ class LLMPoolManagerService
     }
 
     /**
-     * Check Claude CLI OAuth token expiry from credentials file.
-     * Returns: 'valid', 'expiring_soon' (<24h), 'expired', or 'unknown' (no file/parse error).
-     * Cached for 5 minutes to avoid filesystem thrash.
+     * Health check for Codex CLI. Authentication is intentionally verified by
+     * a tiny noninteractive version/catalog command, not by reading private
+     * Codex state from disk.
      */
+    private function healthCheckCodexCli(object $instance): bool
+    {
+        $config = json_decode($instance->config ?? '{}', true) ?: [];
+        $cliPath = $config['executable'] ?? 'codex';
+        $result = Process::timeout(5)->run(['which', $cliPath]);
+        $path = trim($result->output());
+        if (! $result->successful() || $path === '' || ! file_exists($path) || ! is_executable($path)) {
+            return false;
+        }
+
+        $version = Process::timeout(10)->run([$cliPath, '--version']);
+
+        return $version->successful() && trim($version->output().$version->errorOutput()) !== '';
+    }
+
     public function checkClaudeTokenExpiry(): string
     {
         return Cache::remember('claude_token_expiry_status', 300, function () {
-            $home = $this->resolveRuntimeEnvValue('HOME') ?: $this->resolveCurrentUserHome();
-            if (! $home) {
-                Log::debug('LLMPoolManagerService: HOME not available for Claude credentials check');
+            $status = $this->readClaudeCredentialExpiryStatus();
 
-                return 'unknown';
+            if ($status !== 'expired') {
+                return $status;
             }
 
-            $credPath = rtrim($home, '/').'/.claude/.credentials.json';
-
-            if (! file_exists($credPath)) {
-                Log::debug('LLMPoolManagerService: Claude credentials file not found', ['path' => $credPath]);
-
-                return 'unknown';
-            }
-
-            try {
-                $creds = json_decode(file_get_contents($credPath), true);
-                $expiresAt = $creds['claudeAiOauth']['expiresAt'] ?? null;
-
-                if ($expiresAt === null) {
-                    return 'unknown';
-                }
-
-                // expiresAt is in milliseconds
-                $expiresAtSeconds = (int) ($expiresAt / 1000);
-                $now = time();
-
-                if ($now >= $expiresAtSeconds) {
-                    return 'expired';
-                }
-
-                // Warn if expiring within 24 hours
-                if (($expiresAtSeconds - $now) < 86400) {
-                    return 'expiring_soon';
-                }
+            if ($this->claudeAuthStatusLoggedIn()) {
+                Log::info('LLMPoolManagerService: Claude credentials expiry is stale but CLI auth status is logged in');
 
                 return 'valid';
-            } catch (\Throwable $e) {
-                Log::debug('LLMPoolManagerService: Failed to parse Claude credentials', ['error' => $e->getMessage()]);
+            }
 
+            return 'expired';
+        });
+    }
+
+    /**
+     * Check Claude CLI OAuth token expiry from credentials file.
+     * Returns: 'valid', 'expiring_soon' (<24h), 'expired', or 'unknown' (no file/parse error).
+     */
+    private function readClaudeCredentialExpiryStatus(): string
+    {
+        $home = $this->resolveRuntimeEnvValue('HOME') ?: $this->resolveCurrentUserHome();
+        if (! $home) {
+            Log::debug('LLMPoolManagerService: HOME not available for Claude credentials check');
+
+            return 'unknown';
+        }
+
+        $credPath = rtrim($home, '/').'/.claude/.credentials.json';
+
+        if (! file_exists($credPath)) {
+            Log::debug('LLMPoolManagerService: Claude credentials file not found', ['path' => $credPath]);
+
+            return 'unknown';
+        }
+
+        try {
+            $creds = json_decode(file_get_contents($credPath), true);
+            $expiresAt = $creds['claudeAiOauth']['expiresAt'] ?? null;
+
+            if ($expiresAt === null) {
                 return 'unknown';
             }
-        });
+
+            // expiresAt is in milliseconds.
+            $expiresAtSeconds = (int) ($expiresAt / 1000);
+            $now = time();
+
+            if ($now >= $expiresAtSeconds) {
+                return 'expired';
+            }
+
+            // Warn if expiring within 24 hours.
+            if (($expiresAtSeconds - $now) < 86400) {
+                return 'expiring_soon';
+            }
+
+            return 'valid';
+        } catch (\Throwable $e) {
+            Log::debug('LLMPoolManagerService: Failed to parse Claude credentials', ['error' => $e->getMessage()]);
+
+            return 'unknown';
+        }
+    }
+
+    private function claudeAuthStatusLoggedIn(): bool
+    {
+        $cliPath = config('services.anthropic.cli_path', 'claude');
+        $result = $this->runClaudeAuthStatus($cliPath);
+        $data = $this->extractClaudeAuthStatusData($result['output'] ?? '');
+
+        if (($data['loggedIn'] ?? false) === true) {
+            return true;
+        }
+
+        if (($result['successful'] ?? false) === false) {
+            Log::debug('LLMPoolManagerService: Claude auth status check failed', [
+                'output' => mb_substr((string) ($result['output'] ?? ''), 0, 500),
+            ]);
+        }
+
+        return false;
+    }
+
+    /**
+     * Health-only Claude CLI auth probe. Inference remains inside AIService/AIRouter.
+     *
+     * @return array{successful: bool, output: string}
+     */
+    protected function runClaudeAuthStatus(string $cliPath): array
+    {
+        $pending = Process::timeout(10);
+        $env = $this->buildClaudeCliEnv();
+        if ($env !== null) {
+            $pending = $pending->env($env);
+        }
+
+        $result = $pending->run([$cliPath, 'auth', 'status']);
+
+        return [
+            'successful' => $result->successful(),
+            'output' => trim($result->output()."\n".$result->errorOutput()),
+        ];
+    }
+
+    private function extractClaudeAuthStatusData(string $output): ?array
+    {
+        $data = json_decode(trim($output), true);
+        if (is_array($data)) {
+            return $data;
+        }
+
+        if (preg_match('/\{[^}]*"loggedIn"[^}]*\}/', $output, $jsonMatch)) {
+            $data = json_decode($jsonMatch[0], true);
+
+            return is_array($data) ? $data : null;
+        }
+
+        return null;
+    }
+
+    private function buildClaudeCliEnv(): ?array
+    {
+        $env = [];
+        foreach (['HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'TERM', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'PWD'] as $key) {
+            $value = $this->resolveRuntimeEnvValue($key);
+            if ($value !== null) {
+                $env[$key] = $value;
+            }
+        }
+
+        $home = $env['HOME'] ?? $this->resolveCurrentUserHome();
+        if ($home !== null) {
+            $env['HOME'] = $home;
+        }
+
+        $token = config('services.anthropic.cli_oauth_token');
+        if ($token) {
+            $env['CLAUDE_CODE_OAUTH_TOKEN'] = $token;
+        }
+
+        return $env !== [] ? $env : null;
     }
 
     /**

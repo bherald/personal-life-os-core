@@ -9,17 +9,19 @@ class GenealogyMediaIntakeReportService
 {
     private const REPORT_VERSION = 1;
 
-    private const ENRICHMENT_TYPES = ['obituary', 'census', 'certificate', 'document', 'military'];
+    private const ENRICHMENT_TYPES = ['obituary', 'census', 'certificate', 'document', 'military', 'headstone'];
 
-    private const HTR_TYPES = ['document', 'certificate', 'census', 'military'];
+    private const HTR_TYPES = ['document', 'certificate', 'census', 'military', 'headstone'];
 
-    private const HTR_EXTENSIONS = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp'];
+    private const HTR_EXTENSIONS = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp', 'jp2', 'j2k', 'jpf', 'jpx'];
 
-    private const HTR_MIME_TYPES = ['image/jpeg', 'image/png', 'image/tiff', 'image/bmp', 'image/webp'];
+    private const HTR_MIME_TYPES = ['image/jpeg', 'image/png', 'image/tiff', 'image/bmp', 'image/webp', 'image/jp2', 'image/jpx', 'image/j2k', 'image/x-jp2'];
+
+    public function __construct(private readonly GenealogyTreeRootResolver $rootResolver) {}
 
     public function collect(int $treeId, ?string $root, int $limit, bool $dryRun = false): array
     {
-        $root = $this->normalizeRoot($root);
+        $root = $this->normalizeRoot($treeId, $root, inferFromMedia: ! $dryRun);
         $limit = max(1, min(200, $limit));
 
         $payload = [
@@ -215,7 +217,7 @@ class GenealogyMediaIntakeReportService
                 SUM(CASE WHEN {$hasTranscript} THEN 1 ELSE 0 END) AS has_transcription,
                 SUM(CASE WHEN media_type IN ({$htrTypes}) AND NOT ({$hasTranscript}) AND file_exists = 1 AND {$htrFormatSql} THEN 1 ELSE 0 END) AS htr_pending,
                 SUM(CASE WHEN media_type IN ({$htrTypes}) AND NOT ({$hasTranscript}) AND (COALESCE(file_exists, 0) <> 1 OR nextcloud_path IS NULL OR nextcloud_path = '') THEN 1 ELSE 0 END) AS htr_blocked_path,
-                SUM(CASE WHEN media_type IN ({$enrichmentTypes}) AND file_exists = 1 AND analysis_status = 'completed' AND (enrichment_status IS NULL OR enrichment_status = 'failed') THEN 1 ELSE 0 END) AS enrich_eligible,
+                SUM(CASE WHEN media_type IN ({$enrichmentTypes}) AND file_exists = 1 AND (analysis_status = 'completed' OR {$hasTranscript}) AND (enrichment_status IS NULL OR enrichment_status = 'failed') THEN 1 ELSE 0 END) AS enrich_eligible,
                 SUM(CASE WHEN enrichment_status = 'completed' THEN 1 ELSE 0 END) AS enrichment_completed,
                 SUM(CASE WHEN enrichment_status = 'failed' THEN 1 ELSE 0 END) AS enrichment_failed,
                 SUM(CASE WHEN enrichment_status = 'skipped' THEN 1 ELSE 0 END) AS enrichment_skipped
@@ -517,14 +519,9 @@ class GenealogyMediaIntakeReportService
         ];
     }
 
-    private function normalizeRoot(?string $root): string
+    private function normalizeRoot(int $treeId, ?string $root, bool $inferFromMedia = true): string
     {
-        $root = trim((string) ($root ?: config('genealogy.nextcloud_root', '/Library/Genealogy')));
-        if ($root === '') {
-            $root = '/Library/Genealogy';
-        }
-
-        return '/'.trim($root, '/');
+        return $this->rootResolver->mediaRoot($treeId, $root, $inferFromMedia);
     }
 
     private function rootLike(string $root): string
@@ -541,9 +538,18 @@ class GenealogyMediaIntakeReportService
     {
         $extensions = $this->sqlStringList(self::HTR_EXTENSIONS);
         $mimeTypes = $this->sqlStringList(self::HTR_MIME_TYPES);
+        $formatSql = Schema::hasColumn('genealogy_media', 'file_format')
+            ? "LOWER(COALESCE(file_format, ''))"
+            : "''";
+        if ($formatSql !== "''" && DB::connection()->getDriverName() !== 'sqlite' && Schema::hasColumn('genealogy_media', 'local_filename')) {
+            $formatSql = "LOWER(COALESCE(file_format, SUBSTRING_INDEX(local_filename, '.', -1), ''))";
+        }
+        $mimeSql = Schema::hasColumn('genealogy_media', 'mime_type')
+            ? "LOWER(COALESCE(mime_type, ''))"
+            : "''";
 
-        return "(LOWER(COALESCE(file_format, SUBSTRING_INDEX(local_filename, '.', -1), '')) IN ({$extensions})
-            OR LOWER(COALESCE(mime_type, '')) IN ({$mimeTypes}))";
+        return "({$formatSql} IN ({$extensions})
+            OR {$mimeSql} IN ({$mimeTypes}))";
     }
 
     /**
@@ -552,7 +558,7 @@ class GenealogyMediaIntakeReportService
     private function sqlStringList(array $values): string
     {
         $safe = array_values(array_filter(array_map(
-            static fn ($value): string => preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $value)),
+            static fn ($value): string => preg_replace('/[^a-z0-9_\/\-]/', '', strtolower((string) $value)),
             $values
         )));
 

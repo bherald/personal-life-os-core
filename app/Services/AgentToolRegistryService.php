@@ -1110,6 +1110,7 @@ class AgentToolRegistryService
                 'mcp_server' => $config['mcp_server'] ?? null,
                 'mcp_tool' => $config['mcp_tool'] ?? null,
                 '_audit' => false,
+                '_catalog' => true,
             ];
 
             try {

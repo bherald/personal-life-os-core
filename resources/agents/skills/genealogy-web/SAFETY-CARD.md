@@ -1,5 +1,5 @@
 # Safety Card: genealogy-web
-**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-04-12
+**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-05-12
 
 | Field | Value |
 |-------|-------|
@@ -8,15 +8,16 @@
 | **Schedule** | Every 4 hours at minute 30 |
 | **Max Iterations** | 15 |
 | **Max Tokens** | 30,000 |
-| **Permissions** | genealogy:read, genealogy:write, rag:read, system:read |
+| **Permissions** | genealogy:read, genealogy:write, rag:read, system:read, system:write |
 | **Notifications** | Pushover |
 
-**Capabilities:** Search community genealogy sites, web search, local RAG/graph context, and FAN evidence to find indirect research leads.
+**Capabilities:** Search community genealogy sites, web search, local RAG/graph context, and FAN evidence to find indirect research leads. Submit review items and save web-research procedures for future recall.
 
 **Constraints:**
 - Community genealogy profiles are not authoritative by themselves
 - FAN and graph evidence are supportive, not self-sufficient proof
 - Must not auto-promote web/community claims into accepted facts
+- Local PLOS may use owned private/living FT data internally; export/publish/share workflows own privacy and redaction gates
 
 **Failure Modes:**
 - WikiTree/web data may be stale or unsourced

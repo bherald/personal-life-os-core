@@ -16,14 +16,14 @@ use Illuminate\Support\Facades\Log;
  * wills, diaries) that resist standard OCR.
  *
  * Model: microsoft/trocr-base-handwritten (~340 MB, fits GTX 1060 6GB VRAM)
- * CPU fallback: microsoft/trocr-small-handwritten (~65 MB)
+ * CPU fallback: same model on CPU when CUDA is unavailable or incompatible.
  *
  * GPU lock: ComputeRouterService handles per-instance GPU locks and
  * transition compatibility with legacy whisper_gpu_lock/ollama_busy_lock on
  * the primary local GPU role.
  *
  * To install:
- *   pip install torch torchvision transformers Pillow
+ *   pip install torch torchvision transformers Pillow tiktoken sentencepiece
  *   (model downloads automatically on first use to ~/.cache/huggingface)
  */
 class HtrTranscriptionService
@@ -35,6 +35,8 @@ class HtrTranscriptionService
     private const MIN_FREE_VRAM_MB = 2048;
 
     private const OOM_COOLDOWN_SEC = 600;
+
+    private const MIN_GENEALOGY_PERSIST_CONFIDENCE = 0.70;
 
     private ?ComputeRouterService $computeRouter = null;
 
@@ -87,6 +89,12 @@ class HtrTranscriptionService
         $cacheKey = 'htr_transcription:'.md5($imagePath.filemtime($imagePath));
         $cached = Cache::get($cacheKey);
         if ($cached !== null) {
+            if (! $this->isUsableTranscriptResult($cached)) {
+                Cache::forget($cacheKey);
+
+                return null;
+            }
+
             return $cached;
         }
 
@@ -146,6 +154,17 @@ class HtrTranscriptionService
                     'path' => $imagePath,
                     'error' => $parsed['error'] ?? 'unknown',
                     'instance' => $result['instance_id'],
+                ]);
+
+                return null;
+            }
+
+            if (! $this->isUsableTranscriptResult($parsed)) {
+                Log::warning('HtrTranscriptionService: unusable transcript result', [
+                    'path' => $imagePath,
+                    'instance' => $result['instance_id'],
+                    'confidence' => $parsed['confidence'] ?? null,
+                    'line_count' => $parsed['line_count'] ?? null,
                 ]);
 
                 return null;
@@ -242,9 +261,36 @@ class HtrTranscriptionService
         }
 
         if ($result && ! empty($result['text'])) {
+            if (! $this->isPersistableGenealogyTranscript($result)) {
+                $confidence = (float) ($result['confidence'] ?? 0);
+                $preview = mb_substr(trim((string) $result['text']), 0, 160);
+
+                DB::update(
+                    "UPDATE genealogy_media
+                     SET analysis_status = CASE WHEN analysis_status = 'completed' THEN analysis_status ELSE 'skipped' END,
+                         analysis_error = ?,
+                         updated_at = NOW()
+                     WHERE id = ?",
+                    ['htr_low_confidence:'.round($confidence, 4), $mediaId]
+                );
+
+                Log::warning('HtrTranscriptionService: low-confidence genealogy transcript not persisted', [
+                    'media_id' => $mediaId,
+                    'confidence' => $confidence,
+                    'threshold' => self::MIN_GENEALOGY_PERSIST_CONFIDENCE,
+                    'preview' => $preview,
+                ]);
+
+                $result['skipped_reason'] = 'low_confidence';
+                $result['confidence_threshold'] = self::MIN_GENEALOGY_PERSIST_CONFIDENCE;
+                $result['persisted'] = false;
+
+                return $result;
+            }
+
             // Persist transcription back to genealogy_media
             DB::update(
-                'UPDATE genealogy_media SET transcription_text = ?, updated_at = NOW() WHERE id = ?',
+                'UPDATE genealogy_media SET transcription_text = ?, analysis_error = NULL, updated_at = NOW() WHERE id = ?',
                 [substr($result['text'], 0, 65535), $mediaId]
             );
         }
@@ -281,8 +327,8 @@ class HtrTranscriptionService
             'gpu_model' => $instance->gpu_model ?? null,
             'gpu_vram_mb' => $instance->gpu_vram_mb ?? null,
             'host' => $instance->host ?? null,
-            'install_cmd' => 'pip install torch torchvision transformers Pillow',
-            'model' => 'microsoft/trocr-base-handwritten (~340MB GPU) / trocr-small-handwritten (~65MB CPU)',
+            'install_cmd' => 'pip install torch torchvision transformers Pillow tiktoken sentencepiece',
+            'model' => 'microsoft/trocr-base-handwritten (~340MB; GPU preferred, CPU fallback)',
         ];
     }
 
@@ -295,6 +341,7 @@ class HtrTranscriptionService
         return in_array($mime, [
             'image/jpeg', 'image/jpg', 'image/png', 'image/tiff',
             'image/bmp', 'image/webp', 'image/gif',
+            'image/jp2', 'image/jpx', 'image/j2k', 'image/x-jp2',
         ], true);
     }
 
@@ -380,7 +427,40 @@ class HtrTranscriptionService
 
         return str_contains($error, 'out of memory')
             || str_contains($error, 'cuda out of memory')
+            || str_contains($error, 'no kernel image is available')
+            || str_contains($error, 'cudaerrornokernelimagefordevice')
             || str_contains($error, 'model_load_failed');
+    }
+
+    private function isUsableTranscriptResult(mixed $result): bool
+    {
+        if (! is_array($result) || isset($result['error'])) {
+            return false;
+        }
+
+        $text = trim((string) ($result['text'] ?? ''));
+        if ($text !== '' && str_contains(strtolower($text), '[transcription error:')) {
+            return false;
+        }
+
+        foreach ((array) ($result['lines'] ?? []) as $line) {
+            $lineText = is_array($line) ? (string) ($line['text'] ?? '') : (string) $line;
+            if (str_contains(strtolower($lineText), '[transcription error:')) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function isPersistableGenealogyTranscript(array $result): bool
+    {
+        $text = trim((string) ($result['text'] ?? ''));
+        if ($text === '') {
+            return false;
+        }
+
+        return (float) ($result['confidence'] ?? 0) >= self::MIN_GENEALOGY_PERSIST_CONFIDENCE;
     }
 
     /**

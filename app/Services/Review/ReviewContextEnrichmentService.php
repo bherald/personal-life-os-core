@@ -52,16 +52,22 @@ class ReviewContextEnrichmentService
 
     private const TYPED_REMEDIATION_FINDING_TYPES = [
         'data_quality_review',
+        'date_quality_review',
         'genealogy_data_quality',
         'genealogy_source_cleanup',
+        'genealogy_source_quality',
         'source_duplicate_cleanup',
+        'source_quality_review',
     ];
 
     private const TYPED_REMEDIATION_CHANGE_TYPES = [
         'data_quality_review',
+        'date_quality_review',
         'genealogy_data_quality',
         'genealogy_source_cleanup',
+        'genealogy_source_quality',
         'source_duplicate_cleanup',
+        'source_quality_review',
         'source_duplicate_mark',
         'family_duplicate_mark',
         'family_child_unlink',

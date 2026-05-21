@@ -1216,8 +1216,8 @@ class ScheduledJobService
              WHERE t.tree_id = ?
                AND COALESCE(NULLIF(t.research_question, ''), NULLIF(t.evidence_summary, '')) IS NOT NULL
                AND (
-                    t.status IN ('processing', 'completed', 'failed')
-                    OR t.outcome_state IN ('deferred', 'requeue', 'needs_human_review')
+                    t.status IN ('processing', 'failed')
+                    OR t.outcome_state IN ('requeue', 'needs_human_review')
                )
              ORDER BY
                 CASE WHEN t.status = 'processing' THEN 0 ELSE 1 END,

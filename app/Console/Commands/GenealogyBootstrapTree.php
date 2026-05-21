@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Genealogy\GenealogyTreeRootResolver;
 use App\Services\Genealogy\TreeManagementService;
 use Illuminate\Console\Command;
 
@@ -13,7 +14,7 @@ class GenealogyBootstrapTree extends Command
 
     protected $description = 'Create a minimal genealogy tree for local intake/review development when none exists';
 
-    public function handle(TreeManagementService $trees): int
+    public function handle(TreeManagementService $trees, GenealogyTreeRootResolver $treeRootResolver): int
     {
         $name = trim((string) $this->argument('name'));
         $description = trim((string) $this->option('description'));
@@ -48,8 +49,7 @@ class GenealogyBootstrapTree extends Command
             $description,
         ]]);
         $this->line('Next: `php artisan genealogy:ingest-documents --list-trees`');
-        $defaultFolder = config('genealogy.ft_reference_root', '/Library/FamilyTree/__intake');
-        $defaultFolder = dirname((string) $defaultFolder);
+        $defaultFolder = $treeRootResolver->referenceRoot($treeId, inferFromMedia: false);
         $this->line('Then: `php artisan genealogy:ingest-documents --stage --save-run --tree='.$treeId.' --folder='.$defaultFolder.' --limit=10 --unprocessed-only`');
 
         return Command::SUCCESS;

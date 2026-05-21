@@ -27,6 +27,7 @@ class GenealogyRAGIndex extends Command
                             {--person-id= : Index a specific person only}
                             {--reindex : Re-index all persons (removes existing entries first)}
                             {--dry-run : Show what would be indexed without indexing}
+                            {--exclude-living : Exclude persons explicitly marked living}
                             {--limit=500 : Maximum number of persons to index per run}';
 
     /**
@@ -63,6 +64,7 @@ class GenealogyRAGIndex extends Command
         $personId = $this->option('person-id');
         $reindex = $this->option('reindex');
         $dryRun = $this->option('dry-run');
+        $excludeLiving = (bool) $this->option('exclude-living');
         $limit = (int) $this->option('limit');
 
         $this->info('Genealogy RAG Indexer');
@@ -80,7 +82,7 @@ class GenealogyRAGIndex extends Command
         }
 
         // Get persons to index
-        $persons = $this->getPersonsToIndex($treeId, $personId, $limit, $reindex);
+        $persons = $this->getPersonsToIndex($treeId, $personId, $limit, $reindex, $excludeLiving);
         $this->info("\nPersons to index: " . count($persons));
 
         if (count($persons) === 0) {
@@ -146,7 +148,7 @@ class GenealogyRAGIndex extends Command
     /**
      * Get persons to index from the database.
      */
-    private function getPersonsToIndex(?int $treeId, ?int $personId, int $limit, bool $reindex): array
+    private function getPersonsToIndex(?int $treeId, ?int $personId, int $limit, bool $reindex, bool $excludeLiving): array
     {
         // First, get already indexed person IDs from PostgreSQL if not reindexing
         $alreadyIndexed = [];
@@ -178,9 +180,9 @@ class GenealogyRAGIndex extends Command
             $params[] = $treeId;
         }
 
-        // Skip living persons for privacy
-        // If living flag is set, use it. Otherwise, consider persons with death dates as deceased (safe to index)
-        $query .= " AND (p.living = 0 OR (p.living IS NULL AND p.death_date IS NOT NULL AND p.death_date != ''))";
+        if ($excludeLiving) {
+            $query .= " AND (p.living IS NULL OR p.living = 0)";
+        }
 
         // If not reindexing, exclude already indexed persons
         if (!empty($alreadyIndexed)) {
@@ -289,7 +291,6 @@ class GenealogyRAGIndex extends Command
                 (f.husband_id = ? AND f.wife_id = p.id) OR
                 (f.wife_id = ? AND f.husband_id = p.id)
             )
-            WHERE (p.living = 0 OR (p.living IS NULL AND p.death_date IS NOT NULL AND p.death_date != ''))
             GROUP BY p.id, p.given_name, p.surname
         ";
 
@@ -308,7 +309,6 @@ class GenealogyRAGIndex extends Command
             JOIN genealogy_families f ON c.family_id = f.id
             JOIN genealogy_persons p ON (p.id = f.husband_id OR p.id = f.wife_id)
             WHERE c.person_id = ?
-            AND p.living = 0
         ";
 
         $parents = DB::select($query, [$personId]);
@@ -328,7 +328,6 @@ class GenealogyRAGIndex extends Command
                 JOIN genealogy_children c ON c.family_id = f.id
                 JOIN genealogy_persons p ON c.person_id = p.id
                 WHERE (f.husband_id = ? OR f.wife_id = ?)
-                AND (p.living = 0 OR (p.living IS NULL AND p.death_date IS NOT NULL AND p.death_date != ''))
                 GROUP BY p.id, p.given_name, p.surname, p.birth_date
                 ORDER BY p.birth_date
             ) AS children
@@ -365,7 +364,8 @@ class GenealogyRAGIndex extends Command
             metadata: $metadata,
             sourceId: (string) $person->id,
             sourceType: 'genealogy_person',
-            designation: self::DESIGNATION
+            designation: self::DESIGNATION,
+            options: ['skip_dedup' => true]
         );
     }
 

@@ -98,8 +98,8 @@ return [
     | OfflinePolicyService::evaluateProvider() maps llm_instances rows to one
     | of these three classes and refuses those not in the active profile's
     | `allowed_provider_classes`. `cloud_sensitive_safe` = sensitive_safe=true
-    | providers (Anthropic Claude CLI, Groq, SambaNova, Cerebras). Everything
-    | else that is not a local Ollama host is `cloud_external`.
+    | providers (Anthropic Claude CLI, Codex Exec, Groq, SambaNova, Cerebras).
+    | Everything else that is not a local Ollama host is `cloud_external`.
     |
     */
 
@@ -239,7 +239,7 @@ return [
     | Profile definitions
     |--------------------------------------------------------------------------
     |
-    | The six-rung mode ladder. `confirmation` lists tool classes that require
+    | The profile ladder. `confirmation` lists tool classes that require
     | human confirmation before execution (in addition to operations that carry
     | their own confirmation rule). `audit` = 'always' means every decision
     | (allow / deny / confirm) is persisted to offline_audit_events.
@@ -279,6 +279,17 @@ return [
             'confirmation' => ['bounded-write', 'command-safe'],
             'audit' => 'always',
             'description' => 'offline_review + bounded local edits/lint/test/build + local MCP. Human review/commit boundary intact.',
+        ],
+
+        'offline_genealogy_assist' => [
+            'allowed_tool_classes' => ['read', 'bounded-write'],
+            'allowed_mcp_trust' => ['plos_local', 'local_lan'],
+            'allowed_path_classes' => ['repo_read', 'additional_dir_read'],
+            'allowed_provider_classes' => ['local_llm'],
+            'allowed_remote_domain_classes' => ['plos_lan'],
+            'confirmation' => ['bounded-write'],
+            'audit' => 'always',
+            'description' => 'offline_review + tree-scoped, dry-run-first, confirmed Genea MCP writes only. No filesystem, Nextcloud, shell, deploy, or cloud.',
         ],
 
         'hybrid_review' => [
@@ -433,6 +444,8 @@ return [
         'plos.execution_get' => 'read',
         'plos.schedule_list' => 'read',
         'plos.system_diagnostics' => 'read',
+        'plos.genealogy_context' => 'read',
+        'plos.genealogy_batch_apply' => 'bounded-write',
         'plos.workflow_run' => 'bounded-write',
         'plos.artisan_execute' => 'command-safe',
         'plos.node_create' => 'bounded-write',
@@ -560,9 +573,82 @@ return [
 
         // --- genealogy ---
         'genealogy.gedcom_parse' => 'read',
+        'genealogy.genealogy_context' => 'read',
         'genealogy.tree_search' => 'read',
+        'genealogy.person_search' => 'read',
         'genealogy.tree_stats' => 'read',
+        'genealogy.tree_status' => 'read',
+        'genealogy.work_status' => 'read',
+        'genealogy.source_audit_workbook' => 'bounded-write',
+        'genealogy.coverage_rebuild' => 'bounded-write',
+        'genealogy.schedule_status' => 'read',
+        'genealogy.research_task_queue' => 'read',
+        'genealogy.research_task_profile' => 'read',
+        'genealogy.research_task_create' => 'bounded-write',
         'genealogy.source_extract' => 'read',
+        'genealogy.source_profile' => 'read',
+        'genealogy.person_source_gap_batch' => 'read',
+        'genealogy.source_gap_decision_lookup' => 'read',
+        'genealogy.evidence_capture_plan' => 'read',
+        'genealogy.rag_status' => 'read',
+        'genealogy.person_profile' => 'read',
+        'genealogy.name_variant_add' => 'bounded-write',
+        'genealogy.family_profile' => 'read',
+        'genealogy.health_audit' => 'read',
+        'genealogy.health_review_packet' => 'read',
+        'genealogy.review_packet_context' => 'read',
+        'genealogy.review_packet_decision' => 'bounded-write',
+        'genealogy.health_audit_memory_batch' => 'bounded-write',
+        'genealogy.relationship_audit' => 'read',
+        'genealogy.export_readiness' => 'read',
+        'genealogy.export_standalone_status' => 'read',
+        'genealogy.duplicate_candidates' => 'read',
+        'genealogy.media_unlinked' => 'read',
+        'genealogy.media_triage_batch' => 'read',
+        'genealogy.media_profile' => 'read',
+        'genealogy.media_review_packet' => 'read',
+        'genealogy.media_ocr_escalation_batch' => 'read',
+        'genealogy.person_fact_extract' => 'read',
+        'genealogy.media_review_mark' => 'bounded-write',
+        'genealogy.media_quarantine' => 'bounded-write',
+        'genealogy.media_duplicate_consolidate' => 'bounded-write',
+        'genealogy.person_media_link_retire' => 'bounded-write',
+        'genealogy.media_rag_batch' => 'bounded-write',
+        'genealogy.rag_index_batch' => 'bounded-write',
+        'genealogy.person_embedding_batch' => 'bounded-write',
+        'genealogy.media_htr_batch' => 'bounded-write',
+        'genealogy.media_intake_memory_batch' => 'bounded-write',
+        'genealogy.media_link_integrity' => 'bounded-write',
+        'genealogy.person_source_link_integrity' => 'bounded-write',
+        'genealogy.source_citation_link_apply' => 'bounded-write',
+        'genealogy.evidence_capture_review' => 'bounded-write',
+        'genealogy.evidence_capture_execute' => 'bounded-write',
+        'genealogy.evidence_capture_direct' => 'bounded-write',
+        'genealogy.source_media_backfill' => 'bounded-write',
+        'genealogy.nara_placeholder_capture_batch' => 'bounded-write',
+        'genealogy.media_attach_proposal' => 'bounded-write',
+        'genealogy.media_identity_apply' => 'bounded-write',
+        'genealogy.source_add_proposal' => 'bounded-write',
+        'genealogy.fact_update_proposal' => 'bounded-write',
+        'genealogy.relationship_link_proposal' => 'bounded-write',
+        'genealogy.apply_approved_proposal' => 'bounded-write',
+        'genealogy.person_fact_apply_batch' => 'bounded-write',
+        'genealogy.approve_apply_proposal' => 'bounded-write',
+        'genealogy.proposal_queue' => 'read',
+        'genealogy.review_decision_memory_batch' => 'bounded-write',
+        'genealogy.review_packet_memory_batch' => 'bounded-write',
+        'genealogy.memory_backfill_batch' => 'bounded-write',
+        'genealogy.lesson_memory_lookup' => 'read',
+        'genealogy.lesson_memory_context' => 'read',
+        'genealogy.lesson_memory_save' => 'bounded-write',
+        'genealogy.memory_report' => 'read',
+        'genealogy.non_ft_name_lookup' => 'read',
+        'genealogy.non_ft_name_add' => 'bounded-write',
+        'genealogy.source_gap_decision_add' => 'bounded-write',
+        'genealogy.research_memo_save' => 'bounded-write',
+        'genealogy.family_duplicate_retire' => 'bounded-write',
+        'genealogy.person_source_link_retire' => 'bounded-write',
+        'genealogy.genealogy_batch_apply' => 'bounded-write',
         'genealogy.person_research' => 'read',
         'genealogy.gedcom_export' => 'bounded-write',
 
@@ -575,6 +661,63 @@ return [
         'filesystem.create_directory' => 'bounded-write',
         'filesystem.move_file' => 'bounded-write',
         'filesystem.delete_file' => 'command-dangerous',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Offline Genealogy Assist write allowlist
+    |--------------------------------------------------------------------------
+    |
+    | `offline_genealogy_assist` is narrower than offline_dev_assist. It allows
+    | only the Genea MCP bounded-write tools below, and OfflinePolicyService
+    | adds per-call checks: genealogy server only, positive tree_id required,
+    | dry-run allowed, and dry_run=false requires confirm=true. Capture
+    | tools use their own explicit execute/save/download/storage confirmations.
+    |
+    */
+
+    'offline_genealogy_assist_write_tools' => [
+        'review_packet_decision',
+        'health_audit_memory_batch',
+        'media_review_mark',
+        'media_quarantine',
+        'media_duplicate_consolidate',
+        'person_media_link_retire',
+        'coverage_rebuild',
+        'research_task_create',
+        'source_audit_workbook',
+        'media_rag_batch',
+        'rag_index_batch',
+        'person_embedding_batch',
+        'media_htr_batch',
+        'media_intake_memory_batch',
+        'media_link_integrity',
+        'person_source_link_integrity',
+        'source_citation_link_apply',
+        'evidence_capture_review',
+        'evidence_capture_execute',
+        'evidence_capture_direct',
+        'source_media_backfill',
+        'nara_placeholder_capture_batch',
+        'media_attach_proposal',
+        'media_identity_apply',
+        'source_add_proposal',
+        'fact_update_proposal',
+        'relationship_link_proposal',
+        'apply_approved_proposal',
+        'person_fact_apply_batch',
+        'approve_apply_proposal',
+        'review_decision_memory_batch',
+        'review_packet_memory_batch',
+        'memory_backfill_batch',
+        'lesson_memory_save',
+        'name_variant_add',
+        'non_ft_name_add',
+        'source_gap_decision_add',
+        'research_memo_save',
+        'family_duplicate_retire',
+        'person_source_link_retire',
+        'genealogy_batch_apply',
     ],
 
     // Loopback/LAN patterns for the `plos_lan` domain class. PCRE regex.

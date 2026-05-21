@@ -127,6 +127,40 @@ export class DatabaseManager {
     return rows[0].count;
   }
 
+  async query<T = mysql.RowDataPacket[]>(
+    sql: string,
+    params: any[] = []
+  ): Promise<T> {
+    const [rows] = await this.pool.query(sql, params);
+    return rows as T;
+  }
+
+  async execute(
+    sql: string,
+    params: any[] = []
+  ): Promise<mysql.ResultSetHeader> {
+    const [result] = await this.pool.execute<mysql.ResultSetHeader>(sql, params);
+    return result;
+  }
+
+  async transaction<T>(
+    callback: (connection: mysql.PoolConnection) => Promise<T>
+  ): Promise<T> {
+    const connection = await this.pool.getConnection();
+
+    try {
+      await connection.beginTransaction();
+      const result = await callback(connection);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

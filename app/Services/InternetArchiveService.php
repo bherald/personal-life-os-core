@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Genealogy\GenealogyTreeRootResolver;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -70,6 +71,13 @@ class InternetArchiveService
     private ?float $lastRequestTime = null;
 
     private static bool $missingUserAgentContactLogged = false;
+
+    private GenealogyTreeRootResolver $treeRootResolver;
+
+    public function __construct(?GenealogyTreeRootResolver $treeRootResolver = null)
+    {
+        $this->treeRootResolver = $treeRootResolver ?? app(GenealogyTreeRootResolver::class);
+    }
 
     private function userAgent(string $version = '3.9'): string
     {
@@ -483,10 +491,14 @@ class InternetArchiveService
                 return ['success' => false, 'error' => 'Tree not found'];
             }
 
-            $treeName = $tree->name;
             $filename = basename($localPath);
-            $genealogyRoot = '/'.trim((string) config('genealogy.nextcloud_root', '/Library/Genealogy'), '/');
-            $nextcloudPath = "{$genealogyRoot}/{$treeName}/{$subfolder}/{$filename}";
+            $configuredGenealogyRoot = config('genealogy.nextcloud_root', '/Library/Genealogy');
+            $treeRoot = $this->treeRootResolver->treeScopedRoot(
+                $treeId,
+                $this->treeRootResolver->mediaRoot($treeId, $configuredGenealogyRoot),
+                (string) $tree->name
+            );
+            $nextcloudPath = $treeRoot.'/'.$this->normalizeTreeSubfolder($subfolder).'/'.$filename;
 
             $nextcloudApi = app(\App\Services\NextcloudFileApiService::class);
             $nextcloudApi->ensureDirectoryExists(dirname($nextcloudPath));
@@ -519,6 +531,23 @@ class InternetArchiveService
 
             return ['success' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    private function normalizeTreeSubfolder(string $subfolder): string
+    {
+        $parts = array_values(array_filter(
+            explode('/', str_replace('\\', '/', trim($subfolder))),
+            static fn (string $part): bool => $part !== '' && $part !== '.' && $part !== '..'
+        ));
+
+        $safe = array_map(static function (string $part): string {
+            $part = preg_replace('/[^A-Za-z0-9._-]+/', '-', $part) ?? '';
+            $part = trim($part, '-_.');
+
+            return $part !== '' ? $part : 'files';
+        }, $parts);
+
+        return $safe !== [] ? implode('/', $safe) : 'documents';
     }
 
     /**

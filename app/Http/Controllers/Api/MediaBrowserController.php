@@ -2256,7 +2256,7 @@ class MediaBrowserController extends Controller
     private function getMimeTypesForType(string $type): array
     {
         return match ($type) {
-            'image' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/tiff', 'image/bmp'],
+            'image' => ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif', 'image/tiff', 'image/bmp', 'image/jp2', 'image/jpx', 'image/j2k', 'image/x-jp2'],
             'video' => ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska', 'video/mpeg'],
             'audio' => ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/flac', 'audio/aac'],
             'document' => ['application/pdf'],

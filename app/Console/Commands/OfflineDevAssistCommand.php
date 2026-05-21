@@ -47,7 +47,9 @@ class OfflineDevAssistCommand extends Command
         'repo-dev',
         'serena',
         'code-review',
+        'prompt-compressor',
         'plos',
+        'genealogy',
         'time',
     ];
 

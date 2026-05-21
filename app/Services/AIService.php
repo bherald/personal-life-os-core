@@ -873,7 +873,32 @@ PROMPT;
             });
         }
 
-        // prefer_claude: Try Claude CLI first for quality-critical tasks (research synthesis)
+        // Explicit external routes. Normal routing still tries local Ollama before fallback providers.
+        $preferCodex = ! empty($config['prefer_codex']) || ($config['ai_mode'] ?? null) === 'codex_exec';
+        if ($preferCodex) {
+            $result = $this->tryCodexExec($prompt, $config);
+
+            if ($result['success']) {
+                $result['duration_ms'] = $result['duration_ms'] ?? (int) ((microtime(true) - $startTime) * 1000);
+                $result['from_cache'] = false;
+
+                if ($useCache && $this->semanticCache && isset($cacheContext)) {
+                    $this->semanticCache->put($prompt, $result, $cacheContext);
+                }
+
+                return $result;
+            }
+
+            $attempts['codex_exec'] = $result['error'];
+            if (! empty($config['codex_required'])) {
+                throw new Exception('Codex Exec failed: '.$result['error']);
+            }
+
+            Log::info('AIService: Codex Exec preferred but failed, falling back to normal provider chain', [
+                'error' => $result['error'],
+            ]);
+        }
+
         $preferClaude = ! empty($config['prefer_claude']);
 
         if ($preferClaude && $this->isClaudeCliEnabled() && ! $this->isCircuitOpen('claude_cli')) {
@@ -1041,6 +1066,36 @@ PROMPT;
                 }
 
                 $attempts['claude_cli'] = $result['error'];
+            } elseif ($fallback['type'] === 'codex_exec') {
+                $rpmKey = 'rpm_count_codex_exec';
+                $currentRpm = Cache::get($rpmKey, 0);
+                if (($fallback['rate_limit_rpm'] ?? null) && $currentRpm >= $fallback['rate_limit_rpm']) {
+                    Cache::put('rate_limit_codex_exec', true, 60);
+                    $attempts['codex_exec'] = "Rate limit exhausted for {$fallback['name']} ({$currentRpm}/{$fallback['rate_limit_rpm']} RPM)";
+
+                    continue;
+                }
+
+                $result = $this->tryCodexExec($prompt, $config);
+
+                if ($result['success']) {
+                    if ($fallback['rate_limit_rpm'] ?? null) {
+                        Cache::put($rpmKey, $currentRpm + 1, 60);
+                    }
+
+                    $result['duration_ms'] = $result['duration_ms'] ?? (int) ((microtime(true) - $startTime) * 1000);
+                    $result['from_cache'] = false;
+
+                    if ($useCache && $this->semanticCache) {
+                        $this->semanticCache->put($prompt, $result, $cacheContext);
+                    }
+
+                    $this->logCascadeResult($config, $result);
+
+                    return $result;
+                }
+
+                $attempts['codex_exec'] = $result['error'];
             } else {
                 // External API provider
                 $result = $this->tryExternalProvider($fallback, $prompt, $config);
@@ -2821,6 +2876,39 @@ PROMPT;
     }
 
     /**
+     * Try Codex Exec as an explicit, table-backed noninteractive pipeline provider.
+     */
+    private function tryCodexExec(string $prompt, array $config): array
+    {
+        $providerId = 'codex_exec';
+
+        if ($this->isOfflineMode()) {
+            return ['success' => false, 'error' => 'Codex Exec blocked: routing.offline_mode is enabled.'];
+        }
+
+        if (! $this->isCodexExecEnabled()) {
+            return ['success' => false, 'error' => 'Codex Exec is disabled'];
+        }
+
+        if ($this->isCircuitOpen($providerId)) {
+            return ['success' => false, 'error' => 'Codex Exec circuit is open'];
+        }
+
+        $startTime = microtime(true);
+        $result = app(CodexExecConnectorService::class)->execute($prompt, $config);
+
+        if ($result['success'] ?? false) {
+            $this->recordSuccess($providerId, microtime(true) - $startTime);
+
+            return $result;
+        }
+
+        $this->recordFailure($providerId, (string) ($result['error'] ?? 'Unknown Codex Exec error'));
+
+        return $result;
+    }
+
+    /**
      * Count external providers with active rate_limit_ cache (simultaneous 429 storm indicator).
      */
     private function countActiveRateLimitedProviders(): int
@@ -2836,10 +2924,10 @@ PROMPT;
     }
 
     /**
-     * Build the fallback chain: external API providers + Claude CLI, ordered by priority.
+     * Build the fallback chain: external API providers + Codex Exec + Claude CLI, ordered by priority.
      *
-     * Reads active external providers from llm_instances table and interleaves them
-     * with Claude CLI based on priority (lower = tried first).
+     * Local Ollama is tried before this chain. This method only ranks non-local
+     * fallback providers using table priority and observed health.
      *
      * @param  bool  $sensitiveData  If true, skip providers marked as not safe for sensitive data
      * @param  bool  $skipClaude  If true, omit Claude CLI from chain (already tried)
@@ -2911,6 +2999,19 @@ PROMPT;
             $chain[] = array_merge($provider, ['type' => 'external_api']);
         }
 
+        $codexProvider = $this->getCodexExecFallbackProvider();
+        if ($codexProvider !== null) {
+            if (! $sensitiveData || ($codexProvider['sensitive_safe'] ?? false)) {
+                $codexAllowedByProfile = $profileAllowedTypes === null
+                    || in_array('codex_cli', $profileAllowedTypes, true);
+                if ($codexAllowedByProfile && ! ($requireSensitiveSafe && ! ($codexProvider['sensitive_safe'] ?? false))) {
+                    if (! $this->isCircuitOpen('codex_exec') && ! Cache::has('rate_limit_codex_exec')) {
+                        $chain[] = array_merge($codexProvider, ['type' => 'codex_exec']);
+                    }
+                }
+            }
+        }
+
         // Add Claude CLI — read priority, latency, success_rate from DB for scoring
         if (! $skipClaude) {
             $claudeData = ['priority' => 20, 'avg_response_ms' => 30000, 'success_rate' => 80, 'consecutive_failures' => 0];
@@ -2951,6 +3052,50 @@ PROMPT;
         return $chain;
     }
 
+    private function getCodexExecFallbackProvider(): ?array
+    {
+        try {
+            $row = DB::selectOne("
+                SELECT instance_id, instance_name, instance_type, priority, capabilities, config,
+                       rate_limit_rpm, rate_limit_tpm, circuit_state, max_concurrent,
+                       avg_response_ms, consecutive_failures, success_rate
+                FROM llm_instances
+                WHERE instance_id = 'codex_exec'
+                  AND is_active = 1
+                  AND is_healthy = 1
+                  AND routability = 'allowed'
+                LIMIT 1
+            ");
+
+            if (! $row) {
+                return null;
+            }
+
+            $capabilities = json_decode($row->capabilities ?? '[]', true) ?: [];
+
+            return [
+                'id' => $row->instance_id,
+                'name' => $row->instance_name,
+                'instance_type' => $row->instance_type,
+                'priority' => (int) ($row->priority ?? 18),
+                'rate_limit_rpm' => $row->rate_limit_rpm,
+                'rate_limit_tpm' => $row->rate_limit_tpm,
+                'max_concurrent' => $row->max_concurrent,
+                'circuit_state' => $row->circuit_state,
+                'sensitive_safe' => in_array('sensitive_safe', $capabilities, true) || ($capabilities['sensitive_safe'] ?? false),
+                'capabilities' => $capabilities,
+                'config' => json_decode($row->config ?? '{}', true) ?: [],
+                'avg_response_ms' => (float) ($row->avg_response_ms ?? 30000),
+                'consecutive_failures' => (int) ($row->consecutive_failures ?? 0),
+                'success_rate' => (float) ($row->success_rate ?? 80),
+            ];
+        } catch (\Throwable $e) {
+            Log::debug('AIService: codex_exec fallback provider lookup failed', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+    }
+
     private function isClaudeCliEnabled(): bool
     {
         // Defence in depth: offline mode blocks Claude CLI even if a caller
@@ -2965,6 +3110,25 @@ PROMPT;
             return (bool) ($row->is_active ?? false);
         } catch (\Throwable $e) {
             Log::debug('AIService: claude_cli activation lookup failed', ['error' => $e->getMessage()]);
+
+            return false;
+        }
+    }
+
+    private function isCodexExecEnabled(): bool
+    {
+        if ($this->isOfflineMode()) {
+            return false;
+        }
+
+        try {
+            $row = DB::selectOne("SELECT is_active, is_healthy, routability FROM llm_instances WHERE instance_id = 'codex_exec'");
+
+            return (bool) ($row->is_active ?? false)
+                && (bool) ($row->is_healthy ?? false)
+                && (string) ($row->routability ?? 'blocked') === 'allowed';
+        } catch (\Throwable $e) {
+            Log::debug('AIService: codex_exec activation lookup failed', ['error' => $e->getMessage()]);
 
             return false;
         }
@@ -3095,7 +3259,7 @@ PROMPT;
      *
      * Provider-class → instance_type coarse admission:
      *   local_llm             → ollama
-     *   cloud_sensitive_safe  → claude_cli, anthropic_api, custom
+     *   cloud_sensitive_safe  → claude_cli, codex_cli, anthropic_api, custom
      *                           (custom admission is coarse — per-provider
      *                           sensitive_safe filter applies in
      *                           buildFallbackChain)
@@ -3115,7 +3279,7 @@ PROMPT;
 
         $classToTypes = [
             'local_llm' => ['ollama'],
-            'cloud_sensitive_safe' => ['claude_cli', 'anthropic_api', 'custom'],
+            'cloud_sensitive_safe' => ['claude_cli', 'codex_cli', 'anthropic_api', 'custom'],
             'cloud_external' => ['openai', 'google_gemini', 'openrouter', 'azure_openai'],
         ];
 
@@ -5709,8 +5873,14 @@ PROMPT;
                 $result['method'] = 'tika';
                 $result['metadata'] = $tikaResult['metadata'] ?? [];
 
-                // For images, even if Tika extracted text, vision might provide better description
-                if (! $isImage || strlen(trim($tikaResult['text'])) > 100) {
+                // For images, long OCR/Tika output can still be mostly form
+                // noise. Escalate suspicious image text to vision before
+                // accepting it as the extraction result.
+                if (
+                    ! $isImage
+                    || ! $options['use_vision']
+                    || ! $this->shouldEscalateImageTextToVision((string) $tikaResult['text'])
+                ) {
                     $result['duration_ms'] = (int) ((microtime(true) - $startTime) * 1000);
                     Log::info('AIService::extractContent completed via Tika', [
                         'filename' => $filename,
@@ -5719,6 +5889,11 @@ PROMPT;
 
                     return $result;
                 }
+
+                Log::info('AIService::extractContent escalating noisy image text to Vision', [
+                    'filename' => $filename,
+                    'text_length' => strlen((string) $tikaResult['text']),
+                ]);
             }
         }
 
@@ -5842,6 +6017,37 @@ PROMPT;
         ]);
 
         return $result;
+    }
+
+    protected function shouldEscalateImageTextToVision(string $text): bool
+    {
+        $compact = trim((string) preg_replace('/\s+/u', ' ', strip_tags($text)));
+        $length = mb_strlen($compact);
+
+        if ($length < 100) {
+            return true;
+        }
+
+        $charCount = max(1, mb_strlen($compact));
+        preg_match_all('/[[:alnum:]]/u', $compact, $alnumMatches);
+        preg_match_all('/[|_~^{}<>=\\\\\/]+|[;:,.]{3,}/u', $compact, $noiseMatches);
+        preg_match_all('/(?<![[:alpha:]])[[:alpha:]](?![[:alpha:]])/u', $compact, $singleLetterMatches);
+        preg_match_all('/\b[[:alpha:]]{3,}\b/u', $compact, $wordMatches);
+        preg_match_all('/\b(?:certificate|bureau|vital|statistics|registration|district|primary|file|place of|full name|date of|birth|death|father|mother|informant|occupation)\b/iu', $compact, $labelMatches);
+        preg_match_all('/\b(?:Jan|January|Feb|February|Mar|March|Apr|April|May|Jun|June|Jul|July|Aug|August|Sep|Sept|September|Oct|October|Nov|November|Dec|December|\d{4}|county|township|borough|cemetery|M\.D\.|Mrs\.|Miss)\b/iu', $compact, $dataMatches);
+
+        $alnumRatio = count($alnumMatches[0]) / $charCount;
+        $singleLetterRatio = count($singleLetterMatches[0]) / max(1, count($singleLetterMatches[0]) + count($wordMatches[0]));
+
+        if ($alnumRatio < 0.55) {
+            return true;
+        }
+
+        if (count($noiseMatches[0]) >= 12 && $singleLetterRatio > 0.18) {
+            return true;
+        }
+
+        return count($labelMatches[0]) >= 8 && count($dataMatches[0]) < 3;
     }
 
     /**

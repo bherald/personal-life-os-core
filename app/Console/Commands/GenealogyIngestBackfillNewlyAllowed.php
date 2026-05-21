@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\Genealogy\GenealogyDocumentIngestionService;
+use App\Services\Genealogy\GenealogyTreeRootResolver;
 use App\Services\Genealogy\Support\GenealogyDocumentExtensions;
 use App\Services\NextcloudFileApiService;
 use Illuminate\Console\Command;
@@ -47,15 +48,17 @@ class GenealogyIngestBackfillNewlyAllowed extends Command
         'jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp',
     ];
 
-    public function __construct(private NextcloudFileApiService $nc)
-    {
+    public function __construct(
+        private NextcloudFileApiService $nc,
+        private ?GenealogyTreeRootResolver $treeRootResolver = null,
+    ) {
         parent::__construct();
+        $this->treeRootResolver ??= app(GenealogyTreeRootResolver::class);
     }
 
     public function handle(GenealogyDocumentIngestionService $ingester): int
     {
         $treeId = (int) $this->option('tree');
-        $folder = (string) ($this->option('folder') ?: config('genealogy.nextcloud_root', '/Library/Genealogy'));
         $limit = max(1, (int) $this->option('limit'));
         $dryRun = ! $this->option('execute');
         $tag = (string) $this->option('tag');
@@ -65,6 +68,11 @@ class GenealogyIngestBackfillNewlyAllowed extends Command
 
             return self::FAILURE;
         }
+
+        $folder = $this->treeRootResolver->mediaRoot(
+            $treeId,
+            $this->option('folder') ? (string) $this->option('folder') : null
+        );
 
         $postSprint = GenealogyDocumentExtensions::allowed();
         $newlyAllowed = array_values(array_diff($postSprint, self::PRE_SPRINT_ALLOWED));

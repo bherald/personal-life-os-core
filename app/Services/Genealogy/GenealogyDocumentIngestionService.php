@@ -214,7 +214,7 @@ class GenealogyDocumentIngestionService
                     SUM(CASE WHEN enrichment_status = 'failed' THEN 1 ELSE 0 END) as failed
              FROM genealogy_media
              WHERE tree_id = ?
-               AND media_type IN ('obituary','census','certificate','document','military')
+               AND media_type IN ('obituary','census','certificate','document','military','headstone')
              GROUP BY media_type
              ORDER BY media_type",
             [$treeId]
@@ -224,7 +224,7 @@ class GenealogyDocumentIngestionService
             "SELECT id, media_type, local_filename, imported_at, enrichment_status
              FROM genealogy_media
              WHERE tree_id = ?
-               AND media_type IN ('obituary','census','certificate','document','military')
+               AND media_type IN ('obituary','census','certificate','document','military','headstone')
              ORDER BY imported_at DESC
              LIMIT 10",
             [$treeId]

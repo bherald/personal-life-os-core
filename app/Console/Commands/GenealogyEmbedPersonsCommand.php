@@ -14,14 +14,16 @@ use Illuminate\Support\Facades\Log;
  * PostgreSQL genealogy_person_embeddings table, enabling semantic person search
  * and future face-to-person matching.
  *
- * Skips living persons (privacy). Upserts on person_id conflict.
+ * Indexes all persons by default for private family-tree search. Operators can
+ * pass --exclude-living when exporting or running in a privacy-sensitive context.
  */
 class GenealogyEmbedPersonsCommand extends Command
 {
     protected $signature = 'genealogy:embed-persons
                             {--tree-id= : Specific tree ID to process}
-                            {--limit=200 : Max persons per run}
+                            {--limit=200 : Max persons per run; 0 means all}
                             {--reindex : Re-embed all persons (delete existing embeddings first)}
+                            {--exclude-living : Exclude persons explicitly marked living}
                             {--stats : Show counts only, no processing}';
 
     protected $description = 'Generate 768d embeddings for genealogy persons into genealogy_person_embeddings';
@@ -32,44 +34,55 @@ class GenealogyEmbedPersonsCommand extends Command
             return $this->showStats();
         }
 
-        $treeId  = $this->option('tree-id') ? (int) $this->option('tree-id') : null;
-        $limit   = (int) $this->option('limit');
+        $treeId = $this->option('tree-id') ? (int) $this->option('tree-id') : null;
+        $limit = (int) $this->option('limit');
         $reindex = (bool) $this->option('reindex');
+        $excludeLiving = (bool) $this->option('exclude-living');
 
         $this->info('Genealogy Person Embeddings');
         $this->info('===========================');
         $this->newLine();
 
-        if ($reindex) {
-            $this->warn('--reindex: deleting existing embeddings' . ($treeId ? " for tree {$treeId}" : ' (all trees)'));
-            $this->deleteExisting($treeId);
-            $this->newLine();
-        }
-
         // Fetch persons needing embeddings
-        $persons = $this->fetchPersons($treeId, $limit, $reindex);
+        $persons = $this->fetchPersons($treeId, $limit, $reindex, $excludeLiving);
 
         if (empty($persons)) {
             $this->info('No persons require embedding.');
+            $this->syncEmbeddingCoverage($treeId);
             $this->line('[ITEMS_PROCESSED:0]');
+
             return Command::SUCCESS;
         }
 
-        $this->info(sprintf('Processing %d persons (limit %d)...', count($persons), $limit));
+        if ($reindex) {
+            $this->warn('--reindex: deleting existing embeddings for selected batch');
+            $deleted = $this->deleteExisting(array_map(
+                static fn (object $person): int => (int) $person->id,
+                $persons
+            ));
+            $this->line(sprintf('Deleted %d existing embedding(s).', $deleted));
+            $this->newLine();
+        }
+
+        $this->info(sprintf(
+            'Processing %d persons (limit %s)...',
+            count($persons),
+            $limit <= 0 ? 'all' : (string) $limit
+        ));
         $this->newLine();
 
         $aiService = app(AIService::class);
         $bar = $this->output->createProgressBar(count($persons));
         $bar->start();
 
-        $embedded  = 0;
-        $skipped   = 0;
-        $failed    = 0;
+        $embedded = 0;
+        $skipped = 0;
+        $failed = 0;
 
         foreach ($persons as $person) {
             try {
                 $searchText = $this->buildSearchText($person);
-                $biography  = $this->buildBiography($person, $searchText);
+                $biography = $this->buildBiography($person, $searchText);
 
                 $result = $aiService->generateEmbedding($searchText);
 
@@ -77,18 +90,19 @@ class GenealogyEmbedPersonsCommand extends Command
                     $failed++;
                     Log::warning('genealogy:embed-persons — embedding failed', [
                         'person_id' => $person->id,
-                        'name'      => trim($person->given_name . ' ' . $person->surname),
+                        'name' => trim($person->given_name.' '.$person->surname),
                     ]);
                     $bar->advance();
+
                     continue;
                 }
 
-                $embeddingStr = '[' . implode(',', $result['embedding']) . ']';
-                $birthYear    = $this->extractYear($person->birth_date ?? null);
-                $deathYear    = $this->extractYear($person->death_date ?? null);
-                $fullName     = trim(($person->given_name ?? '') . ' ' . ($person->surname ?? ''));
+                $embeddingStr = '['.implode(',', $result['embedding']).']';
+                $birthYear = $this->extractYear($person->birth_date ?? null);
+                $deathYear = $this->extractYear($person->death_date ?? null);
+                $fullName = trim(($person->given_name ?? '').' '.($person->surname ?? ''));
 
-                DB::connection('pgsql_rag')->statement("
+                DB::connection('pgsql_rag')->statement('
                     INSERT INTO genealogy_person_embeddings
                         (person_id, tree_id, full_name, surname, given_name,
                          birth_year, death_year, birth_place, death_place,
@@ -104,11 +118,11 @@ class GenealogyEmbedPersonsCommand extends Command
                         birth_place  = EXCLUDED.birth_place,
                         death_place  = EXCLUDED.death_place,
                         updated_at   = NOW()
-                ", [
+                ', [
                     $person->id,
                     $person->tree_id,
                     $fullName,
-                    $person->surname  ?? null,
+                    $person->surname ?? null,
                     $person->given_name ?? null,
                     $birthYear,
                     $deathYear,
@@ -124,7 +138,7 @@ class GenealogyEmbedPersonsCommand extends Command
                 $failed++;
                 Log::error('genealogy:embed-persons — upsert error', [
                     'person_id' => $person->id,
-                    'error'     => $e->getMessage(),
+                    'error' => $e->getMessage(),
                 ]);
             }
 
@@ -133,6 +147,8 @@ class GenealogyEmbedPersonsCommand extends Command
 
         $bar->finish();
         $this->newLine(2);
+
+        $this->syncEmbeddingCoverage($treeId);
 
         // Final stats table
         $totalEmbedded = $this->countEmbedded($treeId);
@@ -152,11 +168,11 @@ class GenealogyEmbedPersonsCommand extends Command
         $this->line(sprintf('[ITEMS_PROCESSED:%d]', $embedded));
 
         Log::info('genealogy:embed-persons completed', [
-            'tree_id'       => $treeId,
-            'processed'     => count($persons),
-            'embedded'      => $embedded,
-            'failed'        => $failed,
-            'total_in_table'=> $totalEmbedded,
+            'tree_id' => $treeId,
+            'processed' => count($persons),
+            'embedded' => $embedded,
+            'failed' => $failed,
+            'total_in_table' => $totalEmbedded,
         ]);
 
         return Command::SUCCESS;
@@ -172,22 +188,31 @@ class GenealogyEmbedPersonsCommand extends Command
         $this->info('====================================');
         $this->newLine();
 
-        // Persons eligible (non-living)
+        $treeId = $this->option('tree-id') ? (int) $this->option('tree-id') : null;
+        $where = $treeId !== null ? ' WHERE tree_id = ?' : '';
+        $params = $treeId !== null ? [$treeId] : [];
+
         $totalPersons = DB::select(
-            'SELECT COUNT(*) AS cnt FROM genealogy_persons WHERE living = 0 OR living IS NULL'
+            "SELECT COUNT(*) AS cnt FROM genealogy_persons{$where}",
+            $params
         )[0]->cnt ?? 0;
 
-        // Already embedded
-        $totalEmbedded = DB::connection('pgsql_rag')->select(
-            'SELECT COUNT(*) AS cnt FROM genealogy_person_embeddings'
-        )[0]->cnt ?? 0;
+        if ($treeId !== null) {
+            $totalEmbedded = DB::connection('pgsql_rag')->select(
+                'SELECT COUNT(*) AS cnt FROM genealogy_person_embeddings WHERE tree_id = ?',
+                [$treeId]
+            )[0]->cnt ?? 0;
+        } else {
+            $totalEmbedded = DB::connection('pgsql_rag')->select(
+                'SELECT COUNT(*) AS cnt FROM genealogy_person_embeddings'
+            )[0]->cnt ?? 0;
+        }
 
         $pending = max(0, $totalPersons - $totalEmbedded);
 
         // Per-tree breakdown (MySQL side)
         $treeCounts = DB::select(
             'SELECT tree_id, COUNT(*) AS cnt FROM genealogy_persons
-             WHERE living = 0 OR living IS NULL
              GROUP BY tree_id ORDER BY tree_id'
         );
 
@@ -203,9 +228,9 @@ class GenealogyEmbedPersonsCommand extends Command
         $this->table(
             ['Metric', 'Value'],
             [
-                ['Total eligible persons (non-living)', $totalPersons],
-                ['Embeddings stored',                   $totalEmbedded],
-                ['Pending (approx)',                    $pending],
+                ['Total persons',     $totalPersons],
+                ['Embeddings stored', $totalEmbedded],
+                ['Pending (approx)',  $pending],
             ]
         );
 
@@ -216,10 +241,10 @@ class GenealogyEmbedPersonsCommand extends Command
             foreach ($treeCounts as $row) {
                 $tid = (int) $row->tree_id;
                 $rows[] = [
-                    'tree_id'  => $tid,
-                    'persons'  => (int) $row->cnt,
+                    'tree_id' => $tid,
+                    'persons' => (int) $row->cnt,
                     'embedded' => $embMap[$tid] ?? 0,
-                    'pending'  => max(0, (int) $row->cnt - ($embMap[$tid] ?? 0)),
+                    'pending' => max(0, (int) $row->cnt - ($embMap[$tid] ?? 0)),
                 ];
             }
             $this->table(['Tree ID', 'Persons', 'Embedded', 'Pending'], $rows);
@@ -240,15 +265,17 @@ class GenealogyEmbedPersonsCommand extends Command
      * from PostgreSQL first, then exclude via NOT IN on the MySQL query.
      * The set is bounded by $limit to keep the IN-list manageable.
      */
-    private function fetchPersons(?int $treeId, int $limit, bool $reindex): array
+    private function fetchPersons(?int $treeId, int $limit, bool $reindex, bool $excludeLiving): array
     {
         $params = [];
 
-        $sql = 'SELECT p.id, p.tree_id, p.given_name, p.surname, p.sex,
-                       p.birth_date, p.birth_place, p.death_date, p.death_place,
-                       p.occupation, p.notes
+        $sql = 'SELECT p.*
                 FROM genealogy_persons p
-                WHERE (p.living = 0 OR p.living IS NULL)';
+                WHERE 1=1';
+
+        if ($excludeLiving) {
+            $sql .= ' AND (p.living IS NULL OR p.living = 0)';
+        }
 
         if ($treeId !== null) {
             $sql .= ' AND p.tree_id = ?';
@@ -268,15 +295,19 @@ class GenealogyEmbedPersonsCommand extends Command
             $existing = DB::connection('pgsql_rag')->select($pgSql, $pgParams);
 
             if (! empty($existing)) {
-                $existingIds = array_map(fn($row) => (int) $row->person_id, $existing);
+                $existingIds = array_map(fn ($row) => (int) $row->person_id, $existing);
                 $placeholders = implode(',', array_fill(0, count($existingIds), '?'));
                 $sql .= " AND p.id NOT IN ({$placeholders})";
                 array_push($params, ...$existingIds);
             }
         }
 
-        $sql .= ' ORDER BY p.id ASC LIMIT ?';
-        $params[] = $limit;
+        $sql .= ' ORDER BY p.id ASC';
+
+        if ($limit > 0) {
+            $sql .= ' LIMIT ?';
+            $params[] = $limit;
+        }
 
         return DB::select($sql, $params);
     }
@@ -284,20 +315,70 @@ class GenealogyEmbedPersonsCommand extends Command
     /**
      * Delete existing embeddings (used with --reindex).
      */
-    private function deleteExisting(?int $treeId): void
+    private function deleteExisting(array $personIds): int
     {
-        if ($treeId !== null) {
-            $deleted = DB::connection('pgsql_rag')->delete(
-                'DELETE FROM genealogy_person_embeddings WHERE tree_id = ?',
-                [$treeId]
-            );
-        } else {
-            $deleted = DB::connection('pgsql_rag')->delete(
-                'DELETE FROM genealogy_person_embeddings'
-            );
+        $personIds = array_values(array_unique(array_filter(array_map(
+            static fn ($personId): int => (int) $personId,
+            $personIds
+        ))));
+
+        if ($personIds === []) {
+            return 0;
         }
 
-        $this->line(sprintf('Deleted %d existing embedding(s).', $deleted));
+        $placeholders = implode(',', array_fill(0, count($personIds), '?'));
+
+        return DB::connection('pgsql_rag')->delete(
+            "DELETE FROM genealogy_person_embeddings WHERE person_id IN ({$placeholders})",
+            $personIds
+        );
+    }
+
+    /**
+     * PostgreSQL person embeddings have no cross-DB foreign key to MySQL people.
+     * Prune deleted-person rows after runs so stats and semantic search stay honest.
+     */
+    private function syncEmbeddingCoverage(?int $treeId): void
+    {
+        $personIds = $this->currentPersonIds($treeId);
+        $pgsql = DB::connection('pgsql_rag');
+
+        if ($personIds === []) {
+            if ($treeId !== null) {
+                $pgsql->delete('DELETE FROM genealogy_person_embeddings WHERE tree_id = ?', [$treeId]);
+            } else {
+                $pgsql->delete('DELETE FROM genealogy_person_embeddings');
+            }
+
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($personIds), '?'));
+        $sql = "DELETE FROM genealogy_person_embeddings WHERE person_id NOT IN ({$placeholders})";
+        $params = $personIds;
+
+        if ($treeId !== null) {
+            $sql .= ' AND tree_id = ?';
+            $params[] = $treeId;
+        }
+
+        $pgsql->delete($sql, $params);
+    }
+
+    private function currentPersonIds(?int $treeId): array
+    {
+        $sql = 'SELECT id FROM genealogy_persons';
+        $params = [];
+
+        if ($treeId !== null) {
+            $sql .= ' WHERE tree_id = ?';
+            $params[] = $treeId;
+        }
+
+        return array_map(
+            static fn (object $row): int => (int) $row->id,
+            DB::select($sql, $params)
+        );
     }
 
     /**
@@ -327,45 +408,30 @@ class GenealogyEmbedPersonsCommand extends Command
     {
         $parts = [];
 
-        $name = trim(($person->given_name ?? '') . ' ' . ($person->surname ?? ''));
+        $name = trim(($person->given_name ?? '').' '.($person->surname ?? ''));
         if ($name !== '') {
             $parts[] = $name;
         }
 
         $sexLabel = match (strtoupper((string) ($person->sex ?? ''))) {
-            'M'     => 'male',
-            'F'     => 'female',
+            'M' => 'male',
+            'F' => 'female',
             default => null,
         };
         if ($sexLabel !== null) {
             $parts[] = $sexLabel;
         }
 
-        if (! empty($person->birth_date)) {
-            $born = 'born ' . $person->birth_date;
-            if (! empty($person->birth_place)) {
-                $born .= ' in ' . $person->birth_place;
+        foreach ($this->personFieldLabels() as $field => $label) {
+            $value = $this->normalizePersonValue($person->{$field} ?? null);
+            if ($value === null || $value === '') {
+                continue;
             }
-            $parts[] = $born;
-        } elseif (! empty($person->birth_place)) {
-            $parts[] = 'born in ' . $person->birth_place;
+
+            $parts[] = "{$label}: {$value}";
         }
 
-        if (! empty($person->death_date)) {
-            $died = 'died ' . $person->death_date;
-            if (! empty($person->death_place)) {
-                $died .= ' in ' . $person->death_place;
-            }
-            $parts[] = $died;
-        } elseif (! empty($person->death_place)) {
-            $parts[] = 'died in ' . $person->death_place;
-        }
-
-        if (! empty($person->occupation)) {
-            $parts[] = 'Occupation: ' . $person->occupation;
-        }
-
-        return implode(', ', $parts) . '.';
+        return implode(', ', $parts).'.';
     }
 
     /**
@@ -373,13 +439,82 @@ class GenealogyEmbedPersonsCommand extends Command
      */
     private function buildBiography(object $person, string $searchText): string
     {
-        if (empty($person->notes)) {
+        if (empty($person->notes) || str_contains($searchText, (string) $person->notes)) {
             return $searchText;
         }
 
-        $notesSnippet = mb_substr(trim($person->notes), 0, 500);
+        return $searchText."\n".trim($person->notes);
+    }
 
-        return $searchText . "\n" . $notesSnippet;
+    private function personFieldLabels(): array
+    {
+        return [
+            'id' => 'Person database ID',
+            'tree_id' => 'Tree ID',
+            'gedcom_id' => 'GEDCOM ID',
+            'uid' => 'UID',
+            'title' => 'Title',
+            'given_name' => 'Given name',
+            'surname' => 'Surname',
+            'suffix' => 'Suffix',
+            'nickname' => 'Nickname or also known as',
+            'sex' => 'Sex',
+            'birth_date' => 'Birth date',
+            'birth_place' => 'Birth place',
+            'birth_lat' => 'Birth latitude',
+            'birth_lon' => 'Birth longitude',
+            'birth_place_id' => 'Birth place ID',
+            'death_date' => 'Death date',
+            'death_place' => 'Death place',
+            'death_lat' => 'Death latitude',
+            'death_lon' => 'Death longitude',
+            'death_place_id' => 'Death place ID',
+            'burial_date' => 'Burial date',
+            'burial_place' => 'Burial place',
+            'burial_lat' => 'Burial latitude',
+            'burial_lon' => 'Burial longitude',
+            'burial_place_id' => 'Burial place ID',
+            'occupation' => 'Occupation',
+            'education' => 'Education',
+            'religion' => 'Religion',
+            'primary_photo_id' => 'Primary photo media ID',
+            'notes' => 'Notes',
+            'primary_language' => 'Primary language',
+            'living' => 'Living status',
+            'privacy_override' => 'Privacy override',
+            'physical_description' => 'Physical description',
+            'nationality' => 'Nationality',
+            'ssn' => 'SSN',
+            'id_number' => 'ID number',
+            'property' => 'Property',
+            'cause_of_death' => 'Cause of death',
+            'created_at' => 'Record created at',
+            'updated_at' => 'Record updated at',
+            'rag_indexed_at' => 'RAG indexed at before this run',
+        ];
+    }
+
+    private function normalizePersonValue(mixed $value): mixed
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if (is_numeric($value)) {
+            return $value;
+        }
+
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        return $value;
     }
 
     /**

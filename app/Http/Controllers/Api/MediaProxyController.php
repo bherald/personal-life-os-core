@@ -204,6 +204,8 @@ class MediaProxyController extends Controller
             'image/png',
             'image/gif',
             'image/webp',
+            'image/jp2',
+            'image/jpx',
             'image/svg+xml',
             'text/plain',
             'text/html',
@@ -232,10 +234,11 @@ class MediaProxyController extends Controller
 
         return match ($extension) {
             'pdf' => 'application/pdf',
-            'jpg', 'jpeg' => 'image/jpeg',
+            'jpg', 'jpeg', 'jfif' => 'image/jpeg',
             'png' => 'image/png',
             'gif' => 'image/gif',
             'webp' => 'image/webp',
+            'jp2', 'j2k', 'jpf', 'jpx' => 'image/jp2',
             'svg' => 'image/svg+xml',
             'mp4' => 'video/mp4',
             'webm' => 'video/webm',

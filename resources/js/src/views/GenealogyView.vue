@@ -1094,13 +1094,14 @@
                 <label class="text-sm font-medium text-theme-secondary">Report Type:</label>
                 <select v-model="selectedReportType" class="px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
                   <option value="missing_data">Missing Data Report</option>
+                  <option value="source_audit_workbook">Source Audit Workbook</option>
                   <option value="ahnentafel">Ahnentafel Report</option>
                   <option value="descendant">Descendant Report</option>
                   <option value="pedigree">Pedigree Chart</option>
                   <option value="family_group">Family Group Sheet</option>
                 </select>
                 <!-- Person selector for person-specific reports -->
-                <template v-if="selectedReportType !== 'missing_data'">
+                <template v-if="reportNeedsPerson">
                   <select v-model="reportPersonId" class="flex-1 px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
                     <option :value="null">Select a person...</option>
                     <option v-for="person in sortedPersons" :key="person.id" :value="person.id">
@@ -1126,9 +1127,163 @@
             </div>
 
             <!-- Generated Report Display -->
-            <div v-if="selectedReportType !== 'missing_data' && generatedReport" class="bg-theme-tertiary rounded-lg p-4 mb-4">
+            <div v-if="reportNeedsPerson && generatedReport" class="bg-theme-tertiary rounded-lg p-4 mb-4">
               <h3 class="text-lg font-semibold text-theme-primary mb-3">{{ generatedReport.title }}</h3>
               <div class="prose prose-invert max-w-none text-theme-primary text-sm" v-html="generatedReport.html"></div>
+            </div>
+
+            <!-- Source Audit Workbook -->
+            <div v-if="selectedReportType === 'source_audit_workbook'" class="space-y-4">
+              <div class="bg-theme-tertiary rounded-lg p-4">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <label class="text-sm text-theme-secondary">
+                    Format
+                    <select v-model="sourceAuditFormat" class="mt-1 w-full px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
+                      <option value="manifest">Manifest only</option>
+                      <option value="csv_zip">CSV package</option>
+                      <option value="docx">Word DOCX</option>
+                      <option value="odt">OpenOffice ODT</option>
+                    </select>
+                  </label>
+                  <label class="text-sm text-theme-secondary">
+                    Privacy
+                    <select v-model="sourceAuditPrivacyMode" class="mt-1 w-full px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
+                      <option value="private_local">Private local</option>
+                      <option value="audit_ids_only">Audit IDs only</option>
+                      <option value="public_redacted">Public redacted</option>
+                    </select>
+                  </label>
+                  <label class="flex items-center gap-2 text-sm text-theme-secondary mt-6">
+                    <input v-model="sourceAuditIncludeSources" type="checkbox" class="rounded border-theme">
+                    Sources
+                  </label>
+                  <label class="flex items-center gap-2 text-sm text-theme-secondary mt-6">
+                    <input v-model="sourceAuditIncludeMedia" type="checkbox" class="rounded border-theme">
+                    Media
+                  </label>
+                  <label class="flex items-center gap-2 text-sm text-theme-secondary">
+                    <input v-model="sourceAuditIncludeIssues" type="checkbox" class="rounded border-theme">
+                    Issues
+                  </label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-3">
+                  <label class="text-sm text-theme-secondary">
+                    Pre-scan IDs
+                    <input v-model.number="sourceAuditPrelabelCount" min="0" max="500" type="number" class="mt-1 w-full px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
+                  </label>
+                  <label class="text-sm text-theme-secondary">
+                    Shard
+                    <select v-model="sourceAuditShardMode" class="mt-1 w-full px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
+                      <option value="none">No sharding</option>
+                      <option value="surname_initial">Surname initial</option>
+                    </select>
+                  </label>
+                  <label class="text-sm text-theme-secondary">
+                    Scope
+                    <select v-model="sourceAuditScope" class="mt-1 w-full px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
+                      <option value="full">Full tree</option>
+                      <option value="branch">Branch mini workbook</option>
+                    </select>
+                  </label>
+                  <label v-if="sourceAuditScope === 'branch'" class="text-sm text-theme-secondary">
+                    Branch person
+                    <select v-model="sourceAuditBranchPersonId" class="mt-1 w-full px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
+                      <option value="">Select person</option>
+                      <option v-for="person in sortedPersons" :key="person.id" :value="person.id">
+                        {{ person.surname }}, {{ person.given_name }} ({{ person.id }})
+                      </option>
+                    </select>
+                  </label>
+                  <label v-if="sourceAuditScope === 'branch'" class="text-sm text-theme-secondary">
+                    Branch mode
+                    <select v-model="sourceAuditBranchMode" class="mt-1 w-full px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
+                      <option value="descendants">Descendants</option>
+                      <option value="ancestors">Ancestors</option>
+                      <option value="family">Immediate family</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="flex flex-wrap gap-3 mt-4">
+                  <button @click="runSourceAuditWorkbook(true)" class="btn-secondary" :disabled="generatingSourceAudit">
+                    {{ generatingSourceAudit ? 'Working...' : 'Dry Run' }}
+                  </button>
+                  <button @click="runSourceAuditWorkbook(false)" class="px-4 py-2 bg-accent text-white rounded-lg hover:bg-accent-blue font-medium disabled:opacity-50" :disabled="generatingSourceAudit">
+                    Generate Package
+                  </button>
+                </div>
+              </div>
+
+              <div class="bg-theme-tertiary rounded-lg p-4">
+                <div class="flex items-start justify-between gap-3 flex-wrap mb-3">
+                  <div>
+                    <h3 class="text-lg font-semibold text-theme-primary">Workbook Row Review Packet</h3>
+                    <p class="text-sm text-theme-secondary">Create a review packet from a printed tag such as #I3826# or #F575#.</p>
+                  </div>
+                  <span class="text-xs px-2 py-1 rounded bg-theme-secondary text-theme-secondary">row action</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <label class="text-sm text-theme-secondary md:col-span-1">
+                    Workbook tag
+                    <input v-model="sourceAuditReviewTag" type="text" placeholder="#I{id}# or #F{id}#" class="mt-1 w-full px-3 py-2 bg-theme-secondary text-theme-primary rounded-lg border border-theme focus:ring-2 focus:ring-accent">
+                  </label>
+                  <div class="flex flex-wrap items-end gap-3 md:col-span-2">
+                    <button type="button" @click="createSourceAuditReviewPacket(true)" class="btn-secondary" :disabled="creatingSourceAuditReviewPacket || !sourceAuditReviewTag.trim()">
+                      {{ creatingSourceAuditReviewPacket ? 'Working...' : 'Dry Run Packet' }}
+                    </button>
+                    <button type="button" @click="createSourceAuditReviewPacket(false)" class="px-4 py-2 bg-fuchsia-500/10 text-fuchsia-400 rounded-lg hover:bg-fuchsia-500/20 font-medium disabled:opacity-50" :disabled="creatingSourceAuditReviewPacket || !sourceAuditReviewTag.trim()">
+                      Create Review Packet
+                    </button>
+                  </div>
+                </div>
+                <div v-if="sourceAuditReviewError" class="mt-3 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-sm text-rose-400 whitespace-pre-wrap">
+                  {{ sourceAuditReviewError }}
+                </div>
+                <div v-if="sourceAuditReviewResult" class="mt-3 text-sm text-theme-secondary space-y-1">
+                  <div v-if="sourceAuditReviewResult.target">
+                    Target: <span class="text-theme-primary">{{ sourceAuditReviewResult.target.tag }} · {{ sourceAuditReviewResult.target.label }}</span>
+                  </div>
+                  <div v-if="sourceAuditReviewResult.packet">
+                    Packet: <span class="text-theme-primary">{{ sourceAuditReviewResult.packet.packet_label }}</span>
+                  </div>
+                  <a v-if="sourceAuditReviewResult.research_hub_url" :href="sourceAuditReviewResult.research_hub_url" class="text-accent hover:underline" target="_blank" rel="noopener">
+                    Open in Research Hub
+                  </a>
+                </div>
+              </div>
+
+              <div v-if="sourceAuditResult" class="bg-theme-tertiary rounded-lg p-4">
+                <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                  <div>
+                    <h3 class="text-lg font-semibold text-theme-primary">Source Audit Workbook</h3>
+                    <p class="text-sm text-theme-secondary">{{ sourceAuditResult.dry_run ? 'Dry run' : 'Generated' }} · {{ sourceAuditResult.run_id }}</p>
+                  </div>
+                  <span class="text-xs px-2 py-1 rounded bg-theme-secondary text-theme-secondary">{{ sourceAuditResult.privacy_mode }}</span>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+                  <div v-for="[sheet, count] in sourceAuditRowCounts" :key="sheet" class="bg-theme-secondary rounded p-2">
+                    <div class="text-xs text-theme-secondary truncate">{{ sheet }}</div>
+                    <div class="text-lg font-semibold text-theme-primary">{{ count }}</div>
+                  </div>
+                </div>
+                <div class="text-xs text-theme-secondary space-y-1">
+                  <div v-if="sourceAuditResult.output_dir">Output: {{ sourceAuditResult.output_dir }}</div>
+                  <div v-else-if="sourceAuditResult.output_plan?.output_dir">Planned output: {{ sourceAuditResult.output_plan.output_dir }}</div>
+                  <div v-if="sourceAuditResult.branch_filter">Branch: {{ sourceAuditResult.branch_filter.label }} ({{ sourceAuditResult.branch_filter.person_count }} people)</div>
+                  <div v-if="sourceAuditResult.files?.length" class="flex flex-wrap gap-x-3 gap-y-1">
+                    <span>Files:</span>
+                    <a
+                      v-for="file in sourceAuditResult.files"
+                      :key="file.path || file.relative_path"
+                      :href="file.download_url || '#'"
+                      target="_blank"
+                      rel="noopener"
+                      class="text-accent hover:underline"
+                    >
+                      {{ file.relative_path }}
+                    </a>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- Missing Data Report (original) -->
@@ -3099,7 +3254,7 @@
                     <button v-if="selectedPerson.primary_photo_id === item.id" @click.stop="setPersonPrimaryPhoto(selectedPerson.id, null)" class="absolute top-1 right-1 z-10 bg-red-500/80 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600" title="Remove as Primary Photo">
                       <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
-                    <img v-if="item.nextcloud_path && isImage(item.file_format)" :src="`/api/media/file?path=${encodeURIComponent(item.nextcloud_path)}`" class="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity" @click="openImageModal(item)" />
+                    <img v-if="getMediaCardPreviewUrl(item)" :src="getMediaCardPreviewUrl(item)" class="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity" @click="openImageModal(item)" />
                   </div>
                 </div>
                 <p v-else class="text-theme-secondary text-sm text-center py-2">No media linked</p>
@@ -4191,8 +4346,8 @@
                 class="relative aspect-square bg-theme-tertiary rounded overflow-hidden cursor-pointer hover:ring-2 hover:ring-accent transition-all group"
               >
                 <img
-                  v-if="item.nextcloud_path && isImage(item.file_format)"
-                  :src="`/api/media/file?path=${encodeURIComponent(item.nextcloud_path)}`"
+                  v-if="getMediaCardPreviewUrl(item)"
+                  :src="getMediaCardPreviewUrl(item)"
                   class="w-full h-full object-cover"
                 />
                 <div v-else class="w-full h-full flex items-center justify-center text-theme-secondary">
@@ -4229,10 +4384,10 @@
             <div class="grid grid-cols-2 gap-6">
               <!-- Media Preview with Face Regions -->
               <div class="bg-theme-tertiary rounded-lg p-4 flex flex-col items-center justify-center min-h-[300px]">
-                <div v-if="getMediaUrl(selectedMedia) && isImage(selectedMedia.file_format)" class="relative inline-block">
+                <div v-if="getMediaImagePreviewUrl(selectedMedia) && isImage(selectedMedia.file_format)" class="relative inline-block">
                   <img
                     ref="mediaPreviewImg"
-                    :src="getMediaUrl(selectedMedia)"
+                    :src="getMediaImagePreviewUrl(selectedMedia)"
                     :alt="selectedMedia.title"
                     class="max-w-full max-h-[400px] object-contain rounded"
                     @load="onMediaImageLoad"
@@ -4825,6 +4980,19 @@
               </div>
 
               <div class="grid grid-cols-1 lg:grid-cols-4 gap-3">
+                <label class="block">
+                  <span class="text-xs text-theme-secondary uppercase tracking-wide">Tree</span>
+                  <select
+                    v-model.number="intakeRunStageForm.tree_id"
+                    class="mt-1 w-full rounded-lg border border-theme bg-theme-secondary text-theme-primary px-3 py-2"
+                  >
+                    <option :value="null">Select tree</option>
+                    <option v-for="tree in trees" :key="tree.id" :value="tree.id">
+                      {{ tree.name }}
+                    </option>
+                  </select>
+                </label>
+
                 <label class="block lg:col-span-2">
                   <span class="text-xs text-theme-secondary uppercase tracking-wide">Root Path</span>
                   <input
@@ -4842,6 +5010,16 @@
                     type="text"
                     class="mt-1 w-full rounded-lg border border-theme bg-theme-secondary text-theme-primary px-3 py-2"
                     placeholder="Optional"
+                  />
+                </label>
+
+                <label class="block">
+                  <span class="text-xs text-theme-secondary uppercase tracking-wide">Workbook Tag</span>
+                  <input
+                    v-model="intakeRunStageForm.workbook_tag"
+                    type="text"
+                    class="mt-1 w-full rounded-lg border border-theme bg-theme-secondary text-theme-primary px-3 py-2"
+                    placeholder="#I3826# or #F575#"
                   />
                 </label>
 
@@ -4866,7 +5044,7 @@
                 <button
                   type="button"
                   class="px-4 py-2 rounded-lg bg-fuchsia-500/10 text-fuchsia-400 hover:bg-fuchsia-500/20 disabled:opacity-60"
-                  :disabled="stagingIntakeRun || !selectedTreeId || !`${intakeRunStageForm.root_path || ''}`.trim()"
+                  :disabled="stagingIntakeRun || !intakeRunStageTreeId || !`${intakeRunStageForm.root_path || ''}`.trim()"
                   @click="stageIntakeRun"
                 >
                   {{ stagingIntakeRun ? 'Scanning Folder...' : 'Scan Folder And Save Run' }}
@@ -4874,7 +5052,7 @@
               </div>
 
               <div class="text-xs text-theme-secondary">
-                Uses the selected tree and saves the run so it can be reopened here for packet review and decision capture.
+                Uses the chosen tree and optional workbook tag, then saves the run so it can be reopened here for packet review and decision capture.
               </div>
 
               <div v-if="intakeRunStageError" class="rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-sm text-rose-400 whitespace-pre-wrap">
@@ -4961,6 +5139,12 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <div v-if="selectedIntakeRun.root_path">
                     <div class="text-xs text-theme-secondary uppercase tracking-wide">Scope</div>
                     <div class="text-theme-primary text-sm break-all">{{ selectedIntakeRun.root_path }}</div>
+                  </div>
+                  <div v-if="selectedIntakeRunWorkbookTarget">
+                    <div class="text-xs text-theme-secondary uppercase tracking-wide">Workbook Target</div>
+                    <div class="text-theme-primary text-sm break-all">
+                      {{ selectedIntakeRunWorkbookTarget.tag }} · {{ selectedIntakeRunWorkbookTarget.label }}
+                    </div>
                   </div>
                   <div class="rounded border border-theme p-3">
                     <div class="flex items-center justify-between gap-2 flex-wrap">
@@ -5552,6 +5736,12 @@ Large packets can take time on the first pass while the packet preview is prepar
                                     class="px-2 py-0.5 rounded bg-fuchsia-500/10 text-fuchsia-400"
                                   >
                                     already ingested
+                                  </span>
+                                  <span
+                                    v-if="document.workbookTarget"
+                                    class="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400"
+                                  >
+                                    {{ document.workbookTarget.tag }} · {{ document.workbookTarget.label }}
                                   </span>
                                 </div>
                                 <div class="text-theme-secondary text-xs mt-1 whitespace-pre-wrap">
@@ -6699,9 +6889,9 @@ Large packets can take time on the first pass while the packet preview is prepar
             </div>
 
             <!-- Loading State -->
-            <div v-if="exportingGedcom" class="text-center py-8">
+            <div v-if="exportingGedcom || exportingGedZip" class="text-center py-8">
               <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-accent mx-auto mb-4"></div>
-              <p class="text-theme-secondary">Generating GEDCOM file...</p>
+              <p class="text-theme-secondary">Generating export...</p>
             </div>
 
             <!-- Export Ready -->
@@ -6710,6 +6900,9 @@ Large packets can take time on the first pass while the packet preview is prepar
                 <p class="text-green-400 font-medium">GEDCOM file ready for download</p>
                 <p class="text-sm text-theme-secondary mt-1">
                   File: {{ gedcomExportData.filename }} ({{ formatBytes(gedcomExportData.size) }})
+                </p>
+                <p class="text-sm text-theme-secondary mt-1">
+                  Privacy: {{ gedcomExportData.privacy_label }}
                 </p>
               </div>
 
@@ -6739,16 +6932,35 @@ Large packets can take time on the first pass while the packet preview is prepar
             <!-- Initial State -->
             <div v-else>
               <p class="text-theme-secondary mb-4">
-                Export your family tree in GEDCOM 5.5.1 format. This standardized format can be imported
-                into most genealogy software and online services.
+                Export this family tree for genealogy software or a portable GEDZip backup.
               </p>
 
-              <button
-                @click="exportGedcom"
-                class="w-full px-4 py-3 bg-accent text-white rounded-lg hover:bg-accent/80 font-medium"
-              >
-                Generate GEDCOM Export
-              </button>
+              <label class="flex items-start gap-3 rounded-lg border border-theme bg-theme-tertiary p-4 mb-4 cursor-pointer">
+                <input
+                  v-model="exportRedactLiving"
+                  type="checkbox"
+                  class="mt-1 h-4 w-4 rounded border-theme text-accent focus:ring-accent"
+                >
+                <span>
+                  <span class="block font-medium text-theme-primary">Public redaction</span>
+                  <span class="block text-sm text-theme-secondary">Hide living person details</span>
+                </span>
+              </label>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  @click="exportGedcom"
+                  class="w-full px-4 py-3 bg-accent text-white rounded-lg hover:bg-accent/80 font-medium"
+                >
+                  Generate GEDCOM
+                </button>
+                <button
+                  @click="downloadGedZip"
+                  class="w-full px-4 py-3 bg-theme-tertiary text-theme-primary border border-theme rounded-lg hover:bg-theme-primary hover:text-white font-medium"
+                >
+                  Download GEDZip
+                </button>
+              </div>
             </div>
 
             <div class="flex justify-end mt-6 pt-4 border-t border-theme">
@@ -9686,8 +9898,8 @@ Large packets can take time on the first pass while the packet preview is prepar
                   class="bg-theme-tertiary rounded-lg p-2 relative group cursor-pointer hover:ring-2 hover:ring-accent transition-all"
                   @click="openMediaInEditModal(media)">
                   <!-- Image thumbnail -->
-                  <img v-if="isMediaImage(media) && getMediaUrl(media)"
-                    :src="getMediaUrl(media)"
+                  <img v-if="getMediaCardPreviewUrl(media)"
+                    :src="getMediaCardPreviewUrl(media)"
                     :alt="media.title || media.filename"
                     class="w-full h-24 object-cover rounded" />
                   <!-- PDF icon -->
@@ -9764,8 +9976,8 @@ Large packets can take time on the first pass while the packet preview is prepar
                     class="bg-theme-tertiary rounded p-1 cursor-pointer hover:ring-2 hover:ring-accent transition-all"
                     :class="{ 'opacity-50 pointer-events-none': linkingMedia }">
                     <!-- Image thumbnail -->
-                    <img v-if="isMediaImage(media) && getMediaUrl(media)"
-                      :src="getMediaUrl(media)"
+                    <img v-if="getMediaCardPreviewUrl(media)"
+                      :src="getMediaCardPreviewUrl(media)"
                       :alt="media.title || media.filename"
                       class="w-full h-16 object-cover rounded" />
                     <!-- PDF icon -->
@@ -10186,8 +10398,8 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <div v-for="mediaItem in paginatedViewingSourceMedia" :key="mediaItem.id"
                     @click="openMediaDetail(mediaItem)"
                     class="aspect-square rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-accent transition-all bg-theme-primary">
-                    <img v-if="mediaItem.thumbnail_url || mediaItem.media_type === 'photo'"
-                      :src="mediaItem.thumbnail_url || mediaItem.nextcloud_url"
+                    <img v-if="getMediaCardPreviewUrl(mediaItem) || mediaItem.media_type === 'photo'"
+                      :src="getMediaCardPreviewUrl(mediaItem) || mediaItem.nextcloud_url"
                       :alt="mediaItem.title"
                       class="w-full h-full object-cover"
                       loading="lazy"
@@ -11366,6 +11578,23 @@ const missingDataReport = ref({});
 const selectedReportType = ref('missing_data');
 const loadingReport = ref(false);
 const expandedReportSection = ref(null);
+const sourceAuditFormat = ref('csv_zip');
+const sourceAuditPrivacyMode = ref('private_local');
+const sourceAuditIncludeSources = ref(true);
+const sourceAuditIncludeMedia = ref(true);
+const sourceAuditIncludeIssues = ref(true);
+const sourceAuditPrelabelCount = ref(0);
+const sourceAuditShardMode = ref('none');
+const sourceAuditScope = ref('full');
+const sourceAuditBranchPersonId = ref('');
+const sourceAuditBranchMode = ref('descendants');
+const generatingSourceAudit = ref(false);
+const sourceAuditResult = ref(null);
+const sourceAuditReviewTag = ref('');
+const sourceAuditReviewResult = ref(null);
+const sourceAuditReviewError = ref('');
+const creatingSourceAuditReviewPacket = ref(false);
+const sourceAuditRowCounts = computed(() => Object.entries(sourceAuditResult.value?.row_counts || sourceAuditResult.value?.counts || {}));
 
 // Media modals state (Phase 3.1, 3.2)
 const showMediaUploadModal = ref(false);
@@ -11413,12 +11642,15 @@ const showTranscriptionQueueModal = ref(false);
 const intakeRuns = ref([]);
 const showIntakeRunsModal = ref(false);
 const createDefaultIntakeRunStageForm = () => ({
+  tree_id: selectedTreeId.value || null,
   root_path: '/Library/FamilyTree',
   packet_label: '',
+  workbook_tag: '',
   limit: '100',
   unprocessed_only: false,
 });
 const intakeRunStageForm = ref(createDefaultIntakeRunStageForm());
+const intakeRunStageTreeId = computed(() => normalizePositiveInt(intakeRunStageForm.value.tree_id) || selectedTreeId.value || null);
 const stagingIntakeRun = ref(false);
 const intakeRunStageError = ref('');
 const selectedIntakeRun = ref(null);
@@ -11461,9 +11693,11 @@ const showExportModal = ref(false);
 const showValidationModal = ref(false);
 const showStatisticsModal = ref(false);
 const exportingGedcom = ref(false);
+const exportingGedZip = ref(false);
 const validatingTree = ref(false);
 const loadingStatistics = ref(false);
 const gedcomExportData = ref(null);
+const exportRedactLiving = ref(false);
 const validationResults = ref(null);
 const treeStatistics = ref(null);
 const backupStatus = ref(null);
@@ -11501,6 +11735,7 @@ const newVariantType = ref('');
 const reportPersonId = ref(null);
 const generatingReport = ref(false);
 const generatedReport = ref(null);
+const reportNeedsPerson = computed(() => !['missing_data', 'source_audit_workbook'].includes(selectedReportType.value));
 const currentTreeRootPersonId = computed(() => {
   const tree = trees.value.find(t => t.id === selectedTreeId.value);
   return tree?.root_person_id ?? null;
@@ -12186,6 +12421,12 @@ const searchPersons = async () => {
 watch(activeTab, (tab) => {
   if (tab === 'research-history') {
     loadResearchLogs();
+  }
+});
+
+watch(selectedTreeId, (treeId) => {
+  if (treeId && !intakeRunStageForm.value.tree_id) {
+    intakeRunStageForm.value.tree_id = treeId;
   }
 });
 
@@ -12904,9 +13145,10 @@ const closeEventModal = () => {
 // Image Lightbox/Popup methods
 const openImageModal = (item) => {
   enlargedImage.value = {
-    src: `/api/media/file?path=${encodeURIComponent(item.nextcloud_path)}`,
+    src: getMediaImagePreviewUrl(item, 'large') || getMediaUrl(item),
     title: item.title || item.local_filename || 'Image',
-    nextcloud_path: item.nextcloud_path
+    nextcloud_path: item.nextcloud_path,
+    type: 'image',
   };
   showImageModal.value = true;
 };
@@ -14379,19 +14621,27 @@ const loadIntakeRuns = async () => {
 };
 
 const stageIntakeRun = async () => {
-  if (!selectedTreeId.value) return;
+  const treeId = intakeRunStageTreeId.value;
+  if (!treeId) return;
 
   stagingIntakeRun.value = true;
   intakeRunStageError.value = '';
 
   try {
     const response = await axios.post('/api/genealogy/intake-runs/stage', {
-      tree_id: selectedTreeId.value,
+      tree_id: treeId,
       root_path: `${intakeRunStageForm.value.root_path || ''}`.trim(),
       packet_label: `${intakeRunStageForm.value.packet_label || ''}`.trim() || null,
+      workbook_tag: `${intakeRunStageForm.value.workbook_tag || ''}`.trim() || null,
       limit: normalizePositiveInt(intakeRunStageForm.value.limit) || 100,
       unprocessed_only: !!intakeRunStageForm.value.unprocessed_only,
     });
+
+    if (selectedTreeId.value !== treeId) {
+      selectedTreeId.value = treeId;
+      localStorage.setItem('genealogy_selected_tree', treeId);
+      await loadTreeData();
+    }
 
     await loadIntakeRuns();
 
@@ -14419,6 +14669,20 @@ const intakeRunPacketOptions = computed(() => {
         label: label || `Untitled packet ${index + 1}`,
       };
     });
+});
+
+const selectedIntakeRunWorkbookTarget = computed(() => {
+  const runTarget = selectedIntakeRun.value?.workbook_target || null;
+  if (runTarget?.tag || runTarget?.label) {
+    return runTarget;
+  }
+
+  const packetTarget = selectedIntakeRunPacket.value?.workbook_target || null;
+  if (packetTarget?.tag || packetTarget?.label) {
+    return packetTarget;
+  }
+
+  return null;
 });
 
 const selectedIntakeRunPacket = computed(() => {
@@ -14713,6 +14977,7 @@ const selectedIntakeRunDocumentPreviewItems = computed(() => {
       classificationLabel: classification.replace(/_/g, ' '),
       duplicateScopeLabel: duplicateScope.replace(/_/g, ' '),
       alreadyIngested: Boolean(document?.already_ingested),
+      workbookTarget: document?.workbook_target || null,
       anchorLabels: anchors.slice(0, 6),
       previewPath,
       previewType,
@@ -15469,6 +15734,9 @@ const scheduleApprovalDraftPreview = () => {
 const openIntakeRunsModal = async () => {
   showIntakeRunsModal.value = true;
   intakeRunStageError.value = '';
+  if (!intakeRunStageForm.value.tree_id && selectedTreeId.value) {
+    intakeRunStageForm.value.tree_id = selectedTreeId.value;
+  }
   await loadIntakeRuns();
   if (intakeRuns.value.length > 0) {
     await selectIntakeRun(intakeRuns.value[0].run_key);
@@ -15549,6 +15817,12 @@ const copyToClipboard = async (text) => {
 // PHASE 4: EXPORT, BACKUP & DATA INTEGRITY
 // ========================================================================
 
+const exportPrivacyParams = () => ({
+  privacy_context: exportRedactLiving.value ? 'public_export' : 'private_local',
+  redact_living: exportRedactLiving.value,
+  include_living: !exportRedactLiving.value
+});
+
 const exportGedcom = async () => {
   if (!selectedTreeId.value) return;
 
@@ -15556,7 +15830,12 @@ const exportGedcom = async () => {
   gedcomExportData.value = null;
 
   try {
-    const response = await axios.get(`/api/genealogy/trees/${selectedTreeId.value}/export/gedcom`);
+    const response = await axios.get(`/api/genealogy/trees/${selectedTreeId.value}/export/gedcom`, {
+      params: {
+        download: false,
+        ...exportPrivacyParams()
+      }
+    });
     gedcomExportData.value = response.data.data;
   } catch (error) {
     console.error('Failed to export GEDCOM:', error);
@@ -15578,6 +15857,49 @@ const downloadGedcom = () => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+};
+
+const downloadGedZip = async () => {
+  if (!selectedTreeId.value) return;
+
+  exportingGedZip.value = true;
+  gedcomExportData.value = null;
+
+  try {
+    const response = await axios.get(`/api/genealogy/trees/${selectedTreeId.value}/export/gedzip`, {
+      params: exportPrivacyParams(),
+      responseType: 'blob'
+    });
+    downloadBlob(response.data, filenameFromContentDisposition(response.headers['content-disposition']) || 'family-tree.gdz');
+  } catch (error) {
+    console.error('Failed to export GEDZip:', error);
+    alert(error.response?.data?.error?.message || 'Failed to export GEDZip');
+  } finally {
+    exportingGedZip.value = false;
+  }
+};
+
+const downloadBlob = (data, filename) => {
+  const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+const filenameFromContentDisposition = (contentDisposition) => {
+  if (!contentDisposition) return null;
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1].replace(/["']/g, ''));
+  }
+
+  const match = contentDisposition.match(/filename="?([^"]+)"?/i);
+  return match?.[1] || null;
 };
 
 // Person Activity Log
@@ -15655,6 +15977,68 @@ const deleteNameVariant = async (variantId) => {
 };
 
 // Reports
+const runSourceAuditWorkbook = async (dryRun = true) => {
+  if (!selectedTreeId.value || generatingSourceAudit.value) return;
+
+  if (!dryRun) {
+    const confirmed = window.confirm('Generate the source-audit package under this tree report folder? Private local mode includes living/private details.');
+    if (!confirmed) return;
+  }
+
+  generatingSourceAudit.value = true;
+  try {
+    const branchPersonId = sourceAuditScope.value === 'branch'
+      ? normalizePositiveInt(sourceAuditBranchPersonId.value)
+      : null;
+    const response = await axios.post(`/api/genealogy/trees/${selectedTreeId.value}/reports/source-audit-workbook`, {
+      format: sourceAuditFormat.value,
+      privacy_mode: sourceAuditPrivacyMode.value,
+      layout_profile: 'dense_audit_v1',
+      include_sources: sourceAuditIncludeSources.value,
+      include_media: sourceAuditIncludeMedia.value,
+      include_issues: sourceAuditIncludeIssues.value,
+      prelabel_count: Number(sourceAuditPrelabelCount.value || 0),
+      shard_mode: sourceAuditShardMode.value,
+      branch_person_id: branchPersonId,
+      branch_mode: sourceAuditBranchMode.value,
+      dry_run: dryRun,
+      confirm: !dryRun
+    });
+    sourceAuditResult.value = response.data.data;
+  } catch (error) {
+    console.error('Failed to generate source-audit workbook:', error);
+    alert(error.response?.data?.error?.message || error.response?.data?.data?.error || 'Failed to generate source-audit workbook');
+  } finally {
+    generatingSourceAudit.value = false;
+  }
+};
+
+const createSourceAuditReviewPacket = async (dryRun = true) => {
+  const tag = sourceAuditReviewTag.value.trim();
+  if (!selectedTreeId.value || !tag || creatingSourceAuditReviewPacket.value) return;
+
+  if (!dryRun) {
+    const confirmed = window.confirm(`Create a pending genealogy review packet for ${tag}?`);
+    if (!confirmed) return;
+  }
+
+  creatingSourceAuditReviewPacket.value = true;
+  sourceAuditReviewError.value = '';
+  try {
+    const response = await axios.post(`/api/genealogy/trees/${selectedTreeId.value}/reports/source-audit-workbook/review-packet`, {
+      tag,
+      dry_run: dryRun,
+      confirm: !dryRun,
+    });
+    sourceAuditReviewResult.value = response.data.data;
+  } catch (error) {
+    console.error('Failed to create source-audit review packet:', error);
+    sourceAuditReviewError.value = error.response?.data?.error?.message || error.response?.data?.data?.error || 'Failed to create source-audit review packet';
+  } finally {
+    creatingSourceAuditReviewPacket.value = false;
+  }
+};
+
 const generateReport = async () => {
   if (!reportPersonId.value || !selectedTreeId.value) return;
 
@@ -15709,6 +16093,7 @@ const downloadReportPDF = async () => {
 
 const openExportModal = () => {
   gedcomExportData.value = null;
+  exportRedactLiving.value = false;
   showExportModal.value = true;
 };
 
@@ -16127,7 +16512,17 @@ const formatFileSize = (bytes) => {
 
 const isImage = (format) => {
   if (!format) return false;
-  return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif'].includes(format.toLowerCase());
+  return ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'heic', 'heif', 'jp2', 'j2k', 'jpf', 'jpx'].includes(format.toLowerCase());
+};
+
+const getMediaExtension = (media) => {
+  const filename = media?.filename || media?.local_filename || media?.nextcloud_path || media?.original_path || '';
+  const fileExt = filename.includes('.') ? filename.split('.').pop()?.toLowerCase() : '';
+  return (media?.file_format || fileExt || '').toLowerCase();
+};
+
+const isBrowserRenderableImage = (media) => {
+  return ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'bmp', 'webp'].includes(getMediaExtension(media));
 };
 
 // Media type helpers for edit modal
@@ -16145,10 +16540,45 @@ const getMediaUrl = (media) => {
   return null;
 };
 
+const getMediaThumbnailUrl = (media, size = 'medium') => {
+  if (!media) return null;
+  if (media.thumbnail_url) {
+    const sizedUrl = media.thumbnail_url.replace(/\/thumbnail\/(small|medium|large)(\?|$)/, `/thumbnail/${size}$2`);
+    if (sizedUrl.includes('size=')) {
+      return sizedUrl.replace(/([?&]size=)(small|medium|large)/, `$1${encodeURIComponent(size)}`);
+    }
+    return sizedUrl;
+  }
+  if (media.id) {
+    return `/api/genealogy/media/${media.id}/thumbnail?size=${encodeURIComponent(size)}`;
+  }
+  if (media.asset_uuid) {
+    return `/api/media/${media.asset_uuid}/thumbnail/${encodeURIComponent(size)}`;
+  }
+  if (media.nextcloud_path) {
+    return `/api/media/path-thumbnail?path=${encodeURIComponent(media.nextcloud_path)}&size=${encodeURIComponent(size)}`;
+  }
+  return null;
+};
+
+const getMediaCardPreviewUrl = (media, size = 'medium') => {
+  return getMediaThumbnailUrl(media, size) || (isBrowserRenderableImage(media) ? getMediaUrl(media) : null);
+};
+
+const getMediaImagePreviewUrl = (media, size = 'large') => {
+  if (!media) return null;
+  if (!isMediaImage(media) && !isImage(media.file_format)) {
+    return getMediaUrl(media);
+  }
+  if (!isBrowserRenderableImage(media)) {
+    return getMediaThumbnailUrl(media, size);
+  }
+  return getMediaUrl(media) || getMediaThumbnailUrl(media, size);
+};
+
 const isMediaImage = (media) => {
-  const filename = media.filename || media.local_filename || media.nextcloud_path || '';
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  return ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif'].includes(ext);
+  const ext = getMediaExtension(media);
+  return ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'heic', 'heif', 'jp2', 'j2k', 'jpf', 'jpx'].includes(ext);
 };
 
 const isMediaPdf = (media) => {
@@ -16165,7 +16595,7 @@ const isMediaHtml = (media) => {
 
 // Open media in popup modal - handles images, PDFs, HTML
 const openMediaInEditModal = (media) => {
-  const url = media.nextcloud_url || media.url || (media.nextcloud_path ? `/api/media/file?path=${encodeURIComponent(media.nextcloud_path)}` : null);
+  const url = isMediaImage(media) ? getMediaImagePreviewUrl(media, 'large') : getMediaUrl(media);
   if (!url) return;
 
   if (isMediaImage(media)) {
@@ -16196,7 +16626,7 @@ const getDocumentPreviewType = (path) => {
   }
 
   const ext = normalized.split('.').pop() || '';
-  if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif'].includes(ext)) {
+  if (['jpg', 'jpeg', 'jfif', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'heic', 'heif', 'jp2', 'j2k', 'jpf', 'jpx'].includes(ext)) {
     return 'image';
   }
   if (ext === 'pdf') {

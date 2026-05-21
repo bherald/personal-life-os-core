@@ -9,3 +9,5 @@ torchvision>=0.17,<1
 transformers>=4.40,<5
 sentence-transformers>=3,<6
 openai-whisper>=20231117
+tiktoken>=0.12,<1
+sentencepiece>=0.2,<1

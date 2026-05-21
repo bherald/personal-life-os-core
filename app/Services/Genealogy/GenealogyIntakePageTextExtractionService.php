@@ -134,7 +134,7 @@ class GenealogyIntakePageTextExtractionService
 
         $extension = strtolower(pathinfo($localPath, PATHINFO_EXTENSION));
 
-        return in_array($extension, ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp', 'gif'], true);
+        return in_array($extension, ['jpg', 'jpeg', 'jfif', 'png', 'tif', 'tiff', 'bmp', 'webp', 'gif', 'jp2', 'j2k', 'jpf', 'jpx'], true);
     }
 
     private function successResult(string $text, string $sourceMethod, ?array $quality = null): array

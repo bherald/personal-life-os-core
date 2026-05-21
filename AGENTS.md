@@ -11,6 +11,7 @@ Follow `.editorconfig`: UTF-8, LF endings, spaces, and 4-space indentation by de
 
 ## Testing Guidelines
 Add tests beside the relevant behavior and use descriptive `*Test.php` names, for example `WorkflowEngineTest.php` or `ScheduledJobCommandTest.php`. Prefer unit tests for isolated node and service logic, and feature or stabilization tests for full workflow, schema, and command paths. PHPUnit is configured through `phpunit.xml`; app source coverage is scoped to `app/`.
+Schema-mutating tests must follow `docs/testing-isolation-playbook.md`: use `Tests\Support\PreservesSchemaTables`, a per-test sqlite connection, or a dedicated test database instead of permanently creating/dropping shared migrated tables.
 
 ## Commit & Pull Request Guidelines
 Recent history uses Conventional Commit prefixes like `fix:`, `perf:`, and `docs:`. Keep commits focused and imperative, for example `fix: guard stale-file reindex loop`. For `fix:` commits that touch production behavior, include a body with root cause, behavior changed, verification, and any deployment or rollback notes; `.gitmessage` carries the local template. Pull requests should describe the user-visible or operational impact, list any config or migration changes, link the relevant issue, complete the production-behavior checklist when applicable, and include screenshots when UI views in `resources/views` or `resources/js` change.

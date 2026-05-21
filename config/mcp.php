@@ -819,13 +819,72 @@ return [
         | Genealogy MCP Server (Internal)
         |--------------------------------------------------------------------------
         |
-        | Internal MCP server for genealogy operations. Provides 6 tools:
+        | Internal MCP server for genealogy operations. Provides 66 tools:
         | - gedcom_parse: Parse GEDCOM file -> structured data
         | - gedcom_export: Export tree -> GEDCOM string
+        | - source_audit_workbook: Generate FT source-audit manifest/CSV/DOCX/ODT package
         | - tree_search: Search persons/families/sources
+        | - person_search: Tree-scoped person search
+        | - person_profile: Complete read-only person profile
+        | - name_variant_add: Add vetted name variants for maiden/married/alias/nickname searches
         | - person_research: AI research suggestions
+        | - health_audit: Read-only health audit over selected sections
+        | - health_review_packet: Canonical read-only review packets for health-audit issues
+        | - review_packet_context: Compact read-only genealogy review-packet context by target ref or token
+        | - review_packet_decision: Guarded dry-run-first genealogy review-packet decision wrapper
+        | - relationship_audit: Read-only relationship integrity audit
         | - tree_stats: Get tree statistics
+        | - tree_status: Aggregated tree readiness/status summary
+        | - work_status: Count-only work counters for batching decisions
+        | - coverage_rebuild: Dry-run-first ancestor path and person coverage rebuild
+        | - schedule_status: Compact read-only scheduler coverage and recent failures
+        | - research_task_queue: Compact read-only research task queue by tree
+        | - research_task_profile: Read-only detail for one research task
+        | - research_task_create: Dry-run-first guarded research task creation
         | - source_extract: Extract source citations with URLs
+        | - source_profile: Read-only source detail, citation, and media context
+        | - person_source_gap_batch: Ranked people lacking direct person-source links
+        | - source_gap_decision_lookup: Read source-gap review memory
+        | - source_gap_decision_add: Store source-gap review memory
+        | - media_profile: Read-only media detail and link context
+        | - media_review_packet: Compact document/OCR/media evidence review packet
+        | - media_ocr_escalation_batch: Compact OCR/HTR/vision escalation candidates
+        | - person_fact_extract: Extract review-first fact/relationship candidates from one evidence packet
+        | - media_unlinked: List unlinked media candidates with metadata hints
+        | - media_triage_batch: Compact unlinked media triage buckets
+        | - media_review_mark: Store non-destructive review memory for unresolved media
+        | - media_quarantine: Guarded quarantine/delete for unlinked uncited media
+        | - media_duplicate_consolidate: Guarded consolidation for byte-identical duplicate media
+        | - media_rag_batch: Bounded media RAG indexing batch wrapper
+        | - rag_index_batch: Bounded person/place/source RAG indexing batch wrapper
+        | - media_htr_batch: Bounded HTR transcription status, dry-run, or confirmed batch
+        | - media_link_integrity: Audit and repair deterministic missing media links
+        | - person_source_link_integrity: Audit and repair deterministic missing person-source links
+        | - source_citation_link_apply: Dry-run-first bounded source citation/link creation
+        | - evidence_capture_plan: Plan capture-ready evidence media for FT storage
+        | - evidence_capture_review: Materialize tree-scoped capture approval rows
+        | - evidence_capture_execute: Preflight or execute approved FT media capture
+        | - evidence_capture_direct: Dry-run-first one-off vetted evidence URL capture
+        | - source_media_backfill: Backfill URL-only source rows into FT storage
+        | - nara_placeholder_capture_batch: Capture NARA URL-only media placeholders into FT storage
+        | - media_attach_proposal: Create review-first person/family media attachment proposals
+        | - media_identity_apply: Apply operator-confirmed media identity metadata and links
+        | - source_add_proposal: Create review-first person/source attachment proposals
+        | - fact_update_proposal: Create review-first person fact update proposals
+        | - relationship_link_proposal: Create review-first existing-person relationship proposals
+        | - apply_approved_proposal: Apply already-approved proposals with dry-run preview
+        | - person_fact_apply_batch: Apply approved source-backed person fact proposals in bounded batches
+        | - approve_apply_proposal: Confirm proposal approval and application through canonical review services
+        | - proposal_queue: Read-only tree-scoped proposal review queue
+        | - review_packet_memory_batch: Feed accepted/rejected review-packet outcomes into semantic memory
+        | - rag_status: Get person/media RAG and embedding coverage
+        | - export_readiness: Get self-contained export readiness checks
+        | - export_standalone_status: Summarize GEDZip/tree-folder standalone export status
+        | - duplicate_candidates: List read-only duplicate person candidates
+        | - family_duplicate_retire: Retire isolated duplicate family rows after strict no-reference checks
+        | - non_ft_name_add: Store tree-scoped rejected/non-FT name memory
+        | - non_ft_name_lookup: Search rejected/non-FT name memory
+        | - research_memo_save: Save guarded FT-local research memos and source-gap memory
         |
         | Enables AI orchestration of family tree research and data management.
         | Uses RAW SQL - no Eloquent models.
@@ -835,14 +894,14 @@ return [
             'enabled' => true,
             'type' => 'internal',
             'service' => \App\Services\Genealogy\GenealogyMCPService::class,
-            'tools' => 6,
+            'tools' => 66,
             'description' => 'Genealogy operations (GEDCOM, search, AI research)',
             'trust_boundary' => 'plos_local',
             'transport' => 'internal_service',
             'network_required' => 'lan_only',
             'write_scope' => 'plos_data',
             'secret_surface_risk' => 'low',
-            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
+            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist', 'offline_genealogy_assist'],
             'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'],
         ],
 

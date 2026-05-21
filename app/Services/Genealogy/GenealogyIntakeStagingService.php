@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\Genealogy\SourceAudit\SourceAuditWorkbookTagResolver;
 use App\Services\Genealogy\Support\GenealogyDocumentExtensions;
 use App\Services\NextcloudFileApiService;
 use Illuminate\Support\Facades\Log;
@@ -12,13 +13,26 @@ class GenealogyIntakeStagingService
     // (union of config('file_types.document') and config('file_types.image')).
 
     public function __construct(
-        private readonly NextcloudFileApiService $nextcloud
+        private readonly NextcloudFileApiService $nextcloud,
+        private readonly ?SourceAuditWorkbookTagResolver $workbookTags = null
     ) {}
 
     public function stageScope(int $treeId, string $rootPath, int $limit = 100, array $options = []): array
     {
         $packetLabel = trim((string) ($options['packet_label'] ?? ''));
         $unprocessedOnly = (bool) ($options['unprocessed_only'] ?? false);
+        $explicitWorkbookTag = trim((string) ($options['workbook_tag'] ?? ''));
+        $explicitWorkbookTarget = null;
+        if ($explicitWorkbookTag !== '') {
+            $explicitWorkbookTarget = $this->tagResolver()->resolveTag($treeId, $explicitWorkbookTag);
+            if (! ($explicitWorkbookTarget['success'] ?? false)) {
+                return [
+                    'success' => false,
+                    'error' => $explicitWorkbookTarget['error'] ?? 'invalid_workbook_tag',
+                    'root_path' => $rootPath,
+                ];
+            }
+        }
 
         $listing = $this->nextcloud->listFiles($rootPath, true, 300, $limit > 0 ? $limit * 5 : 0);
         if (! ($listing['success'] ?? false)) {
@@ -42,7 +56,7 @@ class GenealogyIntakeStagingService
         $scanTruncatedReason = $listing['scan_truncated_reason'] ?? null;
         $symlinkLoopsSkipped = (int) ($listing['symlink_loops_skipped'] ?? 0);
         $scanSource = (string) ($listing['source'] ?? 'unknown');
-        $partialScan = (!$scanComplete) || $scanTruncated || $scanErrorsCount > 0;
+        $partialScan = (! $scanComplete) || $scanTruncated || $scanErrorsCount > 0;
 
         $files = [];
 
@@ -51,7 +65,7 @@ class GenealogyIntakeStagingService
                 continue;
             }
 
-            $normalized = $this->normalizeFile((array) $file);
+            $normalized = $this->normalizeFile((array) $file, $treeId, $explicitWorkbookTarget);
             if ($normalized === null) {
                 continue;
             }
@@ -64,7 +78,7 @@ class GenealogyIntakeStagingService
         }
 
         $files = array_slice($files, 0, max(0, $limit));
-        $packets = $this->groupIntoPackets($files, $packetLabel);
+        $packets = $this->groupIntoPackets($files, $packetLabel, $explicitWorkbookTarget);
 
         $warnings = [];
         if ($partialScan) {
@@ -106,6 +120,8 @@ class GenealogyIntakeStagingService
             'tree_id' => $treeId,
             'root_path' => $rootPath,
             'packet_label' => $packetLabel !== '' ? $packetLabel : null,
+            'workbook_tag' => $explicitWorkbookTarget['tag'] ?? null,
+            'workbook_target' => $explicitWorkbookTarget,
             'file_count' => count($files),
             'packet_count' => count($packets),
             'packets' => $packets,
@@ -122,7 +138,7 @@ class GenealogyIntakeStagingService
         ];
     }
 
-    private function normalizeFile(array $file): ?array
+    private function normalizeFile(array $file, int $treeId, ?array $explicitWorkbookTarget): ?array
     {
         $path = trim((string) ($file['path'] ?? ''));
         if ($path === '') {
@@ -138,6 +154,10 @@ class GenealogyIntakeStagingService
         $mimeType = trim((string) ($file['mime_type'] ?? ''));
         $isPdf = $extension === 'pdf' || $mimeType === 'application/pdf';
         $isImage = str_starts_with($mimeType, 'image/') || GenealogyDocumentExtensions::isImage($extension);
+        $workbookTarget = $explicitWorkbookTarget;
+        if ($workbookTarget === null) {
+            $workbookTarget = $this->tagResolver()->resolveFirstTagInText($treeId, $name.' '.$path);
+        }
 
         return [
             'path' => $path,
@@ -149,10 +169,12 @@ class GenealogyIntakeStagingService
             'is_pdf' => $isPdf,
             'is_image' => $isImage,
             'already_ingested' => (bool) ($file['already_ingested'] ?? false),
+            'workbook_tag' => $workbookTarget['tag'] ?? null,
+            'workbook_target' => $workbookTarget,
         ];
     }
 
-    private function groupIntoPackets(array $files, string $packetLabel): array
+    private function groupIntoPackets(array $files, string $packetLabel, ?array $explicitWorkbookTarget): array
     {
         $grouped = [];
 
@@ -167,6 +189,8 @@ class GenealogyIntakeStagingService
                     'documents' => [],
                     'file_count' => 0,
                     'estimated_pages' => 0,
+                    'workbook_tag' => $explicitWorkbookTarget['tag'] ?? ($file['workbook_tag'] ?? null),
+                    'workbook_target' => $explicitWorkbookTarget ?? ($file['workbook_target'] ?? null),
                 ];
             }
 
@@ -177,9 +201,15 @@ class GenealogyIntakeStagingService
                 'size' => $file['size'],
                 'mime_type' => $file['mime_type'],
                 'already_ingested' => $file['already_ingested'],
+                'workbook_tag' => $file['workbook_tag'] ?? null,
+                'workbook_target' => $file['workbook_target'] ?? null,
             ];
             $grouped[$packetKey]['file_count']++;
             $grouped[$packetKey]['estimated_pages'] += $this->estimatePages($file);
+            if (empty($grouped[$packetKey]['workbook_target']) && ! empty($file['workbook_target'])) {
+                $grouped[$packetKey]['workbook_tag'] = $file['workbook_tag'] ?? null;
+                $grouped[$packetKey]['workbook_target'] = $file['workbook_target'];
+            }
         }
 
         foreach ($grouped as &$packet) {
@@ -229,5 +259,10 @@ class GenealogyIntakeStagingService
         $seed = implode('|', [$treeId, trim($rootPath), trim($packetLabel)]);
 
         return 'intake:'.substr(sha1($seed), 0, 12);
+    }
+
+    private function tagResolver(): SourceAuditWorkbookTagResolver
+    {
+        return $this->workbookTags ?? app(SourceAuditWorkbookTagResolver::class);
     }
 }

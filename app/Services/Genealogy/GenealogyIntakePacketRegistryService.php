@@ -6,10 +6,15 @@ use App\Services\NextcloudFileApiService;
 
 class GenealogyIntakePacketRegistryService
 {
+    private ?GenealogyTreeRootResolver $treeRootResolver;
+
     public function __construct(
         private readonly NextcloudFileApiService $nextcloud,
-        private readonly GenealogyIntakeDocumentClassifierService $documentClassifier = new GenealogyIntakeDocumentClassifierService
-    ) {}
+        private readonly GenealogyIntakeDocumentClassifierService $documentClassifier = new GenealogyIntakeDocumentClassifierService,
+        ?GenealogyTreeRootResolver $treeRootResolver = null,
+    ) {
+        $this->treeRootResolver = $treeRootResolver;
+    }
 
     public function planPacketRegistration(array $packet, array $context = []): array
     {
@@ -112,7 +117,25 @@ class GenealogyIntakePacketRegistryService
             return rtrim($folder, '/').'/__intake/'.$packetLabel;
         }
 
+        $treeId = $this->positiveInt($context['tree_id'] ?? $packet['tree_id'] ?? null);
+        if ($treeId !== null) {
+            $resolver = $this->treeRootResolver ?? app(GenealogyTreeRootResolver::class);
+
+            return $resolver->referenceRoot($treeId).'/__intake/'.$packetLabel;
+        }
+
         return $this->defaultFtReferenceRoot().'/'.$packetLabel;
+    }
+
+    private function positiveInt(mixed $value): ?int
+    {
+        if (filter_var($value, FILTER_VALIDATE_INT) === false) {
+            return null;
+        }
+
+        $int = (int) $value;
+
+        return $int > 0 ? $int : null;
     }
 
     private function defaultFtReferenceRoot(): string

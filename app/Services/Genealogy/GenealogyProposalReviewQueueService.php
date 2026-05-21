@@ -3,6 +3,7 @@
 namespace App\Services\Genealogy;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * SHARED DISPLAY SEAM for genealogy proposal review screens.
@@ -213,6 +214,10 @@ class GenealogyProposalReviewQueueService
         $confidence = (float) ($row->confidence ?? 0.0);
         $status = (string) ($row->status ?? 'pending');
         $evidenceSources = json_decode((string) ($row->evidence_sources ?? '[]'), true);
+        $evidenceSources = is_array($evidenceSources) ? $evidenceSources : [];
+        $provenance = json_decode((string) ($row->provenance_json ?? 'null'), true);
+        $provenance = is_array($provenance) ? $provenance : null;
+        $reviewFlags = $this->buildProposalReviewFlags($changeType, $currentValue, $proposedValue, $evidenceSources, $confidence);
 
         return [
             'id' => (int) ($row->id ?? 0),
@@ -225,7 +230,7 @@ class GenealogyProposalReviewQueueService
             'current_value_excerpt' => $this->buildValueExcerpt($currentValue),
             'proposed_value_excerpt' => $this->buildValueExcerpt($proposedValue),
             'has_truncated_values' => $this->hasTruncatedValues($currentValue, $proposedValue),
-            'evidence_sources' => is_array($evidenceSources) ? $evidenceSources : [],
+            'evidence_sources' => $evidenceSources,
             'evidence_summary' => isset($row->evidence_summary) && (string) $row->evidence_summary !== ''
                 ? (string) $row->evidence_summary
                 : null,
@@ -240,6 +245,9 @@ class GenealogyProposalReviewQueueService
             'applied_at' => isset($row->applied_at) ? (string) $row->applied_at : null,
             'created_at' => (string) ($row->created_at ?? ''),
             'age_days' => $this->computeAgeDays((string) ($row->created_at ?? '')),
+            'review_flags' => $reviewFlags,
+            'review_route' => $this->buildProposalReviewRoute($reviewFlags),
+            'provenance' => $provenance,
         ];
     }
 
@@ -256,6 +264,14 @@ class GenealogyProposalReviewQueueService
         $confidence = (float) ($row->confidence ?? 0.0);
         $status = (string) ($row->status ?? 'pending');
         $evidenceSources = json_decode((string) ($row->evidence_sources ?? '[]'), true);
+        $evidenceSources = is_array($evidenceSources) ? $evidenceSources : [];
+        $relatedPersonName = trim((string) ($row->related_person_full_name ?? '')) !== ''
+            ? $this->buildPersonDisplayName((string) ($row->related_person_full_name ?? ''))
+            : null;
+        $proposedName = trim((string) ($row->proposed_name ?? '')) !== ''
+            ? (string) $row->proposed_name
+            : ($relatedPersonName ?? '');
+        $reviewFlags = $this->buildProposalReviewFlags('relationship', null, $proposedName, $evidenceSources, $confidence);
 
         return [
             'id' => (int) ($row->id ?? 0),
@@ -266,16 +282,10 @@ class GenealogyProposalReviewQueueService
             'related_person_id' => isset($row->related_person_id) && (int) $row->related_person_id > 0
                 ? (int) $row->related_person_id
                 : null,
-            'related_person_display_name' => trim((string) ($row->related_person_full_name ?? '')) !== ''
-                ? $this->buildPersonDisplayName((string) ($row->related_person_full_name ?? ''))
-                : null,
+            'related_person_display_name' => $relatedPersonName,
             'relationship_type' => $relationshipType,
             'relationship_label' => $this->buildRelationshipLabel($relationshipType),
-            'proposed_name' => trim((string) ($row->proposed_name ?? '')) !== ''
-                ? (string) $row->proposed_name
-                : (trim((string) ($row->related_person_full_name ?? '')) !== ''
-                    ? $this->buildPersonDisplayName((string) ($row->related_person_full_name ?? ''))
-                    : ''),
+            'proposed_name' => $proposedName,
             'proposed_given_name' => isset($row->proposed_given_name) && (string) $row->proposed_given_name !== ''
                 ? (string) $row->proposed_given_name
                 : null,
@@ -302,7 +312,7 @@ class GenealogyProposalReviewQueueService
             'proposed_marriage_place' => isset($row->proposed_marriage_place) && (string) $row->proposed_marriage_place !== ''
                 ? (string) $row->proposed_marriage_place
                 : null,
-            'evidence_sources' => is_array($evidenceSources) ? $evidenceSources : [],
+            'evidence_sources' => $evidenceSources,
             'evidence_summary' => isset($row->evidence_summary) && (string) $row->evidence_summary !== ''
                 ? (string) $row->evidence_summary
                 : null,
@@ -320,7 +330,90 @@ class GenealogyProposalReviewQueueService
             'applied_at' => isset($row->applied_at) ? (string) $row->applied_at : null,
             'created_at' => (string) ($row->created_at ?? ''),
             'age_days' => $this->computeAgeDays((string) ($row->created_at ?? '')),
+            'review_flags' => $reviewFlags,
+            'review_route' => $this->buildProposalReviewRoute($reviewFlags),
         ];
+    }
+
+    /**
+     * @param  list<string>  $evidenceSources
+     * @return list<string>
+     */
+    public function buildProposalReviewFlags(string $changeType, ?string $currentValue, ?string $proposedValue, array $evidenceSources, float $confidence): array
+    {
+        $flags = [];
+
+        if ($evidenceSources === []) {
+            $flags[] = 'missing_evidence_sources';
+        }
+
+        if ($confidence < 0.50) {
+            $flags[] = 'low_confidence';
+        } elseif ($confidence < 0.65) {
+            $flags[] = 'weak_confidence';
+        } elseif ($confidence < 0.80) {
+            $flags[] = 'medium_confidence';
+        }
+
+        if ($changeType === 'fact_update'
+            && $currentValue !== null
+            && trim($currentValue) !== ''
+            && $proposedValue !== null
+            && trim($proposedValue) !== ''
+            && ! $this->proposalValuesEquivalent($currentValue, $proposedValue)
+        ) {
+            $flags[] = 'conflicts_with_current_fact';
+        }
+
+        return array_values(array_unique($flags));
+    }
+
+    /**
+     * @param  list<string>  $reviewFlags
+     * @return array{queue: string, default_tool: string, default_action: string, approval_ready: bool}
+     */
+    public function buildProposalReviewRoute(array $reviewFlags): array
+    {
+        if (in_array('conflicts_with_current_fact', $reviewFlags, true)) {
+            return [
+                'queue' => 'conflict_review',
+                'default_tool' => 'genealogy.proposal_queue',
+                'default_action' => 'compare_current_and_proposed_values_against_sources_before_approval',
+                'approval_ready' => false,
+            ];
+        }
+
+        if (array_intersect($reviewFlags, ['missing_evidence_sources', 'low_confidence', 'weak_confidence']) !== []) {
+            return [
+                'queue' => 'evidence_review',
+                'default_tool' => 'genealogy.proposal_queue',
+                'default_action' => 'add_or_verify_source_backed_evidence_before_approval',
+                'approval_ready' => false,
+            ];
+        }
+
+        if (in_array('medium_confidence', $reviewFlags, true)) {
+            return [
+                'queue' => 'medium_evidence_review',
+                'default_tool' => 'genealogy.proposal_queue',
+                'default_action' => 'review_medium_confidence_source_evidence_before_approval',
+                'approval_ready' => false,
+            ];
+        }
+
+        return [
+            'queue' => 'standard_review',
+            'default_tool' => 'genealogy.proposal_queue',
+            'default_action' => 'review_then_approve_if_evidence_is_sufficient',
+            'approval_ready' => true,
+        ];
+    }
+
+    private function proposalValuesEquivalent(?string $left, ?string $right): bool
+    {
+        $normalize = static fn (?string $value): string => strtolower(preg_replace('/[^a-z0-9]+/i', '', (string) $value) ?? '');
+
+        return $normalize($left) === $normalize($right);
     }
 
     /** @return 'High'|'Medium'|'Low' */
@@ -522,20 +615,21 @@ class GenealogyProposalReviewQueueService
         }
 
         $params[] = $limit;
+        $provenanceSelect = $this->proposedChangesProvenanceSelect();
 
-        $rows = DB::select(
-            'SELECT pc.id, pc.tree_id, pc.person_id, pc.change_type, pc.field_name,
-                    pc.current_value, pc.proposed_value, pc.evidence_sources, pc.evidence_summary,
-                    pc.confidence, pc.agent_id, pc.status, pc.applied_at,
-                    pc.reviewer_notes, pc.created_at,
-                    TRIM(CONCAT(COALESCE(gp.given_name, \'\'), \' \', COALESCE(gp.surname, \'\'))) AS person_full_name
-             FROM genealogy_proposed_changes pc
-             LEFT JOIN genealogy_persons gp ON gp.id = pc.person_id AND gp.tree_id = pc.tree_id
-             WHERE '.implode(' AND ', $where).'
-             ORDER BY pc.created_at DESC
-             LIMIT ?',
-            $params
-        );
+        $sql = "SELECT pc.id, pc.tree_id, pc.person_id, pc.change_type, pc.field_name,
+                       pc.current_value, pc.proposed_value, pc.evidence_sources, pc.evidence_summary,
+                       {$provenanceSelect},
+                       pc.confidence, pc.agent_id, pc.status, pc.applied_at,
+                       pc.reviewer_notes, pc.created_at,
+                       TRIM(CONCAT(COALESCE(gp.given_name, ''), ' ', COALESCE(gp.surname, ''))) AS person_full_name
+                FROM genealogy_proposed_changes pc
+                LEFT JOIN genealogy_persons gp ON gp.id = pc.person_id AND gp.tree_id = pc.tree_id
+                WHERE ".implode(' AND ', $where).'
+                ORDER BY pc.created_at DESC
+                LIMIT ?';
+
+        $rows = DB::select($sql, $params);
 
         return array_map(fn ($row) => $this->formatPersonChangeRow($row), $rows);
     }
@@ -604,21 +698,35 @@ class GenealogyProposalReviewQueueService
     private function queryPersonChangesByIds(array $ids): array
     {
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $provenanceSelect = $this->proposedChangesProvenanceSelect();
 
-        $rows = DB::select(
-            'SELECT pc.id, pc.tree_id, pc.person_id, pc.change_type, pc.field_name,
-                    pc.current_value, pc.proposed_value, pc.evidence_summary,
-                    pc.confidence, pc.agent_id, pc.status, pc.applied_at,
-                    pc.reviewer_notes, pc.created_at,
-                    TRIM(CONCAT(COALESCE(gp.given_name, \'\'), \' \', COALESCE(gp.surname, \'\'))) AS person_full_name
-             FROM genealogy_proposed_changes pc
-             LEFT JOIN genealogy_persons gp ON gp.id = pc.person_id AND gp.tree_id = pc.tree_id
-             WHERE pc.id IN ('.$placeholders.')
-             ORDER BY pc.created_at DESC',
-            $ids
-        );
+        $sql = "SELECT pc.id, pc.tree_id, pc.person_id, pc.change_type, pc.field_name,
+                       pc.current_value, pc.proposed_value, pc.evidence_sources, pc.evidence_summary,
+                       {$provenanceSelect},
+                       pc.confidence, pc.agent_id, pc.status, pc.applied_at,
+                       pc.reviewer_notes, pc.created_at,
+                       TRIM(CONCAT(COALESCE(gp.given_name, ''), ' ', COALESCE(gp.surname, ''))) AS person_full_name
+                FROM genealogy_proposed_changes pc
+                LEFT JOIN genealogy_persons gp ON gp.id = pc.person_id AND gp.tree_id = pc.tree_id
+                WHERE pc.id IN ({$placeholders})
+                ORDER BY pc.created_at DESC";
+
+        $rows = DB::select($sql, $ids);
 
         return array_map(fn ($row) => $this->formatPersonChangeRow($row), $rows);
+    }
+
+    private function proposedChangesProvenanceSelect(): string
+    {
+        try {
+            if (Schema::hasColumn('genealogy_proposed_changes', 'provenance_json')) {
+                return 'pc.provenance_json';
+            }
+        } catch (\Throwable) {
+            // Tests and partial installs may not have a live schema.
+        }
+
+        return 'NULL AS provenance_json';
     }
 
     /**
@@ -636,7 +744,7 @@ class GenealogyProposalReviewQueueService
                     pr.proposed_sex, pr.proposed_birth_date, pr.proposed_birth_place,
                     pr.proposed_death_date, pr.proposed_death_place,
                     pr.proposed_marriage_date, pr.proposed_marriage_place,
-                    pr.evidence_summary, pr.confidence, pr.agent_id, pr.status,
+                    pr.evidence_sources, pr.evidence_summary, pr.confidence, pr.agent_id, pr.status,
                     pr.applied_person_id, pr.applied_family_id, pr.applied_at, pr.created_at,
                     TRIM(CONCAT(COALESCE(gp.given_name, \'\'), \' \', COALESCE(gp.surname, \'\'))) AS person_full_name,
                     TRIM(CONCAT(COALESCE(rp.given_name, \'\'), \' \', COALESCE(rp.surname, \'\'))) AS related_person_full_name

@@ -694,6 +694,13 @@ const showToast = (msg, type = 'success') => {
 // All categories shown — face match items (typo/nickname) are actionable in review panel
 const EXCLUDED_CATEGORIES = []
 const DEFAULT_OPERATOR_REVIEW_TYPE = 'genealogy_evidence_asset_capture'
+const DETAIL_REVIEW_TYPES = new Set([
+  'genealogy_finding',
+  'genealogy_merge',
+  'change_proposal',
+  'genealogy_review_packet',
+  DEFAULT_OPERATOR_REVIEW_TYPE,
+])
 const PREVIEW_REQUIRED_GENEALOGY_CHANGE_TYPES = new Set([
   'data_quality_review',
   'source_duplicate_cleanup',
@@ -734,6 +741,62 @@ const scrollItemIntoView = async (unifiedId) => {
   }
 }
 
+const reviewItemType = (item) => item?.source || item?.review_type || null
+
+const canOpenDetailForItem = (item) => {
+  const type = reviewItemType(item)
+  return Boolean(type && DETAIL_REVIEW_TYPES.has(type))
+}
+
+const reviewItemFromContext = (payload, unifiedId) => {
+  const item = payload?.item || payload?.data?.item || null
+  if (!item) return null
+
+  const reviewType = item.review_type || item.source || `${unifiedId}`.split(':', 1)[0]
+  const type = reviewTypes.value[reviewType] || {}
+  const normalized = {
+    ...item,
+    unified_id: item.unified_id || unifiedId,
+    source: item.source || reviewType,
+    category: item.category || type.category || (reviewType?.startsWith('genealogy') ? 'genealogy' : null),
+    ui_schema: item.ui_schema || type.ui_schema || {},
+    actions: item.actions || type.actions || [],
+    color: item.color || type.color || null,
+    batch_enabled: item.batch_enabled ?? Boolean(type.batch_enabled),
+    details: item.details || {},
+  }
+
+  if (payload?.target_ref && !normalized.target_ref) normalized.target_ref = payload.target_ref
+  if (payload?.review_focus && !normalized.review_focus) normalized.review_focus = payload.review_focus
+  if (payload?.packet_outcome && !normalized.packet_outcome) normalized.packet_outcome = payload.packet_outcome
+  if (payload?.packet_status && !normalized.packet_status) normalized.packet_status = payload.packet_status
+  if (payload?.source_locator && !normalized.source_locator) normalized.source_locator = payload.source_locator
+  if (Array.isArray(payload?.claims) && normalized.claim_count === undefined) normalized.claim_count = payload.claims.length
+  if (Array.isArray(payload?.source_locators) && normalized.source_count === undefined) normalized.source_count = payload.source_locators.length
+
+  return normalized
+}
+
+const loadFocusedReviewItem = async (unifiedId) => {
+  try {
+    const contextPayload = await api.get(`/research-hub/items/${encodeURIComponent(unifiedId)}/context`)
+    const contextItem = reviewItemFromContext(contextPayload, unifiedId)
+    if (contextItem) return contextItem
+  } catch (error) {
+    if (error?.response?.status !== 404) {
+      console.error('Failed to load focused review context:', error)
+    }
+  }
+
+  try {
+    const response = await api.get(`/reviews/${encodeURIComponent(unifiedId)}`)
+    return response.item || response.data?.item || null
+  } catch (error) {
+    console.error('Failed to load focused review item:', error)
+    return null
+  }
+}
+
 const focusLinkedItem = async () => {
   const unifiedId = normalizeRouteString(route.query.unified_id)
   if (!unifiedId) {
@@ -743,14 +806,7 @@ const focusLinkedItem = async () => {
   let target = items.value.find((item) => item.unified_id === unifiedId) || null
 
   if (!target) {
-    try {
-      const response = await api.get(`/reviews/${encodeURIComponent(unifiedId)}`)
-      target = response.item || response.data?.item || null
-    } catch (error) {
-      console.error('Failed to load focused review item:', error)
-      return
-    }
-
+    target = await loadFocusedReviewItem(unifiedId)
     if (!target) {
       return
     }
@@ -764,6 +820,9 @@ const focusLinkedItem = async () => {
   }
 
   selectedItem.value = target
+  if (canOpenDetailForItem(target)) {
+    detailUnifiedId.value = target.unified_id
+  }
   await scrollItemIntoView(unifiedId)
 }
 
@@ -1152,14 +1211,7 @@ const setupScrollObserver = () => {
 
 const selectItem = (item) => {
   selectedItem.value = item
-  // Open the master/detail compare for any genealogy review type the
-  // enrichment service understands. Phase 1 only wired finding+merge;
-  // change_proposal was added in the post-deploy gap fix after the
-  // operator's screenshot showed event_add (change_proposal) items
-  // not opening the pane.
-  const detailTypes = ['genealogy_finding', 'genealogy_merge', 'change_proposal', 'genealogy_review_packet', DEFAULT_OPERATOR_REVIEW_TYPE]
-  const detailType = item?.source || item?.review_type
-  if (detailType && detailTypes.includes(detailType)) {
+  if (canOpenDetailForItem(item)) {
     detailUnifiedId.value = item.unified_id
   }
 }

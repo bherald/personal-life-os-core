@@ -6,9 +6,16 @@ use App\Services\AIService;
 
 class GenealogyLocalSourceQualityService
 {
+    private ?GenealogyLessonPromptContextService $lessonPromptContext = null;
+
     public function __construct(
         private readonly AIService $aiService
     ) {}
+
+    private function lessonContext(): GenealogyLessonPromptContextService
+    {
+        return $this->lessonPromptContext ??= app(GenealogyLessonPromptContextService::class);
+    }
 
     public function assess(array $extraction, array $media = []): array
     {
@@ -73,6 +80,7 @@ class GenealogyLocalSourceQualityService
         $title = (string) ($media['title'] ?? 'Genealogy document');
         $personsJson = json_encode($extraction['persons'] ?? [], JSON_UNESCAPED_SLASHES);
         $notes = (string) ($extraction['notes_remainder'] ?? '');
+        $lessonContext = $this->lessonContext()->build($media, $this->lessonSearchTerms($extraction, $media), 4);
 
         return <<<PROMPT
 Assess whether this extracted genealogy evidence is strong enough for proposal generation.
@@ -91,6 +99,7 @@ Guidance:
 - weak: fragmentary or too uncertain for proposals
 - noisy: mostly junk, OCR garbage, or non-genealogical content
 - collateral_only: useful context about relatives or cluster, but not strong enough for direct person proposals
+{$lessonContext}
 
 Document:
 - type: {$mediaType}
@@ -104,6 +113,37 @@ Notes:
 
 Prefer weak or collateral_only over false usable.
 PROMPT;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function lessonSearchTerms(array $extraction, array $media): array
+    {
+        $terms = [
+            $media['media_type'] ?? null,
+            $media['title'] ?? null,
+            $extraction['document_type'] ?? null,
+            'source quality',
+            'proposal generation',
+            'collateral',
+            'weak evidence',
+            'ocr',
+            'vision',
+        ];
+
+        foreach (array_slice((array) ($extraction['persons'] ?? []), 0, 5) as $person) {
+            $person = (array) $person;
+            $terms[] = $person['name'] ?? null;
+            $terms[] = $person['given_name'] ?? null;
+            $terms[] = $person['surname'] ?? null;
+            $terms[] = $person['role'] ?? null;
+        }
+
+        return array_values(array_filter(
+            array_map(static fn (mixed $term): string => trim((string) $term), $terms),
+            static fn (string $term): bool => $term !== ''
+        ));
     }
 
     private function parseResponse(string $response): array

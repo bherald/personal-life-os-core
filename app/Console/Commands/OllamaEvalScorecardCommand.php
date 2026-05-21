@@ -10,7 +10,8 @@ class OllamaEvalScorecardCommand extends Command
         {model? : Optional model name to inspect}
         {--list : Show the candidate queue}
         {--cases : Show eval cases}
-        {--json : Emit JSON instead of table/text output}';
+        {--json : Emit JSON instead of table/text output}
+        {--compact : Emit aggregate-only scorecard posture without notes}';
 
     protected $description = 'Show the local Ollama Sprint A routing, scorecard fields, and candidate queue';
 
@@ -43,11 +44,16 @@ class OllamaEvalScorecardCommand extends Command
             }
 
             if ($this->option('json')) {
-                $this->line(json_encode([
+                $modelPayload = [
                     'model' => $candidate,
                     'scorecard_fields' => $payload['scorecard_fields'],
                     'minimum_acceptance' => $payload['minimum_acceptance'],
-                ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+                ];
+                if ($this->option('compact')) {
+                    $modelPayload = $this->compactModelPayload($candidate);
+                }
+
+                $this->line(json_encode($modelPayload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
                 return self::SUCCESS;
             }
@@ -71,7 +77,8 @@ class OllamaEvalScorecardCommand extends Command
         }
 
         if ($this->option('json')) {
-            $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            $output = $this->option('compact') ? $this->compactScorecardPayload($payload) : $payload;
+            $this->line(json_encode($output, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             return self::SUCCESS;
         }
@@ -118,5 +125,78 @@ class OllamaEvalScorecardCommand extends Command
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function compactScorecardPayload(array $payload): array
+    {
+        $candidates = is_array($payload['candidate_queue'] ?? null) ? $payload['candidate_queue'] : [];
+        $routing = is_array($payload['routing'] ?? null) ? $payload['routing'] : [];
+        $compressionFamilies = config('ollama_eval.compression_families', []);
+
+        $candidateCounts = [];
+        $activeModels = [];
+        $benchModels = [];
+        $watchModels = [];
+        $caveatModels = [];
+
+        foreach ($candidates as $candidate) {
+            if (! is_array($candidate)) {
+                continue;
+            }
+
+            $status = (string) ($candidate['status'] ?? 'unknown');
+            $model = (string) ($candidate['model'] ?? 'unknown');
+            $candidateCounts[$status] = ($candidateCounts[$status] ?? 0) + 1;
+
+            if ($status === 'active') {
+                $activeModels[] = $model;
+            } elseif ($status === 'bench') {
+                $benchModels[] = $model;
+            } elseif ($status === 'watch') {
+                $watchModels[] = $model;
+            }
+
+            if (str_contains(strtolower((string) ($candidate['notes'] ?? '')), 'caveat')) {
+                $caveatModels[] = $model;
+            }
+        }
+
+        return [
+            'status' => 'ok',
+            'read_only' => true,
+            'no_write' => true,
+            'promotion_apply_enabled' => false,
+            'routing_buckets' => array_map(static fn ($tasks): int => is_array($tasks) ? count($tasks) : 0, $routing),
+            'scorecard_field_count' => count($payload['scorecard_fields'] ?? []),
+            'minimum_acceptance_count' => count($payload['minimum_acceptance'] ?? []),
+            'eval_case_count' => count($payload['eval_cases'] ?? []),
+            'candidate_counts' => $candidateCounts,
+            'active_models' => $activeModels,
+            'bench_models' => $benchModels,
+            'watch_models' => $watchModels,
+            'caveat_models' => $caveatModels,
+            'compression_families' => array_values(array_map(
+                static fn (array $family): string => (string) ($family['family'] ?? 'unknown'),
+                is_array($compressionFamilies) ? $compressionFamilies : []
+            )),
+        ];
+    }
+
+    /** @param array<string, mixed> $candidate */
+    private function compactModelPayload(array $candidate): array
+    {
+        return [
+            'status' => 'ok',
+            'read_only' => true,
+            'no_write' => true,
+            'model' => (string) ($candidate['model'] ?? 'unknown'),
+            'candidate_status' => (string) ($candidate['status'] ?? 'unknown'),
+            'intended_use' => (string) ($candidate['intended_use'] ?? 'unknown'),
+            'has_caveat' => str_contains(strtolower((string) ($candidate['notes'] ?? '')), 'caveat'),
+        ];
     }
 }

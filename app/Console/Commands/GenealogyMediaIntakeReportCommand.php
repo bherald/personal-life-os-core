@@ -9,7 +9,7 @@ class GenealogyMediaIntakeReportCommand extends Command
 {
     protected $signature = 'genealogy:media-intake-report
         {--tree=4 : Tree ID to inspect}
-        {--root= : File registry / Nextcloud root to inspect; defaults to genealogy.nextcloud_root}
+        {--root= : File registry / Nextcloud root to inspect; defaults to tree-inferred media root}
         {--limit=50 : Max sample rows for non-compact output}
         {--json : Emit machine-readable JSON}
         {--markdown : Emit Markdown}

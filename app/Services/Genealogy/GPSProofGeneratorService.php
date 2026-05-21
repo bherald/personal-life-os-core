@@ -5,6 +5,8 @@ namespace App\Services\Genealogy;
 use App\Services\AIService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 /**
  * N96/N67 — GPS Proof Argument Generator
@@ -31,48 +33,71 @@ use Illuminate\Support\Facades\Log;
  */
 class GPSProofGeneratorService
 {
+    private const LESSON_MEMORY_TYPES = [
+        'research_process_lesson',
+        'document_interpretation_lesson',
+        'source_capture_lesson',
+        'identity_decision_lesson',
+        'offline_workflow_lesson',
+    ];
+
     private ?AIService $aiService = null;
+
     private ?SourceConflictService $conflictService = null;
+
     private ?SearchCoverageService $coverageService = null;
+
     private ?GenealogyService $genealogyService = null;
 
     private function ai(): AIService
     {
-        if (!$this->aiService) $this->aiService = app(AIService::class);
+        if (! $this->aiService) {
+            $this->aiService = app(AIService::class);
+        }
+
         return $this->aiService;
     }
 
     private function conflicts(): SourceConflictService
     {
-        if (!$this->conflictService) $this->conflictService = app(SourceConflictService::class);
+        if (! $this->conflictService) {
+            $this->conflictService = app(SourceConflictService::class);
+        }
+
         return $this->conflictService;
     }
 
     private function coverage(): SearchCoverageService
     {
-        if (!$this->coverageService) $this->coverageService = app(SearchCoverageService::class);
+        if (! $this->coverageService) {
+            $this->coverageService = app(SearchCoverageService::class);
+        }
+
         return $this->coverageService;
     }
 
     private function genealogy(): GenealogyService
     {
-        if (!$this->genealogyService) $this->genealogyService = app(GenealogyService::class);
+        if (! $this->genealogyService) {
+            $this->genealogyService = app(GenealogyService::class);
+        }
+
         return $this->genealogyService;
     }
 
     /**
      * Generate a GPS proof argument for a specific genealogical question.
      *
-     * @param int    $personId  Person being proven
-     * @param string $question  The genealogical question (e.g. "Who were the parents of William Doe?")
-     * @param array  $options   Optional: ['max_tokens'=>int, 'task_id'=>int]
-     *   task_id: when provided, saves proof to gps_research_tasks.conclusion and updates status.
+     * @param  int  $personId  Person being proven
+     * @param  string  $question  The genealogical question (e.g. "Who were the parents of William Doe?")
+     * @param  array  $options  Optional: ['max_tokens'=>int, 'task_id'=>int]
+     *                          task_id: when provided, saves proof to gps_research_tasks.conclusion and updates status.
      * @return array ['success'=>bool, 'proof'=>string, 'citations_validated'=>int, 'warnings'=>string[], 'task_saved'=>bool]
      */
     public function generateProofArgument(int $personId, string $question, array $options = []): array
     {
         $person = $this->genealogy()->getPersonFull($personId);
-        if (!$person) {
+        if (! $person) {
             return ['success' => false, 'error' => 'Person not found'];
         }
 
@@ -95,15 +120,15 @@ class GPSProofGeneratorService
             'model_role' => 'quality',
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return ['success' => false, 'error' => $result['error'] ?? 'AI generation failed'];
         }
 
         $proofText = $result['response'] ?? '';
-        $personName = trim(($person['given_name'] ?? '') . ' ' . ($person['surname'] ?? ''));
+        $personName = trim(($person['given_name'] ?? '').' '.($person['surname'] ?? ''));
 
         $proofValidation = $this->validateProofIntegrity($proofText, $personName, $question, $evidence);
-        if (!$proofValidation['valid']) {
+        if (! $proofValidation['valid']) {
             $warnings = $proofValidation['warnings'];
             $fallbackProof = $this->buildDeterministicFallbackProof($person, $question, $evidence, $coverage, $conflicts);
 
@@ -114,7 +139,7 @@ class GPSProofGeneratorService
             }
         }
 
-        if (!$proofValidation['valid']) {
+        if (! $proofValidation['valid']) {
             $warnings = $proofValidation['warnings'];
 
             Log::warning('GPSProofGeneratorService: Proof subject mismatch', [
@@ -138,30 +163,30 @@ class GPSProofGeneratorService
         $confidence = $this->inferConfidenceLevel($proofText);
 
         Log::info('GPSProofGeneratorService: Proof generated', [
-            'person_id'          => $personId,
-            'question'           => substr($question, 0, 100),
+            'person_id' => $personId,
+            'question' => substr($question, 0, 100),
             'citations_validated' => $citationsValid,
-            'warnings'           => count($warnings),
-            'confidence'         => $confidence,
+            'warnings' => count($warnings),
+            'confidence' => $confidence,
         ]);
 
         $taskSaved = false;
-        $taskId = isset($options['task_id']) ? (int)$options['task_id'] : null;
+        $taskId = isset($options['task_id']) ? (int) $options['task_id'] : null;
         if ($taskId) {
             $taskSaved = $this->saveToTask($taskId, $proofText, $confidence, $evidence, $conflicts);
         }
 
         return [
-            'success'             => true,
-            'person_id'           => $personId,
-            'question'            => $question,
-            'proof'               => $proofText,
-            'confidence'          => $confidence,
+            'success' => true,
+            'person_id' => $personId,
+            'question' => $question,
+            'proof' => $proofText,
+            'confidence' => $confidence,
             'citations_validated' => $citationsValid,
-            'warnings'            => $warnings,
-            'evidence_count'      => count($evidence['sources']),
+            'warnings' => $warnings,
+            'evidence_count' => count($evidence['sources']),
             'unresolved_conflicts' => $conflicts['total'],
-            'task_saved'          => $taskSaved,
+            'task_saved' => $taskSaved,
         ];
     }
 
@@ -169,9 +194,8 @@ class GPSProofGeneratorService
      * Batch auto-generate proofs for all open/in_progress research tasks in a tree
      * that have at least one source linked to the person.
      *
-     * @param int $treeId
-     * @param int $limit   Max tasks to process in one call
-     * @param bool $dryRun If true, return eligible tasks without generating
+     * @param  int  $limit  Max tasks to process in one call
+     * @param  bool  $dryRun  If true, return eligible tasks without generating
      * @return array ['processed'=>int, 'skipped'=>int, 'errors'=>int, 'tasks'=>array]
      */
     public function generateForOpenTasks(int $treeId, int $limit = 5, bool $dryRun = false): array
@@ -200,7 +224,7 @@ class GPSProofGeneratorService
             $tasks
         )));
         $sourcedPersons = [];
-        if (!empty($personIds)) {
+        if (! empty($personIds)) {
             $rows = DB::table('genealogy_person_sources')
                 ->select('person_id')
                 ->distinct()
@@ -213,60 +237,62 @@ class GPSProofGeneratorService
         }
 
         $processed = 0;
-        $skipped   = 0;
-        $errors    = 0;
-        $taskLog   = [];
+        $skipped = 0;
+        $errors = 0;
+        $taskLog = [];
 
         foreach ($tasks as $task) {
             $task = (array) $task;
             $hasSources = in_array($task['person_id'], $sourcedPersons);
 
-            if (!$hasSources) {
+            if (! $hasSources) {
                 $skipped++;
                 $taskLog[] = ['task_id' => $task['id'], 'status' => 'skipped', 'reason' => 'no sources'];
+
                 continue;
             }
 
             if ($dryRun) {
                 $taskLog[] = ['task_id' => $task['id'], 'person_id' => $task['person_id'], 'status' => 'eligible', 'question' => substr($task['question'], 0, 80)];
                 $processed++;
+
                 continue;
             }
 
             $result = $this->generateProofArgument(
-                (int)$task['person_id'],
+                (int) $task['person_id'],
                 $task['question'],
-                ['task_id' => (int)$task['id']]
+                ['task_id' => (int) $task['id']]
             );
 
             if ($result['success']) {
                 $processed++;
                 $taskLog[] = [
-                    'task_id'    => $task['id'],
-                    'person_id'  => $task['person_id'],
-                    'status'     => 'generated',
+                    'task_id' => $task['id'],
+                    'person_id' => $task['person_id'],
+                    'status' => 'generated',
                     'confidence' => $result['confidence'] ?? 'unknown',
-                    'warnings'   => count($result['warnings'] ?? []),
+                    'warnings' => count($result['warnings'] ?? []),
                 ];
             } else {
                 $errors++;
                 $taskLog[] = [
                     'task_id' => $task['id'],
-                    'status'  => 'error',
-                    'error'   => $result['error'] ?? 'unknown',
+                    'status' => 'error',
+                    'error' => $result['error'] ?? 'unknown',
                 ];
                 Log::warning('GPSProofGeneratorService: batch generation failed', [
                     'task_id' => $task['id'],
-                    'error'   => $result['error'] ?? 'unknown',
+                    'error' => $result['error'] ?? 'unknown',
                 ]);
             }
         }
 
         return [
             'processed' => $processed,
-            'skipped'   => $skipped,
-            'errors'    => $errors,
-            'tasks'     => $taskLog,
+            'skipped' => $skipped,
+            'errors' => $errors,
+            'tasks' => $taskLog,
         ];
     }
 
@@ -275,30 +301,31 @@ class GPSProofGeneratorService
      */
     private function saveToTask(int $taskId, string $proofText, string $confidence, array $evidence, array $conflicts): bool
     {
-        $task = DB::selectOne("SELECT id, tree_id, person_id FROM gps_research_tasks WHERE id = ?", [$taskId]);
-        if (!$task) {
+        $task = DB::selectOne('SELECT id, tree_id, person_id FROM gps_research_tasks WHERE id = ?', [$taskId]);
+        if (! $task) {
             Log::warning('GPSProofGeneratorService: task not found for save', ['task_id' => $taskId]);
+
             return false;
         }
 
         $newStatus = in_array($confidence, ['proven', 'probable']) ? 'resolved' : 'inconclusive';
 
         $evidenceSummary = json_encode([
-            'sources_count'       => count($evidence['sources'] ?? []),
-            'events_count'        => count($evidence['events'] ?? []),
+            'sources_count' => count($evidence['sources'] ?? []),
+            'events_count' => count($evidence['events'] ?? []),
             'unresolved_conflicts' => $conflicts['total'] ?? 0,
-            'generated_at'        => now()->toIso8601String(),
+            'generated_at' => now()->toIso8601String(),
         ]);
 
         DB::update(
-            "UPDATE gps_research_tasks
+            'UPDATE gps_research_tasks
              SET conclusion = ?, evidence_summary = ?, status = ?, resolved_at = NOW(), updated_at = NOW()
-             WHERE id = ?",
+             WHERE id = ?',
             [$proofText, $evidenceSummary, $newStatus, $taskId]
         );
 
         Log::info('GPSProofGeneratorService: Proof saved to task', [
-            'task_id'    => $taskId,
+            'task_id' => $taskId,
             'new_status' => $newStatus,
             'confidence' => $confidence,
         ]);
@@ -361,22 +388,25 @@ class GPSProofGeneratorService
         array $coverage,
         array $conflicts
     ): string {
-        $personName = trim(($person['given_name'] ?? '') . ' ' . ($person['surname'] ?? ''));
-        $birthDate  = $person['birth_date'] ?? 'unknown';
-        $deathDate  = $person['death_date'] ?? 'unknown';
+        $personName = trim(($person['given_name'] ?? '').' '.($person['surname'] ?? ''));
+        $birthDate = $person['birth_date'] ?? 'unknown';
+        $deathDate = $person['death_date'] ?? 'unknown';
+        $lessonContext = $this->buildReusableLessonContext($person, $question, $evidence, $conflicts, 5);
 
         // Format sources as numbered list
         $sourceList = '';
         foreach ($evidence['sources'] as $i => $src) {
             $n = $i + 1;
             $src = (array) $src;
-            $url  = $src['url'] ?? '';
+            $url = $src['url'] ?? '';
             $qual = $src['source_quality'] ?? 'derivative';
             $info = $src['information_quality'] ?? 'secondary';
             $sourceList .= "[Source {$n}] {$src['title']} — quality: {$qual}/{$info}"
-                . ($url ? " — {$url}" : '') . "\n";
+                .($url ? " — {$url}" : '')."\n";
         }
-        if (empty($sourceList)) $sourceList = "No formal sources cited yet.\n";
+        if (empty($sourceList)) {
+            $sourceList = "No formal sources cited yet.\n";
+        }
 
         // Format key facts from events
         $factList = '';
@@ -391,7 +421,9 @@ class GPSProofGeneratorService
             $c = (array) $c;
             $conflictList .= "- CONFLICT on {$c['field_name']}: Source says \"{$c['source_a_value']}\" vs \"{$c['source_b_value']}\" (severity: {$c['conflict_severity']})\n";
         }
-        if (empty($conflictList)) $conflictList = "None detected.\n";
+        if (empty($conflictList)) {
+            $conflictList = "None detected.\n";
+        }
 
         // Format search coverage
         $coverageList = '';
@@ -400,8 +432,12 @@ class GPSProofGeneratorService
             $coverageList .= "- {$cov['repository_type']} ({$cov['repository_name']}): {$cov['search_count']} searches, {$cov['positive_count']} positive\n";
         }
         $uncovered = implode(', ', $coverage['core_uncovered'] ?? []);
-        if ($uncovered) $coverageList .= "- UNCOVERED repository types: {$uncovered}\n";
-        if (empty($coverageList)) $coverageList = "No documented searches yet.\n";
+        if ($uncovered) {
+            $coverageList .= "- UNCOVERED repository types: {$uncovered}\n";
+        }
+        if (empty($coverageList)) {
+            $coverageList = "No documented searches yet.\n";
+        }
 
         return <<<PROMPT
 You are a professional genealogist writing a GPS-compliant proof argument.
@@ -412,12 +448,14 @@ STRICT RULES:
 3. If evidence is insufficient, say so explicitly — do not speculate.
 4. If conflicts exist, address them using GPS Element 4 analysis.
 5. Write in formal genealogical narrative style (third person, past tense).
+6. Reusable Genea lessons are process guardrails only; never treat them as source evidence or cite them as [Source N].
 
 PERSON: {$personName}
 BORN: {$birthDate}
 DIED: {$deathDate}
 
 GENEALOGICAL QUESTION: {$question}
+{$lessonContext}
 
 === AVAILABLE SOURCES ===
 {$sourceList}
@@ -442,6 +480,148 @@ If the evidence is insufficient to reach a conclusion, state that explicitly.
 PROMPT;
     }
 
+    private function buildReusableLessonContext(
+        array $person,
+        string $question,
+        array $evidence,
+        array $conflicts,
+        int $limit = 5
+    ): string {
+        $treeId = (int) ($person['tree_id'] ?? $person['family_tree_id'] ?? 0);
+        if ($treeId < 1 || ! Schema::hasTable('agent_semantic_memory')) {
+            return '';
+        }
+
+        $terms = $this->lessonSearchTerms($person, $question, $evidence, $conflicts);
+        $rows = $this->loadLessonMemoryRows($treeId, $terms, $limit);
+        if ($rows === [] && $terms !== []) {
+            $rows = $this->loadLessonMemoryRows($treeId, ['proof', 'source'], min(3, $limit));
+        }
+
+        if ($rows === []) {
+            return '';
+        }
+
+        $lines = [
+            '',
+            '=== REUSABLE GENEA LESSONS ===',
+            'Process guardrails only; do not treat these lessons as source evidence or cite them as [Source N].',
+        ];
+
+        foreach ($rows as $row) {
+            $payload = json_decode((string) ($row->fact_value ?? ''), true);
+            $payload = is_array($payload) ? $payload : [];
+            $lessonPayload = is_array($payload['payload'] ?? null) ? $payload['payload'] : [];
+            $title = trim((string) ($payload['title'] ?? $row->fact_key ?? 'Genea lesson'));
+            $lesson = trim((string) ($payload['lesson'] ?? ''));
+            $tags = is_array($lessonPayload['tags'] ?? null)
+                ? array_slice(array_values(array_filter(array_map('strval', $lessonPayload['tags']))), 0, 5)
+                : [];
+
+            if ($lesson === '') {
+                continue;
+            }
+
+            $tagText = $tags !== [] ? ' tags='.implode(',', $tags) : '';
+            $lines[] = '- ['.(string) ($row->fact_type ?? 'lesson').'] '.$this->compactLessonText($title, 100).': '.$this->compactLessonText($lesson, 300).$tagText;
+        }
+
+        return count($lines) > 3 ? "\n".implode("\n", $lines)."\n" : '';
+    }
+
+    /**
+     * @return list<object>
+     */
+    private function loadLessonMemoryRows(int $treeId, array $terms, int $limit): array
+    {
+        $limit = max(1, min(8, $limit));
+        $where = [
+            "entity_type = 'genealogy_tree'",
+            'entity_id = ?',
+            'fact_type IN ('.implode(', ', array_fill(0, count(self::LESSON_MEMORY_TYPES), '?')).')',
+        ];
+        $params = [$treeId, ...self::LESSON_MEMORY_TYPES];
+
+        $terms = array_slice(array_values(array_unique(array_filter(
+            array_map(fn (string $term): string => $this->compactLessonText($term, 80), $terms),
+            static fn (string $term): bool => $term !== ''
+        ))), 0, 10);
+
+        if ($terms !== []) {
+            $termClauses = [];
+            foreach ($terms as $term) {
+                $termClauses[] = '(fact_key LIKE ? OR fact_value LIKE ?)';
+                $like = '%'.$term.'%';
+                $params[] = $like;
+                $params[] = $like;
+            }
+            $where[] = '('.implode(' OR ', $termClauses).')';
+        }
+
+        $params[] = $limit;
+
+        return DB::select(
+            'SELECT id, fact_type, fact_key, fact_value, confidence, updated_at
+             FROM agent_semantic_memory
+             WHERE '.implode(' AND ', $where).'
+             ORDER BY confidence DESC, updated_at DESC, id DESC
+             LIMIT ?',
+            $params
+        );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function lessonSearchTerms(array $person, string $question, array $evidence, array $conflicts): array
+    {
+        $terms = [
+            $question,
+            $person['given_name'] ?? null,
+            $person['surname'] ?? null,
+            trim((string) ($person['given_name'] ?? '').' '.(string) ($person['surname'] ?? '')),
+            $person['birth_place'] ?? null,
+            $person['death_place'] ?? null,
+            'gps proof',
+            'proof',
+            'source evidence',
+            'conflict',
+            'identity',
+        ];
+
+        foreach (['birth_place', 'death_place'] as $field) {
+            foreach (explode(',', (string) ($person[$field] ?? '')) as $part) {
+                $terms[] = trim($part);
+            }
+        }
+
+        foreach (array_slice($evidence['sources'] ?? [], 0, 6) as $source) {
+            $source = (array) $source;
+            $terms[] = $source['title'] ?? null;
+            $terms[] = $source['publication'] ?? null;
+            $terms[] = $source['source_type'] ?? null;
+        }
+
+        foreach (array_slice($conflicts['conflicts'] ?? [], 0, 4) as $conflict) {
+            $conflict = (array) $conflict;
+            $terms[] = $conflict['field_name'] ?? null;
+            $terms[] = $conflict['source_a_value'] ?? null;
+            $terms[] = $conflict['source_b_value'] ?? null;
+        }
+
+        return array_values(array_unique(array_filter(
+            array_map(static fn (mixed $term): string => trim((string) $term), $terms),
+            static fn (string $term): bool => $term !== '' && mb_strlen($term) >= 3
+        )));
+    }
+
+    private function compactLessonText(string $text, int $limit): string
+    {
+        $text = trim(preg_replace('/\s+/', ' ', Str::ascii($text)) ?? '');
+
+        return mb_strlen($text) > $limit ? mb_substr($text, 0, $limit - 1).'...' : $text;
+    }
+
     /**
      * Validate that source IDs/URLs mentioned in the proof text exist in the DB.
      * Returns [count_validated, warnings_array].
@@ -457,7 +637,7 @@ PROMPT;
 
         $sourcesCount = count($evidence['sources'] ?? []);
         foreach ($referencedNums as $num) {
-            if ((int)$num > $sourcesCount || (int)$num < 1) {
+            if ((int) $num > $sourcesCount || (int) $num < 1) {
                 $warnings[] = "Proof references [Source {$num}] but only {$sourcesCount} sources exist for this person.";
             } else {
                 $validated++;
@@ -468,10 +648,10 @@ PROMPT;
         preg_match_all('/https?:\/\/[^\s\]"]+/', $proofText, $urlMatches);
         foreach ($urlMatches[0] as $url) {
             $exists = DB::selectOne(
-                "SELECT id FROM genealogy_sources WHERE url = ? LIMIT 1",
+                'SELECT id FROM genealogy_sources WHERE url = ? LIMIT 1',
                 [$url]
             );
-            if (!$exists) {
+            if (! $exists) {
                 $warnings[] = "Proof contains URL not found in genealogy_sources: {$url}";
             } else {
                 $validated++;
@@ -495,7 +675,7 @@ PROMPT;
             $warnings[] = 'Proof claims a single available source despite multiple linked sources.';
         }
 
-        if (!empty($evidence['events']) && preg_match('/no evidence has been found|no sources have been located/i', $proofText) === 1) {
+        if (! empty($evidence['events']) && preg_match('/no evidence has been found|no sources have been located/i', $proofText) === 1) {
             $warnings[] = 'Proof claims no evidence despite recorded events or linked evidence.';
         }
 
@@ -507,7 +687,7 @@ PROMPT;
 
     private function buildDeterministicFallbackProof(array $person, string $question, array $evidence, array $coverage, array $conflicts): ?string
     {
-        $sources = array_values(array_filter($evidence['sources'] ?? [], static fn ($src) => !empty((array) $src)));
+        $sources = array_values(array_filter($evidence['sources'] ?? [], static fn ($src) => ! empty((array) $src)));
         $events = array_values(array_filter(
             $evidence['events'] ?? [],
             fn ($ev) => $this->isMeaningfulEvent((array) $ev)
@@ -756,6 +936,7 @@ PROMPT;
             $date = trim((string) ($event['event_date'] ?? ''));
             if ($place !== '') {
                 $dateClause = $date !== '' ? " for the death recorded {$date}" : '';
+
                 return "The strongest currently linked evidence points to {$place}{$dateClause} as the death place for {$personName}. This conclusion is supported by the recorded death event and the cited source set. Confidence level: {$confidence}.";
             }
         }
@@ -765,6 +946,7 @@ PROMPT;
             $date = trim((string) ($person['death_date'] ?? ''));
             if ($place !== '') {
                 $dateClause = $date !== '' ? " with a recorded death date of {$date}" : '';
+
                 return "The currently stabilized person record identifies {$place} as the death place for {$personName}{$dateClause}. The linked source set should still be reviewed together, but it supports that placement. Confidence level: {$confidence}.";
             }
         }
@@ -774,6 +956,7 @@ PROMPT;
             $date = trim((string) ($person['birth_date'] ?? ''));
             if ($place !== '') {
                 $dateClause = $date !== '' ? " around {$date}" : '';
+
                 return "The currently stabilized person record identifies {$place} as the birth place for {$personName}{$dateClause}. The linked source set should still be reviewed together, but it supports that placement. Confidence level: {$confidence}.";
             }
         }
@@ -826,13 +1009,13 @@ PROMPT;
         $normalizedProof = mb_strtolower($proofText);
         $normalizedName = mb_strtolower(trim($personName));
 
-        if ($normalizedName !== '' && !str_contains($normalizedProof, $normalizedName)) {
+        if ($normalizedName !== '' && ! str_contains($normalizedProof, $normalizedName)) {
             $warnings[] = "Proof does not reference expected subject name: {$personName}";
         }
 
         $questionKeywords = array_values(array_filter(
             preg_split('/[^a-z0-9]+/i', mb_strtolower($question)) ?: [],
-            static fn ($word) => mb_strlen($word) >= 5 && !in_array($word, [
+            static fn ($word) => mb_strlen($word) >= 5 && ! in_array($word, [
                 'whose', 'there', 'where', 'which', 'place', 'birth', 'death', 'exact', 'about', 'records', 'record',
             ], true)
         ));
@@ -846,7 +1029,7 @@ PROMPT;
                 }
             }
 
-            if (!$matchedKeyword) {
+            if (! $matchedKeyword) {
                 $warnings[] = 'Proof does not appear to address the target research question.';
             }
         }

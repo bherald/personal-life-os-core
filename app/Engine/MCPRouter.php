@@ -112,7 +112,10 @@ class MCPRouter
             }
 
             try {
-                $decision = $policy->evaluateMcpTool($server, $name, ['_audit' => false], $profile);
+                $decision = $policy->evaluateMcpTool($server, $name, [
+                    '_audit' => false,
+                    '_catalog' => true,
+                ], $profile);
             } catch (\Throwable $e) {
                 Log::warning('MCPRouter: profile tool-catalog evaluation failed — omitting tool from filtered list', [
                     'server' => $server,
@@ -728,8 +731,32 @@ class MCPRouter
                         'type' => 'object',
                         'properties' => (object) [
                             'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to export'],
-                            'include_living' => ['type' => 'boolean', 'description' => 'Include living persons (default: false for privacy)', 'default' => false],
+                            'include_living' => ['type' => 'boolean', 'description' => 'Include living persons (default: true for private local export)', 'default' => true],
                             'include_media' => ['type' => 'boolean', 'description' => 'Include media object references (default: true)', 'default' => true],
+                            'privacy_context' => ['type' => 'string', 'description' => 'Export privacy context: private_local (default) or public_export', 'default' => 'private_local'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'source_audit_workbook',
+                    'description' => 'Generate a dry-run-first FT source-audit manifest, CSV package, DOCX, or ODT workbook for document comparison and scan pre-label workflow.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to export'],
+                            'format' => ['type' => 'string', 'description' => 'Output format: manifest, csv_zip, package, docx, or odt (default: manifest)', 'default' => 'manifest'],
+                            'privacy_mode' => ['type' => 'string', 'description' => 'Privacy mode: private_local, public_redacted, or audit_ids_only (default: private_local)', 'default' => 'private_local'],
+                            'layout_profile' => ['type' => 'string', 'description' => 'Layout/profile identifier for generated manifest metadata', 'default' => 'dense_audit_v1'],
+                            'include_sources' => ['type' => 'boolean', 'description' => 'Include source/citation sheets (default: true)', 'default' => true],
+                            'include_media' => ['type' => 'boolean', 'description' => 'Include media inventory sheet (default: true)', 'default' => true],
+                            'include_issues' => ['type' => 'boolean', 'description' => 'Include issue and review-note sheets (default: true)', 'default' => true],
+                            'prelabel_count' => ['type' => 'integer', 'description' => 'Reserve this many pre-scan document IDs in prelabel_queue.csv (default: 0, max 500)', 'default' => 0],
+                            'shard_mode' => ['type' => 'string', 'description' => 'Optional sharding mode: none or surname_initial (default: none)', 'default' => 'none'],
+                            'branch_person_id' => ['type' => 'integer', 'description' => 'Optional root person ID for branch-filtered generation'],
+                            'branch_mode' => ['type' => 'string', 'description' => 'Branch mode when branch_person_id is set: descendants, ancestors, or family (default: descendants)', 'default' => 'descendants'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview counts and output path without writing files (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required with dry_run=false to write files under the FT report folder', 'default' => false],
                         ],
                         'required' => ['tree_id'],
                     ],
@@ -749,6 +776,20 @@ class MCPRouter
                     ],
                 ],
                 [
+                    'name' => 'person_search',
+                    'description' => 'Search people within one genealogy tree, with an explicit living-person inclusion switch.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to search'],
+                            'query' => ['type' => 'string', 'description' => 'Name, nickname, surname, or GEDCOM ID query'],
+                            'include_living' => ['type' => 'boolean', 'description' => 'Include living people (default: true)', 'default' => true],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum people to return (default: 50, max: 100)', 'default' => 50],
+                        ],
+                        'required' => ['tree_id', 'query'],
+                    ],
+                ],
+                [
                     'name' => 'person_research',
                     'description' => 'Get AI-powered genealogy research suggestions for a specific person.',
                     'parameters' => [
@@ -758,6 +799,139 @@ class MCPRouter
                             'focus' => ['type' => 'string', 'description' => 'Research focus: ancestry, descendants, siblings, general, brick_wall (default: general)', 'default' => 'general'],
                         ],
                         'required' => ['person_id'],
+                    ],
+                ],
+                [
+                    'name' => 'person_profile',
+                    'description' => 'Get a complete read-only genealogy person profile with relationships, media, sources, research tasks, and RAG status.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'person_id' => ['type' => 'integer', 'description' => 'Person ID to inspect'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum rows per related section (default: 25, max: 100)', 'default' => 25],
+                        ],
+                        'required' => ['person_id'],
+                    ],
+                ],
+                [
+                    'name' => 'name_variant_add',
+                    'description' => 'Dry-run-first addition of a vetted maiden, married, alias, nickname, religious, or phonetic name variant for one tree-scoped person.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the person'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Person ID to receive the name variant'],
+                            'name_type' => ['type' => 'string', 'description' => 'birth, married, maiden, alias, nickname, religious, or phonetic'],
+                            'given_names' => ['type' => 'string', 'description' => 'Variant given names'],
+                            'surname' => ['type' => 'string', 'description' => 'Variant surname'],
+                            'source_id' => ['type' => 'integer', 'description' => 'Optional same-tree source that supports the variant'],
+                            'notes' => ['type' => 'string', 'description' => 'Evidence note explaining why this variant is valid'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'person_id', 'name_type'],
+                    ],
+                ],
+                [
+                    'name' => 'family_profile',
+                    'description' => 'Get a complete read-only genealogy family profile with spouses, children, family/member media, sources, and citations.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the family'],
+                            'family_id' => ['type' => 'integer', 'description' => 'Family ID to inspect'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum rows per related section (default: 25, max: 100)', 'default' => 25],
+                        ],
+                        'required' => ['tree_id', 'family_id'],
+                    ],
+                ],
+                [
+                    'name' => 'health_audit',
+                    'description' => 'Run the read-only genealogy health audit with optional section and minimum severity filters.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'sections' => ['type' => 'array', 'description' => 'Optional sections: links, dates, conflicts, media, rag, citations, duplicates, export'],
+                            'severity' => ['type' => 'string', 'description' => 'Optional minimum severity: info, low, medium, high, critical'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum sample rows per issue (default: 50, max: 200)', 'default' => 50],
+                            'compact' => ['type' => 'boolean', 'description' => 'Omit path/sample details for compact output (default: true)', 'default' => true],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'health_review_packet',
+                    'description' => 'Materialize canonical read-only review packets from genealogy health-audit issues, including schema, samples, review policy, and recommended tools.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'sections' => ['type' => 'array', 'description' => 'Optional sections: links, dates, conflicts, media, rag, citations, duplicates, export'],
+                            'severity' => ['type' => 'string', 'description' => 'Optional minimum severity: info, low, medium, high, critical'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum sample rows per issue (default: 25, max: 200)', 'default' => 25],
+                            'issue_limit' => ['type' => 'integer', 'description' => 'Maximum issue packets to return (default: 20, max: 100)', 'default' => 20],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'review_packet_context',
+                    'description' => 'Get compact read-only genealogy review-packet context by stable target ref or direct token.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'target_ref_or_token' => ['type' => 'string', 'description' => 'Stable genealogy_review_packet:target-xxxxxxxxxxxx reference or direct packet token'],
+                            'include_details' => ['type' => 'boolean', 'description' => 'Include a bounded details summary (default: false)', 'default' => false],
+                        ],
+                        'required' => ['target_ref_or_token'],
+                    ],
+                ],
+                [
+                    'name' => 'review_packet_decision',
+                    'description' => 'Record a guarded genealogy review-packet decision. Dry-run defaults to true; writes require dry_run=false and confirm=true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'target_ref_or_token' => ['type' => 'string', 'description' => 'Stable genealogy_review_packet:target-xxxxxxxxxxxx reference or direct packet token'],
+                            'action' => ['type' => 'string', 'description' => 'mark_reviewed, approve, reject, clarify, or defer'],
+                            'reason_code' => ['type' => 'string', 'description' => 'Required for reject, clarify, and defer'],
+                            'notes' => ['type' => 'string', 'description' => 'Optional operator notes'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                        ],
+                        'required' => ['target_ref_or_token', 'action'],
+                    ],
+                ],
+                [
+                    'name' => 'health_audit_memory_batch',
+                    'description' => 'Backfill current genealogy health-audit findings and fix policies into tree-scoped Genea semantic memory. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to audit and memorize'],
+                            'sections' => ['type' => 'array', 'description' => 'Optional health-audit sections'],
+                            'severity' => ['type' => 'string', 'description' => 'Minimum severity filter', 'default' => 'medium'],
+                            'limit' => ['type' => 'integer', 'description' => 'Sample limit for health audit', 'default' => 25],
+                            'issue_limit' => ['type' => 'integer', 'description' => 'Maximum issue memories to write', 'default' => 20],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing memory', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Actor/agent id for memory source rows', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'relationship_audit',
+                    'description' => 'Run a read-only relationship integrity audit for broken spouse/child links, self-links, duplicate child rows, and date/age conflicts.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum sample rows per issue (default: 50, max: 200)', 'default' => 50],
+                        ],
+                        'required' => ['tree_id'],
                     ],
                 ],
                 [
@@ -772,6 +946,107 @@ class MCPRouter
                     ],
                 ],
                 [
+                    'name' => 'tree_status',
+                    'description' => 'Get an aggregated read-only genealogy tree status summary across health, RAG, media, export readiness, and duplicates.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID; omit to summarize all trees'],
+                            'limit' => ['type' => 'integer', 'description' => 'Sample limit passed to underlying status checks (default: 5, max: 25)', 'default' => 5],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'work_status',
+                    'description' => 'Get count-only genealogy work status for one tree or all trees, optimized for low-token batching decisions.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID; omit to summarize all trees'],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'coverage_rebuild',
+                    'description' => 'Dry-run-first rebuild of genealogy ancestor paths and person coverage for one tree.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to rebuild'],
+                            'root_person_id' => ['type' => 'integer', 'description' => 'Optional root person override; defaults to genealogy_trees.root_person_id'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview status and write requirements only (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'schedule_status',
+                    'description' => 'Get compact read-only genealogy scheduled-job coverage, recent failures, and missing or disabled required jobs.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'hours' => ['type' => 'integer', 'description' => 'Recent run window in hours (default: 24, max: 168)', 'default' => 24],
+                            'include_disabled' => ['type' => 'boolean', 'description' => 'Include disabled genealogy jobs in the listing (default: true)', 'default' => true],
+                            'name_filter' => ['type' => 'string', 'description' => 'Optional scheduled job name filter'],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'research_task_queue',
+                    'description' => 'List compact read-only genealogy research tasks for a tree, optimized for low-token batch selection.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'status' => ['type' => 'string', 'description' => 'Status filter: active, all, queued, processing, completed, failed, or cancelled (default: active)', 'default' => 'active'],
+                            'priority' => ['type' => 'string', 'description' => 'Optional priority filter: urgent, high, medium, low'],
+                            'task_type' => ['type' => 'string', 'description' => 'Optional task type filter: find_records, verify_facts, find_relatives, analyze_dna, suggest_sources, transcribe_document'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum rows to return (default: 50, max: 200)', 'default' => 50],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'research_task_profile',
+                    'description' => 'Get read-only detail for one genealogy research task, including queue context, evidence summary, conflicts, and outcome.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that must own the task'],
+                            'task_id' => ['type' => 'integer', 'description' => 'Genealogy research task ID to inspect'],
+                        ],
+                        'required' => ['tree_id', 'task_id'],
+                    ],
+                ],
+                [
+                    'name' => 'research_task_create',
+                    'description' => 'Dry-run-first creation of a guarded genealogy research task.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID for the task'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Optional person ID the task is about'],
+                            'task_type' => ['type' => 'string', 'description' => 'find_records, verify_facts, find_relatives, analyze_dna, suggest_sources, or transcribe_document'],
+                            'priority' => ['type' => 'string', 'description' => 'urgent, high, medium, or low'],
+                            'research_question' => ['type' => 'string', 'description' => 'Research question to queue'],
+                            'selection_reason' => ['type' => 'string', 'description' => 'Why this task should be queued'],
+                            'scope_reason' => ['type' => 'string', 'description' => 'Scope boundaries and evidence standard'],
+                            'related_people_used' => ['type' => 'array', 'items' => ['type' => 'integer']],
+                            'sources_checked' => ['type' => 'array', 'items' => ['type' => 'integer']],
+                            'evidence_summary' => ['type' => 'string'],
+                            'conflicts_found' => ['type' => 'string'],
+                            'outcome_state' => ['type' => 'string', 'default' => 'needs_research'],
+                            'outcome_reason' => ['type' => 'string'],
+                            'parameters' => ['type' => 'object'],
+                            'dry_run' => ['type' => 'boolean', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'task_type', 'priority', 'research_question'],
+                    ],
+                ],
+                [
                     'name' => 'source_extract',
                     'description' => 'Extract source citations with URLs for media download.',
                     'parameters' => [
@@ -782,6 +1057,870 @@ class MCPRouter
                             'limit' => ['type' => 'integer', 'description' => 'Maximum citations to return (default: 50)', 'default' => 50],
                         ],
                         'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'source_profile',
+                    'description' => 'Read-only profile for one genealogy source row, including classification, citations, linked people/families, and cited media.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that must own the source row'],
+                            'source_id' => ['type' => 'integer', 'description' => 'Genealogy source ID to inspect'],
+                            'citation_limit' => ['type' => 'integer', 'description' => 'Maximum citation rows to return (default: 50, max: 200)', 'default' => 50],
+                            'media_limit' => ['type' => 'integer', 'description' => 'Maximum cited media rows to return (default: 25, max: 100)', 'default' => 25],
+                        ],
+                        'required' => ['tree_id', 'source_id'],
+                    ],
+                ],
+                [
+                    'name' => 'person_source_gap_batch',
+                    'description' => 'List ranked people lacking direct person-source links, with existing media/citation/relationship context and recommended next action.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum people to return (default: 50, max: 200)', 'default' => 50],
+                            'focus' => ['type' => 'string', 'description' => 'Ranking focus: ranked, vitals, connected, media, or living (default: ranked)', 'default' => 'ranked'],
+                            'compact' => ['type' => 'boolean', 'description' => 'Return headline-only candidate rows for low-token scans (default: false)', 'default' => false],
+                            'include_reviewed' => ['type' => 'boolean', 'description' => 'Include candidates that already have source-gap decision memory (default: true)', 'default' => true],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'source_citation_link_apply',
+                    'description' => 'Dry-run-first bounded creation of source citations plus person/family source links for already-vetted same-tree evidence.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns all targets'],
+                            'source_id' => ['type' => 'integer', 'description' => 'Existing genealogy source ID in the same tree'],
+                            'person_ids' => ['type' => 'array', 'description' => 'Optional person IDs to cite/link, max 20', 'items' => ['type' => 'integer']],
+                            'family_ids' => ['type' => 'array', 'description' => 'Optional family IDs to cite/link, max 20', 'items' => ['type' => 'integer']],
+                            'media_id' => ['type' => 'integer', 'description' => 'Optional cited media row in the same tree'],
+                            'fact_type' => ['type' => 'string', 'description' => 'Citation fact type, default person_source_context', 'default' => 'person_source_context'],
+                            'page' => ['type' => 'string', 'description' => 'Optional page, URL section, or review locator'],
+                            'quality' => ['type' => 'integer', 'description' => 'Optional citation quality 0-100'],
+                            'text' => ['type' => 'string', 'description' => 'Required evidence text/analysis explaining exactly what the source supports'],
+                            'evidence_type' => ['type' => 'string', 'description' => 'direct, indirect, or negative', 'default' => 'direct'],
+                            'information_type' => ['type' => 'string', 'description' => 'primary, secondary, or indeterminate', 'default' => 'secondary'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'source_id', 'text'],
+                    ],
+                ],
+                [
+                    'name' => 'evidence_capture_plan',
+                    'description' => 'Plan capture-ready evidence media from genealogy review packets for FT storage; read-only and optionally tree-scoped.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID used to scope review packets when target IDs are present'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum review rows to scan (default: 50, max: 200)', 'default' => 50],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Return query posture without scanning rows when true', 'default' => false],
+                            'compact' => ['type' => 'boolean', 'description' => 'Return count-only payload by default', 'default' => true],
+                            'eligible_only' => ['type' => 'boolean', 'description' => 'Only count capture-ready candidates', 'default' => false],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'evidence_capture_review',
+                    'description' => 'Materialize operator approval rows for tree-scoped evidence media capture; no downloads or canonical writes.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to scope capture approval rows'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum review rows to scan (default: 50, max: 200)', 'default' => 50],
+                            'execute' => ['type' => 'boolean', 'description' => 'Create noncanonical approval rows when true', 'default' => false],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when execute=true', 'default' => false],
+                            'compact' => ['type' => 'boolean', 'description' => 'Return count-only payload by default', 'default' => true],
+                            'eligible_only' => ['type' => 'boolean', 'description' => 'Only materialize capture-ready candidates', 'default' => false],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'evidence_capture_execute',
+                    'description' => 'Preflight or execute already-approved tree-scoped evidence media capture into FT storage with optional genealogy linking.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID stamped on approved capture review rows'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum approved capture rows to inspect (default: 25, max: 100)', 'default' => 25],
+                            'save_preflight' => ['type' => 'boolean', 'description' => 'Stamp noncanonical executor preflight details only', 'default' => false],
+                            'execute_capture' => ['type' => 'boolean', 'description' => 'Download/save approved assets when confirmed', 'default' => false],
+                            'confirm_noncanonical_write' => ['type' => 'boolean', 'description' => 'Required for save_preflight', 'default' => false],
+                            'confirm_download' => ['type' => 'boolean', 'description' => 'Required for execute_capture', 'default' => false],
+                            'confirm_storage_write' => ['type' => 'boolean', 'description' => 'Required for execute_capture', 'default' => false],
+                            'confirm_genealogy_link' => ['type' => 'boolean', 'description' => 'Create person/family/source media links when executing', 'default' => false],
+                            'max_bytes' => ['type' => 'integer', 'description' => 'Optional per-file download byte cap'],
+                            'compact' => ['type' => 'boolean', 'description' => 'Return count-only payload by default', 'default' => true],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'evidence_capture_direct',
+                    'description' => 'Dry-run-first one-off capture of a vetted evidence URL into tree-scoped FT storage with optional source/person/family linking.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns all link targets'],
+                            'url' => ['type' => 'string', 'description' => 'Vetted http/https evidence asset URL to capture'],
+                            'source_id' => ['type' => 'integer', 'description' => 'Optional same-tree genealogy source ID'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Optional same-tree person ID'],
+                            'family_id' => ['type' => 'integer', 'description' => 'Optional same-tree family ID'],
+                            'label' => ['type' => 'string', 'description' => 'Optional media title/filename label'],
+                            'asset_type' => ['type' => 'string', 'description' => 'Optional asset type hint: image, pdf, html, document, audio, or video'],
+                            'content_type' => ['type' => 'string', 'description' => 'Optional MIME hint such as image/jp2'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'confirm_download' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'confirm_storage_write' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'confirm_genealogy_link' => ['type' => 'boolean', 'description' => 'Create person/family/source media links when executing', 'default' => false],
+                            'max_bytes' => ['type' => 'integer', 'description' => 'Optional per-file download byte cap'],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'url'],
+                    ],
+                ],
+                [
+                    'name' => 'source_media_backfill',
+                    'description' => 'Dry-run-first bounded backfill of URL-only genealogy sources into tree-scoped FT storage, using NARA API digital objects when available.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID whose URL-only sources should be backfilled'],
+                            'since' => ['type' => 'string', 'description' => 'Window to scan, e.g. 24h, 14d, all', 'default' => '14d'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum source rows per batch (default 25, max 100)', 'default' => 25],
+                            'order' => ['type' => 'string', 'description' => 'oldest or newest', 'default' => 'oldest'],
+                            'source_ids' => ['type' => 'array', 'description' => 'Optional source IDs to target, max 50', 'items' => ['type' => 'integer']],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'confirm_download' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'confirm_storage_write' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'nara_metadata_snapshot' => ['type' => 'boolean', 'description' => 'Save NARA API metadata HTML when no digital object is downloadable', 'default' => true],
+                            'retry_blocked' => ['type' => 'boolean', 'description' => 'Include sources previously marked source_media_backfill_blocked', 'default' => false],
+                            'link_sources' => ['type' => 'boolean', 'description' => 'Create source-media citation links when capture succeeds', 'default' => true],
+                            'max_bytes' => ['type' => 'integer', 'description' => 'Optional per-file byte cap'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'nara_placeholder_capture_batch',
+                    'description' => 'Dry-run-first bounded capture of NARA Catalog URL-only genealogy_media placeholders into tree-scoped FT storage.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID whose NARA placeholder media rows should be captured'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum placeholder media rows per batch (default 25, max 250)', 'default' => 25],
+                            'media_ids' => ['type' => 'array', 'description' => 'Optional genealogy_media IDs to target, max 100', 'items' => ['type' => 'integer']],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'confirm_download' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'confirm_storage_write' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'metadata_snapshot' => ['type' => 'boolean', 'description' => 'Save vetted NARA API metadata HTML when no digital object is downloadable', 'default' => true],
+                            'compact' => ['type' => 'boolean', 'description' => 'Omit detailed item metadata by default', 'default' => true],
+                            'max_bytes' => ['type' => 'integer', 'description' => 'Optional per-file byte cap'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'rag_status',
+                    'description' => 'Get genealogy person/source/media RAG and person embedding coverage for a tree or all trees.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional: limit status to a specific tree'],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'media_unlinked',
+                    'description' => 'List media rows not linked to any person or family, with metadata hints for review.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum rows to return (default: 50, max: 200)', 'default' => 50],
+                            'type' => ['type' => 'string', 'description' => 'Optional media_type filter'],
+                            'status' => ['type' => 'string', 'description' => 'Optional status filter: all, uncited, citation_only', 'default' => 'all'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'media_triage_batch',
+                    'description' => 'Return compact low-token buckets for unlinked genealogy media triage.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum rows to bucket (default: 50, max: 200)', 'default' => 50],
+                            'status' => ['type' => 'string', 'description' => 'Optional status filter: all, uncited, citation_only', 'default' => 'uncited'],
+                            'include_paths' => ['type' => 'boolean', 'description' => 'Include full paths in bucket rows (default: false)', 'default' => false],
+                            'summary_only' => ['type' => 'boolean', 'description' => 'Return counts and guidance without row-level bucket payloads (default: false)', 'default' => false],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'media_quarantine',
+                    'description' => 'Guarded quarantine/delete for unlinked, uncited same-tree genealogy media. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the media rows'],
+                            'media_ids' => ['type' => 'array', 'description' => 'Media IDs to quarantine, max 50', 'items' => ['type' => 'integer']],
+                            'reason' => ['type' => 'string', 'description' => 'Operator/audit reason for quarantine'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'bucket' => ['type' => 'string', 'description' => 'Optional quarantine bucket folder name'],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'media_ids', 'reason'],
+                    ],
+                ],
+                [
+                    'name' => 'media_review_mark',
+                    'description' => 'Store non-destructive review memory for unlinked, uncited media that needs visual/research follow-up or has no safe automatic action.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the media rows'],
+                            'media_ids' => ['type' => 'array', 'description' => 'Media IDs to mark, max 50', 'items' => ['type' => 'integer']],
+                            'decision' => ['type' => 'string', 'description' => 'needs_visual_review, needs_research, source_context, future_tree_context, or defer_no_safe_action'],
+                            'reason' => ['type' => 'string', 'description' => 'Review/audit reason'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'media_ids', 'decision', 'reason'],
+                    ],
+                ],
+                [
+                    'name' => 'media_duplicate_consolidate',
+                    'description' => 'Guarded dry-run-first consolidation for one byte-identical duplicate media row into a retained media row.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns both media rows'],
+                            'drop_media_id' => ['type' => 'integer', 'description' => 'Duplicate media row to remove after links are repointed'],
+                            'keep_media_id' => ['type' => 'integer', 'description' => 'Canonical media row to retain'],
+                            'reason' => ['type' => 'string', 'description' => 'Operator/evidence reason for consolidation'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'drop_media_id', 'keep_media_id', 'reason'],
+                    ],
+                ],
+                [
+                    'name' => 'person_media_link_retire',
+                    'description' => 'Dry-run-first deletion of bad person-media link rows, with optional matching imported-media citation cleanup.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the person-media links'],
+                            'person_media_ids' => ['type' => 'array', 'description' => 'genealogy_person_media IDs to retire, max 50', 'items' => ['type' => 'integer']],
+                            'reason' => ['type' => 'string', 'description' => 'Evidence/review reason for retiring these media links'],
+                            'retire_imported_citations' => ['type' => 'boolean', 'description' => 'Also delete matching imported_media_association citations for the same person/media pair (default: true)', 'default' => true],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'person_media_ids', 'reason'],
+                    ],
+                ],
+                [
+                    'name' => 'media_rag_batch',
+                    'description' => 'Run bounded genealogy media RAG indexing stats, dry-run, or confirmed batch without shell access.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID to scope indexing'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum media rows to index (default: 20, max: 100)', 'default' => 20],
+                            'max_seconds' => ['type' => 'integer', 'description' => 'Maximum seconds for non-dry-run batch (default: 45, max: 120)', 'default' => 45],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview eligible rows without indexing (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'stats' => ['type' => 'boolean', 'description' => 'Return command stats instead of indexing (default: false)', 'default' => false],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'rag_index_batch',
+                    'description' => 'Run bounded genealogy person/place/source RAG indexing stats, dry-run, or confirmed batch without shell access.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID to scope indexing'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum rows to index (default: 20, max: 100)', 'default' => 20],
+                            'type' => ['type' => 'string', 'description' => 'Index type: persons, places, sources, or all (default: persons)', 'default' => 'persons'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview eligible rows without indexing (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'stats' => ['type' => 'boolean', 'description' => 'Return command stats instead of indexing (default: false)', 'default' => false],
+                            'reindex' => ['type' => 'boolean', 'description' => 'Re-index already indexed rows, still bounded by limit (default: false)', 'default' => false],
+                            'exclude_living' => ['type' => 'boolean', 'description' => 'Exclude living people; default false so private local FT RAG includes living and deceased people', 'default' => false],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'person_embedding_batch',
+                    'description' => 'Run bounded genealogy person embedding stats, dry-run preview, or confirmed batch without shell access.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID to scope embedding'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum person rows to embed (default: 50, max: 500)', 'default' => 50],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview missing embedding coverage without writing (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'stats' => ['type' => 'boolean', 'description' => 'Return command stats instead of embedding (default: false)', 'default' => false],
+                            'reindex' => ['type' => 'boolean', 'description' => 'Re-embed selected rows, still bounded by limit (default: false)', 'default' => false],
+                            'exclude_living' => ['type' => 'boolean', 'description' => 'Exclude living people; default false so private local FT embeddings include living and deceased people', 'default' => false],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'media_htr_batch',
+                    'description' => 'Run bounded genealogy HTR transcription status, dry-run, or confirmed batch without shell access.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID to scope transcription candidates'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum media rows to transcribe (default: 10, max: 20)', 'default' => 10],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview eligible rows without transcribing (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'status' => ['type' => 'boolean', 'description' => 'Return HTR pipeline and eligibility status instead of transcribing (default: false)', 'default' => false],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'media_link_integrity',
+                    'description' => 'Audit and optionally repair deterministic missing person-media links from primary photos, citations, and approved face matches. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect or repair'],
+                            'repair' => ['type' => 'boolean', 'description' => 'Request deterministic repair inserts (default: false)', 'default' => false],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true; set false with repair=true to apply (default: true)', 'default' => true],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum sample rows per category (default: 25, max: 100)', 'default' => 25],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'person_source_link_integrity',
+                    'description' => 'Audit and optionally repair deterministic missing person-source links from existing person citation rows. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect or repair'],
+                            'repair' => ['type' => 'boolean', 'description' => 'Request deterministic repair inserts (default: false)', 'default' => false],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true; set false with repair=true and confirm=true to apply (default: true)', 'default' => true],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum sample rows per category (default: 25, max: 100)', 'default' => 25],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when repair=true and dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Actor/agent id for write audit', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'media_profile',
+                    'description' => 'Read-only profile for one genealogy media row, including paths, text excerpts, current person/family links, citations, and face-match hints.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that must own the media row'],
+                            'media_id' => ['type' => 'integer', 'description' => 'Genealogy media ID to inspect'],
+                            'face_limit' => ['type' => 'integer', 'description' => 'Maximum face-match rows to return (default: 25, max: 100)', 'default' => 25],
+                        ],
+                        'required' => ['tree_id', 'media_id'],
+                    ],
+                ],
+                [
+                    'name' => 'media_review_packet',
+                    'description' => 'Read-only compact document/OCR/media evidence packet with text quality, links, citations, file-registry metadata, name hints, and next actions.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that must own the media row'],
+                            'media_id' => ['type' => 'integer', 'description' => 'Genealogy media ID to inspect'],
+                            'text_limit' => ['type' => 'integer', 'description' => 'Maximum characters per text excerpt (default: 1600, max: 5000)', 'default' => 1600],
+                            'hint_limit' => ['type' => 'integer', 'description' => 'Maximum face/name hint rows to return (default: 20, max: 100)', 'default' => 20],
+                            'summary_only' => ['type' => 'boolean', 'description' => 'Suppress long text excerpts while preserving quality, counts, hints, and next actions', 'default' => false],
+                        ],
+                        'required' => ['tree_id', 'media_id'],
+                    ],
+                ],
+                [
+                    'name' => 'media_ocr_escalation_batch',
+                    'description' => 'Read-only compact OCR/HTR/vision escalation candidates that route weak or missing text to review without persisting low-quality output.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum candidates to return (default: 50, max: 200)', 'default' => 50],
+                            'bucket' => ['type' => 'string', 'description' => 'Optional bucket filter: all, weak_text, html_text_extraction, document_text_extraction, image_ocr_or_vision, processing_failed', 'default' => 'all'],
+                            'include_paths' => ['type' => 'boolean', 'description' => 'Include full media paths in candidate rows (default: false)', 'default' => false],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'media_intake_memory_batch',
+                    'description' => 'Backfill saved genealogy media-intake run outcomes into tree-scoped Genea semantic memory. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID whose saved intake runs should be memorized'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum intake runs to process (default: 50, max: 200)', 'default' => 50],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing memory', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Actor/agent id for memory source rows', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'person_fact_extract',
+                    'description' => 'Read-only extraction of candidate DOB/DOD/place/name/nickname/family facts from one media, source, or reviewed text packet with evidence excerpts and conflict flags.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the evidence and target person'],
+                            'media_id' => ['type' => 'integer', 'description' => 'Optional media packet to inspect. Use exactly one of media_id, source_id, or document_text.'],
+                            'source_id' => ['type' => 'integer', 'description' => 'Optional source packet to inspect. Use exactly one of media_id, source_id, or document_text.'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Optional target person. If omitted, linked/cited people are used.'],
+                            'document_text' => ['type' => 'string', 'description' => 'Optional reviewed text packet. Use exactly one of media_id, source_id, or document_text.'],
+                            'text_limit' => ['type' => 'integer', 'description' => 'Maximum evidence text characters to inspect (default: 5000, max: 12000)', 'default' => 5000],
+                            'minimum_confidence' => ['type' => 'number', 'description' => 'Minimum confidence needed before returning proposal-call parameters (default: 0.50)', 'default' => 0.50],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'media_attach_proposal',
+                    'description' => 'Create a review-first proposal to attach a media row to a person or family without directly mutating media links.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Required tree ID; media and target person/family must both belong to this tree'],
+                            'media_id' => ['type' => 'integer', 'description' => 'Genealogy media ID to attach'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Person ID to attach media to. Use exactly one of person_id or family_id.'],
+                            'family_id' => ['type' => 'integer', 'description' => 'Family ID to attach media to. Use exactly one of person_id or family_id.'],
+                            'evidence' => ['type' => 'object', 'description' => 'Evidence object with summary, sources/evidence_sources, optional confidence, and optional agent_id'],
+                            'confidence' => ['type' => 'number', 'description' => 'Fallback confidence when evidence.confidence is omitted (default: 0.75)', 'default' => 0.75],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview proposal without writing (default: true)', 'default' => true],
+                        ],
+                        'required' => ['tree_id', 'media_id', 'evidence'],
+                    ],
+                ],
+                [
+                    'name' => 'media_identity_apply',
+                    'description' => 'Dry-run-first operator-confirmed media identity apply: links media to a person, syncs media/file face metadata, stores Genea memory, and marks RAG stale.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Required tree ID; media and person must both belong to this tree'],
+                            'media_id' => ['type' => 'integer', 'description' => 'Genealogy media ID to update'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Canonical person ID identified in the media'],
+                            'identity_label' => ['type' => 'string', 'description' => 'Operator-confirmed display identity; defaults to the person name'],
+                            'family_label' => ['type' => 'string', 'description' => 'Optional family nickname or role label seen in file/title metadata'],
+                            'animal_subjects' => ['type' => 'array', 'description' => 'Optional non-person animal subjects, e.g. [{\"name\":\"Heidi\",\"type\":\"dog\"}]'],
+                            'evidence' => ['type' => 'object', 'description' => 'Evidence object with summary, sources/evidence_sources, optional confidence, and optional agent_id'],
+                            'confidence' => ['type' => 'number', 'description' => 'Fallback confidence when evidence.confidence is omitted (default: 0.95)', 'default' => 0.95],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genealogy-mcp-media-identity'],
+                        ],
+                        'required' => ['tree_id', 'media_id', 'person_id', 'evidence'],
+                    ],
+                ],
+                [
+                    'name' => 'fact_update_proposal',
+                    'description' => 'Create a review-first proposal to update a vetted person fact without directly mutating the person record.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Required tree ID; person must belong to this tree'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Person ID to update'],
+                            'field' => ['type' => 'string', 'description' => 'Allowed genealogy person field to update'],
+                            'value' => ['type' => 'string', 'description' => 'Proposed field value'],
+                            'evidence' => ['type' => 'object', 'description' => 'Evidence object with summary, sources/evidence_sources, optional confidence, and optional agent_id'],
+                            'confidence' => ['type' => 'number', 'description' => 'Fallback confidence when evidence.confidence is omitted (default: 0.75)', 'default' => 0.75],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview proposal without writing (default: true)', 'default' => true],
+                        ],
+                        'required' => ['tree_id', 'person_id', 'field', 'value', 'evidence'],
+                    ],
+                ],
+                [
+                    'name' => 'source_add_proposal',
+                    'description' => 'Create a review-first proposal to attach a vetted source URL or existing source_id to a person without directly mutating person-source links.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Required tree ID; person and existing source_id must belong to this tree'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Person ID to attach the source to'],
+                            'source_locator' => ['type' => 'string', 'description' => 'HTTP(S) source URL or existing numeric genealogy source_id'],
+                            'evidence' => ['type' => 'object', 'description' => 'Evidence object with summary, optional sources/evidence_sources, optional confidence, and optional agent_id'],
+                            'confidence' => ['type' => 'number', 'description' => 'Fallback confidence when evidence.confidence is omitted (default: 0.75)', 'default' => 0.75],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview proposal without writing (default: true)', 'default' => true],
+                        ],
+                        'required' => ['tree_id', 'person_id', 'source_locator', 'evidence'],
+                    ],
+                ],
+                [
+                    'name' => 'relationship_link_proposal',
+                    'description' => 'Create a review-first proposal to link two existing people as parent, child, sibling, or spouse without directly mutating family links.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Required tree ID; both people must belong to this tree'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Anchor person ID'],
+                            'related_person_id' => ['type' => 'integer', 'description' => 'Existing person ID to link to the anchor person'],
+                            'relationship_type' => ['type' => 'string', 'description' => 'Relationship relative to person_id: parent, child, sibling, or spouse'],
+                            'evidence' => ['type' => 'object', 'description' => 'Evidence object with summary, sources/evidence_sources, optional confidence, and optional agent_id'],
+                            'confidence' => ['type' => 'number', 'description' => 'Fallback confidence when evidence.confidence is omitted (default: 0.75)', 'default' => 0.75],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview proposal without writing (default: true)', 'default' => true],
+                        ],
+                        'required' => ['tree_id', 'person_id', 'related_person_id', 'relationship_type', 'evidence'],
+                    ],
+                ],
+                [
+                    'name' => 'apply_approved_proposal',
+                    'description' => 'Preview or apply a genealogy proposal that is already in approved status. Dry-run defaults to true and never auto-approves pending rows.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Required tree ID; proposal must belong to this tree'],
+                            'proposal_id' => ['type' => 'integer', 'description' => 'Proposal ID to inspect or apply'],
+                            'proposal_type' => ['type' => 'string', 'description' => 'Optional: change or relationship. Required when IDs collide across proposal tables.'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without applying (default: true)', 'default' => true],
+                        ],
+                        'required' => ['tree_id', 'proposal_id'],
+                    ],
+                ],
+                [
+                    'name' => 'person_fact_apply_batch',
+                    'description' => 'Dry-run-first bounded apply helper for approved, high-confidence, same-tree, source-backed person fact_update proposals only.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the proposals and target people'],
+                            'proposal_ids' => ['type' => 'array', 'description' => 'Optional proposal IDs to inspect/apply. If omitted, approved eligible fact_update proposals are selected by confidence.'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum proposals to inspect/apply (default: 20, max: 50)', 'default' => 20],
+                            'minimum_confidence' => ['type' => 'number', 'description' => 'Minimum confidence required for eligibility (default: 0.80)', 'default' => 0.80],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'approve_apply_proposal',
+                    'description' => 'Preview or confirm approval and application of a pending/approved genealogy proposal through the canonical review services.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Required tree ID; proposal must belong to this tree'],
+                            'proposal_id' => ['type' => 'integer', 'description' => 'Proposal ID to inspect or approve/apply'],
+                            'proposal_type' => ['type' => 'string', 'description' => 'Optional: change or relationship. Required when IDs collide across proposal tables.'],
+                            'reviewer_notes' => ['type' => 'string', 'description' => 'Optional review note recorded on approval'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without approving or applying (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                        ],
+                        'required' => ['tree_id', 'proposal_id'],
+                    ],
+                ],
+                [
+                    'name' => 'proposal_queue',
+                    'description' => 'Read-only tree-scoped genealogy proposal queue for pending, approved, rejected, or applied person-change and relationship proposals.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'status' => ['type' => 'string', 'description' => 'Proposal status: pending, approved, rejected, or applied', 'default' => 'pending'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum rows per proposal type (default: 50, max: 200)', 'default' => 50],
+                            'agent_ids' => ['type' => 'array', 'description' => 'Optional agent_id filter list'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'review_decision_memory_batch',
+                    'description' => 'Backfill accepted/rejected genealogy proposal decisions into tree-scoped Genea semantic memory. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to process'],
+                            'status' => ['type' => 'string', 'description' => 'approved, applied, rejected, terminal, all, or comma-separated statuses', 'default' => 'applied,rejected'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum proposal decisions to process (default: 50, max: 200)', 'default' => 50],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing memory', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Actor/agent id for memory source rows', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'review_packet_memory_batch',
+                    'description' => 'Backfill accepted/rejected genealogy review-packet outcomes into tree-scoped Genea semantic memory. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to process'],
+                            'status' => ['type' => 'string', 'description' => 'reviewed, rejected, terminal, all, or comma-separated statuses', 'default' => 'reviewed,rejected'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum packet decisions to process (default: 50, max: 200)', 'default' => 50],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing memory', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Actor/agent id for memory source rows', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'memory_backfill_batch',
+                    'description' => 'Run a compact Genea learning-memory backfill across canonical lessons, health-audit findings, media-intake outcomes, source-media capture outcomes, and review decisions. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID. Omit for all trees in trusted scheduled contexts.'],
+                            'lanes' => ['type' => 'string', 'description' => 'all or comma-separated lanes: canonical_lessons, health_audit, media_intake, source_media_outcomes, review_decisions, review_packets', 'default' => 'all'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum candidates per lane (default: 25, max: 200)', 'default' => 25],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing memory', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Actor/agent id for memory source rows', 'default' => 'genea-mcp'],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'lesson_memory_save',
+                    'description' => 'Dry-run-first Genea MCP tool to store reusable research, document/OCR, source-capture, identity, and offline workflow lessons in tree-scoped semantic memory.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID the lesson applies to'],
+                            'lesson_type' => ['type' => 'string', 'description' => 'research_process_lesson, document_interpretation_lesson, source_capture_lesson, identity_decision_lesson, or offline_workflow_lesson'],
+                            'title' => ['type' => 'string', 'description' => 'Short reusable lesson title'],
+                            'lesson' => ['type' => 'string', 'description' => 'Reviewed lesson text with enough context to reuse safely'],
+                            'tags' => ['type' => 'array', 'description' => 'Optional compact search tags', 'items' => ['type' => 'string']],
+                            'source_ids' => ['type' => 'array', 'description' => 'Optional same-tree source IDs', 'items' => ['type' => 'integer']],
+                            'person_ids' => ['type' => 'array', 'description' => 'Optional same-tree person IDs', 'items' => ['type' => 'integer']],
+                            'media_ids' => ['type' => 'array', 'description' => 'Optional same-tree media IDs', 'items' => ['type' => 'integer']],
+                            'task_ids' => ['type' => 'array', 'description' => 'Optional same-tree research task IDs', 'items' => ['type' => 'integer']],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview without writing memory', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Actor/agent id for memory source rows', 'default' => 'genea-mcp'],
+                            'confidence' => ['type' => 'number', 'description' => 'Memory confidence 0..1', 'default' => 0.8],
+                        ],
+                        'required' => ['tree_id', 'lesson_type', 'title', 'lesson'],
+                    ],
+                ],
+                [
+                    'name' => 'lesson_memory_lookup',
+                    'description' => 'Read compact reusable Genea lesson memory for a tree, optionally filtered by lesson type and text query.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to search'],
+                            'lesson_type' => ['type' => 'string', 'description' => 'all or one lesson type', 'default' => 'all'],
+                            'query' => ['type' => 'string', 'description' => 'Optional text search over lesson title/value'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum lessons to return (default: 20, max: 100)', 'default' => 20],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'lesson_memory_context',
+                    'description' => 'Read compact reusable Genea lessons for a tree/person/media/source/task context without exposing raw memory tables.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to search'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Optional same-tree person ID'],
+                            'media_id' => ['type' => 'integer', 'description' => 'Optional same-tree media ID'],
+                            'source_id' => ['type' => 'integer', 'description' => 'Optional same-tree source ID'],
+                            'task_id' => ['type' => 'integer', 'description' => 'Optional same-tree research task ID'],
+                            'query' => ['type' => 'string', 'description' => 'Optional extra text query'],
+                            'lesson_type' => ['type' => 'string', 'description' => 'all or one lesson type', 'default' => 'all'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum lessons to return (default: 8, max: 25)', 'default' => 8],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'memory_report',
+                    'description' => 'Read-only Genea memory report: semantic facts, compact rejected/non-FT name guardrails, review signals, learned procedures, and episode summaries.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID for tree-scoped semantic memory'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum recent semantic memories to return (default: 20, max: 100)', 'default' => 20],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'export_readiness',
+                    'description' => 'Get read-only self-contained export readiness issues for a genealogy tree.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum sample rows to return (default: 200, max: 1000)', 'default' => 200],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'export_standalone_status',
+                    'description' => 'Summarize read-only GEDZip and FT-folder standalone export status for one tree or all trees.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree ID to inspect; omit for all trees'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum sample rows per blocking issue (default: 25, max: 1000)', 'default' => 25],
+                        ],
+                    ],
+                ],
+                [
+                    'name' => 'duplicate_candidates',
+                    'description' => 'List existing duplicate person candidates for a tree without applying merges.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to inspect'],
+                            'threshold' => ['type' => 'number', 'description' => 'Minimum duplicate score (default: 0.6)', 'default' => 0.6],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum rows to return (default: 50, max: 200)', 'default' => 50],
+                            'include_resolved' => ['type' => 'boolean', 'description' => 'Include rejected, merged, and resolved pairs (default: false)', 'default' => false],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'family_duplicate_retire',
+                    'description' => 'Dry-run-first deletion of an isolated duplicate family row when both families have the same spouses and the duplicate has no children, events, media, sources, or citations.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns both families'],
+                            'keep_family_id' => ['type' => 'integer', 'description' => 'Canonical family ID to keep'],
+                            'duplicate_family_id' => ['type' => 'integer', 'description' => 'Isolated duplicate family ID to delete'],
+                            'reason' => ['type' => 'string', 'description' => 'Evidence/review reason for retiring the duplicate'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'keep_family_id', 'duplicate_family_id', 'reason'],
+                    ],
+                ],
+                [
+                    'name' => 'person_source_link_retire',
+                    'description' => 'Dry-run-first deletion of uncited invalid person-source link rows after strict tree and citation checks.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the person-source links'],
+                            'person_source_ids' => ['type' => 'array', 'description' => 'genealogy_person_sources IDs to retire, max 50', 'items' => ['type' => 'integer']],
+                            'reason' => ['type' => 'string', 'description' => 'Evidence/review reason for retiring these source links'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                        ],
+                        'required' => ['tree_id', 'person_source_ids', 'reason'],
+                    ],
+                ],
+                [
+                    'name' => 'non_ft_name_lookup',
+                    'description' => 'Search rejected/non-FT genealogy name memory so agents can avoid repeating known bad matches.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'name' => ['type' => 'string', 'description' => 'Rejected/non-FT name to search'],
+                            'tree_id' => ['type' => 'integer', 'description' => 'Optional tree scope'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum matches to return (default: 50, max: 100)', 'default' => 50],
+                        ],
+                        'required' => ['name'],
+                    ],
+                ],
+                [
+                    'name' => 'source_gap_decision_lookup',
+                    'description' => 'Read compact source-gap review memory so agents avoid re-checking known weak, collateral, or deferred evidence.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to search'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Optional person ID to inspect'],
+                            'decision' => ['type' => 'string', 'description' => 'Optional decision filter or all (default: all)', 'default' => 'all'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum matches to return (default: 50, max: 100)', 'default' => 50],
+                        ],
+                        'required' => ['tree_id'],
+                    ],
+                ],
+                [
+                    'name' => 'source_gap_decision_add',
+                    'description' => 'Store dry-run-first source-gap review memory for one person, such as collateral-only, weak evidence, or needs-external-research decisions.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID this decision applies to'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Person ID this source-gap decision applies to'],
+                            'decision' => ['type' => 'string', 'description' => 'Decision: skip_collateral_only, skip_weak_evidence, skip_no_direct_match, needs_external_research, defer_private_living, media_identity_only, source_found, or revisit_later'],
+                            'reason' => ['type' => 'string', 'description' => 'Evidence review reason'],
+                            'source_ids' => ['type' => 'array', 'description' => 'Optional related source IDs reviewed', 'items' => ['type' => 'integer']],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                            'confidence' => ['type' => 'number', 'description' => 'Memory confidence 0..1 (default: 0.8)', 'default' => 0.8],
+                        ],
+                        'required' => ['tree_id', 'person_id', 'decision', 'reason'],
+                    ],
+                ],
+                [
+                    'name' => 'research_memo_save',
+                    'description' => 'Save a dry-run-first FT-local genealogy research memo under the tree media root, optionally appending a person/family note and source-gap memory.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID that owns the memo'],
+                            'title' => ['type' => 'string', 'description' => 'Short memo title'],
+                            'body' => ['type' => 'string', 'description' => 'Reviewed research memo body'],
+                            'person_id' => ['type' => 'integer', 'description' => 'Optional same-tree person ID to reference and mark stale for RAG'],
+                            'family_id' => ['type' => 'integer', 'description' => 'Optional same-tree family ID to reference'],
+                            'relative_path' => ['type' => 'string', 'description' => 'Optional safe .md path below the tree media root; defaults to research/YYYY/MM/DD/...'],
+                            'notes_append' => ['type' => 'string', 'description' => 'Optional note appended to the person/family record with memo path'],
+                            'source_gap_decision' => ['type' => 'string', 'description' => 'Optional source-gap decision code for person_id'],
+                            'source_gap_reason' => ['type' => 'string', 'description' => 'Required when source_gap_decision is provided'],
+                            'source_ids' => ['type' => 'array', 'description' => 'Optional related source IDs reviewed', 'items' => ['type' => 'integer']],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                            'overwrite' => ['type' => 'boolean', 'description' => 'Allow replacing an existing memo file (default: false)', 'default' => false],
+                            'confidence' => ['type' => 'number', 'description' => 'Source-gap memory confidence 0..1 (default: 0.8)', 'default' => 0.8],
+                        ],
+                        'required' => ['tree_id', 'title', 'body'],
+                    ],
+                ],
+                [
+                    'name' => 'non_ft_name_add',
+                    'description' => 'Store tree-scoped non-FT/rejected-name memory for future cleanup and search. Dry-run defaults to true.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tree_id' => ['type' => 'integer', 'description' => 'Tree ID this non-FT name applies to'],
+                            'names' => ['type' => 'array', 'description' => 'Names to remember as non-FT for this tree', 'items' => ['type' => 'string']],
+                            'reason' => ['type' => 'string', 'description' => 'Operator/audit reason'],
+                            'dry_run' => ['type' => 'boolean', 'description' => 'Preview only when true (default: true)', 'default' => true],
+                            'confirm' => ['type' => 'boolean', 'description' => 'Required true when dry_run=false', 'default' => false],
+                            'actor' => ['type' => 'string', 'description' => 'Audit actor label', 'default' => 'genea-mcp'],
+                            'confidence' => ['type' => 'number', 'description' => 'Memory confidence 0..1 (default: 0.8)', 'default' => 0.8],
+                        ],
+                        'required' => ['tree_id', 'names', 'reason'],
                     ],
                 ],
             ];
@@ -1294,7 +2433,23 @@ class MCPRouter
             // a list of param names. Servers outside this map (nextcloud
             // WebDAV, joplin, thunderbird) use paths in a different
             // namespace and are NOT run through classifyPath().
-            $context = [];
+            $policyContextKeys = [
+                'tree_id',
+                'dry_run',
+                'confirm',
+                'repair',
+                'stats',
+                'reindex',
+                'limit',
+                'execute',
+                'save_preflight',
+                'execute_capture',
+                'confirm_noncanonical_write',
+                'confirm_download',
+                'confirm_storage_write',
+                'confirm_genealogy_link',
+            ];
+            $context = array_intersect_key($params, array_flip($policyContextKeys));
             $pathParamNames = $this->resolveLocalFsPathParams($server, $tool);
             foreach ($pathParamNames as $paramName) {
                 if (! empty($params[$paramName]) && is_string($params[$paramName])) {
@@ -1834,8 +2989,24 @@ class MCPRouter
             ),
             'gedcom_export' => $service->gedcom_export(
                 $params['tree_id'],
-                $params['include_living'] ?? false,
-                $params['include_media'] ?? true
+                $params['include_living'] ?? true,
+                $params['include_media'] ?? true,
+                $params['privacy_context'] ?? 'private_local'
+            ),
+            'source_audit_workbook' => $service->source_audit_workbook(
+                $params['tree_id'],
+                $params['format'] ?? 'manifest',
+                $params['privacy_mode'] ?? 'private_local',
+                $params['layout_profile'] ?? 'dense_audit_v1',
+                $params['include_sources'] ?? true,
+                $params['include_media'] ?? true,
+                $params['include_issues'] ?? true,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                (int) ($params['prelabel_count'] ?? 0),
+                $params['shard_mode'] ?? 'none',
+                isset($params['branch_person_id']) ? (int) $params['branch_person_id'] : null,
+                $params['branch_mode'] ?? 'descendants'
             ),
             'tree_search' => $service->tree_search(
                 $params['query'],
@@ -1843,15 +3014,575 @@ class MCPRouter
                 $params['tree_id'] ?? null,
                 $params['limit'] ?? 20
             ),
+            'person_search' => $service->person_search(
+                $params['tree_id'],
+                $params['query'],
+                $params['include_living'] ?? true,
+                $params['limit'] ?? 50
+            ),
             'person_research' => $service->person_research(
                 $params['person_id'],
                 $params['focus'] ?? 'general'
             ),
+            'person_profile' => $service->person_profile(
+                $params['person_id'],
+                $params['limit'] ?? 25
+            ),
+            'name_variant_add' => $service->name_variant_add(
+                $params['tree_id'],
+                $params['person_id'],
+                $params['name_type'],
+                $params['given_names'] ?? null,
+                $params['surname'] ?? null,
+                $params['source_id'] ?? null,
+                $params['notes'] ?? null,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'family_profile' => $service->family_profile(
+                $params['tree_id'],
+                $params['family_id'],
+                $params['limit'] ?? 25
+            ),
+            'health_audit' => $service->health_audit(
+                $params['tree_id'],
+                $params['sections'] ?? null,
+                $params['severity'] ?? null,
+                $params['limit'] ?? 50,
+                $params['compact'] ?? true
+            ),
+            'health_review_packet' => $service->health_review_packet(
+                $params['tree_id'],
+                $params['sections'] ?? null,
+                $params['severity'] ?? null,
+                $params['limit'] ?? 25,
+                $params['issue_limit'] ?? 20
+            ),
+            'review_packet_context' => $service->review_packet_context(
+                $params['target_ref_or_token'],
+                $params['include_details'] ?? false
+            ),
+            'review_packet_decision' => $service->review_packet_decision(
+                $params['target_ref_or_token'],
+                $params['action'],
+                $params['reason_code'] ?? null,
+                $params['notes'] ?? null,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false
+            ),
+            'health_audit_memory_batch' => $service->health_audit_memory_batch(
+                $params['tree_id'],
+                $params['sections'] ?? null,
+                $params['severity'] ?? 'medium',
+                $params['limit'] ?? 25,
+                $params['issue_limit'] ?? 20,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'relationship_audit' => $service->relationship_audit(
+                $params['tree_id'],
+                $params['limit'] ?? 50
+            ),
             'tree_stats' => $service->tree_stats($params['tree_id']),
+            'tree_status' => $service->tree_status(
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 5
+            ),
+            'work_status' => $service->work_status($params['tree_id'] ?? null),
+            'coverage_rebuild' => $service->coverage_rebuild(
+                $params['tree_id'],
+                $params['root_person_id'] ?? null,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false
+            ),
+            'schedule_status' => $service->schedule_status(
+                $params['hours'] ?? 24,
+                $params['include_disabled'] ?? true,
+                $params['name_filter'] ?? null
+            ),
+            'research_task_queue' => $service->research_task_queue(
+                $params['tree_id'],
+                $params['status'] ?? 'active',
+                $params['priority'] ?? null,
+                $params['task_type'] ?? null,
+                $params['limit'] ?? 50
+            ),
+            'research_task_profile' => $service->research_task_profile(
+                $params['tree_id'],
+                $params['task_id']
+            ),
+            'research_task_create' => $service->research_task_create(
+                $params['tree_id'],
+                $params['person_id'] ?? null,
+                $params['task_type'],
+                $params['priority'],
+                $params['research_question'],
+                $params['selection_reason'] ?? null,
+                $params['scope_reason'] ?? null,
+                $params['related_people_used'] ?? [],
+                $params['sources_checked'] ?? [],
+                $params['evidence_summary'] ?? null,
+                $params['conflicts_found'] ?? null,
+                $params['outcome_state'] ?? 'needs_research',
+                $params['outcome_reason'] ?? null,
+                $params['parameters'] ?? [],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
             'source_extract' => $service->source_extract(
                 $params['tree_id'],
                 $params['person_id'] ?? null,
                 $params['limit'] ?? 50
+            ),
+            'source_profile' => $service->source_profile(
+                $params['tree_id'],
+                $params['source_id'],
+                $params['citation_limit'] ?? 50,
+                $params['media_limit'] ?? 25
+            ),
+            'person_source_gap_batch' => $service->person_source_gap_batch(
+                $params['tree_id'],
+                $params['limit'] ?? 50,
+                $params['focus'] ?? 'ranked',
+                (bool) ($params['compact'] ?? false),
+                (bool) ($params['include_reviewed'] ?? true)
+            ),
+            'source_citation_link_apply' => $service->source_citation_link_apply(
+                $params['tree_id'],
+                $params['source_id'],
+                $params['person_ids'] ?? [],
+                $params['family_ids'] ?? [],
+                $params['media_id'] ?? null,
+                $params['fact_type'] ?? 'person_source_context',
+                $params['page'] ?? null,
+                $params['quality'] ?? null,
+                $params['text'] ?? '',
+                $params['evidence_type'] ?? 'direct',
+                $params['information_type'] ?? 'secondary',
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'evidence_capture_plan' => $service->evidence_capture_plan(
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 50,
+                $params['dry_run'] ?? false,
+                $params['compact'] ?? true,
+                $params['eligible_only'] ?? false
+            ),
+            'evidence_capture_review' => $service->evidence_capture_review(
+                $params['tree_id'],
+                $params['limit'] ?? 50,
+                $params['execute'] ?? false,
+                $params['confirm'] ?? false,
+                $params['compact'] ?? true,
+                $params['eligible_only'] ?? false
+            ),
+            'evidence_capture_execute' => $service->evidence_capture_execute(
+                $params['tree_id'],
+                $params['limit'] ?? 25,
+                $params['save_preflight'] ?? false,
+                $params['execute_capture'] ?? false,
+                $params['confirm_noncanonical_write'] ?? false,
+                $params['confirm_download'] ?? false,
+                $params['confirm_storage_write'] ?? false,
+                $params['confirm_genealogy_link'] ?? false,
+                $params['max_bytes'] ?? null,
+                $params['compact'] ?? true
+            ),
+            'evidence_capture_direct' => $service->evidence_capture_direct(
+                $params['tree_id'],
+                $params['url'],
+                $params['source_id'] ?? null,
+                $params['person_id'] ?? null,
+                $params['family_id'] ?? null,
+                $params['label'] ?? null,
+                $params['asset_type'] ?? null,
+                $params['content_type'] ?? null,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['confirm_download'] ?? false,
+                $params['confirm_storage_write'] ?? false,
+                $params['confirm_genealogy_link'] ?? false,
+                $params['max_bytes'] ?? null,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'source_media_backfill' => $service->source_media_backfill(
+                $params['tree_id'],
+                $params['since'] ?? '14d',
+                $params['limit'] ?? 25,
+                $params['order'] ?? 'oldest',
+                $params['source_ids'] ?? null,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['confirm_download'] ?? false,
+                $params['confirm_storage_write'] ?? false,
+                $params['nara_metadata_snapshot'] ?? true,
+                $params['retry_blocked'] ?? false,
+                $params['link_sources'] ?? true,
+                $params['max_bytes'] ?? null
+            ),
+            'nara_placeholder_capture_batch' => $service->nara_placeholder_capture_batch(
+                $params['tree_id'],
+                $params['limit'] ?? 25,
+                $params['media_ids'] ?? null,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['confirm_download'] ?? false,
+                $params['confirm_storage_write'] ?? false,
+                $params['metadata_snapshot'] ?? true,
+                $params['compact'] ?? true,
+                $params['max_bytes'] ?? null
+            ),
+            'rag_status' => $service->rag_status($params['tree_id'] ?? null),
+            'media_unlinked' => $service->media_unlinked(
+                $params['tree_id'],
+                $params['limit'] ?? 50,
+                $params['type'] ?? null,
+                $params['status'] ?? null
+            ),
+            'media_triage_batch' => $service->media_triage_batch(
+                $params['tree_id'],
+                $params['limit'] ?? 50,
+                $params['status'] ?? null,
+                $params['include_paths'] ?? false,
+                $params['summary_only'] ?? false
+            ),
+            'media_quarantine' => $service->media_quarantine(
+                $params['tree_id'],
+                $params['media_ids'],
+                $params['reason'],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['bucket'] ?? null,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'media_review_mark' => $service->media_review_mark(
+                $params['tree_id'],
+                $params['media_ids'],
+                $params['decision'],
+                $params['reason'],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'media_duplicate_consolidate' => $service->media_duplicate_consolidate(
+                $params['tree_id'],
+                $params['drop_media_id'],
+                $params['keep_media_id'],
+                $params['reason'],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'person_media_link_retire' => $service->person_media_link_retire(
+                $params['tree_id'],
+                $params['person_media_ids'],
+                $params['reason'],
+                $params['retire_imported_citations'] ?? true,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'media_rag_batch' => $service->media_rag_batch(
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 20,
+                $params['max_seconds'] ?? 45,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['stats'] ?? false
+            ),
+            'rag_index_batch' => $service->rag_index_batch(
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 20,
+                $params['type'] ?? 'persons',
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['stats'] ?? false,
+                $params['reindex'] ?? false,
+                $params['exclude_living'] ?? false
+            ),
+            'person_embedding_batch' => $service->person_embedding_batch(
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 50,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['stats'] ?? false,
+                $params['reindex'] ?? false,
+                $params['exclude_living'] ?? false
+            ),
+            'media_htr_batch' => $service->media_htr_batch(
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 10,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['status'] ?? false
+            ),
+            'media_intake_memory_batch' => $service->media_intake_memory_batch(
+                $params['tree_id'],
+                $params['limit'] ?? 50,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'media_link_integrity' => $service->media_link_integrity(
+                $params['tree_id'],
+                $params['repair'] ?? false,
+                $params['dry_run'] ?? true,
+                $params['limit'] ?? 25
+            ),
+            'person_source_link_integrity' => $service->person_source_link_integrity(
+                $params['tree_id'],
+                $params['repair'] ?? false,
+                $params['dry_run'] ?? true,
+                $params['limit'] ?? 25,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'media_profile' => $service->media_profile(
+                $params['tree_id'],
+                $params['media_id'],
+                $params['face_limit'] ?? 25
+            ),
+            'media_review_packet' => $service->media_review_packet(
+                $params['tree_id'],
+                $params['media_id'],
+                $params['text_limit'] ?? 1600,
+                $params['hint_limit'] ?? 20,
+                $params['summary_only'] ?? false
+            ),
+            'media_ocr_escalation_batch' => $service->media_ocr_escalation_batch(
+                $params['tree_id'],
+                $params['limit'] ?? 50,
+                $params['bucket'] ?? null,
+                $params['include_paths'] ?? false
+            ),
+            'person_fact_extract' => $service->person_fact_extract(
+                $params['tree_id'],
+                $params['media_id'] ?? null,
+                $params['source_id'] ?? null,
+                $params['person_id'] ?? null,
+                $params['document_text'] ?? null,
+                $params['text_limit'] ?? 5000,
+                $params['minimum_confidence'] ?? 0.50
+            ),
+            'media_attach_proposal' => $service->media_attach_proposal(
+                $params['media_id'],
+                $params['person_id'] ?? null,
+                $params['family_id'] ?? null,
+                $params['evidence'] ?? null,
+                $params['confidence'] ?? 0.75,
+                $params['dry_run'] ?? true,
+                $params['tree_id'] ?? null
+            ),
+            'media_identity_apply' => $service->media_identity_apply(
+                $params['tree_id'],
+                $params['media_id'],
+                $params['person_id'],
+                $params['identity_label'] ?? null,
+                $params['family_label'] ?? null,
+                $params['animal_subjects'] ?? null,
+                $params['evidence'] ?? null,
+                $params['confidence'] ?? 0.95,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? null
+            ),
+            'fact_update_proposal' => $service->fact_update_proposal(
+                $params['person_id'],
+                $params['field'],
+                $params['value'],
+                $params['evidence'] ?? null,
+                $params['confidence'] ?? 0.75,
+                $params['dry_run'] ?? true,
+                $params['tree_id'] ?? null
+            ),
+            'source_add_proposal' => $service->source_add_proposal(
+                $params['person_id'],
+                $params['source_locator'],
+                $params['evidence'] ?? null,
+                $params['confidence'] ?? 0.75,
+                $params['dry_run'] ?? true,
+                $params['tree_id'] ?? null
+            ),
+            'relationship_link_proposal' => $service->relationship_link_proposal(
+                $params['person_id'],
+                $params['related_person_id'],
+                $params['relationship_type'],
+                $params['evidence'] ?? null,
+                $params['confidence'] ?? 0.75,
+                $params['dry_run'] ?? true,
+                $params['tree_id'] ?? null
+            ),
+            'apply_approved_proposal' => $service->apply_approved_proposal(
+                $params['proposal_id'],
+                $params['proposal_type'] ?? null,
+                $params['dry_run'] ?? true,
+                $params['tree_id'] ?? null
+            ),
+            'person_fact_apply_batch' => $service->person_fact_apply_batch(
+                $params['tree_id'],
+                $params['proposal_ids'] ?? null,
+                $params['limit'] ?? 20,
+                $params['minimum_confidence'] ?? 0.80,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'approve_apply_proposal' => $service->approve_apply_proposal(
+                $params['proposal_id'],
+                $params['proposal_type'] ?? null,
+                $params['reviewer_notes'] ?? '',
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['tree_id'] ?? null
+            ),
+            'proposal_queue' => $service->proposal_queue(
+                $params['tree_id'],
+                $params['status'] ?? 'pending',
+                $params['limit'] ?? 50,
+                $params['agent_ids'] ?? null
+            ),
+            'review_decision_memory_batch' => $service->review_decision_memory_batch(
+                $params['tree_id'],
+                $params['status'] ?? 'applied,rejected',
+                $params['limit'] ?? 50,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'review_packet_memory_batch' => $service->review_packet_memory_batch(
+                $params['tree_id'],
+                $params['status'] ?? 'reviewed,rejected',
+                $params['limit'] ?? 50,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'memory_backfill_batch' => $service->memory_backfill_batch(
+                $params['tree_id'] ?? null,
+                $params['lanes'] ?? 'all',
+                $params['limit'] ?? 25,
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'lesson_memory_save' => $service->lesson_memory_save(
+                $params['tree_id'],
+                $params['lesson_type'],
+                $params['title'],
+                $params['lesson'],
+                $params['tags'] ?? [],
+                $params['source_ids'] ?? [],
+                $params['person_ids'] ?? [],
+                $params['media_ids'] ?? [],
+                $params['task_ids'] ?? [],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp',
+                $params['confidence'] ?? 0.8
+            ),
+            'lesson_memory_lookup' => $service->lesson_memory_lookup(
+                $params['tree_id'],
+                $params['lesson_type'] ?? 'all',
+                $params['query'] ?? null,
+                $params['limit'] ?? 20
+            ),
+            'lesson_memory_context' => $service->lesson_memory_context(
+                $params['tree_id'],
+                $params['person_id'] ?? null,
+                $params['media_id'] ?? null,
+                $params['source_id'] ?? null,
+                $params['task_id'] ?? null,
+                $params['query'] ?? null,
+                $params['lesson_type'] ?? 'all',
+                $params['limit'] ?? 8
+            ),
+            'memory_report' => $service->memory_report(
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 20
+            ),
+            'export_readiness' => $service->export_readiness(
+                $params['tree_id'],
+                $params['limit'] ?? 200
+            ),
+            'export_standalone_status' => $service->export_standalone_status(
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 25
+            ),
+            'duplicate_candidates' => $service->duplicate_candidates(
+                $params['tree_id'],
+                $params['threshold'] ?? 0.6,
+                $params['limit'] ?? 50,
+                $params['include_resolved'] ?? false
+            ),
+            'family_duplicate_retire' => $service->family_duplicate_retire(
+                $params['tree_id'],
+                $params['keep_family_id'],
+                $params['duplicate_family_id'],
+                $params['reason'],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'person_source_link_retire' => $service->person_source_link_retire(
+                $params['tree_id'],
+                $params['person_source_ids'],
+                $params['reason'],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp'
+            ),
+            'non_ft_name_lookup' => $service->non_ft_name_lookup(
+                $params['name'],
+                $params['tree_id'] ?? null,
+                $params['limit'] ?? 50
+            ),
+            'source_gap_decision_lookup' => $service->source_gap_decision_lookup(
+                $params['tree_id'],
+                $params['person_id'] ?? null,
+                $params['decision'] ?? 'all',
+                $params['limit'] ?? 50
+            ),
+            'source_gap_decision_add' => $service->source_gap_decision_add(
+                $params['tree_id'],
+                $params['person_id'],
+                $params['decision'],
+                $params['reason'],
+                $params['source_ids'] ?? [],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp',
+                $params['confidence'] ?? 0.8
+            ),
+            'research_memo_save' => $service->research_memo_save(
+                $params['tree_id'],
+                $params['title'],
+                $params['body'],
+                $params['person_id'] ?? null,
+                $params['family_id'] ?? null,
+                $params['relative_path'] ?? null,
+                $params['notes_append'] ?? null,
+                $params['source_gap_decision'] ?? null,
+                $params['source_gap_reason'] ?? null,
+                $params['source_ids'] ?? [],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp',
+                $params['overwrite'] ?? false,
+                $params['confidence'] ?? 0.8
+            ),
+            'non_ft_name_add' => $service->non_ft_name_add(
+                $params['tree_id'],
+                $params['names'],
+                $params['reason'],
+                $params['dry_run'] ?? true,
+                $params['confirm'] ?? false,
+                $params['actor'] ?? 'genea-mcp',
+                $params['confidence'] ?? 0.8
             ),
             default => throw new Exception("Unknown genealogy tool: {$tool}"),
         };

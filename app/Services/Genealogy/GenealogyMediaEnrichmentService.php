@@ -29,7 +29,7 @@ class GenealogyMediaEnrichmentService
 {
     private const CONFIDENCE_FLOOR = 0.65;
 
-    private const DOCUMENT_TYPES = ['obituary', 'census', 'certificate', 'document', 'military'];
+    private const DOCUMENT_TYPES = ['obituary', 'census', 'certificate', 'document', 'military', 'headstone'];
 
     private const AGENT_ID = 'genealogy-media-enrichment';
 
@@ -73,6 +73,8 @@ class GenealogyMediaEnrichmentService
     private ?NameVariantService $nameVariantService = null;
 
     private ?SearchCoverageService $coverageService = null;
+
+    private ?GenealogyLessonPromptContextService $lessonPromptContext = null;
 
     private function ai(): AIService
     {
@@ -155,6 +157,11 @@ class GenealogyMediaEnrichmentService
         return $this->textQualityGate ??= app(GenealogyDocumentTextQualityGateService::class);
     }
 
+    private function lessonContext(): GenealogyLessonPromptContextService
+    {
+        return $this->lessonPromptContext ??= app(GenealogyLessonPromptContextService::class);
+    }
+
     // -------------------------------------------------------------------------
     // Public API
     // -------------------------------------------------------------------------
@@ -197,6 +204,8 @@ class GenealogyMediaEnrichmentService
             ],
         ], [
             'title' => $media['title'] ?? 'Genealogy document',
+            'tree_id' => $treeId ?: null,
+            'family_tree_id' => $treeId ?: null,
             'media_id' => $mediaId,
             'media_type' => $media['media_type'] ?? 'document',
             'ft_candidates' => $treeId > 0 ? $this->buildPreviewTreeCandidates($treeId, $extraction) : [],
@@ -361,6 +370,8 @@ class GenealogyMediaEnrichmentService
     {
         $typePlaceholders = implode(',', array_fill(0, count(self::DOCUMENT_TYPES), '?'));
         $params = array_merge(self::DOCUMENT_TYPES, [$treeId, $limit]);
+        $hasTranscriptSql = "((gm.transcription_text IS NOT NULL AND TRIM(gm.transcription_text) <> '')
+              OR (gm.transcription IS NOT NULL AND TRIM(gm.transcription) <> ''))";
 
         $records = DB::select("
             SELECT gm.id, gm.media_type, gm.title, gm.nextcloud_path,
@@ -369,10 +380,10 @@ class GenealogyMediaEnrichmentService
             WHERE gm.media_type IN ({$typePlaceholders})
               AND gm.tree_id = ?
               AND gm.file_exists = 1
-              AND gm.analysis_status = 'completed'
+              AND (gm.analysis_status = 'completed' OR {$hasTranscriptSql})
               AND (gm.enrichment_status IS NULL OR gm.enrichment_status = 'failed')
             ORDER BY
-              FIELD(gm.media_type, 'census','certificate','obituary','military','document'),
+              FIELD(gm.media_type, 'census','certificate','obituary','military','headstone','document'),
               gm.id ASC
             LIMIT ?
         ", $params);
@@ -459,7 +470,7 @@ class GenealogyMediaEnrichmentService
         // obituaries, census pages) and still a valid last-ditch for documents
         // where ContentExtractionService couldn't pull text.
         $docType = $media['media_type'] ?? 'document';
-        $prompt = $this->buildExtractionPrompt($docType, $media['title'] ?? '', $media['ai_description'] ?? '');
+        $prompt = $this->buildExtractionPrompt($docType, $media['title'] ?? '', $media['ai_description'] ?? '', $media);
 
         $result = $this->ai()->processImage($prompt, $localPath, [
             'temperature' => 0.1,
@@ -525,6 +536,8 @@ class GenealogyMediaEnrichmentService
         }
 
         $extraction = $this->localWorker()->extractStructuredFactsFromText($text, [
+            'tree_id' => $media['tree_id'] ?? $media['person_tree_id'] ?? null,
+            'family_tree_id' => $media['tree_id'] ?? $media['person_tree_id'] ?? null,
             'media_id' => $media['id'] ?? null,
             'media_type' => $media['media_type'] ?? 'document',
             'title' => $media['title'] ?? 'Genealogy document',
@@ -567,6 +580,8 @@ class GenealogyMediaEnrichmentService
         }
 
         $result = $this->localWorker()->extractStructuredFactsFromText($text, [
+            'tree_id' => $media['tree_id'] ?? $media['person_tree_id'] ?? null,
+            'family_tree_id' => $media['tree_id'] ?? $media['person_tree_id'] ?? null,
             'media_id' => $media['id'] ?? null,
             'media_type' => $media['media_type'] ?? 'document',
             'title' => $media['title'] ?? 'Genealogy document',
@@ -590,6 +605,8 @@ class GenealogyMediaEnrichmentService
     private function assessTranscriptQuality(string $text, array $media, ?string $sourceMethod = null): array
     {
         return $this->textQualityGate()->assess($text, [
+            'tree_id' => $media['tree_id'] ?? $media['person_tree_id'] ?? null,
+            'family_tree_id' => $media['tree_id'] ?? $media['person_tree_id'] ?? null,
             'media_id' => $media['id'] ?? null,
             'media_type' => $media['media_type'] ?? 'document',
             'title' => $media['title'] ?? 'Genealogy document',
@@ -597,13 +614,27 @@ class GenealogyMediaEnrichmentService
         ]);
     }
 
-    private function buildExtractionPrompt(string $docType, string $title, string $aiDescription): string
+    private function buildExtractionPrompt(string $docType, string $title, string $aiDescription, array $mediaContext = []): string
     {
+        $lessonContext = $this->lessonContext()->build($mediaContext, [
+            $docType,
+            $title,
+            $aiDescription,
+            'vision',
+            'image',
+            'ocr',
+            'htr',
+            'certificate',
+            'source media',
+            'field level review',
+        ], 4);
+
         return <<<PROMPT
 You are a professional genealogist extracting structured facts from a {$docType} document.
 
 Document title: {$title}
 Known description: {$aiDescription}
+{$lessonContext}
 
 Extract ALL genealogical facts from this document image. Return ONLY valid JSON in this exact format:
 {
@@ -639,8 +670,9 @@ Rules:
 4. notes_remainder: genealogical narrative style for remaining context
 5. If you cannot read a field clearly, omit it rather than guess
 6. For certificates and vital records, extract only field values that are visually readable; do not infer values from the title, filename, nearby tree person, or form labels alone.
-7. If a certificate is hard to read, return lower confidence and put "field_level_review_needed" in notes_remainder.
-8. Return ONLY the JSON object, no other text
+7. For headstones and cemetery memorials, extract only names, dates, burial/cemetery places, and inscriptions that are visible or present in the memorial text.
+8. If a certificate or headstone is hard to read, return lower confidence and put "field_level_review_needed" in notes_remainder.
+9. Return ONLY the JSON object, no other text
 PROMPT;
     }
 
@@ -888,7 +920,7 @@ PROMPT;
                     'role' => 'document_subject',
                 ],
                 (array) $candidate,
-                ['media_type' => 'document', 'title' => 'Phonetic genealogy match triage', 'allow_phonetic_surname' => true]
+                ['tree_id' => $treeId, 'media_type' => 'document', 'title' => 'Phonetic genealogy match triage', 'allow_phonetic_surname' => true]
             );
 
             if (($triage['label'] ?? 'uncertain') !== 'same_person') {
@@ -1117,8 +1149,14 @@ PROMPT;
     {
         return in_array($media['media_type'] ?? '', self::DOCUMENT_TYPES, true)
             && ($media['file_exists'] ?? 0)
-            && ($media['analysis_status'] ?? '') === 'completed'
+            && (($media['analysis_status'] ?? '') === 'completed' || $this->hasTranscript($media))
             && ! in_array($media['enrichment_status'] ?? '', ['completed', 'processing'], true);
+    }
+
+    private function hasTranscript(array $media): bool
+    {
+        return trim((string) ($media['transcription_text'] ?? '')) !== ''
+            || trim((string) ($media['transcription'] ?? '')) !== '';
     }
 
     private function markStatus(int $mediaId, string $status, ?string $error = null): void
@@ -1210,6 +1248,7 @@ PROMPT;
             'certificate' => 'vital_records',
             'obituary' => 'newspaper',
             'military' => 'military',
+            'headstone' => 'cemetery',
             default => 'other',
         };
     }

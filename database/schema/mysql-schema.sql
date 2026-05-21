@@ -4051,7 +4051,7 @@ CREATE TABLE `llm_instances` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `instance_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Unique identifier (e.g., ollama_primary, ollama_secondary_1, claude_cli)',
   `instance_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Human-friendly name (e.g., Primary GPU Server)',
-  `instance_type` enum('ollama','claude_cli','anthropic_api','openai','azure_openai','google_gemini','local_llm','custom') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Provider type for adapter selection',
+  `instance_type` enum('ollama','claude_cli','codex_cli','anthropic_api','openai','azure_openai','google_gemini','local_llm','custom') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Provider type for adapter selection',
   `base_url` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'API endpoint URL (null for CLI-based)',
   `port` int DEFAULT NULL COMMENT 'Port if separate from URL',
   `api_key_env` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Env var name for API key (never store keys directly)',

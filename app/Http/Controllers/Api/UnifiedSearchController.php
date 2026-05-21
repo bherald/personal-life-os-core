@@ -48,7 +48,7 @@ class UnifiedSearchController extends Controller
         // Allow '*' as browse mode (return all items without text filter)
         $isBrowseMode = ($query === '*');
 
-        if (!$isBrowseMode && strlen($query) < 2) {
+        if (! $isBrowseMode && strlen($query) < 2) {
             return response()->json([
                 'success' => false,
                 'error' => 'Query must be at least 2 characters',
@@ -181,7 +181,7 @@ class UnifiedSearchController extends Controller
                 SELECT COUNT(*) as count
                 FROM file_registry
                 WHERE status = 'active'
-                AND extension IN ('jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'tiff', 'mp4', 'mov', 'avi', 'mkv', 'webm')
+                AND extension IN ('jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'heic', 'tiff', 'jp2', 'j2k', 'jpf', 'jpx', 'mp4', 'mov', 'avi', 'mkv', 'webm')
             ")->count ?? 0;
         } catch (\Exception $e) {
             Log::debug('Could not get media count', ['error' => $e->getMessage()]);
@@ -201,40 +201,40 @@ class UnifiedSearchController extends Controller
 
         // Get photos with faces
         try {
-            $stats['photos_with_faces'] = \DB::selectOne("
+            $stats['photos_with_faces'] = \DB::selectOne('
                 SELECT COUNT(DISTINCT file_registry_id) as count
                 FROM file_registry_faces
-            ")->count ?? 0;
+            ')->count ?? 0;
         } catch (\Exception $e) {
             Log::debug('Could not get photos with faces', ['error' => $e->getMessage()]);
         }
 
         // Get total faces
         try {
-            $stats['total_faces'] = \DB::selectOne("
+            $stats['total_faces'] = \DB::selectOne('
                 SELECT COUNT(*) as count
                 FROM file_registry_faces
-            ")->count ?? 0;
+            ')->count ?? 0;
         } catch (\Exception $e) {
             Log::debug('Could not get total faces', ['error' => $e->getMessage()]);
         }
 
         // Get identified faces
         try {
-            $stats['identified_faces'] = \DB::selectOne("
+            $stats['identified_faces'] = \DB::selectOne('
                 SELECT COUNT(*) as count
                 FROM file_registry_faces
                 WHERE person_name IS NOT NULL OR genealogy_person_id IS NOT NULL
-            ")->count ?? 0;
+            ')->count ?? 0;
         } catch (\Exception $e) {
             Log::debug('Could not get identified faces', ['error' => $e->getMessage()]);
         }
 
         // Get RAG doc count
         try {
-            $stats['rag_documents'] = \DB::connection('pgsql_rag')->selectOne("
+            $stats['rag_documents'] = \DB::connection('pgsql_rag')->selectOne('
                 SELECT COUNT(*) as count FROM rag_documents
-            ")->count ?? 0;
+            ')->count ?? 0;
         } catch (\Exception $e) {
             Log::debug('Could not get RAG doc count', ['error' => $e->getMessage()]);
         }

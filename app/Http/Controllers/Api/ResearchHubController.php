@@ -25,9 +25,12 @@ class ResearchHubController extends Controller
 
     private const GENEALOGY_TYPED_REMEDIATION_FINDING_TYPES = [
         'data_quality_review',
+        'date_quality_review',
         'genealogy_data_quality',
         'genealogy_source_cleanup',
+        'genealogy_source_quality',
         'source_duplicate_cleanup',
+        'source_quality_review',
     ];
 
     public function __construct(

@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\DB;
  */
 class GenealogyEnrichMedia extends Command
 {
+    private const SUPPORTED_MEDIA_TYPES = ['obituary', 'census', 'certificate', 'document', 'military', 'headstone'];
+
     protected $signature = 'genealogy:enrich-media
                             {--tree=    : Tree ID (omit to run all trees)}
                             {--media=   : Process a single media ID}
@@ -149,6 +151,9 @@ class GenealogyEnrichMedia extends Command
 
     private function showStatus(): int
     {
+        $supportedTypes = $this->sqlStringList(self::SUPPORTED_MEDIA_TYPES);
+        $hasTranscript = "(LENGTH(TRIM(COALESCE(transcription_text, ''))) > 0 OR LENGTH(TRIM(COALESCE(transcription, ''))) > 0)";
+
         $stats = DB::select("
             SELECT
                 media_type,
@@ -156,9 +161,9 @@ class GenealogyEnrichMedia extends Command
                 SUM(CASE WHEN enrichment_status = 'completed' THEN 1 ELSE 0 END) AS enriched,
                 SUM(CASE WHEN enrichment_status = 'failed'    THEN 1 ELSE 0 END) AS failed,
                 SUM(CASE WHEN enrichment_status = 'skipped'   THEN 1 ELSE 0 END) AS skipped,
-                SUM(CASE WHEN enrichment_status IS NULL AND analysis_status = 'completed' THEN 1 ELSE 0 END) AS pending
+                SUM(CASE WHEN enrichment_status IS NULL AND (analysis_status = 'completed' OR {$hasTranscript}) THEN 1 ELSE 0 END) AS pending
             FROM genealogy_media
-            WHERE media_type IN ('obituary','census','certificate','document','military')
+            WHERE media_type IN ({$supportedTypes})
             GROUP BY media_type
             ORDER BY media_type
         ");
@@ -183,12 +188,12 @@ class GenealogyEnrichMedia extends Command
             FROM (
                 SELECT
                     CASE
-                        WHEN media_type NOT IN ('obituary','census','certificate','document','military') THEN 'unsupported_media_type'
-                        WHEN COALESCE(file_exists, 0) <> 1 THEN 'file_missing'
-                        WHEN COALESCE(analysis_status, '') <> 'completed' THEN 'analysis_not_completed'
                         WHEN enrichment_status = 'processing' THEN 'already_processing'
                         WHEN enrichment_status = 'completed' THEN 'already_completed'
                         WHEN enrichment_status = 'skipped' THEN 'skipped_or_quarantined'
+                        WHEN media_type NOT IN ({$supportedTypes}) THEN 'unsupported_media_type'
+                        WHEN COALESCE(file_exists, 0) <> 1 THEN 'file_missing'
+                        WHEN COALESCE(analysis_status, '') <> 'completed' AND NOT ({$hasTranscript}) THEN 'analysis_not_completed'
                         WHEN enrichment_status IS NULL THEN 'eligible_pending'
                         WHEN enrichment_status = 'failed' THEN 'eligible_retry_failed'
                         ELSE 'other_status'
@@ -258,5 +263,13 @@ class GenealogyEnrichMedia extends Command
         }
 
         return 0;
+    }
+
+    /**
+     * @param  list<string>  $values
+     */
+    private function sqlStringList(array $values): string
+    {
+        return implode(',', array_map(static fn (string $value): string => "'".str_replace("'", "''", $value)."'", $values));
     }
 }

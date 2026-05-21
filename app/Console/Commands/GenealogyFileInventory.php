@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Genealogy\GenealogyTreeRootResolver;
 use App\Services\Genealogy\Support\GenealogyDocumentExtensions;
 use App\Services\NextcloudFileApiService;
 use Illuminate\Console\Command;
@@ -50,15 +51,20 @@ class GenealogyFileInventory extends Command
      */
     private const HISTORICAL_SKIP_FOLDERS = ['photos', 'portraits', 'faces', 'thumbnails', 'profile', 'headshots'];
 
-    public function __construct(private NextcloudFileApiService $nc)
-    {
+    public function __construct(
+        private NextcloudFileApiService $nc,
+        private ?GenealogyTreeRootResolver $treeRootResolver = null,
+    ) {
         parent::__construct();
+        $this->treeRootResolver ??= app(GenealogyTreeRootResolver::class);
     }
 
     public function handle(): int
     {
-        $folder = (string) ($this->option('folder') ?: config('genealogy.nextcloud_root', '/Library/Genealogy'));
         $treeId = $this->option('tree');
+        $folder = $treeId
+            ? $this->treeRootResolver->mediaRoot((int) $treeId, $this->option('folder') ? (string) $this->option('folder') : null)
+            : '/'.trim((string) ($this->option('folder') ?: config('genealogy.nextcloud_root', '/Library/Genealogy')), '/');
         $limit = (int) $this->option('limit');
         $outputDir = rtrim((string) $this->option('output-dir'), '/');
 

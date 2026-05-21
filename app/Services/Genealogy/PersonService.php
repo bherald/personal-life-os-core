@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use Smalot\PdfParser\Parser as PdfParser;
 
 /**
  * PersonService - Person CRUD and Related Operations
@@ -69,6 +70,7 @@ class PersonService
         'ADOP' => 'Adoption',
         'EVEN' => 'Custom Event',
         'MIL' => 'Military Service',
+        'MILI' => 'Military Service',
         'EDUC' => 'Education',
         'OCCU' => 'Occupation',
     ];
@@ -650,6 +652,83 @@ class PersonService
         return (int) DB::getPdo()->lastInsertId();
     }
 
+    private function eventDataFromDelimitedValue(string $value): ?array
+    {
+        if (! str_contains($value, '|')) {
+            return null;
+        }
+
+        $parts = array_map(static fn (string $part): string => trim($part), explode('|', $value));
+        if (count($parts) < 2 || $parts[0] === '') {
+            return null;
+        }
+
+        $eventType = $this->eventTypeFromFieldName($parts[0]);
+        $description = $parts[3] ?? null;
+        if ($description === null || $description === '') {
+            $description = $eventType === 'EVEN'
+                ? trim($parts[0].': '.implode(' | ', array_slice($parts, 1)))
+                : implode(' | ', array_filter(array_slice($parts, 1), static fn (string $part): bool => $part !== ''));
+        }
+
+        return array_filter([
+            'event_type' => $eventType,
+            'event_date' => $parts[1] ?? null,
+            'event_place' => $parts[2] ?? null,
+            'description' => $description,
+        ], static fn ($value): bool => $value !== null && $value !== '');
+    }
+
+    private function eventDataFromFieldValue(string $fieldName, string $value): array
+    {
+        $eventType = $this->eventTypeFromFieldName($fieldName);
+
+        return [
+            'event_type' => $eventType,
+            'description' => $eventType === 'EVEN' ? "{$fieldName}: {$value}" : $value,
+        ];
+    }
+
+    private function eventTypeFromFieldName(string $fieldName): string
+    {
+        $normalized = strtolower(trim($fieldName));
+        $normalized = preg_replace('/[^a-z0-9]+/', '_', $normalized) ?? $normalized;
+        $normalized = trim($normalized, '_');
+
+        $map = [
+            'occupation' => 'OCCU',
+            'education' => 'EDUC',
+            'residence' => 'RESI',
+            'religion' => 'RELI',
+            'naturalization' => 'NATU',
+            'nationalization' => 'NATU',
+            'emigration' => 'EMIG',
+            'immigration' => 'IMMI',
+            'census' => 'CENS',
+            'probate' => 'PROB',
+            'will' => 'WILL',
+            'military' => 'MILI',
+            'military_service' => 'MILI',
+            'military_branch' => 'MILI',
+            'military_rank' => 'MILI',
+            'enlistment' => 'MILI',
+            'enlistment_date' => 'MILI',
+            'discharge' => 'MILI',
+            'discharge_date' => 'MILI',
+            'graduation' => 'GRAD',
+            'retirement' => 'RETI',
+        ];
+
+        if (isset($map[$normalized])) {
+            return $map[$normalized];
+        }
+
+        $upper = strtoupper(substr($normalized, 0, 4));
+        $knownTags = ['OCCU', 'EDUC', 'RESI', 'RELI', 'NATU', 'EMIG', 'IMMI', 'CENS', 'PROB', 'WILL', 'MILI', 'MIL', 'GRAD', 'RETI'];
+
+        return in_array($upper, $knownTags, true) ? $upper : 'EVEN';
+    }
+
     /**
      * Update an event
      *
@@ -811,8 +890,8 @@ class PersonService
      * proposal should apply normally. Skips when:
      *   - proposal has no agent_id (manual operator add — trust)
      *   - person record is missing or lacks given/surname (can't verify)
-     *   - no URL is derivable from proposed_value (nothing to fetch)
-     *   - source content fetch fails (network tolerance — let apply proceed)
+     *   - no URL or local media text is derivable from proposed_value/evidence
+     *   - source content fetch fails
      */
     protected function runSourceAddBackstop(object $proposal): ?string
     {
@@ -847,10 +926,35 @@ class PersonService
         }
 
         if ($url === null) {
-            // No verifiable URL anywhere — cannot prove or disprove the
-            // source matches. Under the operator's STRICT directive,
-            // reject rather than silently allow.
-            return 'source_add has no verifiable URL (neither proposed_value nor resolved genealogy_sources row exposes one)';
+            $localContent = $this->fetchLocalSourceContentForBackstop(
+                $proposal,
+                isset($person->tree_id) ? (int) $person->tree_id : $this->getPersonTreeId((int) $proposal->person_id)
+            );
+
+            if ($localContent === null) {
+                // No verifiable URL or local media text anywhere — cannot
+                // prove or disprove the source matches. Under the operator's
+                // STRICT directive, reject rather than silently allow.
+                return 'source_add has no verifiable URL or local media text (neither proposed_value, resolved genealogy_sources row, nor evidence media exposes verifiable content)';
+            }
+
+            if (ProximityNameMatcher::matchesFullName($localContent['content'], $person->given_name, $person->surname)) {
+                return null;
+            }
+
+            Log::warning('PersonService: source_add local-media backstop REJECTED', [
+                'proposal_id' => $proposal->id ?? null,
+                'person_id' => $proposal->person_id ?? null,
+                'local_media_ids' => $localContent['media_ids'],
+                'target_name' => $person->given_name.' '.$person->surname,
+            ]);
+
+            return sprintf(
+                "Local source media %s does not contain '%s %s' as a proximity-valid phrase",
+                implode(',', $localContent['media_ids']),
+                $person->given_name,
+                $person->surname
+            );
         }
 
         $content = $this->fetchSourceContentForBackstop($url);
@@ -955,6 +1059,118 @@ class PersonService
     }
 
     /**
+     * Resolve local FT media text for source_add proposals that cite existing
+     * source rows without URLs. This keeps downloaded HTML/HTM/PDF/image
+     * evidence usable while preserving the strict name-proximity backstop.
+     *
+     * @return array{content: string, media_ids: array<int>}|null
+     */
+    private function fetchLocalSourceContentForBackstop(object $proposal, ?int $treeId): ?array
+    {
+        $mediaIds = $this->extractBackstopMediaIdsFromProposal($proposal);
+        if ($mediaIds === []) {
+            return null;
+        }
+
+        $mediaIds = array_values(array_slice(array_unique($mediaIds), 0, 10));
+        $placeholders = implode(',', array_fill(0, count($mediaIds), '?'));
+        $params = $mediaIds;
+        $sql = "SELECT id, description, transcription_text, transcription, ai_description
+                FROM genealogy_media
+                WHERE id IN ({$placeholders})";
+
+        if ($treeId !== null && $treeId > 0) {
+            $sql .= ' AND tree_id = ?';
+            $params[] = $treeId;
+        }
+
+        $rows = DB::select($sql, $params);
+        if ($rows === []) {
+            return null;
+        }
+
+        $parts = [];
+        $usedMediaIds = [];
+        foreach ($rows as $row) {
+            $usedMediaIds[] = (int) $row->id;
+            foreach (['transcription_text', 'transcription', 'description', 'ai_description'] as $field) {
+                $value = trim((string) ($row->{$field} ?? ''));
+                if ($value !== '') {
+                    $parts[] = $value;
+                }
+            }
+        }
+
+        $content = html_entity_decode(strip_tags(implode(' ', $parts)), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $content = trim(preg_replace('/\s+/', ' ', $content) ?? $content);
+
+        if ($content === '') {
+            return null;
+        }
+
+        return [
+            'content' => mb_substr($content, 0, 2 * 1024 * 1024),
+            'media_ids' => $usedMediaIds,
+        ];
+    }
+
+    /**
+     * Extract explicit media ids from evidence metadata. We intentionally only
+     * accept ids adjacent to a media/source-media label so dates and path
+     * fragments are not mistaken for media references.
+     *
+     * @return array<int>
+     */
+    private function extractBackstopMediaIdsFromProposal(object $proposal): array
+    {
+        $ids = [];
+        $scan = function (mixed $value) use (&$ids, &$scan): void {
+            if (is_array($value)) {
+                foreach ($value as $item) {
+                    $scan($item);
+                }
+
+                return;
+            }
+
+            if (is_object($value)) {
+                $scan((array) $value);
+
+                return;
+            }
+
+            $text = trim((string) $value);
+            if ($text === '') {
+                return;
+            }
+
+            $decoded = json_decode($text, true);
+            if (is_array($decoded)) {
+                $scan($decoded);
+            }
+
+            if (preg_match_all('/\b(?:FT\d+\s+)?(?:genealogy[_ -]?)?(?:source[_ -]?)?media(?:[_ -]?id)?\D{0,20}(\d{1,10})\b/i', $text, $matches)) {
+                foreach ($matches[1] as $id) {
+                    $ids[] = (int) $id;
+                }
+            }
+        };
+
+        $scan($proposal->evidence_sources ?? null);
+
+        $decodedValue = json_decode(trim((string) ($proposal->proposed_value ?? '')), true);
+        if (is_array($decodedValue)) {
+            foreach (['media_id', 'source_media_id', 'source_media_ids', 'media_ids'] as $key) {
+                if (array_key_exists($key, $decodedValue)) {
+                    $scan($decodedValue[$key]);
+                }
+            }
+        }
+
+        return array_values(array_filter(array_unique($ids), fn (int $id) => $id > 0));
+    }
+
+    /**
      * Fetch source content for backstop verification. 24h cache by URL
      * hash. 10s connect + 10s read timeout. 2MB body cap.
      *
@@ -978,7 +1194,18 @@ class PersonService
                 return null;
             }
 
-            $body = substr((string) $response->body(), 0, 2 * 1024 * 1024);
+            $body = (string) $response->body();
+            $contentType = strtolower((string) $response->header('Content-Type', ''));
+            if ($this->isBackstopPdf($url, $contentType, $body)) {
+                $pdfText = $this->extractBackstopPdfText($body);
+                if ($pdfText !== null) {
+                    Cache::put($cacheKey, $pdfText, 60 * 60 * 24);
+
+                    return $pdfText;
+                }
+            }
+
+            $body = substr($body, 0, 2 * 1024 * 1024);
 
             // Extract attribute text BEFORE strip_tags erases it.
             $attributes = [];
@@ -995,6 +1222,31 @@ class PersonService
         } catch (\Throwable $e) {
             Log::warning('PersonService: source_add backstop fetch failed', [
                 'url' => $url,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    private function isBackstopPdf(string $url, string $contentType, string $body): bool
+    {
+        $path = strtolower((string) parse_url($url, PHP_URL_PATH));
+
+        return str_contains($contentType, 'application/pdf')
+            || str_ends_with($path, '.pdf')
+            || str_starts_with($body, '%PDF');
+    }
+
+    private function extractBackstopPdfText(string $body): ?string
+    {
+        try {
+            $text = trim((new PdfParser)->parseContent($body)->getText());
+            $text = preg_replace('/\s+/', ' ', $text) ?? $text;
+
+            return $text !== '' ? mb_substr($text, 0, 2 * 1024 * 1024) : null;
+        } catch (\Throwable $e) {
+            Log::debug('PersonService: source_add backstop PDF text extraction failed', [
                 'error' => $e->getMessage(),
             ]);
 
@@ -1021,10 +1273,7 @@ class PersonService
             // Classify source from URL domain
             $classification = $this->classifySourceUrl($url);
 
-            // Derive title from evidence_summary (first sentence) or URL hostname
-            $title = $evidenceSummary
-                ? mb_substr(explode('.', $evidenceSummary)[0], 0, 200)
-                : ($classification['site_name'] ?? parse_url($url, PHP_URL_HOST)).' — agent-sourced record';
+            $title = $this->buildAutoCreatedSourceTitle($url, $evidenceSummary, $classification);
 
             DB::insert("
                 INSERT INTO genealogy_sources
@@ -1054,6 +1303,53 @@ class PersonService
 
             return null;
         }
+    }
+
+    /**
+     * Derive a useful source title from proposal evidence without truncating
+     * common abbreviations like "St. Peter's" into junk titles.
+     *
+     * @param  array<string, mixed>  $classification
+     */
+    private function buildAutoCreatedSourceTitle(string $url, string $evidenceSummary, array $classification): string
+    {
+        $summary = trim((string) preg_replace('/\s+/', ' ', $evidenceSummary));
+
+        if ($summary !== '') {
+            $candidate = $this->extractSourceTitleFromEvidenceSummary($summary);
+
+            if ($candidate !== '') {
+                return mb_substr($candidate, 0, 200);
+            }
+        }
+
+        $siteName = trim((string) ($classification['site_name'] ?? ''));
+        if ($siteName === '') {
+            $siteName = (string) (parse_url($url, PHP_URL_HOST) ?: 'Genealogy source');
+        }
+
+        return mb_substr($siteName.' - agent-sourced record', 0, 200);
+    }
+
+    private function extractSourceTitleFromEvidenceSummary(string $summary): string
+    {
+        $introPattern = '/^(.{8,180}?\b(?:page|report|database|index|register|record|transcript|article|memorial|profile|collection))\s+(?:lists|states|shows|records|documents|identifies|places|includes|contains)\b/i';
+
+        if (preg_match($introPattern, $summary, $matches)) {
+            return trim($matches[1], " \t\n\r\0\x0B.,;:");
+        }
+
+        $protected = preg_replace_callback(
+            '/\b(St|Mr|Mrs|Ms|Dr|Rev|Jr|Sr|Mt|Ft|No|Nos|Co|Corp|Inc|Ltd|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\./i',
+            fn (array $matches): string => $matches[1].'<DOT>',
+            $summary
+        ) ?? $summary;
+
+        $sentences = preg_split('/(?<=[.!?])\s+(?=[A-Z0-9])/', $protected, 2);
+        $candidate = (string) ($sentences[0] ?? $protected);
+        $candidate = str_replace('<DOT>', '.', $candidate);
+
+        return trim($candidate, " \t\n\r\0\x0B.,;:");
     }
 
     /**
@@ -1513,41 +1809,26 @@ class PersonService
                     break;
 
                 case 'event_add':
-                    // genealogy-media-enrichment (and likely future enrichment
-                    // agents) sometimes emit proposed_value as a bare string
-                    // alongside a meaningful field_name (e.g. proposed_value =
-                    // "preacher", field_name = "occupation"). Pre-fix the apply
-                    // path returned "Invalid event data JSON" and the operator
-                    // had no way to approve. Now: when the value isn't JSON
-                    // but field_name names a GEDCOM event type or attribute,
-                    // synthesize the event. Only the structural shape changes
-                    // — operator still gates on the actual content via the
-                    // human-approval flow upstream.
                     $eventData = json_decode((string) $proposal->proposed_value, true);
                     if (! is_array($eventData)) {
-                        $bareValue = (string) ($proposal->proposed_value ?? '');
+                        $bareValue = trim((string) ($proposal->proposed_value ?? ''));
                         $fieldName = trim((string) ($proposal->field_name ?? ''));
-                        if ($bareValue === '' || $fieldName === '') {
+                        if ($bareValue === '') {
+                            return [
+                                'success' => false,
+                                'error' => 'event_add proposal has neither valid JSON nor usable bare event value',
+                            ];
+                        }
+
+                        $eventData = $this->eventDataFromDelimitedValue($bareValue)
+                            ?? ($fieldName !== '' ? $this->eventDataFromFieldValue($fieldName, $bareValue) : null);
+
+                        if ($eventData === null) {
                             return [
                                 'success' => false,
                                 'error' => 'event_add proposal has neither valid JSON nor field_name+bare value pair',
                             ];
                         }
-                        // GEDCOM event type tag: 4-letter uppercase. Common
-                        // ones (OCCU, EDUC, RESI, RELI, NATU, EMIG, IMMI,
-                        // CENS) map directly from a lowercase field_name.
-                        // Unknown field_names fall back to "EVEN" (custom
-                        // event) with the field_name preserved in description.
-                        $knownTags = ['OCCU', 'EDUC', 'RESI', 'RELI', 'NATU', 'EMIG', 'IMMI', 'CENS', 'PROB', 'WILL', 'MIL', 'GRAD', 'RETI'];
-                        $upper = strtoupper(substr($fieldName, 0, 4));
-                        $eventType = in_array($upper, $knownTags, true) ? $upper : 'EVEN';
-                        $description = $eventType === 'EVEN'
-                            ? "{$fieldName}: {$bareValue}"
-                            : $bareValue;
-                        $eventData = [
-                            'event_type' => $eventType,
-                            'description' => $description,
-                        ];
                     }
                     $this->createEvent((int) $proposal->person_id, $eventData);
                     break;
@@ -1587,6 +1868,16 @@ class PersonService
                             (int) $proposal->person_id,
                             $sourceId,
                             $citationData
+                        );
+                    } elseif (is_numeric($sourceData) || preg_match('/^\d+$/', trim((string) ($proposal->proposed_value ?? '')))) {
+                        $sourceId = is_numeric($sourceData)
+                            ? (int) $sourceData
+                            : (int) trim((string) $proposal->proposed_value);
+
+                        app(SourceCitationService::class)->linkPersonSource(
+                            (int) $proposal->person_id,
+                            $sourceId,
+                            []
                         );
                     } elseif (preg_match('/https?:\/\//', $proposal->proposed_value ?? '')) {
                         // URL-based source: append as research note with URL + the

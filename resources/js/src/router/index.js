@@ -1,6 +1,11 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 
+const reviewHubRedirect = (to) => ({
+  path: '/knowledge',
+  query: { ...to.query, source: 'review' },
+});
+
 const routes = [
   {
     path: '/login',
@@ -234,7 +239,7 @@ const routes = [
   // Hub consolidated into Knowledge → Review tab
   {
     path: '/hub',
-    redirect: '/knowledge?source=review'
+    redirect: reviewHubRedirect
   },
   {
     path: '/agents',
@@ -242,11 +247,11 @@ const routes = [
   },
   {
     path: '/reviews',
-    redirect: '/knowledge?source=review'
+    redirect: reviewHubRedirect
   },
   {
     path: '/research-hub',
-    redirect: '/knowledge?source=review'
+    redirect: reviewHubRedirect
   },
   {
     path: '/graph',

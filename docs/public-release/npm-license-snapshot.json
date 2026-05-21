@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-09T10:52:56Z",
+  "generated_at": "2026-05-21T13:28:53Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
@@ -2469,7 +2469,7 @@
         },
         {
           "name": "@protobufjs/codegen",
-          "version": "2.0.4",
+          "version": "2.0.5",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -2491,7 +2491,7 @@
         },
         {
           "name": "@protobufjs/fetch",
-          "version": "1.1.0",
+          "version": "1.1.1",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -2513,7 +2513,7 @@
         },
         {
           "name": "@protobufjs/inquire",
-          "version": "1.1.0",
+          "version": "1.1.2",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -2546,7 +2546,7 @@
         },
         {
           "name": "@protobufjs/utf8",
-          "version": "1.1.0",
+          "version": "1.1.1",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -4438,7 +4438,7 @@
         },
         {
           "name": "brace-expansion",
-          "version": "5.0.5",
+          "version": "5.0.6",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -8981,7 +8981,7 @@
         },
         {
           "name": "protobufjs",
-          "version": "7.5.5",
+          "version": "7.6.0",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -10807,7 +10807,7 @@
         },
         {
           "name": "ws",
-          "version": "8.19.0",
+          "version": "8.20.1",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -12149,7 +12149,7 @@
         },
         {
           "name": "ws",
-          "version": "8.20.0",
+          "version": "8.20.1",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",

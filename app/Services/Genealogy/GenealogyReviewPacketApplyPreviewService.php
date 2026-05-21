@@ -65,11 +65,25 @@ class GenealogyReviewPacketApplyPreviewService
             }
         }
 
-        if ($inputs === [] && $this->isRemediationPreviewType($this->scalarText($packet, ['operation_type', 'operation', 'type', 'change_type', 'finding_type']))) {
+        if ($inputs === []
+            && ! $this->hasProposalLikeInputs($packet)
+            && $this->isRemediationPreviewType($this->scalarText($packet, ['operation_type', 'operation', 'type', 'change_type', 'finding_type']))) {
             $inputs[] = $packet;
         }
 
         return $inputs;
+    }
+
+    private function hasProposalLikeInputs(array $packet): bool
+    {
+        foreach (['proposals', 'claims', 'extracted_claims', 'facts'] as $key) {
+            $value = $packet[$key] ?? null;
+            if (is_array($value) && $value !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -240,7 +254,11 @@ class GenealogyReviewPacketApplyPreviewService
             'source_duplicate_cleanup',
             'genealogy_todo_create',
             'data_quality_review',
+            'date_quality_review',
             'genealogy_data_quality',
+            'genealogy_source_cleanup',
+            'genealogy_source_quality',
+            'source_quality_review',
         ], true);
     }
 }

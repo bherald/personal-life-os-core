@@ -211,7 +211,7 @@ class ReviewEvidenceAssetCandidateService
         }
 
         $extension = $parsed['extension'] ?? null;
-        if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'tif', 'tiff'], true)) {
+        if (in_array($extension, ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'tif', 'tiff', 'jp2', 'j2k', 'jpf', 'jpx'], true)) {
             return 'image';
         }
         if ($extension === 'pdf') {

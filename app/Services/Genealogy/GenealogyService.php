@@ -6896,6 +6896,8 @@ class GenealogyService
         if (! in_array($taskType, $validTypes)) {
             $taskType = 'find_records'; // safe default
         }
+        $createdBy = $data['created_by'] ?? null;
+        $createdBy = is_numeric($createdBy) ? (int) $createdBy : null;
 
         DB::insert("
             INSERT INTO genealogy_research_tasks
@@ -6921,7 +6923,7 @@ class GenealogyService
             $data['outcome_state'] ?? null,
             $data['outcome_reason'] ?? null,
             isset($data['parameters']) ? json_encode($data['parameters']) : null,
-            $data['created_by'] ?? null,
+            $createdBy,
         ]);
 
         return (int) DB::getPdo()->lastInsertId();
@@ -8746,8 +8748,71 @@ class GenealogyService
         // Clear existing paths for this tree
         DB::delete('DELETE FROM genealogy_ancestor_paths WHERE tree_id = ?', [$treeId]);
 
-        $written = 0;
         $now = now()->toDateTimeString();
+        $treePersonIds = [];
+        foreach (DB::select('SELECT id FROM genealogy_persons WHERE tree_id = ?', [$treeId]) as $person) {
+            $treePersonIds[(int) $person->id] = true;
+        }
+
+        $familyParents = [];
+        $parentFamilies = [];
+        foreach (DB::select('SELECT id, husband_id, wife_id FROM genealogy_families WHERE tree_id = ?', [$treeId]) as $family) {
+            $familyId = (int) $family->id;
+            $husbandId = (int) ($family->husband_id ?? 0);
+            $wifeId = (int) ($family->wife_id ?? 0);
+            $familyParents[$familyId] = [
+                'husband_id' => $husbandId > 0 && isset($treePersonIds[$husbandId]) ? $husbandId : null,
+                'wife_id' => $wifeId > 0 && isset($treePersonIds[$wifeId]) ? $wifeId : null,
+            ];
+
+            foreach ([$husbandId, $wifeId] as $parentId) {
+                if ($parentId > 0 && isset($treePersonIds[$parentId])) {
+                    $parentFamilies[$parentId][] = $familyId;
+                }
+            }
+        }
+
+        $familyChildren = [];
+        $personChildFamily = [];
+        $children = DB::select(
+            'SELECT c.id, c.family_id, c.person_id
+             FROM genealogy_children c
+             JOIN genealogy_families f ON f.id = c.family_id
+             JOIN genealogy_persons p ON p.id = c.person_id AND p.tree_id = f.tree_id
+             WHERE f.tree_id = ?
+             ORDER BY c.id',
+            [$treeId]
+        );
+        foreach ($children as $child) {
+            $familyId = (int) $child->family_id;
+            $personId = (int) $child->person_id;
+            $familyChildren[$familyId][] = $personId;
+            $personChildFamily[$personId] ??= $familyId;
+        }
+
+        $pathRows = [];
+        $recordPath = static function (int $personId, int $generation, array $path, int $tier) use (&$pathRows, $treeId, $rootPersonId, $now): void {
+            $existing = $pathRows[$personId] ?? null;
+            if ($existing !== null) {
+                $existingTier = (int) $existing['bloodline_tier'];
+                $existingGeneration = (int) $existing['generation'];
+                if ($existingTier < $tier || ($existingTier === $tier && $existingGeneration <= $generation)) {
+                    return;
+                }
+            }
+
+            $pathRows[$personId] = [
+                'tree_id' => $treeId,
+                'root_person_id' => $rootPersonId,
+                'ancestor_id' => $personId,
+                'generation' => $generation,
+                'path_ids' => json_encode(array_values(array_map('intval', $path))),
+                'bloodline_tier' => $tier,
+                'rebuilt_at' => $now,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+        };
 
         // BFS queue: [person_id, generation, path_ids_array]
         $queue = [[$rootPersonId, 0, [$rootPersonId]]];
@@ -8755,85 +8820,124 @@ class GenealogyService
 
         // Track all direct ancestors and their generations for sibling detection
         $directAncestors = [$rootPersonId => 0];
+        $directAncestorPaths = [$rootPersonId => [$rootPersonId]];
 
         // Phase 1: walk straight up the bloodline (Tier 1)
-        while (! empty($queue)) {
-            [$personId, $generation, $path] = array_shift($queue);
+        for ($i = 0; $i < count($queue); $i++) {
+            [$personId, $generation, $path] = $queue[$i];
+            $recordPath((int) $personId, (int) $generation, $path, 1);
 
-            // Insert direct ancestor path
-            DB::statement('
-                INSERT INTO genealogy_ancestor_paths
-                    (tree_id, root_person_id, ancestor_id, generation, path_ids, bloodline_tier, rebuilt_at, created_at)
-                VALUES (?, ?, ?, ?, ?, 1, ?, NOW())
-                ON DUPLICATE KEY UPDATE
-                    generation = VALUES(generation),
-                    path_ids   = VALUES(path_ids),
-                    bloodline_tier = 1,
-                    rebuilt_at = VALUES(rebuilt_at)
-            ', [$treeId, $rootPersonId, $personId, $generation, json_encode($path), $now]);
-            $written++;
-
-            // Find parents of this person
-            $childLink = DB::selectOne(
-                'SELECT c.family_id, f.husband_id, f.wife_id
-                 FROM genealogy_children c
-                 JOIN genealogy_families f ON f.id = c.family_id
-                 WHERE c.person_id = ? AND f.tree_id = ?',
-                [$personId, $treeId]
-            );
-
-            if (! $childLink) {
+            $familyId = $personChildFamily[(int) $personId] ?? null;
+            if (! $familyId || ! isset($familyParents[$familyId])) {
                 continue;
             }
 
             foreach (['husband_id', 'wife_id'] as $parentField) {
-                $parentId = $childLink->$parentField ?? null;
+                $parentId = $familyParents[$familyId][$parentField] ?? null;
                 if (! $parentId || isset($visited[$parentId])) {
                     continue;
                 }
                 $visited[$parentId] = true;
                 $directAncestors[$parentId] = $generation + 1;
-                $queue[] = [$parentId, $generation + 1, array_merge($path, [$parentId])];
+                $parentPath = array_merge($path, [$parentId]);
+                $directAncestorPaths[$parentId] = $parentPath;
+                $queue[] = [$parentId, $generation + 1, $parentPath];
             }
         }
 
         // Phase 2: mark siblings of direct ancestors (Tier 2)
         // For each direct ancestor, find all children of the same family that are NOT direct ancestors
+        $collateralSeeds = [];
         foreach (array_keys($directAncestors) as $ancestorId) {
-            $childLink = DB::selectOne(
-                'SELECT c.family_id FROM genealogy_children c
-                 JOIN genealogy_families f ON f.id = c.family_id
-                 WHERE c.person_id = ? AND f.tree_id = ?',
-                [$ancestorId, $treeId]
-            );
-            if (! $childLink) {
+            $familyId = $personChildFamily[$ancestorId] ?? null;
+            if (! $familyId || empty($familyChildren[$familyId])) {
                 continue;
             }
 
-            $siblings = DB::select(
-                'SELECT c.person_id FROM genealogy_children c
-                 WHERE c.family_id = ? AND c.person_id != ?',
-                [$childLink->family_id, $ancestorId]
-            );
-
             $ancestorGen = $directAncestors[$ancestorId];
-            foreach ($siblings as $sib) {
-                if (isset($directAncestors[$sib->person_id])) {
+            $ancestorPath = $directAncestorPaths[$ancestorId] ?? [$ancestorId];
+            foreach ($familyChildren[$familyId] as $siblingId) {
+                if ($siblingId === $ancestorId || isset($directAncestors[$siblingId])) {
                     continue; // already a direct ancestor
                 }
-                DB::statement('
-                    INSERT INTO genealogy_ancestor_paths
-                        (tree_id, root_person_id, ancestor_id, generation, path_ids, bloodline_tier, rebuilt_at, created_at)
-                    VALUES (?, ?, ?, ?, ?, 2, ?, NOW())
-                    ON DUPLICATE KEY UPDATE
-                        bloodline_tier = LEAST(bloodline_tier, 2),
-                        rebuilt_at = VALUES(rebuilt_at)
-                ', [$treeId, $rootPersonId, $sib->person_id, $ancestorGen, json_encode([$sib->person_id]), $now]);
-                $written++;
+
+                $siblingPath = $this->buildCollateralSiblingPath($ancestorPath, $siblingId, $rootPersonId);
+                $recordPath($siblingId, $ancestorGen, $siblingPath, 2);
+                $collateralSeeds[$siblingId] = [
+                    'person_id' => $siblingId,
+                    'generation' => $ancestorGen,
+                    'path' => $siblingPath,
+                ];
             }
         }
 
-        return $written;
+        // Phase 3: propagate useful tier-3 paths down from tier-2 blood-collateral siblings.
+        // This walks only child links from the blood-relative seed and does not include spouses.
+        $descendantQueue = array_values($collateralSeeds);
+        $visitedCollateral = [];
+        foreach ($collateralSeeds as $seedId => $seed) {
+            $visitedCollateral[(int) $seedId] = true;
+        }
+
+        for ($i = 0; $i < count($descendantQueue); $i++) {
+            $current = $descendantQueue[$i];
+            $parentId = (int) $current['person_id'];
+            $parentGeneration = (int) $current['generation'];
+            $parentPath = array_values(array_map('intval', $current['path']));
+
+            foreach ($parentFamilies[$parentId] ?? [] as $familyId) {
+                foreach ($familyChildren[$familyId] ?? [] as $childId) {
+                    if ($childId <= 0 || isset($directAncestors[$childId]) || isset($visitedCollateral[$childId])) {
+                        continue;
+                    }
+
+                    $childGeneration = $parentGeneration + 1;
+                    $childPath = array_merge($parentPath, [$childId]);
+                    $visitedCollateral[$childId] = true;
+                    $recordPath($childId, $childGeneration, $childPath, 3);
+
+                    $descendantQueue[] = [
+                        'person_id' => $childId,
+                        'generation' => $childGeneration,
+                        'path' => $childPath,
+                    ];
+                }
+            }
+        }
+
+        foreach (array_chunk(array_values($pathRows), 500) as $chunk) {
+            DB::table('genealogy_ancestor_paths')->insert($chunk);
+        }
+
+        return count($pathRows);
+    }
+
+    /**
+     * Build a root-context path for a sibling of a direct ancestor.
+     *
+     * The sibling is at the same generation as the direct ancestor, so the final
+     * direct ancestor node is replaced with the sibling. This preserves enough
+     * root-side context for cousin-branch work without pretending the sibling is
+     * on the direct ancestor chain.
+     *
+     * @param  list<int>  $ancestorPath
+     * @return list<int>
+     */
+    private function buildCollateralSiblingPath(array $ancestorPath, int $siblingId, int $rootPersonId): array
+    {
+        $path = array_values(array_map('intval', $ancestorPath));
+        if ($path === []) {
+            return [$rootPersonId, $siblingId];
+        }
+
+        if (count($path) === 1) {
+            return [(int) $path[0], $siblingId];
+        }
+
+        array_pop($path);
+        $path[] = $siblingId;
+
+        return $path;
     }
 
     /**
@@ -8855,6 +8959,14 @@ class GenealogyService
         $persons = DB::select(
             'SELECT id, birth_date, birth_place, death_date, death_place
              FROM genealogy_persons WHERE tree_id = ?',
+            [$treeId]
+        );
+
+        DB::delete(
+            'DELETE c
+             FROM genealogy_person_coverage c
+             LEFT JOIN genealogy_persons p ON p.id = c.person_id AND p.tree_id = c.tree_id
+             WHERE c.tree_id = ? AND p.id IS NULL',
             [$treeId]
         );
 
@@ -8906,6 +9018,7 @@ class GenealogyService
         $tierWeights = [1 => 1.0, 2 => 0.6, 3 => 0.3, 4 => 0.1];
         $upserted = 0;
         $now = now()->toDateTimeString();
+        $coverageRows = [];
 
         foreach ($persons as $person) {
             $pid = $person->id;
@@ -8954,32 +9067,43 @@ class GenealogyService
             $baseScore = ($tierWeight * 0.50) + ($gapScore * 0.30) + ($staleness * 0.20);
             $priorityScore = $baseScore * (1.0 - ($exhaustion * 0.50));
 
-            DB::statement('
-                INSERT INTO genealogy_person_coverage
-                    (tree_id, person_id, bloodline_tier, generation_distance,
-                     data_gap_score, research_exhaustion_score, pending_hint_count,
-                     last_searched_at, search_count_30d, negative_count_30d,
-                     priority_score, coverage_updated_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-                ON DUPLICATE KEY UPDATE
-                    bloodline_tier              = VALUES(bloodline_tier),
-                    generation_distance         = VALUES(generation_distance),
-                    data_gap_score              = VALUES(data_gap_score),
-                    research_exhaustion_score   = VALUES(research_exhaustion_score),
-                    pending_hint_count          = VALUES(pending_hint_count),
-                    last_searched_at            = VALUES(last_searched_at),
-                    search_count_30d            = VALUES(search_count_30d),
-                    negative_count_30d          = VALUES(negative_count_30d),
-                    priority_score              = VALUES(priority_score),
-                    coverage_updated_at         = VALUES(coverage_updated_at)
-            ', [
-                $treeId, $pid, $tier, $gen,
-                round($gapScore, 3), round($exhaustion, 3),
-                $hintMap[$pid] ?? 0,
-                $lastSearched, $count30d, $neg30d,
-                round($priorityScore, 4), $now,
-            ]);
+            $coverageRows[] = [
+                'tree_id' => $treeId,
+                'person_id' => $pid,
+                'bloodline_tier' => $tier,
+                'generation_distance' => $gen,
+                'data_gap_score' => round($gapScore, 3),
+                'research_exhaustion_score' => round($exhaustion, 3),
+                'pending_hint_count' => $hintMap[$pid] ?? 0,
+                'last_searched_at' => $lastSearched,
+                'search_count_30d' => $count30d,
+                'negative_count_30d' => $neg30d,
+                'priority_score' => round($priorityScore, 4),
+                'coverage_updated_at' => $now,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
             $upserted++;
+        }
+
+        foreach (array_chunk($coverageRows, 500) as $chunk) {
+            DB::table('genealogy_person_coverage')->upsert(
+                $chunk,
+                ['tree_id', 'person_id'],
+                [
+                    'bloodline_tier',
+                    'generation_distance',
+                    'data_gap_score',
+                    'research_exhaustion_score',
+                    'pending_hint_count',
+                    'last_searched_at',
+                    'search_count_30d',
+                    'negative_count_30d',
+                    'priority_score',
+                    'coverage_updated_at',
+                    'updated_at',
+                ]
+            );
         }
 
         // Update priority_rank within tree using window function

@@ -3,9 +3,9 @@
 namespace App\Services\Genealogy;
 
 use App\Services\AIService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
 
 /**
  * Priority A.1: AI Genealogist Persona Service
@@ -20,11 +20,13 @@ class GenealogyAIResearchService
 {
     private AIService $aiService;
 
+    private ?GenealogyLessonPromptContextService $lessonPromptContext = null;
+
     /**
      * Professional genealogist system prompt
      * Based on Evidence Explained methodology and Genealogical Proof Standard
      */
-    private const GENEALOGIST_SYSTEM_PROMPT = <<<PROMPT
+    private const GENEALOGIST_SYSTEM_PROMPT = <<<'PROMPT'
 You are a professional genealogist. Be CONCISE - the user values brevity.
 
 Expertise: vital records, census, immigration, military, land, church records, DNA genealogy, GEDCOM, Evidence Explained citations.
@@ -42,21 +44,26 @@ PROMPT;
         $this->aiService = $aiService;
     }
 
+    private function lessonContext(): GenealogyLessonPromptContextService
+    {
+        return $this->lessonPromptContext ??= app(GenealogyLessonPromptContextService::class);
+    }
+
     /**
      * Research a person and suggest next steps
      *
-     * @param int $personId The genealogy person ID
-     * @param array $options Optional configuration:
-     *                       - focus: 'ancestry'|'descendants'|'siblings'|'general'
-     *                       - include_sources: bool - include existing source analysis
-     *                       - brick_wall: bool - focus on breaking through research barriers
+     * @param  int  $personId  The genealogy person ID
+     * @param  array  $options  Optional configuration:
+     *                          - focus: 'ancestry'|'descendants'|'siblings'|'general'
+     *                          - include_sources: bool - include existing source analysis
+     *                          - brick_wall: bool - focus on breaking through research barriers
      * @return array Research suggestions and strategy
      */
     public function researchPerson(int $personId, array $options = []): array
     {
         $person = $this->getPersonWithContext($personId);
 
-        if (!$person) {
+        if (! $person) {
             return [
                 'success' => false,
                 'error' => 'Person not found',
@@ -68,18 +75,18 @@ PROMPT;
         $isBrickWall = $options['brick_wall'] ?? false;
 
         // Build comprehensive context about the person
-        $context = $this->buildPersonContext($person, $includeSources);
+        $context = $this->buildPersonContext($person, $includeSources, $focus);
 
         // Build the research prompt
         $prompt = $this->buildResearchPrompt($person, $context, $focus, $isBrickWall);
 
         // Cache key for research results (24 hour cache)
-        $cacheKey = "genealogy_ai_research:{$personId}:{$focus}:" . md5(json_encode($options));
+        $cacheKey = "genealogy_ai_research:{$personId}:{$focus}:".md5(json_encode($options).'|'.$context);
 
         return Cache::remember($cacheKey, 86400, function () use ($prompt, $person, $focus) {
             Log::info('GenealogyAIResearchService: Researching person', [
                 'person_id' => $person->id,
-                'name' => $person->given_name . ' ' . $person->surname,
+                'name' => $person->given_name.' '.$person->surname,
                 'focus' => $focus,
             ]);
 
@@ -89,7 +96,7 @@ PROMPT;
                 'model_role' => 'quality', // N120: Use quality-tier model for genealogy research accuracy
             ]);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 return [
                     'success' => false,
                     'error' => $result['error'] ?? 'AI processing failed',
@@ -100,7 +107,7 @@ PROMPT;
             return [
                 'success' => true,
                 'person_id' => $person->id,
-                'person_name' => trim($person->given_name . ' ' . $person->surname),
+                'person_name' => trim($person->given_name.' '.$person->surname),
                 'focus' => $focus,
                 'research_suggestions' => $result['response'],
                 'provider' => $result['provider'] ?? 'unknown',
@@ -113,14 +120,14 @@ PROMPT;
     /**
      * Suggest research strategies for breaking through a brick wall
      *
-     * @param int $personId The genealogy person ID
+     * @param  int  $personId  The genealogy person ID
      * @return array Brick wall breaking strategies
      */
     public function suggestResearchForBrickWall(int $personId): array
     {
         $person = $this->getPersonWithContext($personId);
 
-        if (!$person) {
+        if (! $person) {
             return [
                 'success' => false,
                 'error' => 'Person not found',
@@ -129,7 +136,7 @@ PROMPT;
 
         // Identify what's missing
         $gaps = $this->identifyResearchGaps($person);
-        $context = $this->buildPersonContext($person, true);
+        $context = $this->buildPersonContext($person, true, 'brick_wall');
 
         $prompt = <<<PROMPT
 Brick wall research strategy needed.
@@ -147,12 +154,12 @@ Provide CONCISE, bullet-point response:
 Skip general advice. Only specific strategies for this person's era/location.
 PROMPT;
 
-        $cacheKey = "genealogy_ai_brickwall:{$personId}:" . md5($gaps);
+        $cacheKey = "genealogy_ai_brickwall:{$personId}:".md5($gaps.'|'.$context);
 
         return Cache::remember($cacheKey, 86400, function () use ($prompt, $person) {
             Log::info('GenealogyAIResearchService: Brick wall analysis', [
                 'person_id' => $person->id,
-                'name' => $person->given_name . ' ' . $person->surname,
+                'name' => $person->given_name.' '.$person->surname,
             ]);
 
             $result = $this->aiService->process($prompt, [
@@ -161,7 +168,7 @@ PROMPT;
                 'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
             ]);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 return [
                     'success' => false,
                     'error' => $result['error'] ?? 'AI processing failed',
@@ -172,7 +179,7 @@ PROMPT;
             return [
                 'success' => true,
                 'person_id' => $person->id,
-                'person_name' => trim($person->given_name . ' ' . $person->surname),
+                'person_name' => trim($person->given_name.' '.$person->surname),
                 'brick_wall_strategies' => $result['response'],
                 'research_gaps' => $this->parseResearchGaps($person),
                 'provider' => $result['provider'] ?? 'unknown',
@@ -184,17 +191,28 @@ PROMPT;
     /**
      * Evaluate a source for genealogical quality
      *
-     * @param string $sourceDescription Description of the source to evaluate
-     * @param array $options Optional: person_id for context
+     * @param  string  $sourceDescription  Description of the source to evaluate
+     * @param  array  $options  Optional: person_id for context
      * @return array Source evaluation with GPS compliance rating
      */
     public function evaluateSource(string $sourceDescription, array $options = []): array
     {
         $personContext = '';
-        if (!empty($options['person_id'])) {
+        if (! empty($options['person_id'])) {
             $person = $this->getPersonWithContext($options['person_id']);
             if ($person) {
-                $personContext = "\n\n## Person Being Researched\nName: {$person->given_name} {$person->surname}\nBirth: {$person->birth_date} at {$person->birth_place}\nDeath: {$person->death_date} at {$person->death_place}";
+                $lessonContext = $this->lessonContext()->build(
+                    ['tree_id' => (int) ($person->tree_id ?? 0)],
+                    $this->lessonSearchTerms($person, 'source_evaluation'),
+                    4,
+                    '## Reusable Genea Lessons',
+                    [
+                        'title_limit' => 0,
+                        'lesson_limit' => 320,
+                        'fallback_limit' => 3,
+                    ]
+                );
+                $personContext = "\n\n## Person Being Researched\nName: {$person->given_name} {$person->surname}\nBirth: {$person->birth_date} at {$person->birth_place}\nDeath: {$person->death_date} at {$person->death_place}{$lessonContext}";
             }
         }
 
@@ -235,7 +253,7 @@ Please assess this source on:
    - How should this source be used in a proof argument?
 PROMPT;
 
-        $cacheKey = "genealogy_ai_source_eval:" . md5($sourceDescription . json_encode($options));
+        $cacheKey = 'genealogy_ai_source_eval:'.md5($sourceDescription.json_encode($options));
 
         return Cache::remember($cacheKey, 86400, function () use ($prompt, $sourceDescription) {
             Log::info('GenealogyAIResearchService: Evaluating source');
@@ -246,7 +264,7 @@ PROMPT;
                 'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
             ]);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 return [
                     'success' => false,
                     'error' => $result['error'] ?? 'AI processing failed',
@@ -266,8 +284,8 @@ PROMPT;
     /**
      * Analyze the relationship between two persons
      *
-     * @param int $person1Id First person ID
-     * @param int $person2Id Second person ID
+     * @param  int  $person1Id  First person ID
+     * @param  int  $person2Id  Second person ID
      * @return array Relationship analysis
      */
     public function analyzeRelationship(int $person1Id, int $person2Id): array
@@ -275,15 +293,15 @@ PROMPT;
         $person1 = $this->getPersonWithContext($person1Id);
         $person2 = $this->getPersonWithContext($person2Id);
 
-        if (!$person1 || !$person2) {
+        if (! $person1 || ! $person2) {
             return [
                 'success' => false,
                 'error' => 'One or both persons not found',
             ];
         }
 
-        $context1 = $this->buildPersonContext($person1, false);
-        $context2 = $this->buildPersonContext($person2, false);
+        $context1 = $this->buildPersonContext($person1, false, 'relationship');
+        $context2 = $this->buildPersonContext($person2, false, 'relationship');
 
         // Get known relationship path if any
         $relationshipPath = $this->findRelationshipPath($person1Id, $person2Id);
@@ -325,8 +343,8 @@ PROMPT;
 
         return Cache::remember($cacheKey, 86400, function () use ($prompt, $person1, $person2) {
             Log::info('GenealogyAIResearchService: Analyzing relationship', [
-                'person1' => $person1->given_name . ' ' . $person1->surname,
-                'person2' => $person2->given_name . ' ' . $person2->surname,
+                'person1' => $person1->given_name.' '.$person1->surname,
+                'person2' => $person2->given_name.' '.$person2->surname,
             ]);
 
             $result = $this->aiService->process($prompt, [
@@ -335,7 +353,7 @@ PROMPT;
                 'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
             ]);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 return [
                     'success' => false,
                     'error' => $result['error'] ?? 'AI processing failed',
@@ -346,11 +364,11 @@ PROMPT;
                 'success' => true,
                 'person1' => [
                     'id' => $person1->id,
-                    'name' => trim($person1->given_name . ' ' . $person1->surname),
+                    'name' => trim($person1->given_name.' '.$person1->surname),
                 ],
                 'person2' => [
                     'id' => $person2->id,
-                    'name' => trim($person2->given_name . ' ' . $person2->surname),
+                    'name' => trim($person2->given_name.' '.$person2->surname),
                 ],
                 'analysis' => $result['response'],
                 'provider' => $result['provider'] ?? 'unknown',
@@ -377,7 +395,7 @@ PROMPT;
 
         $redis = \Illuminate\Support\Facades\Redis::connection(config('cache.stores.redis.connection', 'cache'));
         foreach ($patterns as $pattern) {
-            $keys = $redis->keys($cachePrefix . $pattern);
+            $keys = $redis->keys($cachePrefix.$pattern);
             foreach ($keys as $key) {
                 $cleanKey = str_starts_with($key, $dbPrefix) ? substr($key, strlen($dbPrefix)) : $key;
                 $redis->del($cleanKey);
@@ -423,11 +441,11 @@ PROMPT;
     /**
      * Build comprehensive person context for AI prompt
      */
-    private function buildPersonContext(object $person, bool $includeSources = true): string
+    private function buildPersonContext(object $person, bool $includeSources = true, ?string $focus = null): string
     {
         $context = "## Basic Information\n";
         $context .= "- **Name:** {$person->given_name} {$person->surname}\n";
-        $context .= "- **Sex:** " . ($person->sex === 'M' ? 'Male' : ($person->sex === 'F' ? 'Female' : 'Unknown')) . "\n";
+        $context .= '- **Sex:** '.($person->sex === 'M' ? 'Male' : ($person->sex === 'F' ? 'Female' : 'Unknown'))."\n";
 
         if ($person->birth_date) {
             $context .= "- **Birth:** {$person->birth_date}";
@@ -445,7 +463,7 @@ PROMPT;
                 $context .= " at {$person->death_place}";
             }
             $context .= "\n";
-        } elseif (!$this->isLiving($person)) {
+        } elseif (! $this->isLiving($person)) {
             $context .= "- **Death:** Unknown (presumed deceased)\n";
         }
 
@@ -464,7 +482,7 @@ PROMPT;
 
         // Spouses
         $spouses = $this->getSpouses($person->id);
-        if (!empty($spouses)) {
+        if (! empty($spouses)) {
             $context .= "\n## Spouses\n";
             foreach ($spouses as $spouse) {
                 $context .= "- {$spouse->spouse_name}";
@@ -473,7 +491,7 @@ PROMPT;
                     if ($spouse->marriage_place) {
                         $context .= " at {$spouse->marriage_place}";
                     }
-                    $context .= ")";
+                    $context .= ')';
                 }
                 $context .= "\n";
             }
@@ -481,7 +499,7 @@ PROMPT;
 
         // Children
         $children = $this->getChildren($person->id);
-        if (!empty($children)) {
+        if (! empty($children)) {
             $context .= "\n## Children\n";
             foreach ($children as $child) {
                 $context .= "- {$child->given_name} {$child->surname}";
@@ -495,7 +513,7 @@ PROMPT;
         // Sources
         if ($includeSources) {
             $sources = $this->getPersonSources($person->id);
-            if (!empty($sources)) {
+            if (! empty($sources)) {
                 $context .= "\n## Attached Sources\n";
                 foreach ($sources as $source) {
                     $context .= "- {$source->title}";
@@ -507,7 +525,45 @@ PROMPT;
             }
         }
 
+        $context .= $this->lessonContext()->build(
+            ['tree_id' => (int) ($person->tree_id ?? 0)],
+            $this->lessonSearchTerms($person, $focus),
+            6,
+            '## Reusable Genea Lessons',
+            [
+                'title_limit' => 0,
+                'lesson_limit' => 320,
+                'fallback_limit' => 3,
+            ]
+        );
+
         return $context;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function lessonSearchTerms(object $person, ?string $focus): array
+    {
+        $terms = [
+            $focus,
+            $person->given_name ?? null,
+            $person->surname ?? null,
+            trim((string) ($person->given_name ?? '').' '.(string) ($person->surname ?? '')),
+            $person->birth_place ?? null,
+            $person->death_place ?? null,
+        ];
+
+        foreach ([$person->birth_place ?? null, $person->death_place ?? null] as $place) {
+            foreach (explode(',', (string) $place) as $part) {
+                $terms[] = trim($part);
+            }
+        }
+
+        return array_values(array_unique(array_filter(
+            array_map(static fn (mixed $term): string => trim((string) $term), $terms),
+            static fn (string $term): bool => $term !== '' && mb_strlen($term) >= 3
+        )));
     }
 
     /**
@@ -550,37 +606,37 @@ PROMPT;
     {
         $gaps = [];
 
-        if (!$person->birth_date) {
-            $gaps[] = "- Birth date is unknown";
+        if (! $person->birth_date) {
+            $gaps[] = '- Birth date is unknown';
         } elseif (str_starts_with($person->birth_date, 'ABT') || str_starts_with($person->birth_date, 'BEF') || str_starts_with($person->birth_date, 'AFT')) {
             $gaps[] = "- Birth date is approximate ({$person->birth_date})";
         }
 
-        if (!$person->birth_place) {
-            $gaps[] = "- Birth place is unknown";
+        if (! $person->birth_place) {
+            $gaps[] = '- Birth place is unknown';
         }
 
-        if (!$person->death_date && !$this->isLiving($person)) {
-            $gaps[] = "- Death date is unknown (person is presumably deceased)";
+        if (! $person->death_date && ! $this->isLiving($person)) {
+            $gaps[] = '- Death date is unknown (person is presumably deceased)';
         }
 
-        if (!$person->death_place && $person->death_date) {
-            $gaps[] = "- Death place is unknown";
+        if (! $person->death_place && $person->death_date) {
+            $gaps[] = '- Death place is unknown';
         }
 
-        if (!$person->father_id) {
-            $gaps[] = "- Father is unknown";
+        if (! $person->father_id) {
+            $gaps[] = '- Father is unknown';
         }
 
-        if (!$person->mother_id) {
-            $gaps[] = "- Mother is unknown";
+        if (! $person->mother_id) {
+            $gaps[] = '- Mother is unknown';
         }
 
         $sources = $this->getPersonSources($person->id);
         if (empty($sources)) {
-            $gaps[] = "- No sources are attached to this person";
+            $gaps[] = '- No sources are attached to this person';
         } elseif (count($sources) < 3) {
-            $gaps[] = "- Only " . count($sources) . " source(s) attached (consider adding more)";
+            $gaps[] = '- Only '.count($sources).' source(s) attached (consider adding more)';
         }
 
         if (empty($gaps)) {
@@ -597,25 +653,25 @@ PROMPT;
     {
         $gaps = [];
 
-        if (!$person->birth_date) {
+        if (! $person->birth_date) {
             $gaps['birth_date'] = 'unknown';
         } elseif (str_starts_with($person->birth_date, 'ABT') || str_starts_with($person->birth_date, 'BEF') || str_starts_with($person->birth_date, 'AFT')) {
             $gaps['birth_date'] = 'approximate';
         }
 
-        if (!$person->birth_place) {
+        if (! $person->birth_place) {
             $gaps['birth_place'] = 'unknown';
         }
 
-        if (!$person->death_date && !$this->isLiving($person)) {
+        if (! $person->death_date && ! $this->isLiving($person)) {
             $gaps['death_date'] = 'unknown';
         }
 
-        if (!$person->father_id) {
+        if (! $person->father_id) {
             $gaps['father'] = 'unknown';
         }
 
-        if (!$person->mother_id) {
+        if (! $person->mother_id) {
             $gaps['mother'] = 'unknown';
         }
 
@@ -633,7 +689,7 @@ PROMPT;
         }
 
         // No birth date = assume not living (historical)
-        if (!$person->birth_date) {
+        if (! $person->birth_date) {
             return false;
         }
 
@@ -680,14 +736,14 @@ PROMPT;
      */
     private function getChildren(int $personId): array
     {
-        return DB::select("
+        return DB::select('
             SELECT c.given_name, c.surname, c.birth_date, c.id
             FROM genealogy_persons c
             INNER JOIN genealogy_children ch ON ch.person_id = c.id
             INNER JOIN genealogy_families f ON f.id = ch.family_id
             WHERE f.husband_id = ? OR f.wife_id = ?
             ORDER BY c.birth_date, c.given_name
-        ", [$personId, $personId]);
+        ', [$personId, $personId]);
     }
 
     /**
@@ -695,13 +751,13 @@ PROMPT;
      */
     private function getPersonSources(int $personId): array
     {
-        return DB::select("
+        return DB::select('
             SELECT s.id, s.title, s.author, s.publication
             FROM genealogy_sources s
             INNER JOIN genealogy_person_sources ps ON ps.source_id = s.id
             WHERE ps.person_id = ?
             ORDER BY s.title
-        ", [$personId]);
+        ', [$personId]);
     }
 
     /**
@@ -735,7 +791,8 @@ PROMPT;
         ", [$person1Id, $person2Id, $person2Id, $person1Id]);
 
         if ($spouse) {
-            $marriageInfo = $spouse->marriage_date ? " (married {$spouse->marriage_date})" : "";
+            $marriageInfo = $spouse->marriage_date ? " (married {$spouse->marriage_date})" : '';
+
             return "These individuals are spouses{$marriageInfo}.";
         }
 
@@ -748,7 +805,7 @@ PROMPT;
         ", [$person1Id, $person2Id]);
 
         if ($sibling) {
-            return "These individuals are siblings (share at least one parent).";
+            return 'These individuals are siblings (share at least one parent).';
         }
 
         return "No direct relationship path found in the current data. They may be more distantly related or the connection hasn't been documented yet.";
@@ -759,15 +816,15 @@ PROMPT;
      *
      * Uses AI to parse research text and extract actionable data items mapped to GEDCOM fields
      *
-     * @param int $personId The person being researched
-     * @param string $researchText The raw research text to parse
+     * @param  int  $personId  The person being researched
+     * @param  string  $researchText  The raw research text to parse
      * @return array Structured extraction results
      */
     public function extractStructuredData(int $personId, string $researchText): array
     {
         $person = $this->getPersonWithContext($personId);
 
-        if (!$person) {
+        if (! $person) {
             return [
                 'success' => false,
                 'error' => 'Person not found',
@@ -827,7 +884,7 @@ PROMPT;
                 'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
             ]);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 return [
                     'success' => false,
                     'error' => $result['error'] ?? 'AI processing failed',
@@ -849,6 +906,7 @@ PROMPT;
                     'error' => json_last_error_msg(),
                     'response' => substr($response, 0, 500),
                 ]);
+
                 return [
                     'success' => false,
                     'error' => 'Failed to parse AI response as JSON',
@@ -862,7 +920,7 @@ PROMPT;
             return [
                 'success' => true,
                 'person_id' => $personId,
-                'person_name' => trim($person->given_name . ' ' . $person->surname),
+                'person_name' => trim($person->given_name.' '.$person->surname),
                 'extracted_items' => $validItems,
                 'item_count' => count($validItems),
                 'provider' => $result['provider'] ?? 'unknown',
@@ -873,9 +931,10 @@ PROMPT;
                 'person_id' => $personId,
                 'error' => $e->getMessage(),
             ]);
+
             return [
                 'success' => false,
-                'error' => 'Extraction failed: ' . $e->getMessage(),
+                'error' => 'Extraction failed: '.$e->getMessage(),
             ];
         }
     }
@@ -888,16 +947,36 @@ PROMPT;
         $lines = [];
         $lines[] = "Name: {$person->given_name} {$person->surname}";
 
-        if (!empty($person->birth_date)) $lines[] = "Birth Date: {$person->birth_date}";
-        if (!empty($person->birth_place)) $lines[] = "Birth Place: {$person->birth_place}";
-        if (!empty($person->death_date)) $lines[] = "Death Date: {$person->death_date}";
-        if (!empty($person->death_place)) $lines[] = "Death Place: {$person->death_place}";
-        if (!empty($person->burial_date)) $lines[] = "Burial Date: {$person->burial_date}";
-        if (!empty($person->burial_place)) $lines[] = "Burial Place: {$person->burial_place}";
-        if (!empty($person->occupation)) $lines[] = "Occupation: {$person->occupation}";
-        if (!empty($person->education)) $lines[] = "Education: {$person->education}";
-        if (!empty($person->religion)) $lines[] = "Religion: {$person->religion}";
-        if (!empty($person->nationality)) $lines[] = "Nationality: {$person->nationality}";
+        if (! empty($person->birth_date)) {
+            $lines[] = "Birth Date: {$person->birth_date}";
+        }
+        if (! empty($person->birth_place)) {
+            $lines[] = "Birth Place: {$person->birth_place}";
+        }
+        if (! empty($person->death_date)) {
+            $lines[] = "Death Date: {$person->death_date}";
+        }
+        if (! empty($person->death_place)) {
+            $lines[] = "Death Place: {$person->death_place}";
+        }
+        if (! empty($person->burial_date)) {
+            $lines[] = "Burial Date: {$person->burial_date}";
+        }
+        if (! empty($person->burial_place)) {
+            $lines[] = "Burial Place: {$person->burial_place}";
+        }
+        if (! empty($person->occupation)) {
+            $lines[] = "Occupation: {$person->occupation}";
+        }
+        if (! empty($person->education)) {
+            $lines[] = "Education: {$person->education}";
+        }
+        if (! empty($person->religion)) {
+            $lines[] = "Religion: {$person->religion}";
+        }
+        if (! empty($person->nationality)) {
+            $lines[] = "Nationality: {$person->nationality}";
+        }
 
         return implode("\n", $lines);
     }
@@ -911,7 +990,7 @@ PROMPT;
             'birth_date', 'birth_place', 'death_date', 'death_place',
             'burial_date', 'burial_place', 'occupation', 'education',
             'religion', 'nationality', 'cause_of_death', 'physical_description',
-            'title', 'notes'
+            'title', 'notes',
         ];
 
         $validActions = ['update', 'add', 'note'];
@@ -920,13 +999,15 @@ PROMPT;
         $validated = [];
 
         foreach ($items as $item) {
-            if (!is_array($item)) continue;
+            if (! is_array($item)) {
+                continue;
+            }
 
             $field = $item['field'] ?? null;
             $value = $item['value'] ?? null;
 
             // Skip invalid items
-            if (!$field || !$value || !in_array($field, $validFields)) {
+            if (! $field || ! $value || ! in_array($field, $validFields)) {
                 continue;
             }
 
@@ -978,15 +1059,14 @@ PROMPT;
     /**
      * Apply selected extracted items to a person record
      *
-     * @param int $personId
-     * @param array $itemsToApply Array of items with field and value
+     * @param  array  $itemsToApply  Array of items with field and value
      * @return array Result of the update
      */
     public function applyExtractedData(int $personId, array $itemsToApply): array
     {
-        $person = DB::selectOne("SELECT * FROM genealogy_persons WHERE id = ?", [$personId]);
+        $person = DB::selectOne('SELECT * FROM genealogy_persons WHERE id = ?', [$personId]);
 
-        if (!$person) {
+        if (! $person) {
             return [
                 'success' => false,
                 'error' => 'Person not found',
@@ -1000,7 +1080,9 @@ PROMPT;
             $field = $item['field'] ?? null;
             $value = $item['value'] ?? null;
 
-            if (!$field || !$value) continue;
+            if (! $field || ! $value) {
+                continue;
+            }
 
             if ($field === 'notes') {
                 $notesAdditions[] = $value;
@@ -1010,7 +1092,7 @@ PROMPT;
         }
 
         // Apply field updates
-        if (!empty($updates)) {
+        if (! empty($updates)) {
             $fields = [];
             $params = [];
 
@@ -1019,22 +1101,22 @@ PROMPT;
                 $params[] = $value;
             }
 
-            $fields[] = "updated_at = NOW()";
+            $fields[] = 'updated_at = NOW()';
             $params[] = $personId;
 
-            $sql = "UPDATE genealogy_persons SET " . implode(', ', $fields) . " WHERE id = ?";
+            $sql = 'UPDATE genealogy_persons SET '.implode(', ', $fields).' WHERE id = ?';
             DB::update($sql, $params);
         }
 
         // Append notes if any
-        if (!empty($notesAdditions)) {
+        if (! empty($notesAdditions)) {
             $today = date('Y-m-d');
-            $noteText = "\n\n---\n## AI Research Findings ({$today})\n\n" . implode("\n\n", $notesAdditions);
+            $noteText = "\n\n---\n## AI Research Findings ({$today})\n\n".implode("\n\n", $notesAdditions);
 
             $existingNotes = $person->notes ?? '';
-            $newNotes = $existingNotes . $noteText;
+            $newNotes = $existingNotes.$noteText;
 
-            DB::update("UPDATE genealogy_persons SET notes = ?, updated_at = NOW() WHERE id = ?", [$newNotes, $personId]);
+            DB::update('UPDATE genealogy_persons SET notes = ?, updated_at = NOW() WHERE id = ?', [$newNotes, $personId]);
         }
 
         $appliedCount = count($updates) + count($notesAdditions);

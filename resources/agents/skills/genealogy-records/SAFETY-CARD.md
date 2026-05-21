@@ -1,5 +1,5 @@
 # Safety Card: genealogy-records
-**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-04-12
+**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-05-12
 
 | Field | Value |
 |-------|-------|
@@ -11,13 +11,14 @@
 | **Permissions** | genealogy:read, genealogy:write, rag:read, rag:write, system:read, system:write |
 | **Notifications** | Pushover |
 
-**Capabilities:** Search record repositories, collect evidence for specific persons, compare against existing tree data, log search attempts, submit review items, and index findings.
+**Capabilities:** Search record repositories, collect evidence for specific persons, compare against existing tree data, log search attempts, submit review items, index findings, and save records-research procedures for future recall.
 
 **Constraints:**
 - Cannot directly edit accepted genealogy facts
 - All fact changes must go through `submit_for_review` or `propose_change`
 - Must log negative searches instead of silently skipping
 - Record-linked claims require source traceability
+- Local PLOS may use owned private/living FT data internally; export/publish/share workflows own privacy and redaction gates
 
 **Failure Modes:**
 - Repository outages reduce coverage and force partial runs

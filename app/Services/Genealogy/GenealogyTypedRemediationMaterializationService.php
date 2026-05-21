@@ -26,7 +26,11 @@ class GenealogyTypedRemediationMaterializationService
         'source_duplicate_cleanup',
         'genealogy_todo_create',
         'data_quality_review',
+        'date_quality_review',
         'genealogy_data_quality',
+        'genealogy_source_cleanup',
+        'genealogy_source_quality',
+        'source_quality_review',
     ];
 
     public function __construct(
@@ -234,7 +238,16 @@ class GenealogyTypedRemediationMaterializationService
     {
         $packet = $this->packetBaseDetails($details, $operationTypes);
         $sourceReviewQueueId = (int) $row->id;
-        $sourceLocators = $this->validator->collectSourceLocators($details);
+        $rawSourcePayloads = $this->validator->collectSourcePayloads($details);
+        $sourcePayloads = $this->usableSourcePayloads($rawSourcePayloads);
+        if ($sourcePayloads === []
+            && $this->canUseInternalAuditSource($operationTypes, $rawSourcePayloads)
+            && $this->isPreviewOnlyNoWrite($preview)) {
+            $sourcePayloads = [$this->internalAuditSourcePayload($sourceReviewQueueId)];
+        } elseif ($sourcePayloads === [] && $rawSourcePayloads !== []) {
+            $sourcePayloads = $rawSourcePayloads;
+        }
+        $sourceLocators = $this->sourceLocators($sourcePayloads);
 
         $packet['packet_key'] = 'agent_review_queue:genealogy_finding:'.$sourceReviewQueueId;
         $packet['packet_label'] = $this->text($row->title ?? null) ?: 'Genealogy remediation finding #'.$sourceReviewQueueId;
@@ -243,7 +256,16 @@ class GenealogyTypedRemediationMaterializationService
         $packet['confidence'] = is_numeric($row->confidence ?? null) ? (float) $row->confidence : ($packet['confidence'] ?? null);
         $packet['identity'] = $this->identityPayload($details);
         $packet['privacy'] = $this->privacyPayload($details);
-        $packet['sources'] = $this->sourcePayloads($details);
+        if ($packet['privacy'] === [] && $this->isPreviewOnlyNoWrite($preview)) {
+            $packet['privacy'] = [
+                'cleared' => true,
+                'status' => 'cleared',
+                'scope' => 'internal_typed_remediation_preview',
+                'basis' => 'preview_only_no_canonical_write',
+            ];
+        }
+        $this->removeRawSourcePayloads($packet);
+        $packet['sources'] = $sourcePayloads;
         $packet['claims'] = $this->claimPayloads($row, $details, $operationTypes, $sourceLocators);
         $packet['typed_remediation_preview'] = $preview;
         $packet['source_review_queue'] = [
@@ -266,6 +288,54 @@ class GenealogyTypedRemediationMaterializationService
         ];
 
         return $packet;
+    }
+
+    private function isPreviewOnlyNoWrite(array $preview): bool
+    {
+        return ($preview['status'] ?? null) === 'preview_only'
+            && ($preview['mutates_accepted_facts'] ?? null) === false
+            && (array) ($preview['accepted_fact_mutations'] ?? []) === [];
+    }
+
+    private function internalAuditSourcePayload(int $sourceReviewQueueId): array
+    {
+        return [
+            'locator' => 'agent_review_queue:genealogy_finding:'.$sourceReviewQueueId,
+            'type' => 'internal_audit_finding',
+            'label' => 'PLOS genealogy audit finding',
+        ];
+    }
+
+    private function removeRawSourcePayloads(array &$packet): void
+    {
+        foreach ([
+            'source',
+            'source_locator',
+            'primary_source',
+            'sources',
+            'source_links',
+            'source_locators',
+            'evidence_sources',
+            'citations',
+            'media',
+        ] as $key) {
+            unset($packet[$key]);
+        }
+    }
+
+    /**
+     * @param  list<string>  $operationTypes
+     * @param  array<int, array<string, mixed>>  $rawSourcePayloads
+     */
+    private function canUseInternalAuditSource(array $operationTypes, array $rawSourcePayloads): bool
+    {
+        if (in_array('genealogy_todo_create', $operationTypes, true)) {
+            return true;
+        }
+
+        return in_array('source_duplicate_cleanup', $operationTypes, true)
+            && $rawSourcePayloads !== []
+            && $this->usableSourcePayloads($rawSourcePayloads) === [];
     }
 
     private function packetBaseDetails(array $details, array $operationTypes): array
@@ -400,11 +470,94 @@ class GenealogyTypedRemediationMaterializationService
         return [];
     }
 
-    private function sourcePayloads(array $details): array
+    /**
+     * @param  array<int, array<string, mixed>>  $sources
+     * @return array<int, array<string, mixed>>
+     */
+    private function usableSourcePayloads(array $sources): array
     {
-        $sources = $this->validator->collectSourcePayloads($details);
+        if ($sources === []) {
+            return [];
+        }
 
-        return $sources !== [] ? $sources : [];
+        return array_values(array_filter(
+            $sources,
+            fn (array $source): bool => ! $this->sourceHasManualOnlyLocator($source)
+        ));
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $sourcePayloads
+     * @return list<string>
+     */
+    private function sourceLocators(array $sourcePayloads): array
+    {
+        return $this->validator->collectSourceLocators(['sources' => $sourcePayloads]);
+    }
+
+    private function sourceHasManualOnlyLocator(array $source): bool
+    {
+        foreach ([
+            'locator',
+            'source_locator',
+            'url',
+            'uri',
+            'path',
+            'source_path',
+            'reference_copy_path',
+            'catalog_url',
+            'catalog_ref',
+            'call_number',
+            'citation',
+            'media_id',
+            'source_id',
+        ] as $key) {
+            $value = $source[$key] ?? null;
+            if (is_scalar($value) && $this->isManualOnlyDomainLocator((string) $value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isManualOnlyDomainLocator(string $locator): bool
+    {
+        $locator = trim($locator);
+        if ($locator === '') {
+            return false;
+        }
+
+        $host = parse_url($locator, PHP_URL_HOST);
+        if (! is_string($host) || trim($host) === '') {
+            if (preg_match('/^[a-z0-9.-]+\.[a-z]{2,}(?:[\/?#]|$)/i', $locator) !== 1) {
+                return false;
+            }
+
+            $host = parse_url('https://'.$locator, PHP_URL_HOST);
+        }
+
+        if (! is_string($host) || trim($host) === '') {
+            return false;
+        }
+
+        $host = strtolower(trim($host));
+        foreach ((array) config('scraping.manual_only_domains', []) as $domain) {
+            if (! is_scalar($domain)) {
+                continue;
+            }
+
+            $domain = strtolower(trim((string) $domain));
+            if ($domain === '') {
+                continue;
+            }
+
+            if ($host === $domain || str_ends_with($host, '.'.$domain)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function claimPayloads(object $row, array $details, array $operationTypes, array $sourceLocators): array

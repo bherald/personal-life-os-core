@@ -155,7 +155,7 @@ class MediaUrlService
             'extension' => $extension,
             'mime_type' => $mimeType,
             'is_previewable' => $isPreviewable,
-            'is_image' => in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif']),
+            'is_image' => in_array($extension, ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'heic', 'heif', 'jp2', 'j2k', 'jpf', 'jpx']),
             'is_pdf' => $extension === 'pdf',
             'is_video' => in_array($extension, ['mp4', 'webm', 'mov', 'avi', 'mkv']),
             'is_audio' => in_array($extension, ['mp3', 'wav', 'ogg', 'm4a', 'flac']),
@@ -204,12 +204,15 @@ class MediaUrlService
     {
         return match ($extension) {
             'pdf' => 'application/pdf',
-            'jpg', 'jpeg' => 'image/jpeg',
+            'jpg', 'jpeg', 'jfif' => 'image/jpeg',
             'png' => 'image/png',
             'gif' => 'image/gif',
             'webp' => 'image/webp',
             'bmp' => 'image/bmp',
             'tiff', 'tif' => 'image/tiff',
+            'heic' => 'image/heic',
+            'heif' => 'image/heif',
+            'jp2', 'j2k', 'jpf', 'jpx' => 'image/jp2',
             'mp4' => 'video/mp4',
             'webm' => 'video/webm',
             'mov' => 'video/quicktime',
@@ -235,7 +238,7 @@ class MediaUrlService
     protected function isPreviewable(string $extension): bool
     {
         return in_array($extension, [
-            'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp',
+            'jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif', 'jp2', 'j2k', 'jpf', 'jpx',
             'pdf', 'txt', 'html', 'htm',
             'mp4', 'webm', 'mp3', 'wav', 'ogg',
         ]);

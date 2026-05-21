@@ -13,13 +13,16 @@ use Throwable;
 class NaraCatalogMediaCaptureService
 {
     private const ALLOWED_EXTENSIONS = [
-        'jpg', 'jpeg', 'png', 'gif', 'webp', 'tif', 'tiff',
-        'pdf', 'html', 'htm', 'txt',
+        'jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'tif', 'tiff', 'jp2', 'j2k', 'jpf', 'jpx',
+        'pdf', 'html', 'htm', 'txt', 'rtf',
         'mp3', 'wav', 'ogg', 'flac', 'm4a',
         'mp4', 'm4v', 'mov', 'webm',
     ];
 
-    public function __construct(private readonly GenealogySourceService $sourceService) {}
+    public function __construct(
+        private readonly GenealogySourceService $sourceService,
+        private readonly GenealogyTreeRootResolver $rootResolver,
+    ) {}
 
     /**
      * @param  list<int>  $mediaIds
@@ -38,7 +41,7 @@ class NaraCatalogMediaCaptureService
     ): array {
         $limit = max(1, min(250, $limit));
         $maxBytes = max(1, $maxBytes ?? (int) config('genealogy.evidence_asset_capture.max_bytes', 26214400));
-        $targetRoot = $this->targetRoot();
+        $targetRoot = $this->targetRoot($treeId);
 
         $payload = [
             'schema' => 'genealogy_nara_catalog_media_capture.v1',
@@ -300,7 +303,9 @@ class NaraCatalogMediaCaptureService
             File::put($targetPath, $body);
 
             $extension = strtolower(pathinfo($targetPath, PATHINFO_EXTENSION));
-            $mime = $mime ?: $this->mimeForExtension($extension);
+            if ($mime === null || $mime === 'application/octet-stream') {
+                $mime = $this->mimeForExtension($extension);
+            }
             $mediaType = $this->mediaType($record, $extension);
             $assetUuid = $this->registerFileRegistry($targetPath, $mime, $catalogUrl, $naId, $this->recordTitle($record, $media));
             $this->updateMediaRow(
@@ -459,7 +464,8 @@ class NaraCatalogMediaCaptureService
             $extension = match (true) {
                 str_contains($format, 'pdf') => 'pdf',
                 str_contains($format, 'tiff') || str_contains($format, 'tif') => 'tiff',
-                str_contains($format, 'jpeg') || str_contains($format, 'jpg') => 'jpg',
+                str_contains($format, 'jpeg 2000') || str_contains($format, 'jp2') => 'jp2',
+                str_contains($format, 'jpeg') || str_contains($format, 'jpg') || str_contains($format, 'jfif') => 'jpg',
                 str_contains($format, 'png') => 'png',
                 str_contains($format, 'mp3') => 'mp3',
                 str_contains($format, 'wav') => 'wav',
@@ -493,19 +499,13 @@ class NaraCatalogMediaCaptureService
         return str_contains($host, 'amazonaws.com') && str_contains($path, 'NARAprodstorage');
     }
 
-    private function targetRoot(): string
+    private function targetRoot(int $treeId): string
     {
-        return rtrim((string) config('genealogy.ft_reference_root', storage_path('app/genealogy/ft-reference')), '/');
+        return $this->rootResolver->referenceRoot($treeId);
     }
 
     private function targetPath(string $root, int $treeId, int $mediaId, string $naId, string $title, string $extension): string
     {
-        $treeName = DB::table('genealogy_trees')->where('id', $treeId)->value('name');
-        $treeSlug = Str::slug((string) ($treeName ?: 'tree-'.$treeId));
-        if ($treeSlug === '') {
-            $treeSlug = 'tree-'.$treeId;
-        }
-
         $titleSlug = Str::slug($title);
         if ($titleSlug === '') {
             $titleSlug = 'nara-record';
@@ -513,11 +513,7 @@ class NaraCatalogMediaCaptureService
         $titleSlug = substr($titleSlug, 0, 80);
 
         $extension = in_array($extension, self::ALLOWED_EXTENSIONS, true) ? $extension : 'bin';
-
-        $rootTreeSlug = Str::slug(basename($root));
-        $treeRoot = $rootTreeSlug === $treeSlug
-            ? $root
-            : $root.'/'.$treeSlug;
+        $treeRoot = $this->rootResolver->treeScopedRoot($treeId, $root);
 
         return $treeRoot.'/documents/nara-catalog/nara-'.$naId.'-m'.$mediaId.'-'.$titleSlug.'.'.$extension;
     }
@@ -574,14 +570,16 @@ class NaraCatalogMediaCaptureService
     private function mimeForExtension(string $extension): string
     {
         return match ($extension) {
-            'jpg', 'jpeg' => 'image/jpeg',
+            'jpg', 'jpeg', 'jfif' => 'image/jpeg',
             'png' => 'image/png',
             'gif' => 'image/gif',
             'webp' => 'image/webp',
             'tif', 'tiff' => 'image/tiff',
+            'jp2', 'j2k', 'jpf', 'jpx' => 'image/jp2',
             'pdf' => 'application/pdf',
             'html', 'htm' => 'text/html',
             'txt' => 'text/plain',
+            'rtf' => 'application/rtf',
             'mp3' => 'audio/mpeg',
             'wav' => 'audio/wav',
             'ogg' => 'audio/ogg',

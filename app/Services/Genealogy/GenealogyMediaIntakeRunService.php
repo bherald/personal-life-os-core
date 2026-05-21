@@ -10,6 +10,7 @@ class GenealogyMediaIntakeRunService
 
     public function __construct(
         private readonly GenealogyMediaIntakeReportService $report,
+        private readonly GenealogyTreeRootResolver $rootResolver,
     ) {}
 
     /**
@@ -18,9 +19,9 @@ class GenealogyMediaIntakeRunService
     public function run(array $options): array
     {
         $treeId = (int) ($options['tree_id'] ?? 4);
-        $root = $this->normalizeRoot($options['root'] ?? null);
-        $limit = max(1, min(200, (int) ($options['limit'] ?? 50)));
         $dryRun = (bool) ($options['dry_run'] ?? false);
+        $root = $this->normalizeRoot($treeId, $options['root'] ?? null, inferFromMedia: ! $dryRun);
+        $limit = max(1, min(200, (int) ($options['limit'] ?? 50)));
         $compact = (bool) ($options['compact'] ?? false);
         $stage = (bool) ($options['stage'] ?? false);
         $saveRun = (bool) ($options['save_run'] ?? false);
@@ -145,8 +146,7 @@ class GenealogyMediaIntakeRunService
         bool $evidenceAssets,
         bool $capturePreflight,
         bool $postCaptureDryRun
-    ): array
-    {
+    ): array {
         $steps = [];
 
         if ($stage) {
@@ -287,13 +287,8 @@ class GenealogyMediaIntakeRunService
         ];
     }
 
-    private function normalizeRoot(mixed $root): string
+    private function normalizeRoot(int $treeId, mixed $root, bool $inferFromMedia = true): string
     {
-        $root = trim((string) ($root ?: config('genealogy.nextcloud_root', '/Library/Genealogy')));
-        if ($root === '') {
-            $root = '/Library/Genealogy';
-        }
-
-        return '/'.trim($root, '/');
+        return $this->rootResolver->mediaRoot($treeId, $root, $inferFromMedia);
     }
 }

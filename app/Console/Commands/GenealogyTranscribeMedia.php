@@ -26,11 +26,11 @@ class GenealogyTranscribeMedia extends Command
 
     protected $description = 'N72: Batch HTR (TrOCR) transcription of handwritten genealogy documents';
 
-    private const DOCUMENT_TYPES = ['document', 'certificate', 'census', 'military'];
+    private const DOCUMENT_TYPES = ['document', 'certificate', 'census', 'military', 'headstone'];
 
-    private const HTR_EXTENSIONS = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp'];
+    private const HTR_EXTENSIONS = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp', 'jp2', 'j2k', 'jpf', 'jpx'];
 
-    private const HTR_MIME_TYPES = ['image/jpeg', 'image/png', 'image/tiff', 'image/bmp', 'image/webp'];
+    private const HTR_MIME_TYPES = ['image/jpeg', 'image/png', 'image/tiff', 'image/bmp', 'image/webp', 'image/jp2', 'image/jpx', 'image/j2k', 'image/x-jp2'];
 
     public function handle(HtrTranscriptionService $htr): int
     {
@@ -41,7 +41,7 @@ class GenealogyTranscribeMedia extends Command
         $mediaId = $this->option('media');
         if (! $htr->isAvailable()) {
             $this->warn('HTR pipeline not available or currently busy; skipping scheduled transcription batch.');
-            $this->line('Expected model: microsoft/trocr-base-handwritten (GPU) or trocr-small-handwritten (CPU)');
+            $this->line('Expected model: microsoft/trocr-base-handwritten (GPU preferred, CPU fallback)');
 
             return $mediaId ? 1 : 0;
         }
@@ -88,6 +88,15 @@ class GenealogyTranscribeMedia extends Command
                 continue;
             }
 
+            if (($result['skipped_reason'] ?? null) === 'low_confidence') {
+                $conf = round(($result['confidence'] ?? 0) * 100);
+                $threshold = round(($result['confidence_threshold'] ?? 0) * 100);
+                $this->warn("  [{$record->id}] Skipped — low HTR confidence ({$conf}% < {$threshold}%)");
+                $skipped++;
+
+                continue;
+            }
+
             if (! empty($result['text'])) {
                 $conf = round($result['confidence'] * 100);
                 $this->line("  [{$record->id}] OK — {$result['line_count']} lines, {$conf}% confidence ({$result['device']})");
@@ -125,10 +134,13 @@ class GenealogyTranscribeMedia extends Command
               AND (gm.transcription IS NULL OR TRIM(gm.transcription) = '')
               AND gm.file_exists = 1
               AND {$this->htrFormatSql('gm')}
+              AND gm.nextcloud_path IS NOT NULL
+              AND gm.nextcloud_path != ''
+              AND (gm.analysis_error IS NULL OR gm.analysis_error NOT LIKE 'htr_low_confidence:%')
               AND (gm.analysis_status IS NULL OR gm.analysis_status != 'skipped')
               {$treeClause}
             ORDER BY
-              FIELD(gm.media_type, 'census', 'certificate', 'document', 'military'),
+              FIELD(gm.media_type, 'census', 'certificate', 'document', 'military', 'headstone'),
               gm.id ASC
             LIMIT ?
         ", $params);
@@ -168,6 +180,14 @@ class GenealogyTranscribeMedia extends Command
             return 1;
         }
 
+        if (($result['skipped_reason'] ?? null) === 'low_confidence') {
+            $conf = round(($result['confidence'] ?? 0) * 100);
+            $threshold = round(($result['confidence_threshold'] ?? 0) * 100);
+            $this->warn("Skipped — low HTR confidence ({$conf}% < {$threshold}%). Transcript was not persisted.");
+
+            return 0;
+        }
+
         $this->info('Confidence: '.round($result['confidence'] * 100)."% | Lines: {$result['line_count']} | Device: {$result['device']}");
         $this->line("\n--- TRANSCRIPTION ---");
         $this->line($result['text']);
@@ -179,6 +199,14 @@ class GenealogyTranscribeMedia extends Command
     {
         $missingTranscriptSql = "(transcription_text IS NULL OR TRIM(transcription_text) = '') AND (transcription IS NULL OR TRIM(transcription) = '')";
         $htrFormatSql = $this->htrFormatSql();
+        $readyForHtrSql = "media_type IN ({$this->documentTypesSql()})
+            AND {$missingTranscriptSql}
+            AND file_exists = 1
+            AND {$htrFormatSql}
+            AND nextcloud_path IS NOT NULL
+            AND nextcloud_path != ''
+            AND (analysis_error IS NULL OR analysis_error NOT LIKE 'htr_low_confidence:%')
+            AND (analysis_status IS NULL OR analysis_status != 'skipped')";
         $status = $htr->getStatus();
         $this->line('HTR Pipeline Status:');
         $this->table(['Key', 'Value'], [
@@ -191,7 +219,7 @@ class GenealogyTranscribeMedia extends Command
         ]);
 
         $pending = DB::selectOne(
-            "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE media_type IN ('document','certificate','census','military') AND {$missingTranscriptSql} AND file_exists = 1 AND {$htrFormatSql}"
+            "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE {$readyForHtrSql}"
         );
         $done = DB::selectOne(
             "SELECT COUNT(*) AS cnt FROM genealogy_media WHERE NOT ({$missingTranscriptSql})"
@@ -203,10 +231,11 @@ class GenealogyTranscribeMedia extends Command
             FROM (
                 SELECT
                     CASE
-                        WHEN media_type NOT IN ('document','certificate','census','military') THEN 'unsupported_media_type'
                         WHEN NOT ({$missingTranscriptSql}) THEN 'already_transcribed'
+                        WHEN media_type NOT IN ({$this->documentTypesSql()}) THEN 'unsupported_media_type'
                         WHEN COALESCE(file_exists, 0) <> 1 THEN 'file_missing'
                         WHEN nextcloud_path IS NULL OR nextcloud_path = '' THEN 'path_missing'
+                        WHEN analysis_error LIKE 'htr_low_confidence:%' THEN 'htr_low_confidence'
                         WHEN analysis_status = 'skipped' THEN 'analysis_skipped'
                         WHEN NOT ({$htrFormatSql}) THEN 'unsupported_htr_format'
                         ELSE 'ready_for_htr'
@@ -239,6 +268,11 @@ class GenealogyTranscribeMedia extends Command
 
         return "(LOWER(COALESCE({$prefix}file_format, SUBSTRING_INDEX({$prefix}local_filename, '.', -1), '')) IN ({$extensions})
             OR LOWER(COALESCE({$prefix}mime_type, '')) IN ({$mimeTypes}))";
+    }
+
+    private function documentTypesSql(): string
+    {
+        return implode(',', array_map(static fn (string $type): string => "'{$type}'", self::DOCUMENT_TYPES));
     }
 
     private function isHtrSupportedRecord(object $record): bool

@@ -1,5 +1,5 @@
 # Safety Card: genealogy-analyst
-**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-04-12
+**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-05-12
 
 | Field | Value |
 |-------|-------|
@@ -8,16 +8,17 @@
 | **Schedule** | Every 8 hours |
 | **Max Iterations** | 10 |
 | **Max Tokens** | 40,000 |
-| **Permissions** | genealogy:read, genealogy:write, rag:read, rag:write, system:read |
+| **Permissions** | genealogy:read, genealogy:write, rag:read, rag:write, system:read, system:write |
 | **Notifications** | Pushover |
 
-**Capabilities:** Evaluate evidence chains, assess GPS compliance, detect conflicting sources, generate proof summaries, and surface data-quality issues for human review.
+**Capabilities:** Evaluate evidence chains, assess GPS compliance, detect conflicting sources, generate proof summaries, surface data-quality issues for human review, and save reusable analysis procedures.
 
 **Constraints:**
 - Cannot auto-merge duplicates
 - Cannot directly rewrite accepted genealogy truth
 - Generated proof text must stay tied to cited evidence
 - Conflict resolution proposals must remain review-gated
+- Local PLOS may use owned private/living FT data internally; export/publish/share workflows own privacy and redaction gates
 
 **Failure Modes:**
 - Sparse source coverage produces weak proof outputs

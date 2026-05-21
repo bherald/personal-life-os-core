@@ -44,14 +44,15 @@ class GenealogyMediaService
 
     /** Supported media extensions */
     private const SUPPORTED_EXTENSIONS = [
-        'image' => ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'tif', 'webp'],
+        'image' => ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'bmp', 'tiff', 'tif', 'webp', 'heic', 'heif', 'jp2', 'j2k', 'jpf', 'jpx'],
         'document' => ['pdf', 'doc', 'docx', 'txt', 'rtf'],
         'audio' => ['mp3', 'wav', 'ogg', 'm4a'],
         'video' => ['mp4', 'avi', 'mov', 'mkv', 'webm'],
     ];
 
     public function __construct(
-        NextcloudFileApiService $nextcloudApi
+        NextcloudFileApiService $nextcloudApi,
+        private readonly GenealogyTreeRootResolver $rootResolver,
     ) {
         $this->nextcloudApi = $nextcloudApi;
 
@@ -128,8 +129,7 @@ class GenealogyMediaService
         }
 
         // Build tree folder path
-        $treeFolder = $this->sanitizeFolderName($treeName);
-        $nextcloudFolder = $this->nextcloudBase().'/'.$treeFolder;
+        $nextcloudFolder = $this->treeMediaRoot($treeId, $treeName);
 
         // Get list of files already in Nextcloud for this tree
         $existingFiles = $this->listNextcloudMediaFiles($nextcloudFolder);
@@ -349,20 +349,6 @@ class GenealogyMediaService
     private function isImageExtension(string $extension): bool
     {
         return in_array(strtolower($extension), self::SUPPORTED_EXTENSIONS['image']);
-    }
-
-    /**
-     * Sanitize folder name for filesystem use
-     */
-    private function sanitizeFolderName(string $name): string
-    {
-        // Replace unsafe characters
-        $name = preg_replace('/[<>:"\/\\|?*]/', '_', $name);
-        // Replace multiple spaces/underscores with single
-        $name = preg_replace('/[\s_]+/', '_', $name);
-
-        // Trim
-        return trim($name, ' _');
     }
 
     /**
@@ -1397,8 +1383,7 @@ class GenealogyMediaService
             return ['success' => false, 'error' => 'Media not found'];
         }
 
-        $treeFolder = $this->sanitizeFolderName($media->tree_name);
-        $nextcloudFolder = $this->nextcloudBase().'/'.$treeFolder;
+        $nextcloudFolder = $this->treeMediaRoot((int) $media->tree_id, (string) $media->tree_name);
 
         return $this->importSingleMedia($media, $nextcloudFolder, $windowsBasePath);
     }
@@ -1490,13 +1475,12 @@ class GenealogyMediaService
         $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
 
         // Prepare Nextcloud path
-        $treeFolder = $this->sanitizeFolderName($treeName);
         $mediaTypeFolder = $this->getMediaTypeFolder($extension);
-        $genealogyRoot = $this->nextcloudBase();
-        $nextcloudFolder = $genealogyRoot.'/'.$treeFolder.'/'.$mediaTypeFolder;
+        $treeRoot = $this->treeMediaRoot($treeId, $treeName);
+        $nextcloudFolder = $treeRoot.'/'.$mediaTypeFolder;
 
         // Ensure folders exist
-        $this->ensureNextcloudFolder($genealogyRoot.'/'.$treeFolder);
+        $this->ensureNextcloudFolder($treeRoot);
         $this->ensureNextcloudFolder($nextcloudFolder);
 
         // Generate unique filename
@@ -1627,6 +1611,15 @@ class GenealogyMediaService
             'supported_extensions' => self::SUPPORTED_EXTENSIONS,
             'ssh_status' => 'deprecated', // SSH removed 2026-01-10
         ];
+    }
+
+    private function treeMediaRoot(int $treeId, string $treeName): string
+    {
+        return $this->rootResolver->treeScopedRoot(
+            $treeId,
+            $this->rootResolver->mediaRoot($treeId),
+            $treeName
+        );
     }
 
     // =========================================================================

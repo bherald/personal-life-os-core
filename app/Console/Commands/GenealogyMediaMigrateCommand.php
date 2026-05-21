@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Genealogy\GenealogyTreeRootResolver;
 use App\Services\NextcloudFileApiService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -30,6 +31,8 @@ class GenealogyMediaMigrateCommand extends Command
 
     protected NextcloudFileApiService $nextcloudApi;
 
+    protected GenealogyTreeRootResolver $rootResolver;
+
     protected int $validated = 0;
 
     protected int $exists = 0;
@@ -42,9 +45,10 @@ class GenealogyMediaMigrateCommand extends Command
 
     protected int $failed = 0;
 
-    public function handle(NextcloudFileApiService $nextcloudApi): int
+    public function handle(NextcloudFileApiService $nextcloudApi, GenealogyTreeRootResolver $rootResolver): int
     {
         $this->nextcloudApi = $nextcloudApi;
+        $this->rootResolver = $rootResolver;
 
         $dryRun = $this->option('dry-run');
         $validateOnly = $this->option('validate-only');
@@ -60,11 +64,9 @@ class GenealogyMediaMigrateCommand extends Command
         $trees = DB::select('SELECT id, name FROM genealogy_trees');
         $treeMap = [];
         foreach ($trees as $tree) {
-            // Convert tree name to folder name (replace spaces with underscores)
-            $folderName = preg_replace('/[^a-zA-Z0-9_-]/', '_', $tree->name);
             $treeMap[$tree->id] = [
                 'name' => $tree->name,
-                'dest_folder' => $this->genealogyRoot()."/{$folderName}/photos",
+                'dest_folder' => $this->destinationPhotoFolder((int) $tree->id, (string) $tree->name),
             ];
         }
 
@@ -195,9 +197,11 @@ class GenealogyMediaMigrateCommand extends Command
         return self::SUCCESS;
     }
 
-    private function genealogyRoot(): string
+    private function destinationPhotoFolder(int $treeId, string $treeName): string
     {
-        return '/'.trim((string) config('genealogy.nextcloud_root', '/Library/Genealogy'), '/');
+        $root = $this->rootResolver->mediaRoot($treeId, inferFromMedia: false);
+
+        return $this->rootResolver->treeScopedRoot($treeId, $root, $treeName).'/photos';
     }
 
     private function legacyMediaRoot(): string

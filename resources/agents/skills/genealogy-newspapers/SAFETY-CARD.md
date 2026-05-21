@@ -1,5 +1,5 @@
 # Safety Card: genealogy-newspapers
-**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-04-12
+**Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-05-12
 
 | Field | Value |
 |-------|-------|
@@ -8,15 +8,16 @@
 | **Schedule** | Every 6 hours |
 | **Max Iterations** | 15 |
 | **Max Tokens** | 30,000 |
-| **Permissions** | genealogy:read, genealogy:write, rag:read, rag:write, system:read |
+| **Permissions** | genealogy:read, genealogy:write, rag:read, rag:write, system:read, system:write |
 | **Notifications** | Pushover |
 
-**Capabilities:** Search newspapers, obituary sources, web archives, and related search surfaces for biographical details and family-network evidence.
+**Capabilities:** Search newspapers, obituary sources, web archives, and related search surfaces for biographical details and family-network evidence. Save newspaper-search procedures for future recall.
 
 **Constraints:**
 - Newspaper content is secondary evidence unless corroborated
 - Must not convert obituary or article language into accepted fact without source-backed review
 - Must log search coverage and negative results
+- Local PLOS may use owned private/living FT data internally; export/publish/share workflows own privacy and redaction gates
 
 **Failure Modes:**
 - Search-source outages reduce evidence depth

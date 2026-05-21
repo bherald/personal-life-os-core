@@ -416,9 +416,9 @@ class AgentLoopService
             $temperature = $skillConfig['temperature'] ?? 0.7;
             // AI-1: cascade opt-in — SKILL.md can set `cascade: true` or `cascade: {threshold: 0.7}`
             $cascadeConfig = $skillConfig['cascade'] ?? null;
-            // Genealogy data is NOT sensitive — deceased persons and historical records
-            // are public information (100+ year rule). Only mark sensitive for agents that
-            // handle living person data (email, health, finance).
+            // Local genealogy work may use private/living family-tree records
+            // inside PLOS. Export/public sharing workflows own privacy and
+            // redaction checks at that boundary.
             $hasSensitivePerms = ! empty(array_filter(
                 $skillConfig['permissions'] ?? [],
                 fn ($p) => str_starts_with($p, 'email:') || str_starts_with($p, 'health:') || str_starts_with($p, 'finance:')

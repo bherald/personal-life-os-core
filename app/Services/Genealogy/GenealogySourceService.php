@@ -52,8 +52,11 @@ class GenealogySourceService
 
     private static bool $missingUserAgentContactLogged = false;
 
-    public function __construct()
+    private GenealogyTreeRootResolver $treeRootResolver;
+
+    public function __construct(?GenealogyTreeRootResolver $treeRootResolver = null)
     {
+        $this->treeRootResolver = $treeRootResolver ?? app(GenealogyTreeRootResolver::class);
         $this->newspaperService = app(NewspaperSearchService::class);
     }
 
@@ -2105,10 +2108,13 @@ class GenealogySourceService
                 return ['success' => false, 'error' => 'Tree not found'];
             }
 
-            $treeName = $tree->name;
             $filename = basename($localPath);
-            $genealogyRoot = '/'.trim((string) config('genealogy.nextcloud_root', '/Library/Genealogy'), '/');
-            $nextcloudPath = "{$genealogyRoot}/{$treeName}/{$subfolder}/{$filename}";
+            $treeRoot = $this->treeRootResolver->treeScopedRoot(
+                $treeId,
+                $this->treeRootResolver->mediaRoot($treeId),
+                (string) $tree->name
+            );
+            $nextcloudPath = $treeRoot.'/'.$this->normalizeTreeSubfolder($subfolder).'/'.$filename;
 
             $nextcloudApi = app(\App\Services\NextcloudFileApiService::class);
             $nextcloudApi->ensureDirectoryExists(dirname($nextcloudPath));
@@ -2169,6 +2175,23 @@ class GenealogySourceService
 
             return ['success' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    private function normalizeTreeSubfolder(string $subfolder): string
+    {
+        $parts = array_values(array_filter(
+            explode('/', str_replace('\\', '/', trim($subfolder))),
+            static fn (string $part): bool => $part !== '' && $part !== '.' && $part !== '..'
+        ));
+
+        $safe = array_map(static function (string $part): string {
+            $part = preg_replace('/[^A-Za-z0-9._-]+/', '-', $part) ?? '';
+            $part = trim($part, '-_.');
+
+            return $part !== '' ? $part : 'files';
+        }, $parts);
+
+        return $safe !== [] ? implode('/', $safe) : 'documents';
     }
 
     // ========================================================================

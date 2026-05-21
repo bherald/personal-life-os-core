@@ -306,35 +306,41 @@ class SearchCoverageService
         $targetTypes = $repositoryType ? [$repositoryType] : $coreTypes;
         $placeholders = implode(',', array_fill(0, count($targetTypes), '?'));
 
-        // Find persons who have coverage data but are missing one or more target types
+        // Find persons who are missing one or more target types.
+        // Keep the alias filter in an outer query so the report works across
+        // both MySQL and SQLite-backed regression tests.
         $gaps = DB::select("
-            SELECT p.id AS person_id,
-                   CONCAT(COALESCE(p.given_name, ''), ' ', COALESCE(p.surname, '')) AS person_name,
-                   p.birth_date,
-                   p.death_date,
-                   COALESCE(existing.repo_types_covered, 0) AS repo_types_covered,
-                   COALESCE(existing.total_searches, 0) AS total_searches,
-                   (
-                       SELECT COUNT(*) FROM (
-                           SELECT DISTINCT sc2.repository_type
-                           FROM genealogy_search_coverage sc2
-                           WHERE sc2.person_id = p.id AND sc2.repository_type IN ({$placeholders})
-                       ) covered_sub
-                   ) AS target_types_covered
-            FROM genealogy_persons p
-            LEFT JOIN (
-                SELECT person_id,
-                       COUNT(DISTINCT repository_type) AS repo_types_covered,
-                       SUM(search_count) AS total_searches
-                FROM genealogy_search_coverage
-                WHERE tree_id = ?
-                GROUP BY person_id
-            ) existing ON existing.person_id = p.id
-            WHERE p.tree_id = ?
-            HAVING target_types_covered < ?
-            ORDER BY total_searches DESC, repo_types_covered DESC, person_name ASC
+            SELECT *
+            FROM (
+                SELECT p.id AS person_id,
+                       p.given_name,
+                       p.surname,
+                       p.birth_date,
+                       p.death_date,
+                       COALESCE(existing.repo_types_covered, 0) AS repo_types_covered,
+                       COALESCE(existing.total_searches, 0) AS total_searches,
+                       (
+                           SELECT COUNT(*) FROM (
+                               SELECT DISTINCT sc2.repository_type
+                               FROM genealogy_search_coverage sc2
+                               WHERE sc2.person_id = p.id AND sc2.repository_type IN ({$placeholders})
+                           ) covered_sub
+                       ) AS target_types_covered
+                FROM genealogy_persons p
+                LEFT JOIN (
+                    SELECT person_id,
+                           COUNT(DISTINCT repository_type) AS repo_types_covered,
+                           SUM(search_count) AS total_searches
+                    FROM genealogy_search_coverage
+                    WHERE tree_id = ?
+                    GROUP BY person_id
+                ) existing ON existing.person_id = p.id
+                WHERE p.tree_id = ?
+            ) gap_rows
+            WHERE target_types_covered < ?
+            ORDER BY total_searches DESC, repo_types_covered DESC, given_name ASC, surname ASC
             LIMIT ?
-        ", array_merge($targetTypes, $targetTypes, [$treeId, $treeId, count($targetTypes), $limit]));
+        ", array_merge($targetTypes, [$treeId, $treeId, count($targetTypes), $limit]));
 
         $result = [];
         foreach ($gaps as $row) {
@@ -350,7 +356,7 @@ class SearchCoverageService
 
             $result[] = [
                 'person_id'          => (int) $row['person_id'],
-                'person_name'        => trim($row['person_name']),
+                'person_name'        => trim(($row['given_name'] ?? '') . ' ' . ($row['surname'] ?? '')),
                 'birth_date'         => $row['birth_date'],
                 'death_date'         => $row['death_date'],
                 'total_searches'     => (int) $row['total_searches'],

@@ -28,8 +28,8 @@ class GenealogyEvidenceAssetCaptureExecutorService
         bool $storageConfirmed = false,
         bool $linkConfirmed = false,
         ?int $maxBytes = null,
-    ): array
-    {
+        ?int $treeId = null,
+    ): array {
         $limit = max(1, min($limit, 100));
         $payload = $this->basePayload(
             $limit,
@@ -41,6 +41,7 @@ class GenealogyEvidenceAssetCaptureExecutorService
             $storageConfirmed,
             $linkConfirmed,
             $maxBytes,
+            $treeId,
         );
 
         if ($savePreflight && $executeCapture) {
@@ -90,6 +91,12 @@ class GenealogyEvidenceAssetCaptureExecutorService
             ->get();
 
         foreach ($rows as $row) {
+            if ($treeId !== null && ! $this->captureReviewRowBelongsToTree($row, $treeId)) {
+                $payload['summary']['tree_filtered_rows']++;
+
+                continue;
+            }
+
             $payload['summary']['inspected_approved_rows']++;
             $preflight = $this->preflightRow($row);
             $this->mergePreflightSummary($payload, $preflight);
@@ -237,8 +244,8 @@ class GenealogyEvidenceAssetCaptureExecutorService
         bool $storageConfirmed,
         bool $linkConfirmed,
         ?int $maxBytes,
-    ): array
-    {
+        ?int $treeId,
+    ): array {
         $downloadsEnabled = $executeCapture
             && $downloadConfirmed
             && (bool) config('genealogy.evidence_asset_capture.downloads_enabled', true);
@@ -271,12 +278,14 @@ class GenealogyEvidenceAssetCaptureExecutorService
             'genealogy_link_attempted' => false,
             'capture_execution_enabled' => $executeCapture && $downloadsEnabled && $storageWritesEnabled,
             'captured_at' => now()->toIso8601String(),
+            'tree_id' => $treeId,
             'limit' => $limit,
             'status' => $executeCapture ? 'execute_capture' : 'preflight',
             'blockers' => [],
             'summary' => [
                 'pending_capture_reviews' => 0,
                 'approved_capture_reviews' => 0,
+                'tree_filtered_rows' => 0,
                 'inspected_approved_rows' => 0,
                 'ready_approved_rows' => 0,
                 'source_rows_resolved' => 0,
@@ -456,6 +465,7 @@ class GenealogyEvidenceAssetCaptureExecutorService
         foreach ($plans as $plan) {
             if (! is_array($plan)) {
                 $unresolved++;
+
                 continue;
             }
 
@@ -499,6 +509,13 @@ class GenealogyEvidenceAssetCaptureExecutorService
             'genealogy_link_attempted' => false,
             'canonical_write_attempted' => false,
         ];
+    }
+
+    private function captureReviewRowBelongsToTree(object $row, int $treeId): bool
+    {
+        $details = $this->decodeDetails($row->details ?? null);
+
+        return is_numeric($details['tree_id'] ?? null) && (int) $details['tree_id'] === $treeId;
     }
 
     /**

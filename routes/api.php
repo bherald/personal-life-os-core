@@ -203,6 +203,13 @@ Route::prefix('email/v2')->group(function () {
     Route::get('/suggestions/settings', [\App\Http\Controllers\Api\EmailController::class, 'suggestionSettings']);
     Route::put('/suggestions/settings', [\App\Http\Controllers\Api\EmailController::class, 'updateSuggestionSettings']);
 
+    // Shipment tracking compatibility contract (D1 removed local shipment tables)
+    Route::get('/shipments', [\App\Http\Controllers\Api\EmailController::class, 'shipments']);
+    Route::get('/shipments/stats', [\App\Http\Controllers\Api\EmailController::class, 'shipmentStats']);
+    Route::post('/shipments/scan', [\App\Http\Controllers\Api\EmailController::class, 'scanShipments']);
+    Route::post('/shipments/{id}/received', [\App\Http\Controllers\Api\EmailController::class, 'markShipmentReceived']);
+    Route::post('/shipments/{id}/archive', [\App\Http\Controllers\Api\EmailController::class, 'archiveShipment']);
+
     // Sentiment, unsubscribe, follow-up, draft versions, scheduled — removed (D1)
 
     // Email Analytics
@@ -698,6 +705,10 @@ Route::prefix('file-catalog')->group(function () {
     Route::get('/duplicates', [\App\Http\Controllers\Api\FileCatalogController::class, 'listDuplicates']);
     Route::get('/duplicates/stats', [\App\Http\Controllers\Api\FileCatalogController::class, 'duplicateStats']);
 
+    // Settings
+    Route::get('/settings', [\App\Http\Controllers\Api\FileCatalogController::class, 'settings']);
+    Route::put('/settings', [\App\Http\Controllers\Api\FileCatalogController::class, 'updateSettings']);
+
     // Thumbnails
     Route::get('/files/{uuid}/thumbnail/{size?}', [\App\Http\Controllers\Api\FileCatalogController::class, 'thumbnail']);
     Route::post('/thumbnails/generate', [\App\Http\Controllers\Api\FileCatalogController::class, 'generateThumbnails']);
@@ -924,6 +935,9 @@ Route::prefix('genealogy')->middleware(['genealogy.privacy'])->group(function ()
     Route::get('/missing-data-types', [GenealogyController::class, 'getMissingDataTypes']);
     Route::get('/trees/{treeId}/reports/missing-data', [GenealogyController::class, 'getMissingDataReport']);
     Route::get('/trees/{treeId}/reports/missing-data/summary', [GenealogyController::class, 'getMissingDataSummary']);
+    Route::post('/trees/{treeId}/reports/source-audit-workbook', [GenealogyController::class, 'sourceAuditWorkbook']);
+    Route::post('/trees/{treeId}/reports/source-audit-workbook/review-packet', [GenealogyController::class, 'sourceAuditWorkbookReviewPacket']);
+    Route::get('/trees/{treeId}/reports/source-audit-workbook/download', [GenealogyController::class, 'sourceAuditWorkbookDownload']);
 
     // Intake Runs
     Route::get('/intake-runs', [GenealogyController::class, 'listIntakeRuns']);

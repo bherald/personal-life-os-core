@@ -31,6 +31,7 @@ use App\Services\Genealogy\GenealogyService;
 use App\Services\Genealogy\GenealogyStagedPacketPreviewService;
 use App\Services\Genealogy\NewspaperSearchService;
 use App\Services\Genealogy\Providers\GenealogyProviderManager;
+use App\Services\Genealogy\SourceAudit\SourceAuditWorkbookService;
 use App\Services\RAGService;
 use Exception;
 use Illuminate\Http\JsonResponse;
@@ -276,14 +277,13 @@ class GenealogyController extends Controller
             }
 
             $options = [
-                'include_living' => $request->boolean('include_living', false),
                 'include_media' => $request->boolean('include_media', true),
                 'include_sources' => $request->boolean('include_sources', true),
                 'include_notes' => $request->boolean('include_notes', true),
                 'submitter_name' => $request->input('submitter_name', 'PLOS Genealogy Export'),
                 'submitter_address' => $request->input('submitter_address'),
                 'gedcom_version' => $request->input('gedcom_version', '5.5.1'), // GEN-4: '5.5.1' or '7.0'
-            ];
+            ] + $this->exportPrivacyOptions($request);
 
             $userId = Auth::id();
 
@@ -310,6 +310,11 @@ class GenealogyController extends Controller
                     'content' => $content,
                     'filename' => preg_replace('/[^a-zA-Z0-9_-]/', '_', $tree->name).'.ged',
                     'size' => strlen($content),
+                    'privacy_context' => $options['privacy_context'],
+                    'include_living' => $options['include_living'],
+                    'privacy_label' => $options['include_living']
+                        ? 'Private full-detail export'
+                        : 'Public redacted export',
                 ],
                 'message' => 'GEDCOM exported successfully',
             ]);
@@ -334,12 +339,11 @@ class GenealogyController extends Controller
             }
 
             $options = [
-                'include_living' => $request->boolean('include_living', false),
                 'include_media' => $request->boolean('include_media', true),
                 'include_sources' => $request->boolean('include_sources', true),
                 'include_notes' => $request->boolean('include_notes', true),
                 'submitter_name' => $request->input('submitter_name', 'PLOS Genealogy Export'),
-            ];
+            ] + $this->exportPrivacyOptions($request);
 
             $zipPath = $this->gedcomExportService->exportToGedZip($treeId, null, $options);
 
@@ -350,6 +354,39 @@ class GenealogyController extends Controller
         } catch (Exception $e) {
             return $this->errorResponse('Failed to export GEDZip', $e);
         }
+    }
+
+    private function exportPrivacyOptions(Request $request): array
+    {
+        $privacyContext = $this->normalizeExportPrivacyContext($request->input('privacy_context'));
+        $redactLiving = $request->has('redact_living')
+            ? $request->boolean('redact_living')
+            : null;
+
+        if ($privacyContext === null) {
+            $privacyContext = $redactLiving === true ? 'public_export' : 'private_local';
+        }
+
+        if ($request->has('include_living')) {
+            $includeLiving = $request->boolean('include_living');
+        } elseif ($redactLiving !== null) {
+            $includeLiving = ! $redactLiving;
+        } else {
+            $includeLiving = $privacyContext === 'public_export' ? false : true;
+        }
+
+        return [
+            'privacy_context' => $privacyContext,
+            'include_living' => $includeLiving,
+        ];
+    }
+
+    private function normalizeExportPrivacyContext(mixed $privacyContext): ?string
+    {
+        return match ($privacyContext) {
+            'public_export', 'private_local' => $privacyContext,
+            default => null,
+        };
     }
 
     /**
@@ -1869,6 +1906,85 @@ class GenealogyController extends Controller
         }
     }
 
+    /**
+     * Generate a source-audit workbook manifest or CSV package for a tree.
+     */
+    public function sourceAuditWorkbook(Request $request, int $treeId, SourceAuditWorkbookService $service): JsonResponse
+    {
+        try {
+            $result = $service->generate(
+                treeId: $treeId,
+                format: (string) $request->input('format', 'manifest'),
+                privacyMode: (string) $request->input('privacy_mode', 'private_local'),
+                dryRun: $request->boolean('dry_run', true),
+                confirm: $request->boolean('confirm', false),
+                actor: 'ui:genealogy-source-audit-workbook',
+                layoutProfile: (string) $request->input('layout_profile', 'dense_audit_v1'),
+                includeSources: $request->boolean('include_sources', true),
+                includeMedia: $request->boolean('include_media', true),
+                includeIssues: $request->boolean('include_issues', true),
+                prelabelCount: (int) $request->input('prelabel_count', 0),
+                shardMode: (string) $request->input('shard_mode', 'none'),
+                branchPersonId: $request->filled('branch_person_id') ? (int) $request->input('branch_person_id') : null,
+                branchMode: (string) $request->input('branch_mode', 'descendants')
+            );
+
+            return response()->json([
+                'success' => (bool) ($result['success'] ?? false),
+                'data' => $result,
+            ], ($result['success'] ?? false) ? 200 : 422);
+        } catch (Exception $e) {
+            return $this->errorResponse('Failed to generate source-audit workbook', $e);
+        }
+    }
+
+    /**
+     * Create or preview a genealogy review packet from a source-audit workbook row.
+     */
+    public function sourceAuditWorkbookReviewPacket(Request $request, int $treeId, SourceAuditWorkbookService $service): JsonResponse
+    {
+        $validated = $request->validate([
+            'tag' => 'nullable|string|max:64',
+            'record_type' => 'nullable|string|in:person,family',
+            'record_id' => 'nullable|integer|min:1',
+            'dry_run' => 'nullable|boolean',
+            'confirm' => 'nullable|boolean',
+        ]);
+
+        try {
+            $result = $service->createReviewPacketFromWorkbookRow(
+                treeId: $treeId,
+                tag: $validated['tag'] ?? null,
+                recordType: $validated['record_type'] ?? null,
+                recordId: isset($validated['record_id']) ? (int) $validated['record_id'] : null,
+                dryRun: $request->boolean('dry_run', true),
+                confirm: $request->boolean('confirm', false),
+                actor: 'ui:source-audit-workbook-review-packet'
+            );
+
+            return response()->json([
+                'success' => (bool) ($result['success'] ?? false),
+                'data' => $result,
+            ], ($result['success'] ?? false) ? 200 : 422);
+        } catch (Exception $e) {
+            return $this->errorResponse('Failed to create source-audit workbook review packet', $e);
+        }
+    }
+
+    /**
+     * Download a generated source-audit workbook artifact from the tree report folder.
+     */
+    public function sourceAuditWorkbookDownload(Request $request, int $treeId, SourceAuditWorkbookService $service)
+    {
+        try {
+            $path = $service->resolveReportDownloadPath($treeId, (string) $request->query('path', ''));
+
+            return response()->download($path, basename($path));
+        } catch (Exception $e) {
+            return $this->errorResponse('Failed to download source-audit workbook file', $e, 404);
+        }
+    }
+
     // ========================================================================
     // MEDIA ENDPOINTS
     // ========================================================================
@@ -2129,6 +2245,7 @@ class GenealogyController extends Controller
             'root_path' => 'required|string|max:2000',
             'limit' => 'nullable|integer|min:1|max:500',
             'packet_label' => 'nullable|string|max:255',
+            'workbook_tag' => 'nullable|string|max:64',
             'unprocessed_only' => 'nullable|boolean',
         ]);
 
@@ -2139,6 +2256,7 @@ class GenealogyController extends Controller
                 (int) ($validated['limit'] ?? 100),
                 [
                     'packet_label' => $validated['packet_label'] ?? null,
+                    'workbook_tag' => $validated['workbook_tag'] ?? null,
                     'unprocessed_only' => (bool) ($validated['unprocessed_only'] ?? false),
                 ]
             );
@@ -2163,6 +2281,8 @@ class GenealogyController extends Controller
                         'packet_count' => (int) ($staged['packet_count'] ?? 0),
                         'root_path' => (string) ($staged['root_path'] ?? ($run['root_path'] ?? '')),
                         'packet_label' => $staged['packet_label'] ?? ($run['packet_label'] ?? null),
+                        'workbook_tag' => $staged['workbook_tag'] ?? null,
+                        'workbook_target' => $staged['workbook_target'] ?? null,
                     ],
                 ],
             ]);
@@ -2984,7 +3104,15 @@ class GenealogyController extends Controller
                 }
             }
 
-            // Fallback: Proxy the full image from Nextcloud (for unsupported types or missing registry)
+            // Fallback only for browser-renderable image types. Documents and archival
+            // formats should show a placeholder instead of forcing raw downloads into <img>.
+            if (! $this->isBrowserRenderableThumbnailFallback($media, $fileRecord->mime_type ?? null)) {
+                return response($placeholder, 200)
+                    ->header('Content-Type', 'image/gif')
+                    ->header('Cache-Control', 'public, max-age=300');
+            }
+
+            // Fallback: Proxy the full browser-renderable image from Nextcloud.
             $downloadResult = app(\App\Services\NextcloudFileApiService::class)->downloadFile($media['nextcloud_path']);
 
             if (! $downloadResult['success']) {
@@ -3005,6 +3133,22 @@ class GenealogyController extends Controller
                 ->header('Content-Type', 'image/gif')
                 ->header('Cache-Control', 'public, max-age=300');
         }
+    }
+
+    private function isBrowserRenderableThumbnailFallback(array $media, ?string $registryMimeType = null): bool
+    {
+        $mimeType = strtolower((string) ($registryMimeType ?: ($media['mime_type'] ?? '')));
+        if (in_array($mimeType, ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp'], true)) {
+            return true;
+        }
+
+        $extension = strtolower((string) ($media['file_format'] ?? ''));
+        if ($extension === '') {
+            $path = (string) ($media['local_filename'] ?? $media['nextcloud_path'] ?? $media['original_path'] ?? '');
+            $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        }
+
+        return in_array($extension, ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'bmp'], true);
     }
 
     /**

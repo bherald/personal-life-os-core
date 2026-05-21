@@ -1,12 +1,16 @@
-import { z } from 'zod';
 import { DatabaseManager } from '../integrations/database.js';
 import { ArtisanExecutor } from '../integrations/artisan.js';
+import { GenealogyService } from '../integrations/genealogy.js';
 
 export class ToolHandlers {
+  private genealogy: GenealogyService;
+
   constructor(
     private db: DatabaseManager,
     private artisan: ArtisanExecutor
-  ) {}
+  ) {
+    this.genealogy = new GenealogyService(db);
+  }
 
   // Tool: workflow_list
   async handleWorkflowList(args: { active_only?: boolean }) {
@@ -168,6 +172,111 @@ export class ToolHandlers {
         {
           type: 'text',
           text: result.stdout,
+        },
+      ],
+    };
+  }
+
+  // Tool: genealogy_context
+  async handleGenealogyContext(args: {
+    tree_id: number;
+    person_ids?: number[];
+    family_ids?: number[];
+    media_ids?: number[];
+    source_ids?: number[];
+    text_limit?: number;
+  }) {
+    const context = await this.genealogy.compactContext(args);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(context, null, 2),
+        },
+      ],
+    };
+  }
+
+  // Tool: genealogy_person_get
+  async handleGenealogyPersonGet(args: Parameters<GenealogyService['getPerson']>[0]) {
+    const context = await this.genealogy.getPerson(args);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(context, null, 2),
+        },
+      ],
+    };
+  }
+
+  // Tool: genealogy_family_get
+  async handleGenealogyFamilyGet(args: Parameters<GenealogyService['getFamily']>[0]) {
+    const context = await this.genealogy.getFamily(args);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(context, null, 2),
+        },
+      ],
+    };
+  }
+
+  // Tool: genealogy_source_get
+  async handleGenealogySourceGet(args: Parameters<GenealogyService['getSource']>[0]) {
+    const context = await this.genealogy.getSource(args);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(context, null, 2),
+        },
+      ],
+    };
+  }
+
+  // Tool: genealogy_search
+  async handleGenealogySearch(args: Parameters<GenealogyService['search']>[0]) {
+    const result = await this.genealogy.search(args);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  // Tool: genealogy_tree_stats
+  async handleGenealogyTreeStats(args: Parameters<GenealogyService['treeStats']>[0]) {
+    const result = await this.genealogy.treeStats(args);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  }
+
+  // Tool: genealogy_batch_apply
+  async handleGenealogyBatchApply(args: Parameters<GenealogyService['applyBatch']>[0]) {
+    const result = await this.genealogy.applyBatch(args);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };

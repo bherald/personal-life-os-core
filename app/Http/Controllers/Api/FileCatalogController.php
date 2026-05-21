@@ -8,6 +8,7 @@ use App\Jobs\ExecuteFileRegistryScan;
 use App\Jobs\ThumbnailGenerateJob;
 use App\Services\FileCategorizationRAGService;
 use App\Services\FileRegistryService;
+use App\Services\SystemConfigService;
 use App\Services\ThumbnailService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -500,6 +501,68 @@ class FileCatalogController extends Controller
      *
      * GET /api/file-catalog/settings
      */
+    public function settings(SystemConfigService $config): JsonResponse
+    {
+        try {
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'base_path' => $this->nextcloudLibraryRoot(),
+                    'exclusion_patterns' => $this->normalizePatternList(
+                        $config->get('file_catalog.exclusion_patterns', [])
+                    ),
+                    'include_patterns' => $this->normalizePatternList(
+                        $config->get('file_catalog.include_patterns', [])
+                    ),
+                ],
+            ]);
+        } catch (\Exception $e) {
+            Log::error('FileCatalog: Settings error', ['error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Update catalog settings.
+     *
+     * PUT /api/file-catalog/settings
+     */
+    public function updateSettings(Request $request, SystemConfigService $config): JsonResponse
+    {
+        $validated = $request->validate([
+            'exclusion_patterns' => ['nullable', 'array'],
+            'exclusion_patterns.*' => ['nullable', 'string', 'max:500'],
+            'include_patterns' => ['nullable', 'array'],
+            'include_patterns.*' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        try {
+            $config->set(
+                'file_catalog.exclusion_patterns',
+                $this->normalizePatternList($validated['exclusion_patterns'] ?? []),
+                'json'
+            );
+            $config->set(
+                'file_catalog.include_patterns',
+                $this->normalizePatternList($validated['include_patterns'] ?? []),
+                'json'
+            );
+
+            return $this->settings($config);
+        } catch (\Exception $e) {
+            Log::error('FileCatalog: Update settings error', ['error' => $e->getMessage()]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
     // ==========================================
     // Thumbnail/Preview Endpoints
     // ==========================================
@@ -1192,10 +1255,15 @@ class FileCatalogController extends Controller
     private function guessMimeType(string $ext): string
     {
         return match ($ext) {
-            'jpg', 'jpeg' => 'image/jpeg',
+            'jpg', 'jpeg', 'jfif' => 'image/jpeg',
             'png' => 'image/png',
             'gif' => 'image/gif',
             'webp' => 'image/webp',
+            'bmp' => 'image/bmp',
+            'tif', 'tiff' => 'image/tiff',
+            'jp2', 'j2k', 'jpf', 'jpx' => 'image/jp2',
+            'heic' => 'image/heic',
+            'heif' => 'image/heif',
             'svg' => 'image/svg+xml',
             'pdf' => 'application/pdf',
             'mp4' => 'video/mp4',
@@ -1213,5 +1281,30 @@ class FileCatalogController extends Controller
     private function nextcloudLibraryRoot(): string
     {
         return '/'.trim((string) config('services.nextcloud.library_root', '/Library'), '/');
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function normalizePatternList(mixed $value): array
+    {
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            $value = is_array($decoded) ? $decoded : preg_split('/\r?\n/', $value);
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $patterns = [];
+        foreach ($value as $pattern) {
+            $pattern = trim((string) $pattern);
+            if ($pattern !== '') {
+                $patterns[] = $pattern;
+            }
+        }
+
+        return array_values(array_unique($patterns));
     }
 }

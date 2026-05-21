@@ -1,9 +1,10 @@
 # Docs Layout
 
-This directory is intentionally small. On 2026-04-26 the sprint notes,
+This directory is intentionally curated. On 2026-04-26 the sprint notes,
 implementation packets, historical reports, and one-off research files were
-compressed into `canonical-docs-archive-2026-04-26.zip` and removed as loose
-files. Use the archive only when old provenance is needed.
+compressed into `canonical-docs-archive-2026-04-26.zip`. On 2026-05-21 the
+loose planning/scoping docs were pruned again so git history, not live docs,
+carries old narrative detail.
 
 ## Public-Bound Docs
 
@@ -52,12 +53,11 @@ confirm dependency inventories still match the public provenance snapshots.
 
 The private source repository keeps operator-only runbooks that the public
 extraction must not ship. These include `PROJECT.md`,
-`active-priority-list.md`, `future-enhancements.md`,
-`plos-focus-report-*`, `PROD-MAINTENANCE.md`,
+`active-priority-list.md`, `PROD-MAINTENANCE.md`,
 `plos-runtime-inventory.md`, `rlm-research.md`,
 `plos-research-ledger.md`, `genealogy-research-methodology.md`,
-`docs/claude-*.md`, `canonical-docs-archive-*.zip`, and any operator-side
-connector runbook.
+`canonical-docs-archive-*.zip`, current private runtime bench notes, and any
+operator-side connector runbook.
 
 Keep real Nextcloud bind paths, Joplin notebook paths, Thunderbird mail
 profiles, Android sync targets, Pushover credentials, LAN
@@ -84,3 +84,7 @@ into a canonical doc when the task closes.
 
 Do not keep multiple active queue/roadmap docs that answer "what should we do
 next?" differently.
+
+For private work selection, update `active-priority-list.md`. For public-facing
+direction, update `roadmap.md`. For external research cadence, update
+`plos-research-ledger.md`.

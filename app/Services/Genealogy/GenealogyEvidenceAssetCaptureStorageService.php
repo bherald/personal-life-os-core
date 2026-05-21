@@ -2,9 +2,11 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\FileRegistryService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Throwable;
@@ -18,8 +20,8 @@ class GenealogyEvidenceAssetCaptureStorageService
     ];
 
     private const ALLOWED_EXTENSIONS = [
-        'jpg', 'jpeg', 'png', 'gif', 'webp', 'tif', 'tiff',
-        'pdf', 'html', 'htm', 'txt',
+        'jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'tif', 'tiff', 'jp2', 'j2k', 'jpf', 'jpx',
+        'pdf', 'html', 'htm', 'txt', 'rtf',
         'mp3', 'wav', 'ogg', 'flac', 'm4a',
         'mp4', 'm4v', 'mov', 'webm',
     ];
@@ -33,9 +35,14 @@ class GenealogyEvidenceAssetCaptureStorageService
     private const ALLOWED_CONTENT_TYPES = [
         'application/pdf',
         'application/octet-stream',
+        'application/rtf',
+        'application/x-rtf',
         'text/html',
         'text/plain',
+        'text/rtf',
     ];
+
+    public function __construct(private readonly GenealogyTreeRootResolver $rootResolver) {}
 
     /**
      * @param  array<string, mixed>  $reviewDetails
@@ -83,6 +90,7 @@ class GenealogyEvidenceAssetCaptureStorageService
         foreach ($plans as $plan) {
             if (! is_array($plan)) {
                 $result['summary']['plans_skipped']++;
+
                 continue;
             }
 
@@ -284,6 +292,7 @@ class GenealogyEvidenceAssetCaptureStorageService
             'ok' => true,
             'status' => 'captured',
             'path' => $path,
+            'nextcloud_path' => $this->nextcloudPathForStoredPath($path),
             'filename' => basename($path),
             'content_type' => $contentType,
             'extension' => $extension,
@@ -304,7 +313,7 @@ class GenealogyEvidenceAssetCaptureStorageService
             return ['ok' => false, 'status' => 'blocked', 'blockers' => ['local_reference_missing']];
         }
 
-        if (! $this->isAllowedLocalPath($sourcePath)) {
+        if (! $this->isAllowedLocalPath($sourcePath, $candidate)) {
             return ['ok' => false, 'status' => 'blocked', 'blockers' => ['local_reference_outside_allowed_roots']];
         }
 
@@ -342,6 +351,7 @@ class GenealogyEvidenceAssetCaptureStorageService
             'ok' => true,
             'status' => 'captured',
             'path' => $path,
+            'nextcloud_path' => $this->nextcloudPathForStoredPath($path),
             'filename' => basename($path),
             'content_type' => $contentType,
             'extension' => strtolower((string) pathinfo($path, PATHINFO_EXTENSION)),
@@ -357,12 +367,14 @@ class GenealogyEvidenceAssetCaptureStorageService
     {
         $now = now();
         $mediaType = $this->mediaType($candidate, (string) ($stored['content_type'] ?? ''));
+        $storedPath = (string) ($stored['path'] ?? '');
+        $nextcloudPath = (string) ($stored['nextcloud_path'] ?? $this->nextcloudPathForStoredPath($storedPath));
 
-        return (int) DB::table('genealogy_media')->insertGetId([
+        $mediaId = (int) DB::table('genealogy_media')->insertGetId([
             'tree_id' => (int) $candidate['tree_id'],
             'uid' => $this->mediaUid($candidate),
             'original_path' => (string) ($candidate['locator'] ?? ''),
-            'nextcloud_path' => (string) ($stored['path'] ?? ''),
+            'nextcloud_path' => $nextcloudPath,
             'local_filename' => (string) ($stored['filename'] ?? ''),
             'file_format' => substr((string) ($stored['extension'] ?? ''), 0, 20),
             'mime_type' => substr((string) ($stored['content_type'] ?? 'application/octet-stream'), 0, 100),
@@ -371,7 +383,7 @@ class GenealogyEvidenceAssetCaptureStorageService
             'description' => 'Captured from approved genealogy evidence asset capture review.',
             'analysis_status' => 'pending',
             'enrichment_status' => 'pending',
-            'source_folder' => dirname((string) ($stored['path'] ?? '')),
+            'source_folder' => dirname($nextcloudPath),
             'media_type' => $mediaType,
             'file_exists' => 1,
             'imported_at' => $now,
@@ -379,6 +391,38 @@ class GenealogyEvidenceAssetCaptureStorageService
             'created_at' => $now,
             'updated_at' => $now,
         ]);
+
+        $this->registerCapturedFile($candidate, $stored, $nextcloudPath);
+
+        return $mediaId;
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     * @param  array<string, mixed>  $stored
+     */
+    private function registerCapturedFile(array $candidate, array $stored, string $nextcloudPath): void
+    {
+        if ($nextcloudPath === '' || ! Schema::hasTable('file_registry')) {
+            return;
+        }
+
+        try {
+            app(FileRegistryService::class)->registerFile($nextcloudPath, [
+                'original_path' => (string) ($candidate['locator'] ?? ''),
+                'original_source' => 'other',
+                'title' => $this->safeLabel($candidate['label'] ?? $stored['filename'] ?? 'Evidence asset'),
+                'category' => 'genealogy',
+                'tags' => ['genealogy', 'evidence_capture'],
+                'compute_perceptual_hash' => false,
+            ]);
+        } catch (Throwable $exception) {
+            Log::warning('Genealogy evidence capture: file registry registration failed', [
+                'nextcloud_path' => $nextcloudPath,
+                'error_class' => $exception::class,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -692,7 +736,11 @@ class GenealogyEvidenceAssetCaptureStorageService
 
     private function targetPath(array $candidate, string $extension): string
     {
-        $root = rtrim((string) config('genealogy.ft_reference_root', storage_path('app/genealogy/ft-reference')), '/');
+        $treeId = $this->resolveTreeId($candidate);
+        $root = $treeId !== null
+            ? $this->rootResolver->referenceRoot($treeId)
+            : rtrim((string) config('genealogy.ft_reference_root', storage_path('app/genealogy/ft-reference')), '/');
+        $treeRoot = $treeId !== null ? $this->rootResolver->treeScopedRoot($treeId, $root) : $root;
         $subdir = now()->format('Y/m/d');
         $slug = Str::slug($this->safeLabel($candidate['label'] ?? 'Evidence asset'));
         if ($slug === '') {
@@ -704,7 +752,38 @@ class GenealogyEvidenceAssetCaptureStorageService
             $extension = 'bin';
         }
 
-        return $root.'/evidence-assets/'.$subdir.'/'.$slug.'-'.$candidate['locator_hash'].'.'.$extension;
+        return $treeRoot.'/evidence-assets/'.$subdir.'/'.$slug.'-'.$candidate['locator_hash'].'.'.$extension;
+    }
+
+    private function nextcloudPathForStoredPath(string $path): string
+    {
+        $normalized = $this->normalizeStoredPath($path) ?? $path;
+        $dataRoot = $this->normalizeStoredPath(config('services.nextcloud.data_path'));
+
+        if ($dataRoot !== null && ($normalized === $dataRoot || str_starts_with($normalized, $dataRoot.'/'))) {
+            $relative = ltrim(substr($normalized, strlen($dataRoot)), '/');
+
+            return '/'.$relative;
+        }
+
+        return $normalized;
+    }
+
+    private function normalizeStoredPath(mixed $path): ?string
+    {
+        if (! is_scalar($path)) {
+            return null;
+        }
+
+        $path = trim((string) $path);
+        if ($path === '') {
+            return null;
+        }
+
+        $path = preg_replace('~^file://~i', '', $path) ?? $path;
+        $path = preg_replace('~/+~', '/', str_replace('\\', '/', $path)) ?? $path;
+
+        return rtrim($path, '/') ?: '/';
     }
 
     private function resolveTreeId(array $candidate): ?int
@@ -805,11 +884,12 @@ class GenealogyEvidenceAssetCaptureStorageService
         }
 
         return match ($contentType) {
-            'image/jpeg' => 'jpg',
+            'image/jpeg', 'image/pjpeg' => 'jpg',
             'image/png' => 'png',
             'image/gif' => 'gif',
             'image/webp' => 'webp',
             'image/tiff' => 'tif',
+            'image/jp2', 'image/jpx', 'image/jpm', 'image/j2k', 'image/x-jp2' => 'jp2',
             'application/pdf' => 'pdf',
             'audio/mpeg' => 'mp3',
             'audio/wav', 'audio/x-wav' => 'wav',
@@ -820,6 +900,7 @@ class GenealogyEvidenceAssetCaptureStorageService
             'video/quicktime' => 'mov',
             'video/webm' => 'webm',
             'text/plain' => 'txt',
+            'application/rtf', 'application/x-rtf', 'text/rtf' => 'rtf',
             default => $policy === 'html_snapshot_allowed' ? 'html' : 'bin',
         };
     }
@@ -856,7 +937,7 @@ class GenealogyEvidenceAssetCaptureStorageService
         if ($contentType === 'text/html') {
             return 'html';
         }
-        if (in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp', 'tif', 'tiff'], true)) {
+        if (in_array($extension, ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'tif', 'tiff', 'jp2', 'j2k', 'jpf', 'jpx'], true)) {
             return 'image';
         }
         if (in_array($extension, ['mp3', 'wav', 'ogg', 'flac', 'm4a'], true)) {
@@ -907,14 +988,22 @@ class GenealogyEvidenceAssetCaptureStorageService
         return array_keys($normalized);
     }
 
-    private function isAllowedLocalPath(string $path): bool
+    private function isAllowedLocalPath(string $path, array $candidate): bool
     {
-        $roots = array_filter(array_map(static fn ($root): string => rtrim((string) $root, '/'), [
+        $treeId = $this->resolveTreeId($candidate);
+        $roots = [
             config('genealogy.ft_reference_root'),
             config('genealogy.nextcloud_root'),
             config('genealogy.legacy_media_root'),
             config('genealogy.face_sync_root'),
-        ]));
+        ];
+
+        if ($treeId !== null) {
+            $roots[] = $this->rootResolver->referenceRoot($treeId);
+            $roots[] = $this->rootResolver->mediaRoot($treeId);
+        }
+
+        $roots = array_filter(array_map(static fn ($root): string => rtrim((string) $root, '/'), $roots));
 
         foreach ($roots as $root) {
             $realRoot = realpath($root);

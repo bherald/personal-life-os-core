@@ -2,11 +2,11 @@
 
 namespace App\Services;
 
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Storage;
-use Exception;
 
 /**
  * Thumbnail/Preview Generation Service
@@ -33,6 +33,7 @@ use Exception;
 class ThumbnailService
 {
     private ?NextcloudFileApiService $nextcloudApi = null;
+
     private bool $batchMode = false;
 
     /** Available thumbnail sizes */
@@ -46,9 +47,28 @@ class ThumbnailService
     private const JPEG_QUALITY = 85;
 
     /** Supported MIME types for thumbnail generation */
-    private const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/tiff'];
+    private const SUPPORTED_IMAGE_TYPES = [
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'image/webp',
+        'image/bmp',
+        'image/tiff',
+        'image/jp2',
+        'image/jpx',
+        'image/jpm',
+        'image/j2k',
+        'image/x-jp2',
+        'image/heic',
+        'image/heif',
+        'image/heic-sequence',
+        'image/heif-sequence',
+    ];
+
     private const SUPPORTED_PDF_TYPES = ['application/pdf'];
+
     private const SUPPORTED_VIDEO_TYPES = ['video/mp4', 'video/mpeg', 'video/quicktime', 'video/x-msvideo', 'video/webm', 'video/x-matroska'];
+
     private const SUPPORTED_OFFICE_TYPES = [
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',  // docx
         'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',        // xlsx
@@ -60,6 +80,7 @@ class ThumbnailService
         'application/vnd.oasis.opendocument.spreadsheet',                            // ods
         'application/vnd.oasis.opendocument.presentation',                           // odp
     ];
+
     private const SUPPORTED_TEXT_TYPES = [
         'text/plain',                    // txt, log
         'text/csv',                      // csv
@@ -161,6 +182,10 @@ class ThumbnailService
         'cur' => 'binary',
         // ICO → route to image handler (Imagick supports it)
         'ico' => 'image',
+        // JPEG 2000 archival scans → route to image handler / Pillow fallback
+        'jp2' => 'image', 'j2k' => 'image', 'jpf' => 'image', 'jpx' => 'image', 'jpm' => 'image',
+        // Phone-origin image formats already classified as images by config/file_types.php
+        'heic' => 'image', 'heif' => 'image',
     ];
 
     private function getNextcloudApi(): NextcloudFileApiService
@@ -168,25 +193,26 @@ class ThumbnailService
         if ($this->nextcloudApi === null) {
             $this->nextcloudApi = app(NextcloudFileApiService::class);
         }
+
         return $this->nextcloudApi;
     }
 
     /**
      * Get a thumbnail for a file, generating if needed
      *
-     * @param string $assetUuid File asset UUID
-     * @param string $size Thumbnail size (small, medium, large)
+     * @param  string  $assetUuid  File asset UUID
+     * @param  string  $size  Thumbnail size (small, medium, large)
      * @return array {success, path, mime_type, from_cache} or {success: false, error}
      */
     public function getThumbnail(string $assetUuid, string $size = 'medium'): array
     {
-        if (!isset(self::SIZES[$size])) {
+        if (! isset(self::SIZES[$size])) {
             return ['success' => false, 'error' => "Invalid size: {$size}. Use: small, medium, large"];
         }
 
         // Check local cache
         $cachePath = $this->getThumbnailPath($assetUuid, $size);
-        $fullPath = storage_path('app/' . $cachePath);
+        $fullPath = storage_path('app/'.$cachePath);
 
         if (file_exists($fullPath)) {
             // Ensure DB record has this size tracked (backfill for files generated before DB tracking)
@@ -196,7 +222,7 @@ class ThumbnailService
             );
             if ($file) {
                 $sizes = json_decode($file->thumbnail_sizes ?? '[]', true) ?: [];
-                if (!in_array($size, $sizes)) {
+                if (! in_array($size, $sizes)) {
                     $this->updateThumbnailRecord($file->id, $assetUuid, $size);
                 }
             }
@@ -229,14 +255,14 @@ class ThumbnailService
             [$assetUuid]
         );
 
-        if (!$file) {
+        if (! $file) {
             return ['success' => false, 'error' => 'File not found in registry'];
         }
 
         $mimeType = $file->mime_type ?? '';
 
         // Try Nextcloud preview API first (for images) — skipped in batch mode (local Imagick is faster)
-        if (!$this->batchMode && $file->nextcloud_fileid && in_array($mimeType, self::SUPPORTED_IMAGE_TYPES)) {
+        if (! $this->batchMode && $file->nextcloud_fileid && in_array($mimeType, self::SUPPORTED_IMAGE_TYPES)) {
             $ncResult = $this->tryNextcloudPreview($file, $w, $h, $assetUuid, $size);
             if ($ncResult && $ncResult['success']) {
                 return $ncResult;
@@ -254,8 +280,9 @@ class ThumbnailService
         } else {
             // WebDAV fallback (non-prod or file not on local filesystem)
             $sourceResult = $ncApi->downloadFile($file->current_path);
-            if (!$sourceResult['success']) {
-                $this->markError($file->id, 'Download failed: ' . ($sourceResult['error'] ?? 'unknown'));
+            if (! $sourceResult['success']) {
+                $this->markError($file->id, 'Download failed: '.($sourceResult['error'] ?? 'unknown'));
+
                 return ['success' => false, 'error' => 'Failed to download source file'];
             }
             $tempFile = tempnam(sys_get_temp_dir(), 'thumb_');
@@ -294,8 +321,9 @@ class ThumbnailService
                 } else {
                     // True unknown — generic icon so it has something to show
                     $result = $this->generateGenericIconThumbnail($outputPath, $w, $h, $ext, $mimeType);
-                    if (!$result) {
+                    if (! $result) {
                         $this->markError($file->id, "Unsupported mime type: {$mimeType}");
+
                         return ['success' => false, 'error' => "Unsupported file type: {$mimeType}"];
                     }
                 }
@@ -303,6 +331,7 @@ class ThumbnailService
 
             if ($result) {
                 $this->updateThumbnailRecord($file->id, $assetUuid, $size);
+
                 return [
                     'success' => true,
                     'path' => $outputPath,
@@ -312,6 +341,7 @@ class ThumbnailService
             }
 
             $this->markError($file->id, 'Thumbnail generation failed');
+
             return ['success' => false, 'error' => 'Thumbnail generation failed'];
         } finally {
             if ($deleteTempFile && $tempFile) {
@@ -329,6 +359,7 @@ class ThumbnailService
         foreach (array_keys(self::SIZES) as $size) {
             $results[$size] = $this->generateThumbnail($assetUuid, $size);
         }
+
         return $results;
     }
 
@@ -344,18 +375,18 @@ class ThumbnailService
         $where = "WHERE status = 'active' AND thumbnail_generated_at IS NULL AND thumbnail_error IS NULL AND mime_type IS NOT NULL AND mime_type != ''";
         $params = [];
 
-        if (!empty($filters['type'])) {
+        if (! empty($filters['type'])) {
             $mimeTypes = $this->getMimeTypesForFilter($filters['type']);
-            if (!empty($mimeTypes)) {
+            if (! empty($mimeTypes)) {
                 $placeholders = implode(',', array_fill(0, count($mimeTypes), '?'));
                 $where .= " AND mime_type IN ({$placeholders})";
                 $params = array_merge($params, $mimeTypes);
             }
         }
 
-        if (!empty($filters['path'])) {
-            $where .= " AND current_path LIKE ?";
-            $params[] = $filters['path'] . '%';
+        if (! empty($filters['path'])) {
+            $where .= ' AND current_path LIKE ?';
+            $params[] = $filters['path'].'%';
         }
 
         $params[] = $limit;
@@ -379,13 +410,14 @@ class ThumbnailService
             $mimeType = $file->mime_type ?? '';
             $ext = strtolower(pathinfo($file->current_path ?? '', PATHINFO_EXTENSION));
 
-            if (!$this->isSupportedMimeType($mimeType) && !isset(self::EXTENSION_TYPE_MAP[$ext])) {
+            if (! $this->isSupportedMimeType($mimeType) && ! isset(self::EXTENSION_TYPE_MAP[$ext])) {
                 $stats['skipped']++;
                 // Mark as unsupported so it's excluded from future batch queries
                 DB::update(
                     "UPDATE file_registry SET thumbnail_error = 'unsupported_type', thumbnail_generated_at = NOW() WHERE id = ?",
                     [$file->id]
                 );
+
                 continue;
             }
 
@@ -411,7 +443,7 @@ class ThumbnailService
                 ]);
                 // Mark error so file doesn't retry infinitely
                 DB::update(
-                    "UPDATE file_registry SET thumbnail_error = ? WHERE id = ?",
+                    'UPDATE file_registry SET thumbnail_error = ? WHERE id = ?',
                     [substr($e->getMessage(), 0, 255), $file->id]
                 );
             }
@@ -446,11 +478,21 @@ class ThumbnailService
             }
 
             if (extension_loaded('imagick')) {
-                return $this->generateImageThumbnailImagick($source, $output, $w, $h);
+                $result = $this->generateImageThumbnailImagick($source, $output, $w, $h);
+                if ($result) {
+                    return true;
+                }
             }
-            return $this->generateImageThumbnailGD($source, $output, $w, $h);
+
+            $result = $this->generateImageThumbnailGD($source, $output, $w, $h);
+            if ($result) {
+                return true;
+            }
+
+            return $this->generateImageThumbnailPillow($source, $output, $w, $h);
         } catch (\Throwable $e) {
             Log::warning('Thumbnail: Image generation failed', ['source' => $source, 'error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -458,7 +500,7 @@ class ThumbnailService
     private function generateImageThumbnailGD(string $source, string $output, int $w, int $h): bool
     {
         $info = @getimagesize($source);
-        if (!$info) {
+        if (! $info) {
             return false;
         }
 
@@ -471,14 +513,14 @@ class ThumbnailService
             default => false,
         };
 
-        if (!$srcImage) {
+        if (! $srcImage) {
             return false;
         }
 
         // Auto-orient based on EXIF data
         if ($info[2] === IMAGETYPE_JPEG && function_exists('exif_read_data')) {
             $exif = @exif_read_data($source);
-            if (!empty($exif['Orientation'])) {
+            if (! empty($exif['Orientation'])) {
                 $srcImage = match ((int) $exif['Orientation']) {
                     3 => imagerotate($srcImage, 180, 0),
                     6 => imagerotate($srcImage, -90, 0),
@@ -512,7 +554,7 @@ class ThumbnailService
         // Pre-validate: check dimensions without full decode to avoid C-level crashes
         $mimeType = function_exists('mime_content_type') ? mime_content_type($source) : null;
         if ($mimeType && in_array($mimeType, ['image/tiff', 'image/gif'])) {
-            $probe = new \Imagick();
+            $probe = new \Imagick;
             $probe->setResourceLimit(\Imagick::RESOURCETYPE_MEMORY, 64 * 1024 * 1024);
             $probe->pingImage($source);
             $pw = $probe->getImageWidth();
@@ -523,7 +565,7 @@ class ThumbnailService
             }
         }
 
-        $imagick = new \Imagick();
+        $imagick = new \Imagick;
         // Set resource limits to prevent C-level crashes on problematic files
         $imagick->setResourceLimit(\Imagick::RESOURCETYPE_MEMORY, 256 * 1024 * 1024);
         $imagick->setResourceLimit(\Imagick::RESOURCETYPE_MAP, 512 * 1024 * 1024);
@@ -536,7 +578,40 @@ class ThumbnailService
         $imagick->setImageCompressionQuality(self::JPEG_QUALITY);
         $result = $imagick->writeImage($output);
         $imagick->destroy();
+
         return $result;
+    }
+
+    private function generateImageThumbnailPillow(string $source, string $output, int $w, int $h): bool
+    {
+        $script = <<<'PYTHON'
+import sys
+from PIL import Image, ImageOps
+
+source, output, width, height = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+img = Image.open(source)
+img = ImageOps.exif_transpose(img)
+resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+img.thumbnail((width, height), resample)
+if img.mode not in ("RGB", "L"):
+    img = img.convert("RGB")
+elif img.mode == "L":
+    img = img.convert("RGB")
+img.save(output, "JPEG", quality=85, optimize=True)
+PYTHON;
+
+        $result = Process::timeout(45)->run(['python3', '-c', $script, $source, $output, (string) $w, (string) $h]);
+        if (! $result->successful()) {
+            Log::debug('Thumbnail: Pillow image generation failed', [
+                'source' => $source,
+                'exit_code' => $result->exitCode(),
+                'error' => trim($result->errorOutput()),
+            ]);
+
+            return false;
+        }
+
+        return file_exists($output) && filesize($output) > 0;
     }
 
     /**
@@ -587,6 +662,7 @@ PHPSCRIPT;
                 'source' => $source,
                 'exit_code' => $exitCode,
             ]);
+
             return false;
         }
 
@@ -601,14 +677,15 @@ PHPSCRIPT;
         try {
             // Try Imagick first
             if (extension_loaded('imagick')) {
-                $imagick = new \Imagick();
+                $imagick = new \Imagick;
                 $imagick->setResolution(150, 150);
-                $imagick->readImage($source . '[0]');
+                $imagick->readImage($source.'[0]');
                 $imagick->setImageFormat('jpeg');
                 $imagick->thumbnailImage($w, $h, true);
                 $imagick->setImageCompressionQuality(self::JPEG_QUALITY);
                 $result = $imagick->writeImage($output);
                 $imagick->destroy();
+
                 return $result;
             }
         } catch (Exception $e) {
@@ -630,15 +707,17 @@ PHPSCRIPT;
             $tempOut,
         ])->exitCode();
 
-        $ppmFile = $tempOut . '-1.jpg';
+        $ppmFile = $tempOut.'-1.jpg';
         if ($returnCode === 0 && file_exists($ppmFile)) {
             rename($ppmFile, $output);
             @unlink($tempOut);
+
             return true;
         }
 
         @unlink($tempOut);
         @unlink($ppmFile);
+
         return false;
     }
 
@@ -663,7 +742,7 @@ PHPSCRIPT;
             $output,
         ])->exitCode();
 
-        if ($returnCode !== 0 || !file_exists($output)) {
+        if ($returnCode !== 0 || ! file_exists($output)) {
             // Try at 0 seconds if video is too short
             $returnCode = Process::timeout(120)->run([
                 'ffmpeg',
@@ -691,7 +770,7 @@ PHPSCRIPT;
      */
     private function generateOfficeThumbnail(string $source, string $output, int $w, int $h): bool
     {
-        $tempDir = sys_get_temp_dir() . '/office_thumb_' . uniqid();
+        $tempDir = sys_get_temp_dir().'/office_thumb_'.uniqid();
         mkdir($tempDir, 0755, true);
 
         try {
@@ -709,14 +788,16 @@ PHPSCRIPT;
             if ($returnCode !== 0) {
                 Log::warning('Thumbnail: LibreOffice conversion failed', ['code' => $returnCode]);
                 $this->cleanupTempDir($tempDir);
+
                 return false;
             }
 
             // Find the generated PDF
-            $pdfFiles = glob($tempDir . '/*.pdf');
+            $pdfFiles = glob($tempDir.'/*.pdf');
             if (empty($pdfFiles)) {
                 Log::warning('Thumbnail: No PDF generated by LibreOffice');
                 $this->cleanupTempDir($tempDir);
+
                 return false;
             }
 
@@ -726,11 +807,13 @@ PHPSCRIPT;
             $result = $this->generatePdfThumbnail($pdfFile, $output, $w, $h);
 
             $this->cleanupTempDir($tempDir);
+
             return $result;
 
         } catch (Exception $e) {
             Log::warning('Thumbnail: Office thumbnail generation failed', ['error' => $e->getMessage()]);
             $this->cleanupTempDir($tempDir);
+
             return false;
         }
     }
@@ -743,16 +826,16 @@ PHPSCRIPT;
         try {
             $lines = [];
             $handle = fopen($source, 'r');
-            if (!$handle) {
+            if (! $handle) {
                 return false;
             }
 
             $lineCount = 0;
             while (($line = fgets($handle)) !== false && $lineCount < 20) {
-                $line = str_replace("\t", "    ", $line);
+                $line = str_replace("\t", '    ', $line);
                 $line = rtrim($line);
                 if (strlen($line) > 80) {
-                    $line = substr($line, 0, 77) . '...';
+                    $line = substr($line, 0, 77).'...';
                 }
                 $lines[] = $line;
                 $lineCount++;
@@ -767,6 +850,7 @@ PHPSCRIPT;
 
         } catch (Exception $e) {
             Log::warning('Thumbnail: Text thumbnail generation failed', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -786,28 +870,28 @@ PHPSCRIPT;
 
         $img = imagecreatetruecolor($imgWidth, $imgHeight);
 
-        $bg      = $colors['bg_color']      ?? [40, 44, 52];
-        $hdrBg   = $colors['header_bg']     ?? [30, 34, 42];
-        $hdrClr  = $colors['header_color']  ?? [97, 175, 239];
-        $lineClr = $colors['line_color']    ?? [171, 178, 191];
+        $bg = $colors['bg_color'] ?? [40, 44, 52];
+        $hdrBg = $colors['header_bg'] ?? [30, 34, 42];
+        $hdrClr = $colors['header_color'] ?? [97, 175, 239];
+        $lineClr = $colors['line_color'] ?? [171, 178, 191];
 
-        $bgColor    = imagecolorallocate($img, ...$bg);
-        $headerBg   = imagecolorallocate($img, ...$hdrBg);
+        $bgColor = imagecolorallocate($img, ...$bg);
+        $headerBg = imagecolorallocate($img, ...$hdrBg);
         $headerText = imagecolorallocate($img, ...$hdrClr);
-        $textColor  = imagecolorallocate($img, ...$lineClr);
+        $textColor = imagecolorallocate($img, ...$lineClr);
 
         imagefilledrectangle($img, 0, 0, $imgWidth, $imgHeight, $bgColor);
         imagefilledrectangle($img, 0, 0, $imgWidth, $headerHeight, $headerBg);
 
         $displayName = $filename ? basename($filename) : 'text file';
         if (strlen($displayName) > 50) {
-            $displayName = '...' . substr($displayName, -47);
+            $displayName = '...'.substr($displayName, -47);
         }
         imagestring($img, 3, $padding, 6, $displayName, $headerText);
 
         // Optional right-side label in header (e.g. "ZIP", "DBF")
-        if (!empty($colors['label'])) {
-            $lbl = strtoupper((string)$colors['label']);
+        if (! empty($colors['label'])) {
+            $lbl = strtoupper((string) $colors['label']);
             $lblX = $imgWidth - (strlen($lbl) * 8) - $padding;
             imagestring($img, 3, $lblX, 6, $lbl, $headerText);
         }
@@ -853,7 +937,7 @@ PHPSCRIPT;
                     // 7z list output: date time attr size comp name
                     if (preg_match('/^\d{4}-\d{2}-\d{2}.*\s{2}(.+)$/', $line, $m)) {
                         $entry = trim($m[1]);
-                        if ($entry && !str_ends_with($entry, '/') && !str_ends_with($entry, '\\')) {
+                        if ($entry && ! str_ends_with($entry, '/') && ! str_ends_with($entry, '\\')) {
                             $files[] = basename($entry);
                             $totalCount++;
                         }
@@ -862,12 +946,12 @@ PHPSCRIPT;
                 $files = array_slice($files, 0, 8);
             } else {
                 // ZIP (and fallback)
-                $zip = new \ZipArchive();
+                $zip = new \ZipArchive;
                 if ($zip->open($source) === true) {
                     $totalCount = $zip->numFiles;
                     for ($i = 0; $i < min($zip->numFiles, 8); $i++) {
                         $stat = $zip->statIndex($i);
-                        if ($stat && !str_ends_with($stat['name'], '/')) {
+                        if ($stat && ! str_ends_with($stat['name'], '/')) {
                             $files[] = basename($stat['name']);
                         }
                     }
@@ -882,17 +966,17 @@ PHPSCRIPT;
             return $this->generateGenericIconThumbnail($output, $w, $h, $ext, "{$archiveLabel} archive");
         }
 
-        $lines = array_map(fn($f) => '  ' . $f, $files);
+        $lines = array_map(fn ($f) => '  '.$f, $files);
         if ($totalCount > count($files)) {
-            $lines[] = '  +' . ($totalCount - count($files)) . ' more...';
+            $lines[] = '  +'.($totalCount - count($files)).' more...';
         }
 
         return $this->renderTextPreview($output, $w, $h, $filename, $lines, [
-            'header_bg'    => [40, 44, 52],
+            'header_bg' => [40, 44, 52],
             'header_color' => [229, 192, 123],
-            'line_color'   => [171, 178, 191],
-            'bg_color'     => [30, 33, 39],
-            'label'        => $archiveLabel,
+            'line_color' => [171, 178, 191],
+            'bg_color' => [30, 33, 39],
+            'label' => $archiveLabel,
         ]);
     }
 
@@ -902,13 +986,14 @@ PHPSCRIPT;
     private function generateDbfThumbnail(string $source, string $output, int $w, int $h, string $filename = ''): bool
     {
         $fp = @fopen($source, 'rb');
-        if (!$fp) {
+        if (! $fp) {
             return $this->generateGenericIconThumbnail($output, $w, $h, 'dbf', 'DBF database');
         }
 
         $header = fread($fp, 32);
         if (strlen($header) < 32) {
             fclose($fp);
+
             return $this->generateGenericIconThumbnail($output, $w, $h, 'dbf', 'DBF database');
         }
 
@@ -925,21 +1010,21 @@ PHPSCRIPT;
             $f = unpack('A11name/Atype/x4/Clength', $fieldDesc);
             $name = rtrim($f['name'], "\x00");
             if ($name) {
-                $fields[] = $name . ':' . $f['type'];
+                $fields[] = $name.':'.$f['type'];
             }
         }
         fclose($fp);
 
-        $lines = array_map(fn($f) => '  ' . $f, $fields);
+        $lines = array_map(fn ($f) => '  '.$f, $fields);
         $lines[] = '';
-        $lines[] = '  ' . number_format($numRecords) . ' records';
+        $lines[] = '  '.number_format($numRecords).' records';
 
         return $this->renderTextPreview($output, $w, $h, $filename, $lines, [
-            'header_bg'    => [40, 44, 52],
+            'header_bg' => [40, 44, 52],
             'header_color' => [224, 108, 117],
-            'line_color'   => [171, 178, 191],
-            'bg_color'     => [30, 33, 39],
-            'label'        => 'DBF',
+            'line_color' => [171, 178, 191],
+            'bg_color' => [30, 33, 39],
+            'label' => 'DBF',
         ]);
     }
 
@@ -950,37 +1035,40 @@ PHPSCRIPT;
     {
         $colorMap = [
             'dll' => [224, 108, 117], 'exe' => [224, 108, 117], 'bin' => [224, 108, 117],
-            'so'  => [224, 108, 117], 'dylib' => [224, 108, 117], 'pyc' => [224, 108, 117],
+            'so' => [224, 108, 117], 'dylib' => [224, 108, 117], 'pyc' => [224, 108, 117],
             'wav' => [198, 120, 221], 'aif' => [198, 120, 221], 'aiff' => [198, 120, 221],
-            'gz'  => [86, 182, 194],  'tar' => [86, 182, 194],  'xz' => [86, 182, 194],
+            'gz' => [86, 182, 194],  'tar' => [86, 182, 194],  'xz' => [86, 182, 194],
             'iso' => [86, 182, 194],
         ];
         $color = $colorMap[$ext] ?? [128, 128, 128];
 
-        $img    = imagecreatetruecolor($w, $h);
-        $bgClr  = imagecolorallocate($img, 30, 33, 39);
+        $img = imagecreatetruecolor($w, $h);
+        $bgClr = imagecolorallocate($img, 30, 33, 39);
         $accent = imagecolorallocate($img, ...$color);
-        $white  = imagecolorallocate($img, 220, 220, 220);
+        $white = imagecolorallocate($img, 220, 220, 220);
 
         imagefill($img, 0, 0, $bgClr);
 
-        $bx1 = (int)($w * 0.15);  $by1 = (int)($h * 0.25);
-        $bx2 = (int)($w * 0.85);  $by2 = (int)($h * 0.65);
+        $bx1 = (int) ($w * 0.15);
+        $by1 = (int) ($h * 0.25);
+        $bx2 = (int) ($w * 0.85);
+        $by2 = (int) ($h * 0.65);
         imagefilledrectangle($img, $bx1, $by1, $bx2, $by2, $accent);
 
         $extDisplay = strtoupper(substr($ext, 0, 6));
-        $cx = (int)(($bx1 + $bx2) / 2) - (int)(strlen($extDisplay) * 4);
-        $cy = (int)(($by1 + $by2) / 2) - 6;
+        $cx = (int) (($bx1 + $bx2) / 2) - (int) (strlen($extDisplay) * 4);
+        $cy = (int) (($by1 + $by2) / 2) - 6;
         imagestring($img, 4, $cx, $cy, $extDisplay, $white);
 
         if ($label) {
             $shortLabel = substr($label, 0, 22);
-            $lx = max(0, (int)($w / 2) - (int)(strlen($shortLabel) * 3));
+            $lx = max(0, (int) ($w / 2) - (int) (strlen($shortLabel) * 3));
             imagestring($img, 1, $lx, $by2 + 8, $shortLabel, $accent);
         }
 
         $result = imagejpeg($img, $output, self::JPEG_QUALITY);
         imagedestroy($img);
+
         return $result;
     }
 
@@ -991,7 +1079,7 @@ PHPSCRIPT;
     {
         // Check first 8KB for binary content
         $handle = fopen($path, 'r');
-        if (!$handle) {
+        if (! $handle) {
             return false;
         }
 
@@ -1025,10 +1113,10 @@ PHPSCRIPT;
      */
     private function cleanupTempDir(string $dir): void
     {
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             return;
         }
-        $files = glob($dir . '/*');
+        $files = glob($dir.'/*');
         foreach ($files as $file) {
             @unlink($file);
         }
@@ -1042,7 +1130,7 @@ PHPSCRIPT;
     {
         try {
             $previewResult = $this->getNextcloudApi()->getPreviewUrl((int) $file->nextcloud_fileid, $w, $h);
-            if (!$previewResult['success'] || empty($previewResult['content'])) {
+            if (! $previewResult['success'] || empty($previewResult['content'])) {
                 return null;
             }
 
@@ -1072,6 +1160,7 @@ PHPSCRIPT;
             ];
         } catch (Exception $e) {
             Log::debug('Thumbnail: Nextcloud preview failed', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -1082,6 +1171,7 @@ PHPSCRIPT;
     public function getThumbnailPath(string $assetUuid, string $size): string
     {
         $prefix = substr($assetUuid, 0, 2);
+
         return "thumbnails/{$prefix}/{$assetUuid}.{$size}.jpg";
     }
 
@@ -1091,10 +1181,10 @@ PHPSCRIPT;
     private function ensureThumbnailDir(string $assetUuid, string $size): string
     {
         $relativePath = $this->getThumbnailPath($assetUuid, $size);
-        $fullPath = storage_path('app/' . $relativePath);
+        $fullPath = storage_path('app/'.$relativePath);
         $dir = dirname($fullPath);
 
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             mkdir($dir, 0755, true);
         }
 
@@ -1129,7 +1219,7 @@ PHPSCRIPT;
     private function markError(int $fileId, string $error): void
     {
         DB::update(
-            "UPDATE file_registry SET thumbnail_error = ? WHERE id = ?",
+            'UPDATE file_registry SET thumbnail_error = ? WHERE id = ?',
             [substr($error, 0, 255), $fileId]
         );
     }
@@ -1141,7 +1231,7 @@ PHPSCRIPT;
     {
         $deleted = 0;
         foreach (array_keys(self::SIZES) as $size) {
-            $path = storage_path('app/' . $this->getThumbnailPath($assetUuid, $size));
+            $path = storage_path('app/'.$this->getThumbnailPath($assetUuid, $size));
             if (file_exists($path)) {
                 @unlink($path);
                 $deleted++;
@@ -1150,7 +1240,7 @@ PHPSCRIPT;
 
         // Clear DB record
         DB::update(
-            "UPDATE file_registry SET thumbnail_generated_at = NULL, thumbnail_sizes = NULL, thumbnail_error = NULL WHERE asset_uuid = ?",
+            'UPDATE file_registry SET thumbnail_generated_at = NULL, thumbnail_sizes = NULL, thumbnail_error = NULL WHERE asset_uuid = ?',
             [$assetUuid]
         );
 
@@ -1165,13 +1255,13 @@ PHPSCRIPT;
         $stats = ['checked' => 0, 'removed' => 0, 'bytes_freed' => 0];
 
         $thumbDir = storage_path('app/thumbnails');
-        if (!is_dir($thumbDir)) {
+        if (! is_dir($thumbDir)) {
             return $stats;
         }
 
-        $prefixDirs = glob($thumbDir . '/*', GLOB_ONLYDIR);
+        $prefixDirs = glob($thumbDir.'/*', GLOB_ONLYDIR);
         foreach ($prefixDirs as $prefixDir) {
-            $files = glob($prefixDir . '/*.jpg');
+            $files = glob($prefixDir.'/*.jpg');
             foreach ($files as $thumbFile) {
                 $stats['checked']++;
                 $basename = basename($thumbFile);
@@ -1187,7 +1277,7 @@ PHPSCRIPT;
                     [$uuid]
                 );
 
-                if (!$exists) {
+                if (! $exists) {
                     $size = filesize($thumbFile);
                     @unlink($thumbFile);
                     $stats['removed']++;
@@ -1205,7 +1295,7 @@ PHPSCRIPT;
     public function getStats(): array
     {
         $generated = DB::selectOne(
-            "SELECT COUNT(*) as cnt FROM file_registry WHERE thumbnail_generated_at IS NOT NULL"
+            'SELECT COUNT(*) as cnt FROM file_registry WHERE thumbnail_generated_at IS NOT NULL'
         );
 
         $errors = DB::selectOne(
@@ -1329,6 +1419,7 @@ PHPSCRIPT;
     {
         $result = Process::timeout(5)->run(['which', 'soffice']);
         $path = trim($result->output());
+
         return $result->successful() && $path !== '' && file_exists($path) && is_executable($path);
     }
 
@@ -1341,6 +1432,7 @@ PHPSCRIPT;
             $size /= 1024;
             $i++;
         }
-        return round($size, 2) . ' ' . $units[$i];
+
+        return round($size, 2).' '.$units[$i];
     }
 }

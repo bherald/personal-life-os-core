@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\Genealogy\Support\GivenNameVariants;
 use App\Services\Genealogy\Support\TemporalProximityChecker;
 use Illuminate\Support\Facades\DB;
 
@@ -139,6 +140,8 @@ class FaceCandidateService
         int $limit,
         ?int $photoYear
     ): array {
+        $searchTokens = $this->expandedNameTokens($tokens);
+
         $query = DB::table('genealogy_persons as gp')
             ->join('genealogy_trees as gt', 'gt.id', '=', 'gp.tree_id')
             ->leftJoinSub(
@@ -151,13 +154,27 @@ class FaceCandidateService
                 '=',
                 'gp.id'
             )
+            ->leftJoinSub(
+                DB::table('genealogy_name_variants')
+                    ->select(
+                        'person_id',
+                        DB::raw("GROUP_CONCAT(DISTINCT TRIM(COALESCE(NULLIF(full_name, ''), CONCAT_WS(' ', given_names, surname))) SEPARATOR '||') AS variant_names")
+                    )
+                    ->groupBy('person_id'),
+                'name_variants',
+                'name_variants.person_id',
+                '=',
+                'gp.id'
+            )
             ->where('gp.tree_id', $treeId)
-            ->where(function ($query) use ($tokens): void {
-                foreach ($tokens as $token) {
+            ->where(function ($query) use ($searchTokens): void {
+                foreach ($searchTokens as $token) {
                     $like = '%'.$token.'%';
                     $query->orWhereRaw('LOWER(gp.given_name) LIKE ?', [$like])
                         ->orWhereRaw('LOWER(gp.surname) LIKE ?', [$like])
-                        ->orWhereRaw("LOWER(CONCAT_WS(' ', gp.given_name, gp.surname)) LIKE ?", [$like]);
+                        ->orWhereRaw('LOWER(gp.nickname) LIKE ?', [$like])
+                        ->orWhereRaw("LOWER(CONCAT_WS(' ', gp.given_name, gp.surname)) LIKE ?", [$like])
+                        ->orWhereRaw('LOWER(name_variants.variant_names) LIKE ?', [$like]);
                 }
             })
             ->select(
@@ -165,6 +182,7 @@ class FaceCandidateService
                 'gp.tree_id',
                 'gp.given_name',
                 'gp.surname',
+                'gp.nickname',
                 'gp.birth_date',
                 'gp.death_date',
                 'gp.living',
@@ -172,7 +190,8 @@ class FaceCandidateService
                 'gt.privacy as tree_privacy',
                 'gt.living_privacy',
                 DB::raw("CONCAT_WS(' ', gp.given_name, gp.surname) AS name"),
-                DB::raw('COALESCE(face_counts.face_count, 0) AS face_count')
+                DB::raw('COALESCE(face_counts.face_count, 0) AS face_count'),
+                DB::raw('COALESCE(name_variants.variant_names, "") AS variant_names')
             )
             ->limit(max($limit * 5, 50))
             ->get();
@@ -188,6 +207,7 @@ class FaceCandidateService
                     'name' => trim((string) $person->name),
                     'given_name' => $person->given_name,
                     'surname' => $person->surname,
+                    'nickname' => $person->nickname,
                     'birth_date' => $person->birth_date,
                     'death_date' => $person->death_date,
                     'living' => $this->nullableBool($person->living ?? null),
@@ -227,7 +247,9 @@ class FaceCandidateService
     {
         $given = $this->normalizeName((string) ($person->given_name ?? ''));
         $surname = $this->normalizeName((string) ($person->surname ?? ''));
+        $nickname = $this->normalizeName((string) ($person->nickname ?? ''));
         $full = trim($given.' '.$surname);
+        $variantNames = $this->variantNames($person);
         $reasons = [];
         $score = 0.0;
 
@@ -236,9 +258,43 @@ class FaceCandidateService
             $reasons[] = 'exact_name';
         }
 
+        if (
+            $normalizedFaceName !== ''
+            && $variantNames !== []
+            && in_array($normalizedFaceName, $variantNames, true)
+        ) {
+            $score = max($score, 0.97);
+            $reasons[] = 'variant_exact';
+        }
+
+        $nicknameFull = trim($nickname.' '.$surname);
+        if ($normalizedFaceName !== '' && $nicknameFull !== '' && $nicknameFull === $normalizedFaceName) {
+            $score = max($score, 0.96);
+            $reasons[] = 'recorded_nickname_exact';
+        }
+
         if ($surname !== '' && in_array($surname, $tokens, true)) {
             $score = max($score, 0.60);
             $reasons[] = 'surname_exact';
+        }
+
+        if (
+            $surname !== ''
+            && in_array($surname, $tokens, true)
+            && $this->givenNameVariantMatch($given, $tokens)
+        ) {
+            $score = max($score, 0.92);
+            $reasons[] = 'given_variant';
+        }
+
+        if (
+            $nickname !== ''
+            && $surname !== ''
+            && in_array($surname, $tokens, true)
+            && $this->hasPrefixMatch($nickname, $tokens)
+        ) {
+            $score = max($score, 0.93);
+            $reasons[] = 'recorded_nickname';
         }
 
         if ($given !== '' && $this->hasPrefixMatch($given, $tokens)) {
@@ -252,6 +308,61 @@ class FaceCandidateService
         }
 
         return [round($score, 2), array_values(array_unique($reasons))];
+    }
+
+    /**
+     * @param  list<string>  $tokens
+     * @return list<string>
+     */
+    private function expandedNameTokens(array $tokens): array
+    {
+        $expanded = $tokens;
+        foreach ($tokens as $token) {
+            foreach (GivenNameVariants::variantsFor($token) as $variant) {
+                $expanded[] = $variant;
+            }
+        }
+
+        return array_values(array_unique(array_filter($expanded, fn (string $token): bool => $token !== '')));
+    }
+
+    /**
+     * @param  list<string>  $tokens
+     */
+    private function givenNameVariantMatch(string $given, array $tokens): bool
+    {
+        $givenTokens = $this->nameTokens($given);
+        $primaryGiven = $givenTokens[0] ?? '';
+        if ($primaryGiven === '') {
+            return false;
+        }
+
+        $givenVariants = GivenNameVariants::variantsFor($primaryGiven);
+        foreach ($tokens as $token) {
+            if ($token !== '' && in_array($token, $givenVariants, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function variantNames(object $person): array
+    {
+        $raw = (string) ($person->variant_names ?? '');
+        if (trim($raw) === '') {
+            return [];
+        }
+
+        $parts = explode('||', $raw);
+
+        return array_values(array_unique(array_filter(
+            array_map(fn (string $name): string => $this->normalizeName($name), $parts),
+            fn (string $name): bool => $name !== ''
+        )));
     }
 
     /**
@@ -351,6 +462,16 @@ class FaceCandidateService
 
         $topScore = (float) ($candidates[0]['score'] ?? 0.0);
         $secondScore = (float) ($candidates[1]['score'] ?? 0.0);
+        $topReasons = $candidates[0]['reasons'] ?? [];
+        if (
+            $topScore >= 0.95
+            && $secondScore < 0.95
+            && is_array($topReasons)
+            && array_intersect($topReasons, ['variant_exact', 'recorded_nickname_exact']) !== []
+        ) {
+            return 'strong_candidate';
+        }
+
         if ($topScore >= 0.85 && ($secondScore === 0.0 || $topScore - $secondScore >= 0.15)) {
             return 'strong_candidate';
         }

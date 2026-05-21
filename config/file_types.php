@@ -11,14 +11,16 @@
  */
 
 return [
-    // Common raster image formats (web/display-safe)
-    'image' => ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'heic', 'heif'],
+    // Common raster image formats plus archival scan formats.
+    // JP2/J2K variants are common in NARA and other preservation repositories;
+    // browser preview may still require derivative thumbnail generation.
+    'image' => ['jpg', 'jpeg', 'jfif', 'png', 'gif', 'bmp', 'webp', 'tiff', 'tif', 'heic', 'heif', 'jp2', 'j2k', 'jpf', 'jpx'],
 
     // RAW camera formats (require specialized processing)
     'image_raw' => ['raw', 'cr2', 'nef', 'arw', 'dng', 'orf', 'rw2'],
 
     // Extensions that support EXIF/XMP metadata
-    'exif' => ['jpg', 'jpeg', 'tiff', 'tif', 'heic', 'heif', 'png', 'webp', 'dng', 'cr2', 'nef', 'arw'],
+    'exif' => ['jpg', 'jpeg', 'jfif', 'tiff', 'tif', 'heic', 'heif', 'png', 'webp', 'jp2', 'j2k', 'jpf', 'jpx', 'dng', 'cr2', 'nef', 'arw'],
 
     // Video formats
     'video' => ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'mpg', 'mpeg', '3gp'],

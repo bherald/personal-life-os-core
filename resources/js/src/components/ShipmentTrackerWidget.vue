@@ -8,18 +8,20 @@
         Active Shipments
       </h3>
       <div class="flex items-center gap-2">
-        <button
-          @click="scanEmails"
-          class="text-accent hover:text-[#2980b9] text-xs flex items-center gap-1"
-          :disabled="scanning"
-          title="Scan emails for new shipments"
-        >
-          <svg class="w-3 h-3" :class="{ 'animate-spin': scanning }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-          </svg>
-          Scan
-        </button>
-        <span class="text-[#666]">|</span>
+        <template v-if="!disabled">
+          <button
+            @click="scanEmails"
+            class="text-accent hover:text-[#2980b9] text-xs flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="scanning"
+            title="Scan emails for new shipments"
+          >
+            <svg class="w-3 h-3" :class="{ 'animate-spin': scanning }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            Scan
+          </button>
+          <span class="text-[#666]">|</span>
+        </template>
         <span class="text-xs text-[#95a5a6]">{{ shipments.length }} active</span>
       </div>
     </div>
@@ -36,7 +38,9 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
       </svg>
       <p class="text-[#95a5a6]">No active shipments</p>
-      <p class="text-xs text-[#666] mt-1">Shipping emails will be tracked automatically</p>
+      <p class="text-xs text-[#666] mt-1">
+        {{ disabled ? 'Shipment tracking is disabled; Thunderbird MCP handles email.' : 'Shipping emails will be tracked automatically' }}
+      </p>
     </div>
 
     <!-- Shipments List -->
@@ -115,6 +119,7 @@ import api from '../utils/api';
 
 const loading = ref(true);
 const scanning = ref(false);
+const disabled = ref(false);
 const shipments = ref([]);
 const stats = ref(null);
 const scanResult = ref(null);
@@ -126,6 +131,8 @@ const fetchShipments = async () => {
       api.get('/email/v2/shipments'),
       api.get('/email/v2/shipments/stats')
     ]);
+
+    disabled.value = Boolean(shipmentsResponse.disabled || statsResponse.data?.disabled);
 
     if (shipmentsResponse.success) {
       shipments.value = shipmentsResponse.data || [];
@@ -142,6 +149,10 @@ const fetchShipments = async () => {
 };
 
 const scanEmails = async () => {
+  if (disabled.value) {
+    return;
+  }
+
   try {
     scanning.value = true;
     scanResult.value = null;

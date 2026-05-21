@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Services\Genealogy\FaceLinkBridgeService;
+use App\Services\Genealogy\Support\GivenNameVariants;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -25,39 +26,6 @@ use Illuminate\Support\Facades\Log;
 class FaceMatcherService
 {
     private ?AIService $aiService = null;
-
-    /** Known nickname mappings */
-    private const NICKNAMES = [
-        'william' => ['bill', 'will', 'willy', 'billy', 'liam'],
-        'robert' => ['bob', 'rob', 'bobby', 'robbie'],
-        'richard' => ['rick', 'dick', 'rich', 'ricky'],
-        'james' => ['jim', 'jimmy', 'jamie'],
-        'john' => ['jack', 'johnny', 'jon'],
-        'michael' => ['mike', 'mikey', 'mick'],
-        'elizabeth' => ['liz', 'beth', 'betty', 'lizzy', 'eliza'],
-        'margaret' => ['maggie', 'peggy', 'marge', 'meg'],
-        'catherine' => ['kate', 'katie', 'kathy', 'cathy', 'cat'],
-        'katherine' => ['kate', 'katie', 'kathy', 'cathy', 'cat'],
-        'kathryn' => ['kate', 'katie', 'kathy', 'cathy', 'cat'],
-        'patricia' => ['pat', 'patty', 'trish', 'tricia'],
-        'jennifer' => ['jen', 'jenny', 'jenn'],
-        'thomas' => ['tom', 'tommy'],
-        'joseph' => ['joe', 'joey'],
-        'charles' => ['charlie', 'chuck', 'chas'],
-        'david' => ['dave', 'davey'],
-        'daniel' => ['dan', 'danny'],
-        'edward' => ['ed', 'eddie', 'ted', 'teddy', 'ned'],
-        'anthony' => ['tony', 'ant'],
-        'donald' => ['don', 'donnie', 'donny'],
-        'laura' => ['laurie', 'lori'],
-        'marjorie' => ['margie', 'marge'],
-        'dorothy' => ['dot', 'dotty', 'dottie'],
-        'deborah' => ['deb', 'debbie', 'debby'],
-        'susan' => ['sue', 'susie', 'suzy'],
-        'nancy' => ['nan', 'nana'],
-        'helen' => ['nellie', 'nell'],
-        'ann' => ['annie', 'anna', 'anne'],
-    ];
 
     private function getAIService(): AIService
     {
@@ -88,10 +56,10 @@ class FaceMatcherService
         if (count($exactMatches) === 1) {
             // Single exact match - auto-link
             return [
-                'match_type' => 'exact',
+                'match_type' => $exactMatches[0]->match_type ?? 'exact',
                 'person_id' => $exactMatches[0]->id,
                 'person_name' => $exactMatches[0]->given_name.' '.$exactMatches[0]->surname,
-                'confidence' => 100,
+                'confidence' => $exactMatches[0]->confidence ?? 100,
                 'action' => 'auto_link',
             ];
         }
@@ -155,16 +123,36 @@ class FaceMatcherService
         $fullName1 = $firstName.' '.($middleName ? $middleName.' ' : '').$lastName;
         $fullName2 = $lastName.', '.$firstName.($middleName ? ' '.$middleName : '');
 
-        return DB::select("
-            SELECT id, given_name, surname, birth_date, death_date
+        $directMatches = DB::select("
+            SELECT id, given_name, surname, birth_date, death_date, 'exact' AS match_type, 100 AS confidence
             FROM genealogy_persons
             WHERE tree_id = ?
             AND (
-                CONCAT(given_name, ' ', surname) = ?
+                CONCAT_WS(' ', given_name, surname) = ?
                 OR CONCAT(surname, ', ', given_name) = ?
                 OR (given_name = ? AND surname = ?)
+                OR CONCAT_WS(' ', nickname, surname) = ?
             )
-        ", [$treeId, $fullName1, $fullName2, $firstName.($middleName ? ' '.$middleName : ''), $lastName]);
+        ", [$treeId, $fullName1, $fullName2, $firstName.($middleName ? ' '.$middleName : ''), $lastName, $fullName1]);
+
+        $variantMatches = DB::select("
+            SELECT gp.id, gp.given_name, gp.surname, gp.birth_date, gp.death_date,
+                   'exact_variant' AS match_type, 97 AS confidence
+            FROM genealogy_name_variants gnv
+            JOIN genealogy_persons gp ON gp.id = gnv.person_id
+            WHERE gp.tree_id = ?
+            AND LOWER(TRIM(COALESCE(NULLIF(gnv.full_name, ''), CONCAT_WS(' ', gnv.given_names, gnv.surname)))) = LOWER(TRIM(?))
+        ", [$treeId, $faceName]);
+
+        $matches = [];
+        foreach ($directMatches as $match) {
+            $matches[(int) $match->id] = $match;
+        }
+        foreach ($variantMatches as $match) {
+            $matches[(int) $match->id] ??= $match;
+        }
+
+        return array_values($matches);
     }
 
     /**
@@ -178,28 +166,31 @@ class FaceMatcherService
 
         $matches = [];
 
-        // Build nickname variations
-        $firstNameVariants = [$firstName];
-        foreach (self::NICKNAMES as $canonical => $variants) {
-            if ($firstName === $canonical || in_array($firstName, $variants)) {
-                $firstNameVariants = array_merge([$canonical], $variants);
-                break;
-            }
-        }
+        $firstNameVariants = GivenNameVariants::variantsFor($firstName);
 
         // SOUNDEX matching on surname
         $soundexMatches = DB::select('
-            SELECT id, given_name, surname, birth_date, death_date
+            SELECT id, given_name, surname, nickname, birth_date, death_date
             FROM genealogy_persons
             WHERE tree_id = ?
             AND SOUNDEX(surname) = SOUNDEX(?)
         ', [$treeId, $lastName]);
 
         foreach ($soundexMatches as $person) {
-            $personFirstName = strtolower(explode(' ', $person->given_name)[0]);
+            $personFirstName = strtolower(explode(' ', (string) ($person->given_name ?? ''))[0]);
+            $personNickname = strtolower(explode(' ', (string) ($person->nickname ?? ''))[0] ?? '');
+            $personNameVariants = GivenNameVariants::variantsFor($personFirstName);
+            if ($personNickname !== '') {
+                $personNameVariants = array_values(array_unique(array_merge(
+                    $personNameVariants,
+                    GivenNameVariants::variantsFor($personNickname)
+                )));
+            }
 
             // Check if first name matches or is a variant
-            $firstNameMatch = in_array($personFirstName, $firstNameVariants);
+            $firstNameMatch = in_array($personFirstName, $firstNameVariants, true)
+                || in_array($firstName, $personNameVariants, true)
+                || ($personNickname !== '' && in_array($personNickname, $firstNameVariants, true));
             $firstNameSoundex = soundex($personFirstName) === soundex($firstName);
 
             if ($firstNameMatch) {

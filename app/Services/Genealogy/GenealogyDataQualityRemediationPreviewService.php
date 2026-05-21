@@ -95,7 +95,13 @@ class GenealogyDataQualityRemediationPreviewService
 
         foreach (['change_type', 'finding_type'] as $key) {
             $value = $this->text($payload[$key] ?? null);
-            if (in_array($value, ['data_quality_review', 'genealogy_data_quality'], true)) {
+            if (in_array($value, [
+                'data_quality_review',
+                'date_quality_review',
+                'genealogy_data_quality',
+                'genealogy_source_quality',
+                'source_quality_review',
+            ], true)) {
                 return 'genealogy_todo_create';
             }
         }

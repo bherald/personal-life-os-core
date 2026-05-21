@@ -6,10 +6,10 @@ use App\Http\Controllers\Controller;
 use App\Jobs\ExecuteEmailSuggestionScan;
 use App\Services\EmailService;
 use App\Services\EmailSuggestionService;
-use Illuminate\Http\Request;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\DB;
 use Exception;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Email API Controller (EA2)
@@ -27,6 +27,7 @@ use Exception;
 class EmailController extends Controller
 {
     private EmailService $emailService;
+
     private EmailSuggestionService $suggestionService;
 
     public function __construct(
@@ -50,6 +51,7 @@ class EmailController extends Controller
     {
         try {
             $status = $this->emailService->getStatus();
+
             return response()->json([
                 'success' => true,
                 'data' => $status,
@@ -68,6 +70,7 @@ class EmailController extends Controller
     {
         try {
             $stats = $this->emailService->getStats();
+
             return response()->json([
                 'success' => true,
                 'data' => $stats,
@@ -89,7 +92,7 @@ class EmailController extends Controller
     public function folders(): JsonResponse
     {
         try {
-            if (!$this->emailService->isAvailable()) {
+            if (! $this->emailService->isAvailable()) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Thunderbird MCP not available',
@@ -98,6 +101,7 @@ class EmailController extends Controller
             }
 
             $folders = $this->emailService->listFolders();
+
             return response()->json([
                 'success' => true,
                 'data' => $folders,
@@ -115,7 +119,7 @@ class EmailController extends Controller
     public function mailboxes(): JsonResponse
     {
         try {
-            if (!$this->emailService->isAvailable()) {
+            if (! $this->emailService->isAvailable()) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Thunderbird MCP not available',
@@ -124,6 +128,7 @@ class EmailController extends Controller
             }
 
             $mailboxes = $this->emailService->listMailboxes();
+
             return response()->json([
                 'success' => true,
                 'data' => $mailboxes,
@@ -150,7 +155,7 @@ class EmailController extends Controller
                 ], 400);
             }
 
-            if (!$this->emailService->isAvailable()) {
+            if (! $this->emailService->isAvailable()) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Thunderbird MCP not available',
@@ -180,7 +185,7 @@ class EmailController extends Controller
     public function recent(Request $request): JsonResponse
     {
         try {
-            if (!$this->emailService->isAvailable()) {
+            if (! $this->emailService->isAvailable()) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Thunderbird MCP not available',
@@ -245,7 +250,7 @@ class EmailController extends Controller
         try {
             $draft = $this->emailService->getDraft($id);
 
-            if (!$draft) {
+            if (! $draft) {
                 return response()->json([
                     'success' => false,
                     'error' => "Draft not found: {$id}",
@@ -271,7 +276,7 @@ class EmailController extends Controller
         try {
             $draft = $this->emailService->getDraft($id);
 
-            if (!$draft) {
+            if (! $draft) {
                 return response()->json([
                     'success' => false,
                     'error' => "Draft not found: {$id}",
@@ -332,7 +337,7 @@ class EmailController extends Controller
             $reason = $request->get('reason');
             $success = $this->emailService->rejectDraft($id, $reason);
 
-            if (!$success) {
+            if (! $success) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Draft not found or already processed',
@@ -443,6 +448,7 @@ class EmailController extends Controller
     {
         try {
             $stats = $this->emailService->getClassificationStats();
+
             return response()->json([
                 'success' => true,
                 'data' => $stats,
@@ -465,6 +471,7 @@ class EmailController extends Controller
     {
         try {
             $settings = $this->emailService->getSettings();
+
             return response()->json([
                 'success' => true,
                 'data' => $settings,
@@ -529,7 +536,79 @@ class EmailController extends Controller
         }
     }
 
-    // Shipment tracking section removed (D1: Thunderbird MCP handles email)
+    // =========================================================================
+    // SHIPMENT TRACKING COMPATIBILITY
+    // =========================================================================
+
+    /**
+     * Shipment tracking storage was removed in D1. Keep a stable empty API
+     * contract so legacy widgets degrade without 404 console noise.
+     *
+     * GET /api/email/v2/shipments
+     */
+    public function shipments(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => [],
+            'count' => 0,
+            'disabled' => true,
+            'unavailable_reason' => 'shipment_tracking_removed_d1_thunderbird_mcp',
+        ]);
+    }
+
+    /**
+     * GET /api/email/v2/shipments/stats
+     */
+    public function shipmentStats(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'active' => 0,
+                'delivered' => 0,
+                'archived' => 0,
+                'disabled' => true,
+                'unavailable_reason' => 'shipment_tracking_removed_d1_thunderbird_mcp',
+            ],
+        ]);
+    }
+
+    /**
+     * POST /api/email/v2/shipments/scan
+     */
+    public function scanShipments(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'queued' => false,
+                'scanned' => 0,
+                'new' => 0,
+                'updated' => 0,
+                'disabled' => true,
+                'unavailable_reason' => 'shipment_tracking_removed_d1_thunderbird_mcp',
+            ],
+            'message' => 'Shipment tracking is disabled; Thunderbird MCP is the email backend.',
+        ]);
+    }
+
+    /**
+     * POST /api/email/v2/shipments/{id}/received
+     */
+    public function markShipmentReceived(int $id): JsonResponse
+    {
+        return $this->shipmentWriteDisabledResponse($id);
+    }
+
+    /**
+     * POST /api/email/v2/shipments/{id}/archive
+     */
+    public function archiveShipment(int $id): JsonResponse
+    {
+        return $this->shipmentWriteDisabledResponse($id);
+    }
+
     // =========================================================================
     // HELPERS
     // =========================================================================
@@ -547,11 +626,22 @@ class EmailController extends Controller
 
         // Add errors from service if available
         $errors = $this->emailService->getErrors();
-        if (!empty($errors)) {
+        if (! empty($errors)) {
             $response['service_errors'] = $errors;
         }
 
         return response()->json($response, $status);
+    }
+
+    private function shipmentWriteDisabledResponse(int $id): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'id' => $id,
+            'disabled' => true,
+            'unavailable_reason' => 'shipment_tracking_removed_d1_thunderbird_mcp',
+            'message' => 'Shipment tracking is disabled; Thunderbird MCP is the email backend.',
+        ]);
     }
 
     // =========================================================================
