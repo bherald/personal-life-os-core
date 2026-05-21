@@ -1015,6 +1015,19 @@ class PublicExportPackagingTest extends TestCase
         $this->assertSame('Apache-2.0', $rootPackages['mcp-agent']['license']);
         $this->assertSame('permissive', $rootPackages['mcp-agent']['bucket']);
 
+        $mcpServerPackages = [];
+        foreach ($npmSnapshot['trees'] as $tree) {
+            if ($tree['label'] !== 'mcp-server') {
+                continue;
+            }
+
+            foreach ($tree['packages'] as $package) {
+                $mcpServerPackages[$package['name']] = $package;
+            }
+        }
+        $this->assertSame('MIT', $mcpServerPackages['@cfworker/json-schema']['license']);
+        $this->assertSame('metadata-override', $mcpServerPackages['@cfworker/json-schema']['source']);
+
         $npmSnapshotMd = file_get_contents(base_path('docs/public-release/npm-license-snapshot.md'));
         $this->assertStringNotContainsString('| root | @mistralai/mistralai', $npmSnapshotMd);
         $this->assertStringNotContainsString('| root | cohere-ai', $npmSnapshotMd);

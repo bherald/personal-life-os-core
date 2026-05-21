@@ -46,6 +46,15 @@ const trees = [
   { label: 'mcp-servers/plos', path: 'mcp-servers/plos', lockfile: 'mcp-servers/plos/package-lock.json', modules: 'mcp-servers/plos/node_modules' },
 ].filter((tree) => fs.existsSync(tree.lockfile));
 
+const packageMetadataOverrides = new Map([
+  ['@cfworker/json-schema', {
+    license: 'MIT',
+    repository: 'https://github.com/cfworker/cfworker',
+    homepage: 'https://github.com/cfworker/cfworker/tree/master/packages/json-schema/README.md',
+    source: 'metadata-override',
+  }],
+]);
+
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
@@ -164,6 +173,15 @@ for (const tree of trees) {
       homepage: String(packageJson?.homepage || metadata.homepage || ''),
       source: source || (packageJson ? 'package.json' : 'package-lock'),
     };
+
+    const metadataOverride = packageMetadataOverrides.get(row.name);
+    if (metadataOverride) {
+      row.license = metadataOverride.license;
+      row.bucket = licenseBucket(row.license);
+      row.repository = metadataOverride.repository;
+      row.homepage = metadataOverride.homepage;
+      row.source = metadataOverride.source;
+    }
 
     rows.push(row);
     buckets[row.bucket] = (buckets[row.bucket] || 0) + 1;

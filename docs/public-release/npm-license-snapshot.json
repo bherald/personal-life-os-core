@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-21T13:28:53Z",
+  "generated_at": "2026-05-21T13:57:13Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
@@ -11023,7 +11023,7 @@
           "package_path": "node_modules/@cfworker/json-schema",
           "repository": "https://github.com/cfworker/cfworker",
           "homepage": "https://github.com/cfworker/cfworker/tree/master/packages/json-schema/README.md",
-          "source": "package.json"
+          "source": "metadata-override"
         },
         {
           "name": "@hono/node-server",
