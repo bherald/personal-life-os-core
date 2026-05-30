@@ -509,11 +509,14 @@ class OfflineDevAssistCommand extends Command
         $runtimeScorecard = $this->runtimeScorecardPayload($model, (string) $session['role']);
         $availability = $pool->describeLocalAvailability();
         $git = $this->runGitCommand(['status', '--short']);
+        $offlineModeActive = $policy->isOfflineModeActive();
 
         $checks = [
             'offline_mode_active' => [
-                'ok' => $policy->isOfflineModeActive(),
-                'detail' => 'Offline kill switch is active',
+                'ok' => $offlineModeActive,
+                'detail' => $offlineModeActive
+                    ? 'Offline kill switch is active'
+                    : 'Offline kill switch is inactive',
             ],
             'local_model_selected' => [
                 'ok' => ($model['selected_local'] ?? null) !== null,

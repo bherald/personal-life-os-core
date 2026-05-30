@@ -10,7 +10,8 @@ class KnowledgeGraphProvenanceAuditCommand extends Command
     protected $signature = 'graph:audit-provenance
                             {--strict : Exit non-zero when provenance issues are present}
                             {--samples=5 : Number of sample rows per issue to include}
-                            {--json : Output machine-readable JSON}';
+                            {--json : Output machine-readable JSON}
+                            {--compact : Omit sample rows and raw source details from output}';
 
     protected $description = 'Read-only audit of knowledge graph provenance links and stale source evidence';
 
@@ -40,8 +41,13 @@ class KnowledgeGraphProvenanceAuditCommand extends Command
             'issues' => $issues,
         ];
 
-        if ($samples > 0) {
+        $compact = (bool) $this->option('compact');
+        if ($samples > 0 && ! $compact) {
             $payload['samples'] = $this->samples($samples);
+        }
+
+        if ($compact) {
+            $payload = $this->compactPayload($payload, $samples);
         }
 
         if ($this->option('json')) {
@@ -51,6 +57,40 @@ class KnowledgeGraphProvenanceAuditCommand extends Command
         }
 
         return $this->renderTable($payload);
+    }
+
+    private function compactPayload(array $payload, int $samplesRequested): array
+    {
+        $issues = $payload['issues'] ?? [];
+
+        return [
+            'generated_at' => $payload['generated_at'] ?? now()->toIso8601String(),
+            'status' => $payload['status'] ?? 'unknown',
+            'strict' => (bool) ($payload['strict'] ?? false),
+            'compact' => true,
+            'counts' => $payload['counts'] ?? [],
+            'issues' => $issues,
+            'summary' => [
+                'issue_count' => count($issues),
+                'warning_issue_count' => count(array_filter(
+                    $issues,
+                    static fn (array $issue): bool => ($issue['severity'] ?? 'warning') !== 'info'
+                )),
+                'info_issue_count' => count(array_filter(
+                    $issues,
+                    static fn (array $issue): bool => ($issue['severity'] ?? 'warning') === 'info'
+                )),
+                'samples_requested' => $samplesRequested,
+            ],
+            'posture' => [
+                'read_only' => true,
+                'aggregate_only' => true,
+                'samples_included' => false,
+                'raw_graph_rows_included' => false,
+                'raw_document_ids_included' => false,
+                'raw_titles_included' => false,
+            ],
+        ];
     }
 
     /**

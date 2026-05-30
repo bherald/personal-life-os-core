@@ -118,6 +118,8 @@ class GPSProofGeneratorService
             'temperature' => 0.2,
             'max_tokens' => $options['max_tokens'] ?? 2000,
             'model_role' => 'quality',
+            'sensitive_data' => true,
+            'data_class' => 'genealogy_proof_argument',
         ]);
 
         if (! $result['success']) {

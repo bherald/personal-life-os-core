@@ -78,9 +78,9 @@ class JoplinSyncCommand extends Command
             if ($this->option('json')) {
                 $this->emitJson($this->syncPayload($stats));
 
-                return ! empty($stats['deferred']) || ($stats['errors'] ?? 0) <= 0
-                    ? self::SUCCESS
-                    : self::FAILURE;
+                return ! empty($stats['deferred']) || ($stats['errors'] ?? 0) > 0
+                    ? self::FAILURE
+                    : self::SUCCESS;
             }
 
             $this->newLine();
@@ -124,7 +124,7 @@ class JoplinSyncCommand extends Command
                     }
                 }
 
-                return $deferred ? self::SUCCESS : self::FAILURE;
+                return self::FAILURE;
             }
 
             $this->newLine();

@@ -52,11 +52,12 @@ confirm dependency inventories still match the public provenance snapshots.
 ## Private Source Docs
 
 The private source repository keeps operator-only runbooks that the public
-extraction must not ship. These include `PROJECT.md`,
-`active-priority-list.md`, `PROD-MAINTENANCE.md`,
+extraction must not ship. These include `PROJECT.md`, `TODO.md`,
+`PROD-MAINTENANCE.md`,
 `plos-runtime-inventory.md`, `rlm-research.md`,
 `plos-research-ledger.md`, `genealogy-research-methodology.md`,
-`canonical-docs-archive-*.zip`, current private runtime bench notes, and any
+`ops/backend-quarantine-playbook.md`, `canonical-docs-archive-*.zip`,
+current private runtime bench notes, and any
 operator-side connector runbook.
 
 Keep real Nextcloud bind paths, Joplin notebook paths, Thunderbird mail
@@ -85,6 +86,7 @@ into a canonical doc when the task closes.
 Do not keep multiple active queue/roadmap docs that answer "what should we do
 next?" differently.
 
-For private work selection, update `active-priority-list.md`. For public-facing
-direction, update `roadmap.md`. For external research cadence, update
-`plos-research-ledger.md`.
+For private work selection, update `TODO.md`. For public-facing direction,
+update the `PUBLIC-CORE-ROADMAP` row in `TODO.md` and then `roadmap.md` if the
+public direction itself changed. For external research cadence, update
+`plos-research-ledger.md` and the relevant row in `TODO.md`.

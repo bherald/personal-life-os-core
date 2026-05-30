@@ -14,7 +14,10 @@ class EpisodicMemoryCommand extends Command
         {--archive : Archive old low-importance episodes}
         {--backfill : Generate summaries from existing agent_episodes}
         {--days=30 : Days to look back for backfill}
+        {--limit=50 : Maximum sessions to backfill per run, capped at 500}
         {--agent= : Filter by agent ID}
+        {--dry-run : Preview backfill candidate counts without writing summaries}
+        {--confirm : Confirm summary creation for backfill}
         {--json : Emit JSON output for read-only stats}
         {--compact : Emit compact JSON for read-only stats}';
 
@@ -200,9 +203,17 @@ class EpisodicMemoryCommand extends Command
     {
         $days = (int) $this->option('days');
         $agentFilter = $this->option('agent');
+        $limit = max(1, min(500, (int) $this->option('limit')));
+        $dryRun = (bool) $this->option('dry-run');
         $cutoff = date('Y-m-d H:i:s', strtotime("-{$days} days"));
 
-        $this->info("Backfilling episodic summaries from agent_episodes (last {$days} days)...");
+        if (! $dryRun && ! $this->option('confirm')) {
+            $this->error('Backfill writes agent_episode_summaries and requires --confirm. Use --dry-run first to preview candidates.');
+
+            return 1;
+        }
+
+        $this->info(($dryRun ? 'Previewing' : 'Backfilling')." episodic summaries from agent_episodes (last {$days} days, limit {$limit})...");
 
         // Get distinct sessions from agent_episodes that don't have summaries yet
         $whereAgent = $agentFilter ? 'AND ae.agent_id = ?' : '';
@@ -220,19 +231,33 @@ class EpisodicMemoryCommand extends Command
                    SUM(ae.duration_ms) as total_duration,
                    GROUP_CONCAT(DISTINCT ae.event_type) as event_types
             FROM agent_episodes ae
-            LEFT JOIN agent_episode_summaries aes ON ae.session_id = aes.session_id
+            LEFT JOIN agent_episode_summaries aes
+                ON ae.agent_id = aes.agent_id
+               AND ae.session_id = aes.session_id
             WHERE aes.id IS NULL
               AND ae.created_at >= ?
+              AND ae.session_id IS NOT NULL
               {$whereAgent}
             GROUP BY ae.agent_id, ae.session_id
-            ORDER BY ae.created_at DESC
+            ORDER BY ended_at DESC
+            LIMIT {$limit}
         ", $bindings);
 
         $total = count($sessions);
-        $this->info("Found {$total} sessions without summaries.");
+        $this->info("Found {$total} candidate session(s) without summaries.");
 
         if ($total === 0) {
             $this->info('Nothing to backfill.');
+
+            return 0;
+        }
+
+        if ($dryRun) {
+            $this->table(
+                ['Agent', 'Candidate sessions', 'Episodes', 'Tokens'],
+                $this->backfillPreviewRows($sessions)
+            );
+            $this->info('Dry run complete. Re-run with --confirm to create summaries.');
 
             return 0;
         }
@@ -349,5 +374,38 @@ class EpisodicMemoryCommand extends Command
         );
 
         return $failed > 0 ? 1 : 0;
+    }
+
+    /**
+     * @param  list<object>  $sessions
+     * @return list<array{0:string,1:int,2:int,3:int}>
+     */
+    private function backfillPreviewRows(array $sessions): array
+    {
+        $byAgent = [];
+        foreach ($sessions as $session) {
+            $agentId = (string) ($session->agent_id ?? 'unknown');
+            $byAgent[$agentId] ??= [
+                'sessions' => 0,
+                'episodes' => 0,
+                'tokens' => 0,
+            ];
+            $byAgent[$agentId]['sessions']++;
+            $byAgent[$agentId]['episodes'] += (int) ($session->episode_count ?? 0);
+            $byAgent[$agentId]['tokens'] += (int) ($session->total_tokens ?? 0);
+        }
+
+        ksort($byAgent);
+
+        return array_map(
+            static fn (string $agentId, array $counts): array => [
+                $agentId,
+                (int) $counts['sessions'],
+                (int) $counts['episodes'],
+                (int) $counts['tokens'],
+            ],
+            array_keys($byAgent),
+            $byAgent
+        );
     }
 }

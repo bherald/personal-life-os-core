@@ -17,7 +17,7 @@ use Exception;
  * - Output: extracted text, metadata, EXIF data, face regions
  *
  * @see App\Services\ContentExtractionService
- * @see docs/future-enhancements.md E17
+ * Historical private backlog label: E17.
  */
 class ContentExtractionNode extends BaseNode
 {

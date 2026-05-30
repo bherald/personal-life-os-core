@@ -14,23 +14,38 @@ class PlosAgentTraceTailCommand extends Command
         {--type= : Filter by event type}
         {--surface= : Filter by trace surface}
         {--actor= : Filter by actor id}
-        {--json : Emit machine-readable JSON}';
+        {--json : Emit machine-readable JSON}
+        {--compact : Emit aggregate-only trace counts without events, ids, actor ids, paths, or payload details}';
 
     protected $description = 'Read-only tail of sanitized PLOS dev-agent trace envelopes';
 
     public function handle(TraceEnvelopeService $traces): int
     {
-        $payload = $traces->tail([
+        $filters = [
             'limit' => $this->option('limit'),
             'since' => $this->option('since'),
             'trace' => $this->option('trace'),
             'type' => $this->option('type'),
             'surface' => $this->option('surface'),
             'actor' => $this->option('actor'),
-        ]);
+        ];
+        $payload = $this->option('compact')
+            ? $traces->compactTail($filters)
+            : $traces->tail($filters);
 
         if ($this->option('json')) {
             $this->line((string) json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            return self::SUCCESS;
+        }
+
+        if ($this->option('compact')) {
+            $this->line(sprintf(
+                'Agent trace compact tail: events=%d warnings=%d window=%dh',
+                (int) ($payload['event_count'] ?? 0),
+                (int) ($payload['warning_count'] ?? 0),
+                (int) ($payload['hours'] ?? 24)
+            ));
 
             return self::SUCCESS;
         }

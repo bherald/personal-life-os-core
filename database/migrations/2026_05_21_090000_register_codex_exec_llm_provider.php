@@ -72,7 +72,6 @@ return new class extends Migration
             'gpt-5.4',
             'gpt-5.4-mini',
             'gpt-5.3-codex',
-            'gpt-5.3-codex-spark',
             'gpt-5.2',
         ];
 
@@ -123,7 +122,6 @@ return new class extends Migration
                     storage_path('app/codex-schemas'),
                 ],
             ],
-            'sensitive_safe' => true,
         ];
 
         DB::table('llm_instances')->updateOrInsert(
@@ -151,7 +149,6 @@ return new class extends Migration
                     'repository',
                     'jsonl',
                     'structured_output',
-                    'sensitive_safe',
                 ], JSON_UNESCAPED_SLASHES),
                 'is_censored' => 1,
                 'supported_models' => json_encode($models, JSON_UNESCAPED_SLASHES),

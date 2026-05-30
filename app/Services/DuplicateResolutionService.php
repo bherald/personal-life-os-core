@@ -15,9 +15,10 @@ class DuplicateResolutionService
     /**
      * Get pending duplicate pairs where BOTH files match the folder filter.
      */
-    public function getScopedPendingPairs(string $folderFilter): array
+    public function getScopedPendingPairs(string $folderFilter, int $limit = 50): array
     {
-        $like = '%' . $folderFilter . '%';
+        $like = '%'.$folderFilter.'%';
+        $limit = max(1, min(500, $limit));
 
         return DB::select("
             SELECT d.id as pair_id, d.content_hash,
@@ -39,6 +40,7 @@ class DuplicateResolutionService
               AND f1.status = 'active' AND f2.status = 'active'
               AND f1.current_path LIKE ? AND f2.current_path LIKE ?
             ORDER BY f1.file_size DESC
+            LIMIT {$limit}
         ", [$like, $like]);
     }
 
@@ -49,7 +51,7 @@ class DuplicateResolutionService
     {
         $sampleSize = min($sampleSize, count($pairs));
         $indices = array_rand($pairs, $sampleSize);
-        if (!is_array($indices)) {
+        if (! is_array($indices)) {
             $indices = [$indices];
         }
 
@@ -90,7 +92,7 @@ class DuplicateResolutionService
     public function verifyPair(object $pair): array
     {
         // Layer 1: Content hash match — these pairs exist because content_hash matched
-        if (!empty($pair->content_hash)) {
+        if (! empty($pair->content_hash)) {
             $result = [
                 'verified' => true,
                 'method' => 'content_hash',
@@ -157,7 +159,7 @@ class DuplicateResolutionService
                     'resolved_at' => now()->toDateTimeString(),
                 ];
 
-                if (!$dryRun) {
+                if (! $dryRun) {
                     DB::update(
                         "UPDATE file_registry_duplicates
                          SET status = 'merged', reviewed_by = 'ai', reviewed_at = NOW(),
@@ -191,7 +193,7 @@ class DuplicateResolutionService
      */
     public function getStatistics(string $folderFilter): array
     {
-        $like = '%' . $folderFilter . '%';
+        $like = '%'.$folderFilter.'%';
 
         $total = DB::selectOne("
             SELECT COUNT(*) as cnt FROM file_registry_duplicates d
@@ -241,7 +243,7 @@ class DuplicateResolutionService
             'unique_content_hashes' => (int) ($uniqueHashes->cnt ?? 0),
             'pairs_with_phash' => (int) ($withPhash->cnt ?? 0),
             'reclaimable_bytes' => (int) ($totalSize->bytes ?? 0),
-            'by_mime_type' => array_map(fn($r) => ['type' => $r->mime_type, 'count' => (int) $r->cnt], $byMimeType),
+            'by_mime_type' => array_map(fn ($r) => ['type' => $r->mime_type, 'count' => (int) $r->cnt], $byMimeType),
         ];
     }
 

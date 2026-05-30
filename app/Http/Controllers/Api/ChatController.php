@@ -199,6 +199,11 @@ class ChatController extends Controller
         }
 
         $isPrivate = $conversation->is_private ?? false;
+        $privacyRoutingConfig = [
+            'sensitive_data' => true,
+            'data_class' => $isPrivate ? 'private_chat' : 'chat',
+            'sensitive_data_reason' => 'chat_conversation',
+        ];
 
         // Save user message (private conversations also persist for multi-turn;
         // messages are hard-deleted when conversation is deleted)
@@ -237,7 +242,7 @@ class ChatController extends Controller
                 $orchResult = $orchestrator->process(
                     $validated['content'],
                     $id,
-                    ['temperature' => 0.7]
+                    array_merge($privacyRoutingConfig, ['temperature' => 0.7])
                 );
 
                 $responseText = $this->formatOrchestratorResult($orchResult);
@@ -363,7 +368,7 @@ class ChatController extends Controller
                     'temperature' => 0.7,
                     'max_tokens' => 4000, // Allow longer responses for synthesis
                     'system_prompt' => $systemPrompt,
-                ]);
+                ] + $privacyRoutingConfig);
             } else {
                 // Normal mode: use tool-aware processing
                 $aiRouter = app(AIRouter::class);
@@ -373,7 +378,7 @@ class ChatController extends Controller
                     'temperature' => 0.7,
                     'max_tokens' => 2000,
                     'system_prompt' => $systemPrompt,
-                ]);
+                ] + $privacyRoutingConfig);
             }
 
             $assistantContent = $result['success'] ? $result['response'] : 'I apologize, but I encountered an error processing your request.';
@@ -750,6 +755,11 @@ class ChatController extends Controller
             $detectedIntent = null;
             $ragSources = []; // Track RAG sources for metadata persistence
             $isUncensored = ($conversation->model_mode ?? '') === 'uncensored';
+            $privacyRoutingConfig = [
+                'sensitive_data' => true,
+                'data_class' => ! empty($conversation->is_private) ? 'private_chat' : 'chat',
+                'sensitive_data_reason' => 'chat_conversation',
+            ];
 
             try {
                 // Uncensored mode: bypass tools, intent classification, and RAG — direct Ollama streaming
@@ -832,7 +842,7 @@ class ChatController extends Controller
                 // Step 2: Handle based on intent
                 if ($this->isActionableIntent($intent)) {
                     // Route to orchestrator for workflow/RAG/MCP/email actions
-                    $result = $orchestrator->process($userContent, $id);
+                    $result = $orchestrator->process($userContent, $id, $privacyRoutingConfig);
 
                     if ($result['success']) {
                         $fullContent = $this->formatOrchestratorResult($result);
@@ -1013,7 +1023,7 @@ class ChatController extends Controller
                         'max_tokens' => 2000,
                         'system_prompt' => $systemPrompt,
                         'model' => $chatModel,
-                    ])) as $chunk) {
+                    ] + $privacyRoutingConfig)) as $chunk) {
                         // Parse chunk to build full message
                         $chunkData = json_decode(trim($chunk), true);
                         if ($chunkData) {

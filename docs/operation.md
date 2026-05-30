@@ -72,7 +72,6 @@ php artisan ops:review-backlog-report --next-target --focus=source-backed-packet
 php artisan ops:review-backlog-report --next-target --focus=aged-review --json
 php artisan ops:review-backlog-report --json --compact
 php artisan ops:review-backlog-report --dry-run --json --compact
-php artisan ops:review-backlog-report --json
 php artisan ops:review-backlog-report --markdown
 php artisan ops:review-backlog-report --dry-run
 ```
@@ -213,7 +212,6 @@ Use the compact backlog report for routine KG/RAG checks:
 ```bash
 php artisan rag:backlog-report --compact
 php artisan rag:backlog-report --json --compact
-php artisan rag:backlog-report --json
 ```
 
 The compact report is read-only. It keeps document count, RAPTOR/sentence/KG
@@ -232,9 +230,8 @@ authority or degraded-mode posture:
 ```bash
 php artisan ops:offline-status
 php artisan ops:offline-status --json
-php artisan ops:offline-smoke --json
 php artisan ops:offline-smoke --json --compact
-php artisan ops:operator-evidence --json
+php artisan ops:operator-evidence --json --compact
 ```
 
 `ops:offline-status` returns only the Operator Evidence offline/degraded
@@ -244,13 +241,13 @@ section. The full `/operator-evidence` screen and `GET /api/ops/operator-evidenc
 include the same offline/degraded section beside queue, backlog, review, and
 other operational evidence.
 
-`ops:offline-smoke --json` is a manual report-only companion. It joins the
-offline-status payload, audit summary, profile-filtered MCP catalog boundary,
-and local runtime scorecard. It does not switch profiles, execute network
-calls, run remediation, or write audit receipts, and it is not scheduled by
-default. Use `--json --compact` for routine status checks; it keeps section
-statuses, stable reason codes, aggregate counts, leaked-server counts, and safe
-local runtime labels while omitting nested payloads, raw details, server lists,
+`ops:offline-smoke --json --compact` is the routine manual report-only
+companion. It joins the offline-status payload, audit summary, profile-filtered
+MCP catalog boundary, and local runtime scorecard. It does not switch profiles,
+execute network calls, run remediation, or write audit receipts, and it is not
+scheduled by default. The compact form keeps section statuses, stable reason
+codes, aggregate counts, leaked-server counts, and safe local runtime labels
+while omitting nested payloads, raw details, server lists,
 paths, prompts, traces, and environment values.
 
 Key fields to check:
@@ -282,7 +279,7 @@ Use this sequence for the current local/offline dev-agent scorecard pass:
 ```bash
 php artisan ops:agent-doctor --json --compact --since=24
 php artisan ops:mcp-health --compact
-php artisan plos:agent-trace-tail --limit=20 --since=24 --json
+php artisan plos:agent-trace-tail --limit=20 --since=24 --json --compact
 php artisan offline:dev-assist /doctor --json
 ```
 
@@ -299,17 +296,20 @@ disabled missing entries, and disabled external processes that are still
 running. It does not start, stop, restart, or dynamically exercise MCP servers,
 and it does not print env values, tokens, or raw process lines.
 
-Use `plos:agent-trace-tail` and `plos:agent-trace-read` only after Agent Doctor,
-MCP Health, or `offline:dev-assist` reports a trace id or trace-readiness issue.
-The trace commands read sanitized append-only NDJSON envelopes under local
-storage. They do not grant tool access, execute remediation, delete trace files,
-or promote dev-agent autonomy.
+Use `plos:agent-trace-tail --json --compact` after Agent Doctor, MCP Health, or
+`offline:dev-assist` reports a trace-readiness issue. The compact tail reports
+aggregate event, warning, type, surface, actor-type, and result-status counts
+without trace ids, event ids, actor ids, paths, or event payload details. Use
+`plos:agent-trace-read` only for a selected local diagnostic trace outside the
+routine MCP scorecard path. The trace commands read sanitized append-only NDJSON
+envelopes under local storage. They do not grant tool access, execute
+remediation, delete trace files, or promote dev-agent autonomy.
 
-The PLOS MCP `plos_artisan` allowlist exposes only the exact redacted Agent
-Doctor and recent trace-tail forms shown above. Trace reads, trace-specific
-tail filters, wider windows, higher limits, reordered flags, detail-expanding
-options, and non-JSON trace commands stay blocked through MCP until separately
-reviewed.
+The PLOS MCP `plos_artisan` allowlist exposes only the exact compact Agent
+Doctor and compact recent trace-tail forms shown above. Trace reads, raw tail
+output, trace-specific tail filters, wider windows, higher limits, reordered
+flags, detail-expanding options, and non-JSON trace commands stay blocked
+through MCP until separately reviewed.
 
 If a live MCP session blocks one of those exact forms, run `plos_artisan` with
 `command=list` and compare the reported allowlist revision to source. Treat a
@@ -361,7 +361,6 @@ For trend evidence, preview aggregate readiness snapshots before writing rows:
 
 ```bash
 php artisan ops:agent-doctor-snapshot --dry-run --json
-php artisan ops:agent-doctor-history --json --days=7
 php artisan ops:agent-doctor-history --json --compact --days=7
 ```
 
@@ -421,7 +420,7 @@ Use the observe-only DBA telemetry report before considering retention,
 partition, cleanup, backup, or Redis remediation work:
 
 ```bash
-php artisan ops:dba-telemetry-report --json
+php artisan ops:dba-telemetry-report --json --compact
 php artisan ops:dba-telemetry-report --dry-run
 ```
 
@@ -439,14 +438,18 @@ For the approved `agent_recursion_calls` retention cleanup path, use the
 bounded dry-run-first command:
 
 ```bash
-php artisan ops:arc-retention --json
-php artisan ops:arc-retention --execute --max-rows=50000 --batch=5000 --sleep-ms=100 --json
+php artisan ops:arc-retention --json --compact
+php artisan ops:arc-retention --execute --max-rows=50000 --batch=5000 --sleep-ms=100 --json --compact
+php artisan ops:arc-retention --execute --repeat=5 --max-rows=10000 --batch=5000 --sleep-ms=100 --json --compact
 ```
 
 The command defaults to dry-run, requires `--execute` to delete rows, uses the
 `created_at` retention index, avoids count-first cleanup, caps each execution,
-and preserves `recursion_effectiveness`. Larger off-peak chunks require the same
-bounded operator approval recorded in `docs/active-priority-list.md`.
+preserves `recursion_effectiveness`, and supports compact aggregate output for
+operator evidence. Repeated execution requires `--execute`, is capped, and
+stops when a bounded run no longer reaches its row cap; keep health/capacity
+checks between repeat groups. Larger off-peak chunks require the same bounded
+operator approval recorded in the private operator TODO.
 
 Relevant docs:
 

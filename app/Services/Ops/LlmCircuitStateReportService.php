@@ -36,35 +36,50 @@ class LlmCircuitStateReportService
             ];
         }
 
+        $select = [
+            'instance_id',
+            'instance_name',
+            'instance_type',
+            'base_url',
+            'priority',
+            'is_active',
+            'is_healthy',
+            'health_score',
+            'routability',
+            'gpu_target',
+            'host_affinity',
+            'compat_status',
+            'capabilities',
+            'config',
+            'allows_private_data',
+            'data_privacy_scope',
+            'avg_response_ms',
+            'p95_response_ms',
+            'success_rate',
+            'total_requests',
+            'total_failures',
+            'consecutive_failures',
+            'circuit_state',
+            'circuit_opened_at',
+            'circuit_retry_at',
+            'last_health_check',
+            'last_success_at',
+            'last_failure_at',
+        ];
+
+        foreach ([
+            'quarantine_status',
+            'quarantined_at',
+            'quarantine_reason',
+            'quarantine_source',
+        ] as $column) {
+            if (Schema::hasColumn('llm_instances', $column)) {
+                $select[] = $column;
+            }
+        }
+
         $rows = DB::table('llm_instances')
-            ->select([
-                'instance_id',
-                'instance_name',
-                'instance_type',
-                'base_url',
-                'priority',
-                'is_active',
-                'is_healthy',
-                'health_score',
-                'routability',
-                'gpu_target',
-                'host_affinity',
-                'compat_status',
-                'capabilities',
-                'config',
-                'avg_response_ms',
-                'p95_response_ms',
-                'success_rate',
-                'total_requests',
-                'total_failures',
-                'consecutive_failures',
-                'circuit_state',
-                'circuit_opened_at',
-                'circuit_retry_at',
-                'last_health_check',
-                'last_success_at',
-                'last_failure_at',
-            ])
+            ->select($select)
             ->orderBy('priority')
             ->orderBy('instance_id')
             ->get();
@@ -85,6 +100,8 @@ class LlmCircuitStateReportService
             'stale_compat_active' => 0,
             'retry_due_still_open' => 0,
             'open_over_threshold' => 0,
+            'quarantined' => 0,
+            'active_quarantined' => 0,
             'provider_classes' => [
                 'local_llm' => 0,
                 'cloud_sensitive_safe' => 0,
@@ -167,6 +184,12 @@ class LlmCircuitStateReportService
             'circuit_opened_at' => $openedAt,
             'circuit_retry_at' => $retryAt,
             'retry_due' => $retryDue,
+            'quarantine' => [
+                'status' => (string) ($row->quarantine_status ?? 'none'),
+                'quarantined_at' => $this->nullableIso8601($row->quarantined_at ?? null),
+                'reason' => $this->redactReason($row->quarantine_reason ?? null),
+                'source' => $this->redactReason($row->quarantine_source ?? null),
+            ],
             'open_minutes' => $openMinutesActual,
             'open_over_threshold' => $isActive
                 && $circuitState === 'open'
@@ -216,6 +239,13 @@ class LlmCircuitStateReportService
 
         if ($instance['retry_due']) {
             $summary['retry_due_still_open']++;
+        }
+
+        if (($instance['quarantine']['status'] ?? 'none') === 'quarantined') {
+            $summary['quarantined']++;
+            if ($instance['active']) {
+                $summary['active_quarantined']++;
+            }
         }
 
         if ($instance['open_over_threshold']) {
@@ -284,6 +314,18 @@ class LlmCircuitStateReportService
             ];
         }
 
+        if ($instance['active'] && ($instance['quarantine']['status'] ?? 'none') === 'quarantined') {
+            $issues[] = [
+                'code' => 'active_quarantined_provider',
+                'severity' => 'error',
+                'message' => "{$instance['instance_id']} is quarantined but still active.",
+                'context' => $context + [
+                    'quarantined_at' => $instance['quarantine']['quarantined_at'] ?? null,
+                    'quarantine_source' => $instance['quarantine']['source'] ?? null,
+                ],
+            ];
+        }
+
         if ($instance['active'] && $instance['healthy'] && $instance['circuit_state'] === 'open') {
             $issues[] = [
                 'code' => 'healthy_provider_open_circuit',
@@ -328,6 +370,24 @@ class LlmCircuitStateReportService
         $time = $this->parseTime($value);
 
         return $time?->toIso8601String();
+    }
+
+    private function redactReason(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $text = trim((string) $value);
+        if ($text === '') {
+            return null;
+        }
+
+        $text = (string) preg_replace('/\b(?:password|passwd|pwd|api[_-]?key|apikey|secret|token|bearer|authorization)\s*[:=]\s*["\']?[^"\'\s,;{}<>]{3,}/i', '[REDACTED_SECRET]', $text);
+        $text = (string) preg_replace('/\bBearer\s+[A-Za-z0-9._~+\/=-]{10,}/i', '[REDACTED_SECRET]', $text);
+        $text = (string) preg_replace('~/home/[^\\s"\'<>),;]+~', '[REDACTED_LOCAL_PATH]', $text);
+
+        return mb_substr($text, 0, 500);
     }
 
     private function parseTime(mixed $value): ?CarbonInterface

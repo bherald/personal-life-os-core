@@ -3642,6 +3642,9 @@ class MediaBrowserController extends Controller
         $staleNamedOnlyHours = 24;
         $decisionState = (string) $request->get('decision_state', 'open');
         $sort = (string) $request->get('sort', 'recent');
+        $clusterScope = (string) $request->get('cluster_scope', 'all');
+        $search = trim((string) $request->get('search', ''));
+        $activeOnly = $request->boolean('active_only', true);
         $staleOnly = $request->boolean('stale');
         if (! in_array($decisionState, ['open', 'decided', 'all'], true)) {
             return response()->json([
@@ -3653,6 +3656,18 @@ class MediaBrowserController extends Controller
             return response()->json([
                 'success' => false,
                 'error' => 'invalid_sort',
+            ], 422);
+        }
+        if (! in_array($clusterScope, ['all', 'mixed'], true)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'invalid_cluster_scope',
+            ], 422);
+        }
+        if (mb_strlen($search) > 100) {
+            return response()->json([
+                'success' => false,
+                'error' => 'invalid_search',
             ], 422);
         }
 
@@ -3679,6 +3694,22 @@ class MediaBrowserController extends Controller
               AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL
               AND LOWER(TRIM(frf.person_name)) != 'unknown'";
 
+        $mixedClusterActiveSql = $activeOnly ? "AND fr_mix.status = 'active'" : '';
+        $mixedClusterJoin = "
+            LEFT JOIN (
+                SELECT frf_mix.cluster_id
+                FROM file_registry_faces frf_mix
+                JOIN file_registry fr_mix ON fr_mix.id = frf_mix.file_registry_id
+                WHERE frf_mix.hidden = 0
+                  AND frf_mix.cluster_id IS NOT NULL
+                  AND NULLIF(TRIM(frf_mix.person_name), '') IS NOT NULL
+                  AND LOWER(TRIM(frf_mix.person_name)) != 'unknown'
+                  {$mixedClusterActiveSql}
+                GROUP BY frf_mix.cluster_id
+                HAVING COUNT(DISTINCT LOWER(TRIM(frf_mix.person_name))) > 1
+            ) mixed_names ON mixed_names.cluster_id = frf.cluster_id
+        ";
+
         $decisionFilter = '';
         if ($decisionState === 'open') {
             $decisionFilter = "AND (
@@ -3693,7 +3724,15 @@ class MediaBrowserController extends Controller
         $staleFilter = $staleOnly
             ? 'AND frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR)'
             : '';
-        $whereParams = $staleOnly ? [$staleNamedOnlyHours] : [];
+        $activeFilter = $activeOnly ? "AND fr.status = 'active'" : '';
+        $clusterScopeFilter = $clusterScope === 'mixed'
+            ? 'AND mixed_names.cluster_id IS NOT NULL'
+            : '';
+        $searchFilter = $search !== ''
+            ? 'AND (frf.person_name LIKE ? OR fr.filename LIKE ? OR fr.current_path LIKE ?)'
+            : '';
+        $searchParams = $search !== '' ? ["%{$search}%", "%{$search}%", "%{$search}%"] : [];
+        $whereParams = array_merge($searchParams, $staleOnly ? [$staleNamedOnlyHours] : []);
         $sortSql = match ($sort) {
             'oldest' => 'frf.updated_at ASC, frf.id ASC',
             default => 'frf.updated_at DESC, frf.id DESC',
@@ -3703,19 +3742,25 @@ class MediaBrowserController extends Controller
             SELECT frf.id as face_id, frf.file_registry_id, frf.person_name,
                    frf.genealogy_person_id, frf.region_x, frf.region_y,
                    frf.region_w, frf.region_h, frf.confidence, frf.source,
-                   frf.verified, frf.favorite, fr.asset_uuid, fr.filename,
-                   fr.current_path, fr.date_taken,
+                   frf.verified, frf.favorite, frf.cluster_id,
+                   fr.asset_uuid, fr.filename, fr.current_path, fr.date_taken,
+                   fr.status AS file_status,
                    IFNULL(GREATEST(TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()), 0), 0) AS backlog_age_hours,
                    CASE WHEN frf.updated_at < DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END AS is_stale_named_only,
+                   CASE WHEN mixed_names.cluster_id IS NOT NULL THEN 1 ELSE 0 END AS is_mixed_name_cluster,
                    q.status AS candidate_decision_status,
                    JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.action')) AS candidate_decision_action,
                    JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.terminal')) AS candidate_decision_terminal,
                    JSON_UNQUOTE(JSON_EXTRACT(q.match_details, '$.latest_candidate_decision.decided_at')) AS candidate_decision_at
             FROM file_registry_faces frf
             JOIN file_registry fr ON fr.id = frf.file_registry_id
+            {$mixedClusterJoin}
             {$decisionJoin}
             WHERE {$namedOnlyFilter}
+              {$activeFilter}
               {$decisionFilter}
+              {$clusterScopeFilter}
+              {$searchFilter}
               {$staleFilter}
             ORDER BY {$sortSql}
             LIMIT ? OFFSET ?
@@ -3724,6 +3769,7 @@ class MediaBrowserController extends Controller
         $faces = array_map(function (object $face): object {
             $face->backlog_age_hours = (int) ($face->backlog_age_hours ?? 0);
             $face->is_stale_named_only = (bool) ($face->is_stale_named_only ?? false);
+            $face->is_mixed_name_cluster = (bool) ($face->is_mixed_name_cluster ?? false);
             $face->face_genealogy_posture = $this->namedOnlyFaceGenealogyPosture();
             $face->candidate_decision_status = $this->safeFaceCandidateDecisionStatus($face->candidate_decision_status ?? null);
             $face->candidate_decision_action = $this->safeFaceCandidateDecisionAction($face->candidate_decision_action ?? null);
@@ -3738,9 +3784,14 @@ class MediaBrowserController extends Controller
         $total = DB::selectOne("
             SELECT COUNT(*) as cnt
             FROM file_registry_faces frf
+            JOIN file_registry fr ON fr.id = frf.file_registry_id
+            {$mixedClusterJoin}
             {$decisionJoin}
             WHERE {$namedOnlyFilter}
+              {$activeFilter}
               {$decisionFilter}
+              {$clusterScopeFilter}
+              {$searchFilter}
               {$staleFilter}
         ", $whereParams);
 
@@ -3749,6 +3800,9 @@ class MediaBrowserController extends Controller
             'data' => $faces,
             'total' => (int) ($total->cnt ?? 0),
             'decision_state' => $decisionState,
+            'active_only' => $activeOnly,
+            'cluster_scope' => $clusterScope,
+            'search' => $search,
             'stale_only' => $staleOnly,
             'sort' => $sort,
             'limit' => $limit,

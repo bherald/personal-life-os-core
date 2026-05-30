@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Process;
  * - E23: PhotoWise face regions (MWG-rs format)
  * - E20: Links face names to GEDCOM genealogy persons
  *
- * @see docs/future-enhancements.md E13, E20, E23
+ * Historical private backlog labels: E13, E20, E23.
  * @see docs/GEDCOM Analysis Reference Document.md
  * @see docs/EXIF-Photowise-Faces/
  */

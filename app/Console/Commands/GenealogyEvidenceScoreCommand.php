@@ -11,7 +11,8 @@ class GenealogyEvidenceScoreCommand extends Command
         {--tree= : Tree ID to inspect}
         {--all-trees : Score every known genealogy tree}
         {--limit=50 : Max proposal rows per proposal type and tree}
-        {--json : Emit machine-readable JSON}';
+        {--json : Emit machine-readable JSON}
+        {--compact : Emit aggregate-only output without proposal rows, IDs, agent IDs, sources, or evidence excerpts}';
 
     protected $description = 'Observe-only genealogy proposal evidence scoring report';
 
@@ -31,6 +32,9 @@ class GenealogyEvidenceScoreCommand extends Command
         }
 
         $payload = $service->collect($treeId, (int) $this->option('limit'));
+        if ($this->option('compact')) {
+            $payload = $service->compactPayload($payload);
+        }
 
         if ($this->option('json')) {
             $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));

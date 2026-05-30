@@ -118,6 +118,49 @@ class TraceEnvelopeService
      * @param  array<string, mixed>  $filters
      * @return array<string, mixed>
      */
+    public function compactTail(array $filters = []): array
+    {
+        $payload = $this->tail($filters);
+        $events = array_values(array_filter((array) ($payload['events'] ?? []), 'is_array'));
+        $warnings = array_values(array_filter((array) ($payload['warnings'] ?? []), 'is_array'));
+
+        return [
+            'result' => (string) ($payload['result'] ?? 'ok'),
+            'compact' => true,
+            'limit' => (int) ($payload['limit'] ?? $this->limit($filters['limit'] ?? 20)),
+            'hours' => (int) ($payload['hours'] ?? $this->hours($filters['since'] ?? null)),
+            'filters' => [
+                'trace_filter_present' => trim((string) ($filters['trace'] ?? '')) !== '',
+                'type_filter_present' => trim((string) ($filters['type'] ?? '')) !== '',
+                'surface_filter_present' => trim((string) ($filters['surface'] ?? '')) !== '',
+                'actor_filter_present' => trim((string) ($filters['actor'] ?? '')) !== '',
+            ],
+            'event_count' => count($events),
+            'warning_count' => count($warnings),
+            'by_event_type' => $this->countByPath($events, ['event_type']),
+            'by_surface' => $this->countByPath($events, ['surface']),
+            'by_actor_type' => $this->countByPath($events, ['actor', 'type']),
+            'by_result_status' => $this->countByPath($events, ['result', 'status']),
+            'warning_counts' => $this->countByPath($warnings, ['warning']),
+            'posture' => [
+                'aggregate_only' => true,
+                'events_included' => false,
+                'trace_ids_included' => false,
+                'event_ids_included' => false,
+                'actor_ids_included' => false,
+                'request_details_included' => false,
+                'tool_details_included' => false,
+                'result_details_included' => false,
+                'file_paths_included' => false,
+                'warning_files_included' => false,
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $filters
+     * @return array<string, mixed>
+     */
     public function readByTraceId(string $traceId, array $filters = []): array
     {
         $filters['trace'] = $traceId;
@@ -374,6 +417,37 @@ class TraceEnvelopeService
         }
 
         return $sanitized;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $rows
+     * @param  list<string>  $path
+     * @return array<string, int>
+     */
+    private function countByPath(array $rows, array $path): array
+    {
+        $counts = [];
+        foreach ($rows as $row) {
+            $value = $row;
+            foreach ($path as $segment) {
+                if (! is_array($value) || ! array_key_exists($segment, $value)) {
+                    $value = null;
+
+                    break;
+                }
+
+                $value = $value[$segment];
+            }
+
+            $key = is_scalar($value) && trim((string) $value) !== ''
+                ? trim((string) $value)
+                : 'unknown';
+            $counts[$key] = ($counts[$key] ?? 0) + 1;
+        }
+
+        ksort($counts);
+
+        return $counts;
     }
 
     /**

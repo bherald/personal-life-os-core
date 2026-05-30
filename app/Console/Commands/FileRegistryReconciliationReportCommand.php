@@ -85,13 +85,16 @@ class FileRegistryReconciliationReportCommand extends Command
             ($posture['canonical_writeback_enabled'] ?? false) ? 'yes' : 'no'
         ));
         $this->line(sprintf(
-            'identity: active=%s missing_identity_or_path=%s duplicate_asset_groups=%s duplicate_fileid_groups=%s same_content_multi_path=%s same_filename_content_multi_path=%s',
+            'identity: active=%s missing_identity_or_path=%s duplicate_asset_groups=%s duplicate_fileid_groups=%s same_content_multi_path=%s same_filename_content_multi_path=%s same_filename_unmaterialized=%s pending_duplicate_pairs=%s keep_both_pairs=%s',
             $counts['active_files'] ?? 0,
             $counts['active_missing_identity_or_path'] ?? 0,
             $counts['duplicate_asset_uuid_groups'] ?? 0,
             $counts['duplicate_nextcloud_fileid_groups'] ?? 0,
             $counts['same_content_multi_path_groups'] ?? 0,
-            $counts['same_filename_content_multi_path_groups'] ?? 0
+            $counts['same_filename_content_multi_path_groups'] ?? 0,
+            $counts['same_filename_content_unmaterialized_groups'] ?? $counts['same_filename_content_multi_path_groups'] ?? 0,
+            $counts['pending_duplicate_review_pairs'] ?? 0,
+            $counts['keep_both_duplicate_pairs'] ?? 0
         ));
         $this->line(sprintf(
             'downstream: mysql_orphan_rows=%s rag_file_documents=%s rag_checked=%s rag_missing_registry=%s',
@@ -112,11 +115,13 @@ class FileRegistryReconciliationReportCommand extends Command
         $posture = $payload['posture'] ?? [];
 
         $this->line(sprintf(
-            'file-reconcile: %s active=%s move_or_duplicate_groups=%s identity_conflicts=%s missing_identity_or_path=%s mysql_orphans=%s rag_checked=%s rag_missing=%s errors=%s',
+            'file-reconcile: %s active=%s move_or_duplicate_groups=%s identity_conflicts=%s duplicate_review_pairs=%s duplicate_keep_both_pairs=%s missing_identity_or_path=%s mysql_orphans=%s rag_checked=%s rag_missing=%s errors=%s',
             $payload['status'] ?? 'unknown',
             $counts['active_files'] ?? 0,
             $counts['move_or_duplicate_candidate_groups'] ?? 0,
             $counts['identity_conflict_groups'] ?? 0,
+            $counts['duplicate_review_pending_pairs'] ?? 0,
+            $counts['duplicate_keep_both_pairs'] ?? 0,
             $counts['missing_identity_or_path'] ?? 0,
             $counts['mysql_downstream_orphan_rows'] ?? 0,
             $counts['rag_checked_sample'] ?? 0,

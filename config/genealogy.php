@@ -115,6 +115,55 @@ return [
         'per_provider_cap' => (int) env('GENEALOGY_SEARCH_PROVIDER_CAP', 10),
     ],
 
+    // Public genealogy web sources the planner may use for source-scoped web
+    // searches when no first-class API wrapper exists. These are discovery
+    // surfaces only: hits still require source vetting and identity bridges
+    // before they can become source_add proposals.
+    'public_web_sources' => [
+        ['name' => 'Digitalarkivet Norway', 'domain' => 'digitalarkivet.no', 'url' => 'https://www.digitalarkivet.no', 'regions' => ['scandinavia'], 'record_types' => ['church', 'census', 'emigration']],
+        ['name' => 'Danish National Archives', 'domain' => 'sa.dk', 'url' => 'https://www.sa.dk', 'regions' => ['scandinavia'], 'record_types' => ['church', 'census', 'probate']],
+        ['name' => 'Swedish National Archives', 'domain' => 'riksarkivet.se', 'url' => 'https://sok.riksarkivet.se', 'regions' => ['scandinavia'], 'record_types' => ['church', 'census', 'military']],
+        ['name' => 'Antenati Italy', 'domain' => 'antenati.cultura.gov.it', 'url' => 'https://antenati.cultura.gov.it', 'regions' => ['italy'], 'record_types' => ['vital']],
+        ['name' => 'FranceArchives', 'domain' => 'francearchives.gouv.fr', 'url' => 'https://francearchives.gouv.fr', 'regions' => ['france'], 'record_types' => ['vital', 'church', 'military']],
+        ['name' => 'Geneteka Poland', 'domain' => 'geneteka.genealodzy.pl', 'url' => 'https://geneteka.genealodzy.pl', 'regions' => ['eastern_europe'], 'record_types' => ['vital', 'church']],
+        ['name' => 'Matricula Online', 'domain' => 'matricula-online.eu', 'url' => 'https://www.matricula-online.eu', 'regions' => ['german_origin', 'eastern_europe', 'italy', 'france'], 'record_types' => ['church']],
+        ['name' => 'FreeBMD England and Wales', 'domain' => 'freebmd.org.uk', 'url' => 'https://www.freebmd.org.uk', 'regions' => ['uk_ireland'], 'record_types' => ['vital']],
+        ['name' => 'UK National Archives Discovery', 'domain' => 'nationalarchives.gov.uk', 'url' => 'https://discovery.nationalarchives.gov.uk', 'regions' => ['uk_ireland'], 'record_types' => ['military', 'probate', 'land']],
+    ],
+
+    // Catalogs that can seed new source candidates for review. Catalog trust
+    // stops at source discovery: imported candidates must still pass domain,
+    // access-mode, API/scrape, and evidence-posture vetting before planner use.
+    'trusted_source_catalogs' => [
+        ['name' => 'FamilySearch Research Wiki', 'url' => 'https://www.familysearch.org/en/wiki/FamilySearch_Research_Wiki', 'posture' => 'locality_guidance_manual_only'],
+        ['name' => "Cyndi's List", 'url' => 'https://www.cyndislist.com', 'posture' => 'curated_directory_candidate_seed'],
+        ['name' => 'Archives Portal Europe', 'url' => 'https://www.archivesportaleurope.net', 'posture' => 'archive_repository_catalog'],
+        ['name' => 'Europeana', 'url' => 'https://www.europeana.eu', 'posture' => 'api_backed_cultural_record_catalog'],
+        ['name' => 'Wikidata', 'url' => 'https://www.wikidata.org', 'posture' => 'structured_institution_metadata_seed'],
+    ],
+
+    'search_planner' => [
+        'enabled' => (bool) env('GENEALOGY_LLM_SEARCH_PLANNER_ENABLED', true),
+        'max_calls' => (int) env('GENEALOGY_LLM_SEARCH_PLANNER_MAX_CALLS', 6),
+        'ai_timeout_seconds' => (int) env('GENEALOGY_LLM_SEARCH_PLANNER_TIMEOUT', 25),
+        'allowed_tools' => [
+            'source_search_all',
+            'generate_record_hints',
+            'newspaper_search',
+            'newspaper_search_obituaries',
+            'nara_search',
+            'internet_archive_search',
+            'wikitree_search',
+            'ellis_island_search',
+            'freedmens_bureau_search',
+            'german_church_records_search',
+            'europeana_search',
+            'dar_search',
+            'mcp_searxng_search',
+            'mcp_genealogy_search',
+        ],
+    ],
+
     'cloudflare_blocked_hosts' => [
         'www.loc.gov',
         'chroniclingamerica.loc.gov',

@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-21T13:57:13Z",
+  "generated_at": "2026-05-30T18:17:31Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
       "label": "root",
       "path": ".",
       "lockfile": "package-lock.json",
-      "package_count": 999,
+      "package_count": 1001,
       "buckets": {
-        "permissive": 990,
+        "permissive": 992,
         "watch": 4,
         "other": 5
       },
@@ -3909,6 +3909,17 @@
           "source": "package.json"
         },
         {
+          "name": "agent-base",
+          "version": "6.0.2",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/axios/node_modules/agent-base",
+          "repository": "git://github.com/TooTallNate/node-agent-base.git",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
           "name": "agentkeepalive",
           "version": "4.6.0",
           "license": "MIT",
@@ -4240,7 +4251,7 @@
         },
         {
           "name": "axios",
-          "version": "1.15.2",
+          "version": "1.16.1",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -6935,6 +6946,17 @@
         },
         {
           "name": "https-proxy-agent",
+          "version": "5.0.1",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/axios/node_modules/https-proxy-agent",
+          "repository": "git://github.com/TooTallNate/node-https-proxy-agent.git",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "https-proxy-agent",
           "version": "7.0.6",
           "license": "MIT",
           "bucket": "permissive",
@@ -9135,7 +9157,7 @@
         },
         {
           "name": "qs",
-          "version": "6.15.1",
+          "version": "6.15.2",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -11874,7 +11896,7 @@
         },
         {
           "name": "qs",
-          "version": "6.15.1",
+          "version": "6.15.2",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -13183,7 +13205,7 @@
         },
         {
           "name": "qs",
-          "version": "6.15.0",
+          "version": "6.15.2",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",

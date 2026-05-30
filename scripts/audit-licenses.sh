@@ -203,7 +203,12 @@ function loadSnapshot() {
 
   const payload = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
   const packages = new Map();
+  const snapshotLockfiles = new Set();
   for (const tree of payload.trees || []) {
+    if (tree.lockfile) {
+      snapshotLockfiles.add(tree.lockfile);
+    }
+
     for (const row of tree.packages || []) {
       if (!row.lockfile || !row.name) continue;
       packages.set(`${row.lockfile}\0${row.name}`, row);
@@ -212,6 +217,7 @@ function loadSnapshot() {
 
   return {
     packages,
+    lockfiles: snapshotLockfiles,
     loaded: true,
     generatedAt: payload.generated_at || 'unknown',
   };
@@ -266,6 +272,10 @@ if (snapshot.loaded) {
   emit('INFO', `npm license snapshot loaded from ${snapshotPath} generated=${snapshot.generatedAt}`);
   const snapshotMtime = fs.statSync(snapshotPath).mtimeMs;
   for (const lockfile of lockfiles) {
+    if (!snapshot.lockfiles.has(lockfile)) {
+      continue;
+    }
+
     if (fs.existsSync(lockfile) && fs.statSync(lockfile).mtimeMs > snapshotMtime) {
       emit('WARN', `npm ${lockfile} is newer than ${snapshotPath}; refresh npm license snapshot`);
     }

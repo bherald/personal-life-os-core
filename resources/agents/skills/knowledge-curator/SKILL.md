@@ -33,6 +33,8 @@ tool_phases:
     - rss_feeds_needing_attention
     - procedure_stats
     - recall_episodes
+    - agent_session_search
+    - agent_trajectory_build
     # Knowledge graph assessment
     - graph_stats
     - graph_community_stats
@@ -123,6 +125,8 @@ tools:
   - consolidate_procedures
   # Episodic memory
   - recall_episodes
+  - agent_session_search
+  - agent_trajectory_build
   - save_episode_note
   # Skill optimization
   - analyze_skill_performance

@@ -29,6 +29,8 @@ tool_phases:
     - ai_system_load
     - system_health_check
     - recall_episodes
+    - agent_session_search
+    - agent_trajectory_build
     - check_model_updates
   act:
     - stalled_jobs
@@ -81,6 +83,8 @@ tools:
   - procedure_stats
   # Episodic memory
   - recall_episodes
+  - agent_session_search
+  - agent_trajectory_build
   - save_episode_note
   # Tool composition
   - discover_compositions

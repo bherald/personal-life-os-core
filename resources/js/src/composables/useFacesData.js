@@ -28,12 +28,16 @@ const namedOnlyLoading = ref(false)
 const namedOnlyDecisionState = ref('open')
 const namedOnlyStaleOnly = ref(false)
 const namedOnlySort = ref('recent')
+const namedOnlyActiveOnly = ref(true)
+const namedOnlyClusterScope = ref('all')
+const namedOnlySearch = ref('')
 const PAGE_SIZE_RECOGNIZED = 60
 const PAGE_SIZE_NEW = 50
 const PAGE_SIZE_HIDDEN = 60
 const PAGE_SIZE_NAMED_ONLY = 50
 const NAMED_ONLY_DECISION_STATES = new Set(['open', 'decided', 'all'])
 const NAMED_ONLY_SORTS = new Set(['recent', 'oldest'])
+const NAMED_ONLY_CLUSTER_SCOPES = new Set(['all', 'mixed'])
 
 // Unidentified faces (N63)
 const unidentifiedFaces = ref([])
@@ -193,6 +197,9 @@ export function useFacesData() {
           decision_state: namedOnlyDecisionState.value,
           stale: namedOnlyStaleOnly.value ? 1 : undefined,
           sort: namedOnlySort.value,
+          active_only: namedOnlyActiveOnly.value ? 1 : 0,
+          cluster_scope: namedOnlyClusterScope.value,
+          search: namedOnlySearch.value || undefined,
         }
       })
 
@@ -231,6 +238,27 @@ export function useFacesData() {
     const nextSort = normalizeNamedOnlySort(sort)
     if (namedOnlySort.value === nextSort && namedOnlyFaces.value.length > 0) return
     namedOnlySort.value = nextSort
+    await loadNamedOnly(true)
+  }
+
+  async function setNamedOnlyActiveOnly(activeOnly) {
+    const nextValue = Boolean(activeOnly)
+    if (namedOnlyActiveOnly.value === nextValue && namedOnlyFaces.value.length > 0) return
+    namedOnlyActiveOnly.value = nextValue
+    await loadNamedOnly(true)
+  }
+
+  async function setNamedOnlyClusterScope(clusterScope) {
+    const nextScope = normalizeNamedOnlyClusterScope(clusterScope)
+    if (namedOnlyClusterScope.value === nextScope && namedOnlyFaces.value.length > 0) return
+    namedOnlyClusterScope.value = nextScope
+    await loadNamedOnly(true)
+  }
+
+  async function setNamedOnlySearch(search) {
+    const nextSearch = String(search || '').trim()
+    if (namedOnlySearch.value === nextSearch && namedOnlyFaces.value.length > 0) return
+    namedOnlySearch.value = nextSearch
     await loadNamedOnly(true)
   }
 
@@ -564,6 +592,11 @@ export function useFacesData() {
     return NAMED_ONLY_SORTS.has(normalized) ? normalized : 'recent'
   }
 
+  function normalizeNamedOnlyClusterScope(clusterScope) {
+    const normalized = String(clusterScope || 'all').trim()
+    return NAMED_ONLY_CLUSTER_SCOPES.has(normalized) ? normalized : 'all'
+  }
+
   // --- Keyboard ---
 
   function handleKeydown(e) {
@@ -629,6 +662,9 @@ export function useFacesData() {
     namedOnlyDecisionState,
     namedOnlyStaleOnly,
     namedOnlySort,
+    namedOnlyActiveOnly,
+    namedOnlyClusterScope,
+    namedOnlySearch,
     unidentifiedFaces,
     unidentifiedPage,
     unidentifiedTotal,
@@ -652,6 +688,9 @@ export function useFacesData() {
     setNamedOnlyDecisionState,
     setNamedOnlyStaleOnly,
     setNamedOnlySort,
+    setNamedOnlyActiveOnly,
+    setNamedOnlyClusterScope,
+    setNamedOnlySearch,
     linkNamedOnlyFace,
     decideNamedOnlyFace,
     unhideFace,

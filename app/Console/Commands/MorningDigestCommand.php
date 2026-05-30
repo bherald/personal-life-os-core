@@ -978,7 +978,14 @@ class MorningDigestCommand extends Command
             $sessions = DB::select("
                 SELECT agent_name AS agent_id, COUNT(*) AS sessions,
                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                       SUM(CASE WHEN status IN ('failed','expired') THEN 1 ELSE 0 END) AS failed
+                       SUM(CASE WHEN status IN ('failed','expired') THEN 1 ELSE 0 END) AS failed,
+                       SUM(CASE
+                           WHEN status = 'completed'
+                            AND agent_name IN ('ai-ops', 'system-guardian', 'log-analyst')
+                            AND COALESCE(message_count, 0) = 0
+                            AND COALESCE(total_tokens, 0) = 0
+                           THEN 1 ELSE 0
+                       END) AS pre_screened_completed
                 FROM agent_sessions
                 WHERE created_at > DATE_SUB(NOW(), INTERVAL ? HOUR) AND agent_name IS NOT NULL AND agent_name != ''
                 GROUP BY agent_name
@@ -1024,15 +1031,19 @@ class MorningDigestCommand extends Command
             foreach ($sessions as $s) {
                 $productiveSessions = count($toolStats[$s->agent_id]['productive_sessions'] ?? []);
                 $completed = (int) $s->completed;
+                $preScreenedCompleted = min($completed, (int) ($s->pre_screened_completed ?? 0));
+                $yieldEligibleCompleted = max(0, $completed - $preScreenedCompleted);
                 $agents[] = [
                     'agent_id' => $s->agent_id,
                     'sessions' => (int) $s->sessions,
                     'completed' => $completed,
+                    'pre_screened_completed' => $preScreenedCompleted,
+                    'yield_eligible_completed' => $yieldEligibleCompleted,
                     'failed' => (int) $s->failed,
                     'review_items' => $reviewMap[$s->agent_id] ?? 0,
                     'successful_tool_calls' => $toolStats[$s->agent_id]['successful_tool_calls'] ?? 0,
                     'productive_sessions' => $productiveSessions,
-                    'yield_rate' => $completed > 0 ? (int) round(($productiveSessions / $completed) * 100) : 0,
+                    'yield_rate' => $yieldEligibleCompleted > 0 ? (int) round(($productiveSessions / $yieldEligibleCompleted) * 100) : 0,
                     'pending_queue' => $pendingMap[$s->agent_id] ?? 0,
                 ];
             }
@@ -1058,9 +1069,11 @@ class MorningDigestCommand extends Command
                 continue;
             }
 
-            // Zero-yield is only meaningful when an agent actually completed runs.
-            // Failed-only agents are already captured by job failure reporting.
-            if (($agent['completed'] ?? 0) <= 0) {
+            // Zero-yield is only meaningful when an agent actually completed
+            // LLM/tool work. Monitoring pre-screen all-clear sessions complete
+            // without messages, tokens, or tool calls by design.
+            $yieldEligibleCompleted = (int) ($agent['yield_eligible_completed'] ?? ($agent['completed'] ?? 0));
+            if ($yieldEligibleCompleted <= 0) {
                 continue;
             }
 

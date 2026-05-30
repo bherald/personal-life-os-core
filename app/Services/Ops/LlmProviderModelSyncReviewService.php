@@ -232,6 +232,26 @@ class LlmProviderModelSyncReviewService
                 ];
             }
 
+            if ($instanceType === 'local_llm') {
+                $response = Http::connectTimeout($connectTimeout)
+                    ->timeout($timeout)
+                    ->get($baseUrl.'/models');
+
+                if (! $response->successful()) {
+                    return [
+                        'status' => 'failed',
+                        'reason' => 'http_'.$response->status(),
+                        'models' => [],
+                    ];
+                }
+
+                return [
+                    'status' => 'ok',
+                    'reason' => null,
+                    'models' => $this->idsFromOpenAiPayload((array) $response->json('data', [])),
+                ];
+            }
+
             if (in_array($instanceType, ['custom', 'openai', 'azure_openai', 'google_gemini'], true)) {
                 $token = $this->runtimeSecret((string) ($row->api_key ?? ''), (string) ($row->api_key_env ?? ''));
                 if ($token === null) {

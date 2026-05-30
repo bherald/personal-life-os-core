@@ -19,7 +19,7 @@ use InvalidArgumentException;
  * 4. Resolution of conflicting evidence
  * 5. Soundly reasoned, coherently written conclusion
  *
- * @see docs/future-enhancements.md Priority 4
+ * Historical private backlog label: Priority 4 research task management.
  * @see Board for Certification of Genealogists GPS standard
  */
 class ResearchTaskService

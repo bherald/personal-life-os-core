@@ -742,8 +742,19 @@ class GedcomExportService
             return '';
         }
 
+        $date = trim($date);
+        if ($date === '') {
+            return '';
+        }
+
+        // A bare genealogy year is already a valid GEDCOM date. Do not send it
+        // through strtotime(): PHP treats "1850" as 18:50 today.
+        if (preg_match('/^\d{3,4}$/', $date)) {
+            return $date;
+        }
+
         // Already in GEDCOM format (has month abbreviation)
-        if (preg_match('/[A-Z]{3}/', $date)) {
+        if (preg_match('/[A-Z]{3}/i', $date)) {
             return strtoupper($date);
         }
 

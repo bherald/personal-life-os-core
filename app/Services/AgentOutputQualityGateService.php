@@ -45,6 +45,7 @@ class AgentOutputQualityGateService
         'source_id',
         'citation_id',
         'record_id',
+        'proposed_value',
         'memorial_id',
         'attachment_id',
         'checksum',
@@ -136,6 +137,9 @@ class AgentOutputQualityGateService
         }
         if ($this->isGenealogyReview($reviewType, $findingType, $agentId) && $this->hasMaterialGenealogyFindingWithoutEvidence($details)) {
             $hardFailReasons[] = 'genealogy_finding_missing_evidence';
+        }
+        if ($this->isGenealogyReview($reviewType, $findingType, $agentId) && $this->hasLowQualityGenealogySourceSearchHit($details)) {
+            $hardFailReasons[] = 'low_quality_genealogy_source_search_hit';
         }
         if ($outputSurface === 'public_doc' && $this->hasUnsupportedPublicDocClaim($text)) {
             $hardFailReasons[] = 'public_doc_unsupported_release_claim';
@@ -405,6 +409,7 @@ class AgentOutputQualityGateService
                 'private_data_marker_detected' => 20,
                 'genealogy_finding_missing_evidence' => 30,
                 'unsupported_source_or_citation' => 20,
+                'low_quality_genealogy_source_search_hit' => 30,
                 'public_doc_unsupported_release_claim' => 30,
                 'manual_browser_provider_as_automated_evidence' => 25,
                 'high_confidence_weak_genealogy_evidence' => 20,
@@ -587,6 +592,168 @@ class AgentOutputQualityGateService
         }
 
         return false;
+    }
+
+    public function allGenealogySourceProposalsAreLowQualitySearchHits(array $details): bool
+    {
+        $items = $this->proposalItems($details);
+        if ($items === []) {
+            return false;
+        }
+
+        $sourceItems = [];
+        foreach ($items as $item) {
+            $changeType = strtolower((string) ($item['change_type'] ?? $item['relationship_type'] ?? ''));
+            if (! in_array($changeType, self::SOURCE_CHANGE_TYPES, true)) {
+                return false;
+            }
+            $sourceItems[] = $item;
+        }
+
+        if ($sourceItems === []) {
+            return false;
+        }
+
+        $personName = $this->detailsPersonName($details);
+        foreach ($sourceItems as $item) {
+            if (! $this->isLowQualityGenealogySourceSearchProposal($item, $personName)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public function isLowQualityGenealogySourceSearchProposal(array $proposal, ?string $personName = null): bool
+    {
+        $changeType = strtolower((string) ($proposal['change_type'] ?? $proposal['relationship_type'] ?? ''));
+        if (! in_array($changeType, self::SOURCE_CHANGE_TYPES, true)) {
+            return false;
+        }
+
+        if (! $this->isGenericSourceSearchBacked($proposal)) {
+            return false;
+        }
+
+        return ! $this->sourceSearchProposalHasIdentityBridge($proposal, $personName);
+    }
+
+    private function hasLowQualityGenealogySourceSearchHit(array $details): bool
+    {
+        $personName = $this->detailsPersonName($details);
+        foreach ($this->proposalItems($details) as $item) {
+            if ($this->isLowQualityGenealogySourceSearchProposal($item, $personName)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isGenericSourceSearchBacked(array $proposal): bool
+    {
+        $sources = $proposal['evidence_sources'] ?? [];
+        $sources = is_array($sources) ? $sources : [$sources];
+        foreach ($sources as $source) {
+            if (! is_scalar($source)) {
+                continue;
+            }
+            $normalized = strtolower(trim((string) $source));
+            if (in_array($normalized, ['source_search_all', 'update_search_coverage'], true)) {
+                return true;
+            }
+        }
+
+        $summary = strtolower((string) ($proposal['evidence_summary'] ?? ''));
+
+        return str_contains($summary, 'source_search_all') || str_contains($summary, ' — query: ');
+    }
+
+    private function sourceSearchProposalHasIdentityBridge(array $proposal, ?string $personName): bool
+    {
+        $personName = trim((string) $personName);
+        if ($personName === '') {
+            return false;
+        }
+
+        $summary = (string) ($proposal['evidence_summary'] ?? '');
+        $preQuerySummary = preg_split('/\s+(?:-|—)\s+query\s*:/iu', $summary, 2)[0] ?? $summary;
+        $text = $preQuerySummary.' '.
+            (string) ($proposal['source_citation'] ?? '').' '.
+            (string) ($proposal['extracted_text'] ?? '').' '.
+            (string) ($proposal['record_title'] ?? '');
+
+        $normalizedText = $this->normalizeIdentityText($text);
+        if ($normalizedText === '') {
+            return false;
+        }
+
+        $tokens = $this->identityNameTokens($personName);
+        if (count($tokens) < 2) {
+            return false;
+        }
+
+        $hitCount = 0;
+        foreach ($tokens as $token) {
+            if (preg_match('/\b'.preg_quote($token, '/').'\b/i', $normalizedText) === 1) {
+                $hitCount++;
+            }
+        }
+
+        if ($hitCount < min(2, count($tokens))) {
+            return false;
+        }
+
+        $phrasePattern = implode('\s+', array_map(static fn (string $token): string => preg_quote($token, '/'), $tokens));
+        if (preg_match('/\bwitness\s*\d*\s+'.$phrasePattern.'\b/i', $normalizedText) === 1) {
+            return false;
+        }
+
+        if (count($tokens) >= 3 && $hitCount < count($tokens)) {
+            return false;
+        }
+
+        return preg_match('/\b(of|from|resident|residence|county|township|born|birth|baptis\w*|christen\w*|death|died|burial|cemetery|memorial|marriage|married|spouse|wife|husband|son|daughter|father|mother|parent|occupation|census|enumerat\w*|obituary|pension|household|probate|will|estate|naturaliz\w*|military|service|regiment|company|artillery)\b/i', $normalizedText) === 1
+            || preg_match('/\b(1[5-9]\d{2}|20\d{2})\b/', $normalizedText) === 1;
+    }
+
+    private function detailsPersonName(array $details): ?string
+    {
+        foreach (['person_name', 'name', 'target_name'] as $key) {
+            if (isset($details[$key]) && is_scalar($details[$key])) {
+                $name = trim((string) $details[$key]);
+                if ($name !== '') {
+                    return $name;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function identityNameTokens(string $name): array
+    {
+        $normalized = $this->normalizeIdentityText($name);
+        $tokens = preg_split('/\s+/', $normalized) ?: [];
+        $stop = ['the', 'and', 'jr', 'sr', 'ii', 'iii', 'iv', 'unknown'];
+
+        return array_values(array_unique(array_filter(
+            $tokens,
+            static fn (string $token): bool => strlen($token) >= 3 && ! in_array($token, $stop, true)
+        )));
+    }
+
+    private function normalizeIdentityText(string $text): string
+    {
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = strtolower($text);
+        $text = (string) preg_replace('/https?:\/\/\S+/i', ' ', $text);
+        $text = (string) preg_replace('/[^a-z0-9]+/', ' ', $text);
+
+        return trim((string) preg_replace('/\s+/', ' ', $text));
     }
 
     private function hasEvidence(array $item): bool

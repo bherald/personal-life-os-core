@@ -1,21 +1,81 @@
 import { z } from 'zod';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CONFIG, shellQuote, sshCmd } from '../config.js';
 import { logger } from '../util/logger.js';
 import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-21-codex-exec-connector';
+export const ALLOWLIST_REVISION = '2026-05-27-trace-tail-compact';
+
+const ALLOWLIST_REVISION_PATTERN = /ALLOWLIST_REVISION\s*=\s*['"]([^'"]+)['"]/;
+
+export type AllowlistFreshness = {
+  status: 'current' | 'stale' | 'unknown';
+  loaded_revision: string;
+  source_revision: string | null;
+  dist_revision: string | null;
+  mismatched_revision_count: number;
+};
+
+export function extractAllowlistRevision(contents: string): string | null {
+  return contents.match(ALLOWLIST_REVISION_PATTERN)?.[1] ?? null;
+}
+
+export function allowlistFreshness(input: {
+  sourceText?: string | null;
+  distText?: string | null;
+} = {}): AllowlistFreshness {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const sourceText = Object.hasOwn(input, 'sourceText')
+    ? input.sourceText
+    : readTextIfPresent(resolve(moduleDir, '../../src/tools/plos-artisan.ts'));
+  const distText = Object.hasOwn(input, 'distText')
+    ? input.distText
+    : readTextIfPresent(resolve(moduleDir, 'plos-artisan.js'));
+
+  const sourceRevision = sourceText === null || sourceText === undefined ? null : extractAllowlistRevision(sourceText);
+  const distRevision = distText === null || distText === undefined ? null : extractAllowlistRevision(distText);
+  const revisions = [sourceRevision, distRevision].filter((revision): revision is string => revision !== null);
+  const mismatchedRevisionCount = revisions.filter(revision => revision !== ALLOWLIST_REVISION).length;
+
+  return {
+    status: revisions.length === 0 ? 'unknown' : (mismatchedRevisionCount > 0 ? 'stale' : 'current'),
+    loaded_revision: ALLOWLIST_REVISION,
+    source_revision: sourceRevision,
+    dist_revision: distRevision,
+    mismatched_revision_count: mismatchedRevisionCount,
+  };
+}
+
+function readTextIfPresent(path: string): string | null {
+  if (!existsSync(path)) {
+    return null;
+  }
+
+  return readFileSync(path, 'utf8');
+}
+
+function allowlistFreshnessLine(): string {
+  const freshness = allowlistFreshness();
+
+  return `Allowlist freshness: status=${freshness.status} loaded=${freshness.loaded_revision} source=${freshness.source_revision ?? 'unknown'} dist=${freshness.dist_revision ?? 'unknown'} mismatches=${freshness.mismatched_revision_count}`;
+}
 
 export const COMPACT_SCORECARD_COMMANDS = [
+  'ops:offline-smoke --json --compact',
   'ops:mcp-health --json --compact',
   'ops:agent-doctor --json --compact --since=24',
   'ops:agent-doctor-history --json --compact --days=7',
-  'plos:agent-trace-tail --limit=20 --since=24 --json',
+  'plos:agent-trace-tail --limit=20 --since=24 --json --compact',
   'episodic:memory --stats --json --compact',
   'agent:procedures --stats --json --compact',
   'llm:sync-providers --json --compact',
   'codex:exec-smoke --json',
+  'ops:local-runtime-scorecard --json --compact',
+  'ops:scheduled-output-audit --json --compact --fail-on-violations',
   'ollama:drift-check --json --compact --no-fail',
   'ollama:eval-scorecard --json --compact',
 ] as const;
@@ -28,7 +88,6 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:health-gate':             { description: 'All validation gates (deploy blocker)', timeout: 60_000 },
   'ops:health-gate --quick':     { description: 'Quick health gate', timeout: 30_000 },
   'ops:daily-report --dry-run':  { description: 'Morning digest preview (no send)', timeout: 60_000 },
-  'ops:operator-evidence --json': { description: 'Operator evidence dashboard payload', timeout: 30_000 },
   'ops:operator-evidence --compact': { description: 'Compact operator evidence dashboard summary', timeout: 30_000 },
   'ops:operator-evidence --json --compact': { description: 'Compact operator evidence dashboard payload', timeout: 30_000 },
   'ops:review-backlog-report --json': { description: 'Read-only review backlog triage report', timeout: 30_000 },
@@ -45,22 +104,22 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:review-backlog-report --next-target --focus=source-backed-packet --json': { description: 'Read-only sanitized source-backed review packet target JSON', timeout: 30_000 },
   'ops:review-backlog-report --next-target --focus=aged-review --json': { description: 'Read-only sanitized oldest aged review target JSON', timeout: 30_000 },
   'ops:offline-status --json':   { description: 'Offline/degraded runtime status', timeout: 15_000 },
-  'ops:offline-smoke --json':    { description: 'Manual read-only offline smoke report', timeout: 30_000 },
-  'ops:agent-doctor --json --since=24': { description: 'Observe-only agent health diagnostics', timeout: 30_000 },
+  'ops:offline-smoke --json --compact': { description: 'Compact read-only offline smoke report without raw details', timeout: 30_000 },
   'ops:agent-doctor --compact': { description: 'Compact observe-only agent health diagnostics', timeout: 30_000 },
   'ops:agent-doctor --json --compact': { description: 'Compact observe-only agent health diagnostics JSON', timeout: 30_000 },
   'ops:agent-doctor --json --compact --since=24': { description: 'Compact observe-only 24-hour agent health diagnostics JSON', timeout: 30_000 },
   'plos:agent-doctor --compact': { description: 'Compact PLOS operator-facing agent diagnostics', timeout: 30_000 },
   'plos:agent-doctor --json --compact': { description: 'Compact PLOS operator-facing agent diagnostics JSON', timeout: 30_000 },
   'ops:agent-doctor-snapshot --dry-run --json': { description: 'Dry-run aggregate Agent Doctor readiness snapshot', timeout: 30_000 },
-  'ops:agent-doctor-history --json --days=7': { description: 'Read-only Agent Doctor readiness snapshot history', timeout: 30_000 },
   'ops:agent-doctor-history --json --compact --days=7': { description: 'Compact read-only Agent Doctor readiness snapshot history', timeout: 30_000 },
-  'plos:agent-trace-tail --limit=20 --since=24 --json': { description: 'Read-only redacted recent agent trace tail JSON', timeout: 30_000 },
+  'plos:agent-trace-tail --limit=20 --since=24 --json --compact': { description: 'Compact read-only recent agent trace tail counts without events, ids, actor ids, paths, or payload details', timeout: 30_000 },
   'ops:mcp-health --compact': { description: 'Compact observe-only MCP configuration and process health scorecard', timeout: 30_000 },
   'ops:mcp-health --json --compact': { description: 'Compact observe-only MCP configuration and process health JSON', timeout: 30_000 },
   'llm:sync-providers --json --compact': { description: 'Compact read-only LLM provider model diff and role/capability review', timeout: 60_000 },
   'llm:sync-providers --json --compact --no-live': { description: 'Compact read-only LLM provider role/capability review without network probes', timeout: 30_000 },
   'codex:exec-smoke --json': { description: 'Dry-run table-backed Codex Exec connector smoke without invoking Codex', timeout: 30_000 },
+  'ops:local-runtime-scorecard --json --compact': { description: 'Compact observe-only local/runtime LLM privacy and readiness scorecard without probes', timeout: 30_000 },
+  'ops:scheduled-output-audit --json --compact --fail-on-violations': { description: 'Compact retained scheduled-output key hygiene audit without raw output or job rows', timeout: 30_000 },
   'ollama:drift-check --json --compact --no-fail': { description: 'Compact read-only Ollama live-vs-DB model drift summary without model names or host URLs', timeout: 60_000 },
   'ollama:eval-scorecard --json --compact': { description: 'Compact read-only Ollama Sprint A routing, candidate, and compression scorecard', timeout: 30_000 },
   'ops:capacity-report --json':   { description: 'Observe-only capacity evidence report', timeout: 30_000 },
@@ -74,12 +133,13 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:face-telemetry-report --compact': { description: 'Compact face/genealogy telemetry report', timeout: 30_000 },
   'ops:face-telemetry-report --json --compact': { description: 'Compact face/genealogy telemetry JSON', timeout: 30_000 },
   'ops:face-telemetry-report --markdown --compact': { description: 'Compact face/genealogy telemetry markdown', timeout: 30_000 },
-  'ops:dba-telemetry-report --json': { description: 'Observe-only DBA telemetry report', timeout: 60_000 },
+  'ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json': { description: 'Read-only face mixed-cluster operator packet with sanitized face samples', timeout: 30_000 },
+  'ops:face-named-only-slice --limit=10 --json': { description: 'Read-only named-only face operator slice without writeback', timeout: 30_000 },
   'ops:dba-telemetry-report --compact': { description: 'Compact observe-only DBA telemetry report', timeout: 60_000 },
   'ops:dba-telemetry-report --json --compact': { description: 'Compact observe-only DBA telemetry JSON', timeout: 60_000 },
   'ops:dba-telemetry-report --markdown --compact': { description: 'Compact observe-only DBA telemetry markdown', timeout: 60_000 },
   'ops:dba-telemetry-report --markdown --dry-run': { description: 'Dry-run observe-only DBA telemetry markdown', timeout: 60_000 },
-  'ops:arc-retention --json': { description: 'Read-only ARC retention dry-run evidence', timeout: 30_000 },
+  'ops:arc-retention --json --compact': { description: 'Compact read-only ARC retention dry-run evidence without environment names, row IDs, or raw timestamps', timeout: 30_000 },
   'ops:audit-privacy-routing --json': { description: 'Sensitive-provider privacy routing audit', timeout: 30_000 },
   'ops:sync-schema-reference':   { description: 'Regenerate schema-reference.md from live DB', timeout: 30_000 },
   'ops:sync-schema-reference --diff': { description: 'Show schema drift without writing', timeout: 30_000 },
@@ -87,6 +147,11 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'files:reconcile-lifecycle --compact': { description: 'Compact read-only file lifecycle reconciliation evidence', timeout: 30_000 },
   'files:reconcile-lifecycle --json --compact': { description: 'Compact JSON read-only file lifecycle reconciliation evidence', timeout: 30_000 },
   'files:reconcile-lifecycle --markdown --compact': { description: 'Compact markdown read-only file lifecycle reconciliation evidence', timeout: 30_000 },
+  'files:resolve-duplicates --status --json --compact': { description: 'Compact read-only duplicate resolver status for the default Family Tree Maker scope without paths or row selectors', timeout: 30_000 },
+  'files:materialize-duplicate-candidates --json --compact --limit=1000': { description: 'Compact dry-run duplicate candidate materialization evidence without file paths or raw samples', timeout: 60_000 },
+  'joplin:rag-reconcile --json --event-hours=24': { description: 'Read-only Joplin RAG reconcile dry-run for 24-hour context events', timeout: 60_000 },
+  'joplin:rag-reconcile --json --event-hours=24 --triggered-only': { description: 'Read-only Joplin RAG reconcile dry-run scoped to triggered context events', timeout: 60_000 },
+  'joplin:rag-reconcile --json --event-hours=24 --triggered-only --limit=50 --max-delete-candidates=50 --max-dependent-rows=5000': { description: 'Capped scheduled Joplin RAG reconcile dry-run without execute/writeback', timeout: 60_000 },
   'files:thumbnails --stats':    { description: 'Thumbnail pipeline stats', timeout: 15_000 },
   'genealogy:reject-codes --json': { description: 'Genealogy reviewer reject-code rollup', timeout: 30_000 },
   'genealogy:reject-codes --json --days=30': { description: 'Genealogy reviewer reject-code 30-day rollup', timeout: 30_000 },
@@ -161,7 +226,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'rag:scale-review --markdown': { description: 'Read-only RAG scale review markdown without saved retrieval file', timeout: 60_000 },
   'rag:scale-review --compact': { description: 'Compact read-only RAG scale review evidence without saved retrieval file', timeout: 60_000 },
   'rag:scale-review --json --compact': { description: 'Compact read-only RAG scale review JSON without saved retrieval file', timeout: 60_000 },
-  'graph:audit-provenance --json': { description: 'Knowledge graph provenance audit', timeout: 60_000 },
+  'graph:audit-provenance --json --compact': { description: 'Compact knowledge graph provenance audit without sample rows or raw document titles', timeout: 60_000 },
   'graph:snapshot-provenance --dry-run --json': { description: 'Dry-run knowledge graph provenance snapshot payload', timeout: 60_000 },
   'graph:detect-communities --stats':  { description: 'Community detection stats', timeout: 15_000 },
   'graph:quality-metrics --stats':     { description: 'Graph quality metrics', timeout: 15_000 },
@@ -195,6 +260,7 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
     const lines = [
       'Available artisan commands:\n',
       `Allowlist revision: ${ALLOWLIST_REVISION}`,
+      allowlistFreshnessLine(),
       `Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}\n`,
       'Compact scorecard commands (exact forms only):',
     ];
@@ -223,6 +289,7 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
       .slice(0, 5);
     return `Blocked: "${command}" is not in the allowed command list.\n`
       + `Allowlist revision: ${ALLOWLIST_REVISION}\n`
+      + `${allowlistFreshnessLine()}\n`
       + `Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}\n`
       + (suggestions.length ? `Did you mean: ${suggestions.join(', ')}?\n` : '')
       + `Use command "list" to see all available commands.`;

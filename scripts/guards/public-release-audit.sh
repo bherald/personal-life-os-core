@@ -33,10 +33,9 @@ public_privacy_scan_excludes=(
     ':!.claude.json'
     ':!.mcp.json'
     ':!CLAUDE.md'
-    ':!docs/active-priority-list.md'
+    ':!docs/TODO.md'
     ':!docs/PROJECT.md'
     ':!docs/PROD-MAINTENANCE.md'
-    ':!docs/future-enhancements.md'
     ':!docs/papers-and-newsletters'
     ':!docs/papers-and-newsletters/**'
     ':!docs/planning'
@@ -92,12 +91,12 @@ scan_credentialed_urls() {
     placeholder_pattern='://(user|username|example|placeholder):(pass|password|secret|placeholder)@'
 
     git grep -n -I -E -e "$url_pattern" -- "${public_candidate_scan_paths[@]}" "${public_privacy_scan_excludes[@]}" \
-        | rg -v -i -e "$placeholder_pattern"
+        | grep -v -i -E -e "$placeholder_pattern"
 }
 
 scan_dev_agent_reference_paths() {
     printf '%s\n' "${public_candidate_scan_paths[@]}" \
-        | rg -i '(^|/)(\.cline|\.roo|\.continue|\.aider|\.openhands|\.goose|\.swe-agent|claude-code-source|claude-code-prompts|cline-rules|roo-rules)(/|$|\.|-)'
+        | grep -i -E '(^|/)(\.cline|\.roo|\.continue|\.aider|\.openhands|\.goose|\.swe-agent|claude-code-source|claude-code-prompts|cline-rules|roo-rules)(/|$|\.|-)'
 }
 
 scan_tracked_runtime_storage_payloads() {
@@ -105,7 +104,7 @@ scan_tracked_runtime_storage_payloads() {
     # storage/claude-work, storage/tools, and any future tracked runtime
     # storage payload outside the public placeholder .gitignore files.
     git ls-files storage \
-        | rg -v '^(storage/app/\.gitignore|storage/app/private/\.gitignore|storage/app/public/\.gitignore|storage/framework/\.gitignore|storage/framework/cache/\.gitignore|storage/framework/cache/data/\.gitignore|storage/framework/sessions/\.gitignore|storage/framework/testing/\.gitignore|storage/framework/views/\.gitignore|storage/logs/\.gitignore)$'
+        | grep -v -E '^(storage/app/\.gitignore|storage/app/private/\.gitignore|storage/app/public/\.gitignore|storage/framework/\.gitignore|storage/framework/cache/\.gitignore|storage/framework/cache/data/\.gitignore|storage/framework/sessions/\.gitignore|storage/framework/testing/\.gitignore|storage/framework/views/\.gitignore|storage/logs/\.gitignore)$'
 }
 
 print_header "Public release audit"
@@ -142,7 +141,7 @@ flag_lines "Tracked archives, screenshots, or generated bundles needing review" 
     bash -c "git ls-files -- '*.zip' '*.tar' '*.tar.gz' '*.tgz' '*.7z' '*.sqlite' '*.db' '*.dump' '*.pem' '*.key' '*.p12' '*.pfx' '*.xpi' 'scheduled-jobs-*.png' 'public/build/**' ':!mcp-server/node_modules/**'"
 
 flag_lines "Vendored dependencies tracked in git" \
-    bash -c "git ls-files | rg '(^|/)(node_modules|vendor)/'"
+    bash -c "git ls-files | grep -E '(^|/)(node_modules|vendor)/'"
 
 flag_lines "Tracked runtime storage payloads requiring public-extraction review" \
     scan_tracked_runtime_storage_payloads
@@ -277,9 +276,9 @@ flag_lines "Files containing private database names or historical credential lit
         ':!.claude.json' \
         ':!.mcp.json' \
         ':!CLAUDE.md' \
+        ':!docs/TODO.md' \
         ':!docs/PROJECT.md' \
         ':!docs/PROD-MAINTENANCE.md' \
-        ':!docs/future-enhancements.md' \
         ':!docs/papers-and-newsletters' \
         ':!docs/papers-and-newsletters/**' \
         ':!docs/planning' \
@@ -291,7 +290,7 @@ flag_lines "Files containing private database names or historical credential lit
         ':!scripts/guards/public-release-audit.sh'
 
 flag_lines "Brand/trademark file paths to rename or private-only gate" \
-    bash -c "git ls-files app resources routes config database docs tailwind.config.js ':!docs/planning' ':!docs/planning/**' | rg -i '(lcars|star[ _-]?trek|starfleet|federation|tricorder|viewscreen|comm[ _-]?badge|warp[ _-]?drive|impulse[ _-]?engine|(^|[^[:alnum:]_])(tng|voy|ds9)([^[:alnum:]_]|$))' | rg -v '^docs/(PROJECT.md|plos-focus-report-.*|public-release-readiness.md|public-release/npm-license-snapshot\\.(json|md)|canonical-docs-archive-.*\\.zip)$'"
+    bash -c "git ls-files app resources routes config database docs tailwind.config.js ':!docs/planning' ':!docs/planning/**' | grep -i -E '(lcars|star[ _-]?trek|starfleet|federation|tricorder|viewscreen|comm[ _-]?badge|warp[ _-]?drive|impulse[ _-]?engine|(^|[^[:alnum:]_])(tng|voy|ds9)([^[:alnum:]_]|$))' | grep -v -E '^docs/(PROJECT.md|plos-focus-report-.*|public-release-readiness.md|public-release/npm-license-snapshot\\.(json|md)|canonical-docs-archive-.*\\.zip)$'"
 
 flag_lines "Brand/trademark terms to replace or private-only gate" \
     git grep -n -i -I -E '(lcars|star[ _-]?trek|starfleet|federation|tricorder|viewscreen|comm[ _-]?badge|warp[ _-]?drive|impulse[ _-]?engine|(^|[^[:alnum:]_])(tng|voy|ds9)([^[:alnum:]_]|$))' -- app resources routes config database docs tailwind.config.js \
@@ -309,7 +308,7 @@ flag_lines "Legacy private project brand terms to replace or private-only gate" 
         ':!docs/canonical-docs-archive-*.zip' \
         ':!docs/PROJECT.md' \
         ':!docs/PROD-MAINTENANCE.md' \
-        ':!docs/future-enhancements.md' \
+        ':!docs/TODO.md' \
         ':!docs/papers-and-newsletters' \
         ':!docs/papers-and-newsletters/**' \
         ':!docs/planning' \

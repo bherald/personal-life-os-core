@@ -261,6 +261,70 @@ class OpsMcpHealthCommandTest extends TestCase
         $this->assertSame($compact, json_decode((string) Artisan::output(), true));
     }
 
+    public function test_compact_payload_includes_offline_policy_profile_admission_summary(): void
+    {
+        config()->set('mcp.servers', [
+            'policy-local' => [
+                'enabled' => true,
+                'type' => 'internal',
+                'transport' => 'internal_service',
+                'tools' => 1,
+                'trust_boundary' => 'plos_local',
+                'network_required' => 'none',
+                'write_scope' => 'none',
+                'secret_surface_risk' => 'low',
+                'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
+                'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'],
+            ],
+            'policy-internet' => [
+                'enabled' => true,
+                'type' => 'external',
+                'transport' => 'external_process',
+                'command' => 'node',
+                'args' => [$this->fixtureEntry],
+                'tools' => 1,
+                'trust_boundary' => 'internet',
+                'network_required' => 'internet',
+                'write_scope' => 'read_only',
+                'secret_surface_risk' => 'medium',
+                'offline_profiles_allowed' => [],
+                'hybrid_profiles_allowed' => ['hybrid_review'],
+            ],
+            'policy-disabled' => [
+                'enabled' => false,
+                'type' => 'internal',
+                'transport' => 'internal_service',
+                'tools' => 1,
+                'trust_boundary' => 'plos_local',
+                'network_required' => 'none',
+                'write_scope' => 'none',
+                'secret_surface_risk' => 'low',
+                'offline_profiles_allowed' => ['offline_review'],
+                'hybrid_profiles_allowed' => ['hybrid_review'],
+            ],
+        ]);
+
+        $service = app(McpHealthReportService::class);
+        $compact = $service->compactPayload($service->collect('node '.$this->fixtureEntry));
+        $policy = $compact['policy_posture'];
+
+        $this->assertSame(['allowed' => 2, 'denied' => 0], $policy['enabled_profile_counts']['default']);
+        $this->assertSame(['allowed' => 1, 'denied' => 1], $policy['enabled_profile_counts']['offline_review']);
+        $this->assertSame(['allowed' => 1, 'denied' => 1], $policy['enabled_profile_counts']['offline_dev_assist']);
+        $this->assertSame(['allowed' => 1, 'denied' => 1], $policy['enabled_profile_counts']['offline_genealogy_assist']);
+        $this->assertSame(['allowed' => 2, 'denied' => 0], $policy['enabled_profile_counts']['hybrid_review']);
+        $this->assertSame(['allowed' => 1, 'denied' => 1], $policy['enabled_profile_counts']['hybrid_dev_assist']);
+        $this->assertSame(['allowed' => 1, 'denied' => 1], $policy['enabled_profile_counts']['cloud_escalation_only']);
+        $this->assertSame(0, $policy['enabled_servers_denied_default']);
+        $this->assertSame(0, $policy['enabled_servers_with_no_non_default_profile']);
+        $this->assertSame(4, $policy['enabled_denial_reason_counts']['trust_boundary_denied']);
+        $this->assertSame(1, $policy['enabled_denial_reason_counts']['hybrid_profile_denied']);
+
+        $servers = collect($service->collect('node '.$this->fixtureEntry)['servers'])->keyBy('name');
+        $this->assertSame(['default', 'hybrid_review'], $servers['policy-internet']['policy']['allowed_profiles']);
+        $this->assertContains('offline_review', $servers['policy-internet']['policy']['denied_profiles']);
+    }
+
     public function test_compact_text_omits_ok_server_details(): void
     {
         $payload = $this->payload();
@@ -297,6 +361,21 @@ class OpsMcpHealthCommandTest extends TestCase
                     'missing_entries' => 0,
                 ],
             ],
+            'policy_posture' => [
+                'enabled_servers_denied_default' => 0,
+                'enabled_servers_with_no_non_default_profile' => 1,
+                'enabled_profile_counts' => [
+                    'offline_review' => ['allowed' => 1, 'denied' => 1],
+                    'offline_dev_assist' => ['allowed' => 2, 'denied' => 0],
+                    'offline_genealogy_assist' => ['allowed' => 1, 'denied' => 1],
+                    'hybrid_review' => ['allowed' => 2, 'denied' => 0],
+                    'hybrid_dev_assist' => ['allowed' => 2, 'denied' => 0],
+                    'cloud_escalation_only' => ['allowed' => 1, 'denied' => 1],
+                ],
+                'enabled_denial_reason_counts' => [
+                    'trust_boundary_denied' => 2,
+                ],
+            ],
         ];
 
         $service = Mockery::mock(McpHealthReportService::class);
@@ -316,6 +395,9 @@ class OpsMcpHealthCommandTest extends TestCase
         $this->assertStringContainsString('write_scope=read:1,workspace:1', $output);
         $this->assertStringContainsString('network_required=optional:1,yes:1', $output);
         $this->assertStringContainsString('secret_surface_risk=high:1,medium:1', $output);
+        $this->assertStringContainsString('policy-posture: enabled_denied_default=0 enabled_no_non_default_profile=1', $output);
+        $this->assertStringContainsString('offline_review=allow:1,deny:1', $output);
+        $this->assertStringContainsString('denial_reasons=trust_boundary_denied:2', $output);
         $this->assertStringContainsString('attention=prompt-compressor status=watch', $output);
         $this->assertStringContainsString('process_matchable=true process_running=false process_marker_count=1', $output);
         $this->assertStringNotContainsString('secret-token', $output);

@@ -28,6 +28,8 @@ tool_phases:
     - queue_metrics
     - alerts_get_active
     - recall_episodes
+    - agent_session_search
+    - agent_trajectory_build
   diagnostics:
     - system_health_snapshot
     - system_unhealthy_snapshots
@@ -89,6 +91,8 @@ tools:
   - procedure_stats
   # Episodic memory
   - recall_episodes
+  - agent_session_search
+  - agent_trajectory_build
   - save_episode_note
   # Speculative execution
   - request_speculative

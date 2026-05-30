@@ -38,7 +38,6 @@ class FrameworkCurrencyCheckCommand extends Command
         'vuejs/core' => 'Frontend framework',
         'pgvector/pgvector' => 'Vector search',
         'tailwindlabs/tailwindcss' => 'CSS framework',
-        'anthropics/claude-code' => 'Claude Code CLI',
     ];
 
     private const HF_CATEGORIES = [
@@ -338,6 +337,7 @@ class FrameworkCurrencyCheckCommand extends Command
                 json_encode($finding['details']),
                 $token,
             ]);
+
             return true;
         } catch (\Illuminate\Database\QueryException $e) {
             // uk_arq_pending_dedup (migration 2026_04_17_175500) fires when the same
@@ -352,6 +352,7 @@ class FrameworkCurrencyCheckCommand extends Command
                 'title' => $finding['title'] ?? '',
                 'source' => $finding['source'] ?? '',
             ]);
+
             return false;
         }
     }

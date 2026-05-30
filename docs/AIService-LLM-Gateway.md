@@ -45,11 +45,10 @@ Provider chain is DB-driven via `llm_instances` table, priority-ordered. Two cha
 2. Ollama Secondary (optional configured local endpoint)
    ↓ (3 retries with backoff)
 3. External APIs (priority-ordered from DB)
-   ↓ SambaNova → Cerebras → Groq → OpenRouter
+   ↓ only rows with is_active=1, is_healthy=1, routability='allowed'
    ↓ Rate limited per-provider, circuit breakers
-   ↓ sensitive_safe flag controls personal data routing
-4. Claude CLI (optional paid/local CLI route)
-   ↓ Parallel slots (up to 20 concurrent)
+   ↓ allows_private_data controls private/sensitive data routing
+4. Codex Exec (approved external private-data partner when enabled)
 5. Operator notification (notifies of total failure)
 ```
 
@@ -58,17 +57,15 @@ Provider chain is DB-driven via `llm_instances` table, priority-ordered. Two cha
 1. Ollama Primary + Secondary (llava:7b)
    ↓ skip_if_busy=true — never waits
 2. External Vision APIs (filtered by vision capability)
-   ↓ OpenRouter (google/gemma-3-27b-it:free)
-   ↓ Gemini, Mistral available when API keys configured
-3. Claude CLI Vision (multimodal)
-   ↓ Parallel slots
-4. Operator notification (notifies of total failure)
+   ↓ only rows with is_active=1, is_healthy=1, routability='allowed'
+   ↓ skipped for sensitive/private images unless allows_private_data=true
+3. Operator notification (notifies of total failure)
 ```
 
 ### Privacy Rules
-- `sensitive_safe=false` providers (OpenRouter, Gemini, Mistral) skipped when `sensitive_data=true`
-- Gemini and Mistral: `vision=false` in DB — never receive images (training risk)
-- Personal photos default to Ollama → Claude CLI path
+- `allows_private_data=false` providers are skipped when `sensitive_data=true`
+- Public/free providers (`mistral_free`, `cerebras_free`, `groq_free`, `deepinfra_free`, `openrouter_free`, `gemini_free`, `sambanova_free`) are public-only/benchmark-only unless explicitly re-reviewed in `llm_instances`
+- Personal photos default to private routing; public/free vision providers do not receive them
 - `php artisan ops:audit-privacy-routing --strict --json` provides a read-only coexistence audit for enabled sensitive tools, active routing profile, `routing.offline_mode`, and reachable provider classes.
 
 ## Sprint A Local-First Routing Direction
@@ -468,26 +465,18 @@ This uses the configured notification channel for the install.
 - OpenAI-compatible vision format via `AIRouter::callOpenAICompatibleVision()`
 - Base64 image sent as `image_url` content type in chat messages
 - `getVisionCapableProviders()` filters by `vision` capability flag in DB
-- Currently active: OpenRouter (`google/gemma-3-27b-it:free`)
+- Normal routing also requires `routability='allowed'`
 - Rate limited per-provider, circuit breakers per-endpoint
-- Privacy: `sensitive_safe=false` providers skipped when `sensitive_data=true`
-- Gemini/Mistral have `vision=false` in DB — never receive images
-
-### Claude CLI Vision
-- Uses Claude Code CLI with image file path
-- Image path included in prompt, piped via stdin
-- Supports parallel processing via slot management (up to 20 concurrent)
+- Privacy: `allows_private_data=false` providers skipped when `sensitive_data=true`
 
 ## External API Providers (v2.3)
 
 Provider configuration is DB-driven via `llm_instances` table. All OpenAI-compatible providers use `AIRouter::callOpenAICompatible()`.
 
-| Provider | Type | Vision | sensitive_safe | Status |
+| Provider | Type | Vision | allows_private_data | Status |
 |----------|------|--------|----------------|--------|
-| SambaNova | custom | No | Yes | Active |
-| Cerebras | custom | No | Yes | Active |
-| Groq | custom | No | Yes | Active |
-| OpenRouter | custom | Yes | No | Active |
+| Codex Exec | codex_cli | No | Yes | Active when configured |
+| Public/free external providers | custom/google_gemini | Mixed | No | Public-only / benchmark-only |
 | Gemini | google_gemini | No* | No | Inactive (no key) |
 | Mistral | custom | No* | No | Inactive (no key) |
 
@@ -536,14 +525,6 @@ $result = $aiService->process($prompt, ['model_role' => 'quality']);
 
 Results are cached per-request in `$providerModelCache` to avoid repeated DB hits.
 
-### Claude CLI Model Flag
-
-Before this change, Claude CLI always ran with no `--model` flag, consuming the Opus quota by default. Now:
-- `tryClaudeCLI()` resolves model via role → appends `--model {model}` to the CLI command
-- `claudeWebResearch()` uses `quality` role by default (sonnet, not opus)
-- Vision path resolves `vision` role → uses sonnet for image analysis
-- `streamingFallbackToClaude()` passes model through config
-
 ### DB Configuration
 
 Models are stored in `llm_instances.config` JSON:
@@ -561,16 +542,11 @@ Models are stored in `llm_instances.config` JSON:
 
 To change a model: `UPDATE llm_instances SET config = JSON_SET(config, '$.models.quality', 'new-model-name') WHERE instance_id = 'groq_free'`
 
-### Claude CLI Priority from DB
-
-`buildFallbackChain()` now reads `llm_instances.priority` for Claude CLI instead of hardcoded 20. Change priority in DB to reposition Claude CLI in the fallback order without a code deploy.
-
 ## Model Discovery Tool (`check_model_updates`)
 
 The ai-ops agent runs `check_model_updates` during every assess phase to detect model drift:
 
 - **Ollama**: GET `/api/tags` — compares against `supported_models` in DB
-- **Claude CLI**: runs `claude --version` — reports CLI version (no model list endpoint)
 - **External APIs**: GET `{base_url}/models` (OpenAI-compatible endpoint) — diffs against DB
 
 When new or deprecated models are found, a review queue item is created for human review. Update `supported_models` and `config.models` in DB to acknowledge changes.
@@ -585,7 +561,7 @@ php artisan agent:run ai-ops --task="check for model updates on all providers"
 | File | Purpose |
 |------|---------|
 | `app/Services/AIService.php` | Main service with provider chains, concurrency, circuit breakers |
-| `app/Engine/AIRouter.php` | HTTP calls: Ollama, Claude CLI, OpenAI-compatible (text + vision) |
+| `app/Engine/AIRouter.php` | HTTP calls: Ollama and OpenAI-compatible providers (text + vision) |
 | `app/Exceptions/AI/` | Exception hierarchy (14 classes) |
 | `app/Exceptions/AI/AIExceptionFactory.php` | Creates typed exceptions from responses/messages |
 | `config/services.php` | Ollama URL and model configuration |

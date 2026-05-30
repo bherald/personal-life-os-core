@@ -71,6 +71,17 @@ class SchedulerOptimizeReportService
                     'category' => isset($recommendation['category']) ? (string) $recommendation['category'] : null,
                 ], static fn ($value): bool => $value !== null);
             }, $topRecommendations),
+            'posture' => [
+                'aggregate_only' => true,
+                'jobs_included' => false,
+                'recommendations_included' => false,
+                'job_ids_included' => false,
+                'job_names_included' => false,
+                'commands_included' => false,
+                'cron_expressions_included' => false,
+                'evidence_included' => false,
+                'raw_reasons_included' => false,
+            ],
         ];
     }
 

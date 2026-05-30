@@ -57,7 +57,7 @@ class OpsAuditPrivacyRoutingCommand extends Command
             $issues[] = [
                 'code' => 'sensitive_tools_can_reach_cloud_external',
                 'severity' => 'warning',
-                'message' => 'Enabled sensitive tool permissions coexist with reachable sensitive_safe=false cloud providers under the current routing profile.',
+                'message' => 'Enabled sensitive tool permissions coexist with reachable allows_private_data=false cloud providers under the current routing profile.',
             ];
         }
 
@@ -137,8 +137,7 @@ class OpsAuditPrivacyRoutingCommand extends Command
     private function providerPosture(array $allowedProviderClasses, bool $offlineModeActive): array
     {
         $rows = DB::select(
-            'SELECT instance_id, instance_name, instance_type, base_url, host_affinity, is_active, is_healthy,
-                    routability, circuit_state, capabilities, config
+            'SELECT *
              FROM llm_instances
              ORDER BY priority ASC, instance_id ASC'
         );
@@ -160,10 +159,12 @@ class OpsAuditPrivacyRoutingCommand extends Command
             $isHealthy = (int) ($row->is_healthy ?? 0) === 1;
             $routability = (string) ($row->routability ?? 'allowed');
             $circuitState = (string) ($row->circuit_state ?? 'closed');
+            $quarantineStatus = (string) ($row->quarantine_status ?? 'none');
             $reachable = $isActive
                 && $isHealthy
                 && $routability === 'allowed'
                 && $circuitState === 'closed'
+                && $quarantineStatus !== 'quarantined'
                 && in_array($providerClass, $allowedProviderClasses, true)
                 && (! $offlineModeActive || $providerClass === 'local_llm');
 
@@ -188,6 +189,7 @@ class OpsAuditPrivacyRoutingCommand extends Command
                 'healthy' => $isHealthy,
                 'routability' => $routability,
                 'circuit_state' => $circuitState,
+                'quarantine_status' => $quarantineStatus,
                 'reachable' => $reachable,
             ];
 

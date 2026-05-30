@@ -24,6 +24,8 @@ tool_phases:
     - log_parse_errors
     - log_cluster_signatures
     - recall_episodes
+    - agent_session_search
+    - agent_trajectory_build
   analyze:
     - log_error_timeline
     - log_correlate_across
@@ -62,6 +64,8 @@ tools:
   - procedure_stats
   # Episodic memory
   - recall_episodes
+  - agent_session_search
+  - agent_trajectory_build
   - save_episode_note
 ---
 

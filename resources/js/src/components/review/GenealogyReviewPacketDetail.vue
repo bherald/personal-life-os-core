@@ -878,6 +878,7 @@ const decisionLogRows = computed(() => decisionLog.value
   .filter(Boolean))
 
 const reviewPassRows = computed(() => {
+  const selfCheck = objectValue(reviewPass.value.self_check)
   const counts = objectValue(reviewPass.value.counts)
   const signals = objectValue(reviewPass.value.signals)
   const posture = objectValue(reviewPass.value.posture)
@@ -887,6 +888,9 @@ const reviewPassRows = computed(() => {
 
   return [
     reviewPassRow('state', 'State', reviewPass.value.label || reviewPass.value.state, reviewPassState(reviewPass.value.state)),
+    reviewPassRow('self_check_score', 'Self-check', selfCheckScoreLabel(selfCheck), selfCheckState(selfCheck)),
+    reviewPassRow('self_check_counts', 'Self-check counts', selfCheckCountLabel(selfCheck), selfCheckState(selfCheck)),
+    reviewPassRow('self_check_signals', 'Self-check signals', selfCheckSignalLabel(selfCheck), Number(selfCheck.signal_watch_count || 0) > 0 ? 'warning' : 'ok'),
     reviewPassRow('reason', 'Reason', reviewPass.value.reason_code ? labelize(reviewPass.value.reason_code) : null, 'warning'),
     reviewPassRow('blockers', 'Blockers', reviewPass.value.blocker_count, Number(reviewPass.value.blocker_count || 0) > 0 ? 'blocked' : 'ok'),
     reviewPassRow('blocker_codes', 'Blocker codes', blockerCodes.map(labelize).join(', '), blockerCodes.length > 0 ? 'blocked' : 'ok'),
@@ -1322,6 +1326,33 @@ function claimSourceCoverageLabel(counts) {
   const linkedCount = numberOrNull(counts.claims_with_source_context)
   if (claimCount === null && linkedCount === null) return null
   return `${linkedCount ?? 0}/${claimCount ?? 0}`
+}
+
+function selfCheckScoreLabel(selfCheck) {
+  const score = numberOrNull(selfCheck.score_percent)
+  const totalRows = numberOrNull(selfCheck.total_rows)
+  if (score === null && totalRows === null) return null
+  return score === null ? `${totalRows ?? 0} rows` : `${score}%`
+}
+
+function selfCheckCountLabel(selfCheck) {
+  const totalRows = numberOrNull(selfCheck.total_rows)
+  if (totalRows === null) return null
+  return `${selfCheck.ok_count ?? 0} ok, ${selfCheck.warning_count ?? 0} warn, ${selfCheck.blocked_count ?? 0} block, ${selfCheck.missing_count ?? 0} missing`
+}
+
+function selfCheckSignalLabel(selfCheck) {
+  const total = numberOrNull(selfCheck.signal_total)
+  if (total === null) return null
+  return `${selfCheck.signal_ok_count ?? 0}/${total} signals`
+}
+
+function selfCheckState(selfCheck) {
+  const status = stringOrNull(selfCheck.status)
+  if (status === 'ok') return 'ok'
+  if (status === 'blocked') return 'blocked'
+  if (status === 'missing') return 'missing'
+  return 'warning'
 }
 
 function checklistStateClass(state) {

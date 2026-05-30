@@ -1309,6 +1309,11 @@ class ReviewBacklogReportService
             'source_locator_rows' => (int) ($packetReadiness['source_locator_rows'] ?? 0),
             'claim_rows' => (int) ($packetReadiness['claim_rows'] ?? 0),
             'preview_only_rows' => (int) ($packetReadiness['preview_only_rows'] ?? 0),
+            'identity_present_rows' => (int) ($packetReadiness['identity_present_rows'] ?? 0),
+            'privacy_present_rows' => (int) ($packetReadiness['privacy_present_rows'] ?? 0),
+            'privacy_cleared_rows' => (int) ($packetReadiness['privacy_cleared_rows'] ?? 0),
+            'validation_present_rows' => (int) ($packetReadiness['validation_present_rows'] ?? 0),
+            'validation_valid_rows' => (int) ($packetReadiness['validation_valid_rows'] ?? 0),
             'canonical_mutation_rows' => (int) ($packetReadiness['canonical_mutation_rows'] ?? 0),
             'apply_preview_missing_rows' => (int) ($packetReadiness['apply_preview_missing_rows'] ?? 0),
             'persisted_apply_preview_not_array_rows' => (int) ($packetReadiness['persisted_apply_preview_not_array_rows'] ?? 0),
@@ -1504,6 +1509,21 @@ class ReviewBacklogReportService
                 (($reviewPass['posture']['tokens_included'] ?? true) === true) ? 'true' : 'false',
                 (($reviewPass['posture']['locators_included'] ?? true) === true) ? 'true' : 'false',
             );
+
+            $selfCheck = is_array($reviewPass['self_check'] ?? null) ? $reviewPass['self_check'] : [];
+            if ($selfCheck !== []) {
+                $lines[] = sprintf(
+                    'packet_self_check status=%s score=%s gate_ok=%s gate_gaps=%s blocked=%s details_included=%s tokens_included=%s locators_included=%s',
+                    (string) ($selfCheck['status'] ?? 'unknown'),
+                    $selfCheck['score_percent'] ?? 'none',
+                    $selfCheck['gate_ok_count'] ?? 0,
+                    $selfCheck['gate_gap_count'] ?? 0,
+                    $selfCheck['blocked_rows'] ?? 0,
+                    (($selfCheck['details_included'] ?? true) === true) ? 'true' : 'false',
+                    (($selfCheck['tokens_included'] ?? true) === true) ? 'true' : 'false',
+                    (($selfCheck['locators_included'] ?? true) === true) ? 'true' : 'false',
+                );
+            }
         }
 
         return implode("\n", $lines)."\n";
@@ -1551,6 +1571,7 @@ class ReviewBacklogReportService
             '- Packet preview-only rows: `'.$packetReadiness['preview_only_rows'].'`',
             '- Packet canonical-mutation rows: `'.$packetReadiness['canonical_mutation_rows'].'`',
             '- Packet review-pass state: `'.($packetReadiness['review_pass']['state'] ?? 'unknown').'`',
+            '- Packet self-check: `'.($packetReadiness['review_pass']['self_check']['status'] ?? 'unknown').'`, score `'.($packetReadiness['review_pass']['self_check']['score_percent'] ?? 'none').'`, gate gaps `'.($packetReadiness['review_pass']['self_check']['gate_gap_count'] ?? 0).'`, details included `'.((($packetReadiness['review_pass']['self_check']['details_included'] ?? true) === true) ? 'true' : 'false').'`',
             '',
             '## Triage Buckets',
             '',
@@ -2051,6 +2072,11 @@ class ReviewBacklogReportService
             'source_locator_rows' => 0,
             'claim_rows' => 0,
             'preview_only_rows' => 0,
+            'identity_present_rows' => 0,
+            'privacy_present_rows' => 0,
+            'privacy_cleared_rows' => 0,
+            'validation_present_rows' => 0,
+            'validation_valid_rows' => 0,
             'canonical_mutation_rows' => 0,
             'apply_preview_missing_rows' => 0,
             'persisted_apply_preview_not_array_rows' => 0,
@@ -2110,6 +2136,15 @@ class ReviewBacklogReportService
             if (($focus['preview_only'] ?? null) === true) {
                 $readiness['preview_only_rows']++;
             }
+            if ($this->packetIdentityPresent($details)) {
+                $readiness['identity_present_rows']++;
+            }
+            if (is_array($details['privacy'] ?? null) && $details['privacy'] !== []) {
+                $readiness['privacy_present_rows']++;
+            }
+            if ($this->packetPrivacyCleared($details)) {
+                $readiness['privacy_cleared_rows']++;
+            }
             if (($focus['canonical_mutation'] ?? null) === true) {
                 $readiness['canonical_mutation_rows']++;
             }
@@ -2130,6 +2165,8 @@ class ReviewBacklogReportService
             if (! is_array($validation)) {
                 $readiness['validation_missing_rows']++;
             } else {
+                $readiness['validation_present_rows']++;
+
                 if (($validation['valid'] ?? null) !== true) {
                     $readiness['validation_not_valid_rows']++;
                 }
@@ -2137,6 +2174,9 @@ class ReviewBacklogReportService
                 $validationErrors = $validation['errors'] ?? [];
                 if (is_array($validationErrors) && $validationErrors !== []) {
                     $readiness['validation_errors_rows']++;
+                }
+                if ($this->packetValidationValid($validation)) {
+                    $readiness['validation_valid_rows']++;
                 }
             }
 
@@ -2859,6 +2899,11 @@ class ReviewBacklogReportService
                 'locator_present_rows' => (int) ($readiness['source_locator_rows'] ?? 0),
                 'claim_rows' => (int) ($readiness['claim_rows'] ?? 0),
                 'preview_only_rows' => (int) ($readiness['preview_only_rows'] ?? 0),
+                'identity_present_rows' => (int) ($readiness['identity_present_rows'] ?? 0),
+                'privacy_present_rows' => (int) ($readiness['privacy_present_rows'] ?? 0),
+                'privacy_cleared_rows' => (int) ($readiness['privacy_cleared_rows'] ?? 0),
+                'validation_present_rows' => (int) ($readiness['validation_present_rows'] ?? 0),
+                'validation_valid_rows' => (int) ($readiness['validation_valid_rows'] ?? 0),
                 'canonical_mutation_rows' => $canonicalMutation,
                 'malformed_details_rows' => (int) ($readiness['malformed_details'] ?? 0),
             ],
@@ -2870,7 +2915,85 @@ class ReviewBacklogReportService
             ],
             'reason_code_counts' => $reasonCounts,
             'blocker_code_counts' => $blockerCounts,
+            'self_check' => $this->packetReadinessSelfCheck($readiness),
             'posture' => $this->reviewPassPosture(),
+        ];
+    }
+
+    /**
+     * Aggregate, display-only self-check for pending genealogy review packets.
+     *
+     * The projection is intentionally count-only. It does not include packet
+     * details, row ids, tokens, source locators, or raw identifiers.
+     *
+     * @param  array<string, mixed>  $readiness
+     * @return array<string, mixed>
+     */
+    private function packetReadinessSelfCheck(array $readiness): array
+    {
+        $pending = (int) ($readiness['pending_packet_rows'] ?? 0);
+        $blocked = (int) ($readiness['blocked_rows'] ?? 0);
+        $canonicalMutation = (int) ($readiness['canonical_mutation_rows'] ?? 0);
+        $blockerCounts = $this->safeReviewPassCountMap($readiness['blocker_code_counts'] ?? []);
+        $blockerCount = array_sum($blockerCounts);
+
+        $gateCounts = [
+            'review_ready_rows' => (int) ($readiness['ready_rows'] ?? 0),
+            'source_backed_rows' => (int) ($readiness['source_backed_rows'] ?? 0),
+            'boundary_labeled_rows' => (int) ($readiness['boundary_labeled_rows'] ?? 0),
+            'source_locator_rows' => (int) ($readiness['source_locator_rows'] ?? 0),
+            'claim_rows' => (int) ($readiness['claim_rows'] ?? 0),
+            'preview_only_rows' => (int) ($readiness['preview_only_rows'] ?? 0),
+            'identity_present_rows' => (int) ($readiness['identity_present_rows'] ?? 0),
+            'privacy_cleared_rows' => (int) ($readiness['privacy_cleared_rows'] ?? 0),
+            'validation_valid_rows' => (int) ($readiness['validation_valid_rows'] ?? 0),
+            'non_canonical_mutation_rows' => max(0, $pending - $canonicalMutation),
+        ];
+
+        $gapCounts = [];
+        foreach ($gateCounts as $gate => $count) {
+            $gateCounts[$gate] = min($pending, max(0, $count));
+            $gapCounts[$gate] = max(0, $pending - $gateCounts[$gate]);
+        }
+
+        $gateTotal = $pending * count($gateCounts);
+        $gateOkCount = array_sum($gateCounts);
+        $gateGapCount = max(0, $gateTotal - $gateOkCount);
+        $status = match (true) {
+            $pending === 0 => 'empty',
+            $blocked > 0 || $blockerCount > 0 || (int) ($readiness['malformed_details'] ?? 0) > 0 => 'blocked',
+            $gateGapCount > 0 => 'warning',
+            default => 'ok',
+        };
+
+        return [
+            'schema' => 'genealogy_review_packet_self_check_aggregate.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'scope' => 'aggregate',
+            'status' => $status,
+            'score_percent' => $gateTotal > 0 ? round(($gateOkCount / $gateTotal) * 100, 1) : null,
+            'total_rows' => $pending,
+            'ready_rows' => (int) ($readiness['ready_rows'] ?? 0),
+            'blocked_rows' => $blocked,
+            'blocker_count' => $blockerCount,
+            'gate_total' => $gateTotal,
+            'gate_ok_count' => $gateOkCount,
+            'gate_gap_count' => $gateGapCount,
+            'gate_counts' => $gateCounts,
+            'gap_counts' => $gapCounts,
+            'identity_present_rows' => (int) ($readiness['identity_present_rows'] ?? 0),
+            'privacy_present_rows' => (int) ($readiness['privacy_present_rows'] ?? 0),
+            'privacy_cleared_rows' => (int) ($readiness['privacy_cleared_rows'] ?? 0),
+            'validation_present_rows' => (int) ($readiness['validation_present_rows'] ?? 0),
+            'validation_valid_rows' => (int) ($readiness['validation_valid_rows'] ?? 0),
+            'canonical_write_allowed' => false,
+            'apply_enabled' => false,
+            'details_included' => false,
+            'raw_identifiers_included' => false,
+            'tokens_included' => false,
+            'locators_included' => false,
+            'review_decisions_included' => false,
         ];
     }
 

@@ -476,6 +476,8 @@ class GenealogyMediaEnrichmentService
             'temperature' => 0.1,
             'max_tokens' => 1500,
             'model_role' => 'quality',
+            'sensitive_data' => true,
+            'data_class' => 'genealogy_media_enrichment_image',
         ]);
 
         if (! ($result['success'] ?? false)) {

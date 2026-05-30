@@ -119,6 +119,15 @@ class AgentDoctorReadinessHistoryService
                 'warning_delta' => $this->nullableSignedInt($summary['warning_delta'] ?? null),
                 'critical_delta' => $this->nullableSignedInt($summary['critical_delta'] ?? null),
                 'agent_count_delta' => $this->nullableSignedInt($summary['agent_count_delta'] ?? null),
+                'latest_failure_modes' => $this->failureModes($summary['latest_failure_modes'] ?? []),
+                'oldest_failure_modes' => $this->failureModes($summary['oldest_failure_modes'] ?? []),
+                'failure_mode_snapshot_count' => (int) ($summary['failure_mode_snapshot_count'] ?? 0),
+                'failure_mode_coverage_percent' => $this->nullableFloat($summary['failure_mode_coverage_percent'] ?? null),
+                'failure_mode_delta_status' => $this->failureModeDeltaStatus($summary['failure_mode_delta_status'] ?? null),
+                'failure_mode_delta_reason' => $this->failureModeDeltaReason($summary['failure_mode_delta_reason'] ?? null),
+                'failure_mode_deltas' => $this->failureModeDeltasFromValue($summary['failure_mode_deltas'] ?? []),
+                'top_rising_failure_modes' => $this->failureModeDeltasFromValue($summary['top_rising_failure_modes'] ?? []),
+                'top_falling_failure_modes' => $this->failureModeDeltasFromValue($summary['top_falling_failure_modes'] ?? []),
             ],
             'trace' => [
                 'latest_status' => $this->nullableStatus($latest['trace_status'] ?? null),
@@ -168,6 +177,15 @@ class AgentDoctorReadinessHistoryService
             'trace_events_24h_delta' => null,
             'recursion_calls_7d_delta' => null,
             'latest_output_quality' => $this->emptyOutputQuality(),
+            'latest_failure_modes' => [],
+            'oldest_failure_modes' => [],
+            'failure_mode_snapshot_count' => 0,
+            'failure_mode_coverage_percent' => null,
+            'failure_mode_delta_status' => 'insufficient_data',
+            'failure_mode_delta_reason' => 'no_snapshots',
+            'failure_mode_deltas' => [],
+            'top_rising_failure_modes' => [],
+            'top_falling_failure_modes' => [],
             'trend' => 'insufficient_data',
         ];
     }
@@ -207,6 +225,21 @@ class AgentDoctorReadinessHistoryService
         $summary['trace_events_24h_delta'] = (int) ($latest['trace_events_24h'] ?? 0) - (int) ($oldest['trace_events_24h'] ?? 0);
         $summary['recursion_calls_7d_delta'] = (int) ($latest['recursion_calls_7d'] ?? 0) - (int) ($oldest['recursion_calls_7d'] ?? 0);
         $summary['latest_output_quality'] = $latest['output_quality'] ?? $this->emptyOutputQuality();
+        $summary['latest_failure_modes'] = $this->failureModes($latest['failure_modes'] ?? []);
+        $summary['oldest_failure_modes'] = $this->failureModes($oldest['failure_modes'] ?? []);
+        $failureModeCoverage = $this->failureModeCoverage($snapshots);
+        $summary['failure_mode_snapshot_count'] = $failureModeCoverage['snapshot_count'];
+        $summary['failure_mode_coverage_percent'] = $failureModeCoverage['coverage_percent'];
+        $summary['failure_mode_delta_status'] = $failureModeCoverage['delta_status'];
+        $summary['failure_mode_delta_reason'] = $failureModeCoverage['delta_reason'];
+        if ($failureModeCoverage['delta_status'] === 'complete') {
+            $summary['failure_mode_deltas'] = $this->failureModeDeltas(
+                $summary['latest_failure_modes'],
+                $summary['oldest_failure_modes']
+            );
+            $summary['top_rising_failure_modes'] = $this->topFailureModeDeltas($summary['failure_mode_deltas'], rising: true);
+            $summary['top_falling_failure_modes'] = $this->topFailureModeDeltas($summary['failure_mode_deltas'], rising: false);
+        }
         $summary['trend'] = $this->trend($latest, $oldest, $summary);
 
         return $summary;
@@ -238,6 +271,8 @@ class AgentDoctorReadinessHistoryService
             'warning_check_ids' => $checks['warning_check_ids'],
             'critical_check_ids' => $checks['critical_check_ids'],
             'output_quality' => $checks['output_quality'],
+            'failure_modes' => $checks['failure_modes'],
+            'failure_modes_present' => $checks['failure_modes_present'],
         ];
     }
 
@@ -302,6 +337,11 @@ class AgentDoctorReadinessHistoryService
         return is_numeric($value) ? (int) $value : null;
     }
 
+    private function nullableFloat(mixed $value): ?float
+    {
+        return is_numeric($value) ? round((float) $value, 1) : null;
+    }
+
     private function nullableString(mixed $value): ?string
     {
         if ($value === null || $value === '') {
@@ -340,6 +380,31 @@ class AgentDoctorReadinessHistoryService
         ];
     }
 
+    private function failureModeDeltaStatus(mixed $value): string
+    {
+        $status = $this->nullableString($value) ?? 'insufficient_data';
+
+        return in_array($status, ['complete', 'partial_history', 'insufficient_data'], true)
+            ? $status
+            : 'insufficient_data';
+    }
+
+    private function failureModeDeltaReason(mixed $value): string
+    {
+        $reason = $this->nullableString($value) ?? 'unknown';
+
+        return in_array($reason, [
+            'all_snapshots_have_failure_modes',
+            'endpoint_snapshots_have_failure_modes',
+            'fewer_than_two_snapshots',
+            'latest_missing_failure_modes',
+            'no_snapshots',
+            'oldest_missing_failure_modes',
+        ], true)
+            ? $reason
+            : 'unknown';
+    }
+
     /**
      * @param  array<string, mixed>  $snapshot
      * @return array<string, mixed>
@@ -358,6 +423,8 @@ class AgentDoctorReadinessHistoryService
             'recursion_status' => $this->nullableStatus($snapshot['recursion_status'] ?? null),
             'recursion_calls_7d' => $this->nullableInt($snapshot['recursion_calls_7d'] ?? null),
             'output_quality' => $this->outputQuality($snapshot['output_quality'] ?? []),
+            'failure_modes' => $this->failureModes($snapshot['failure_modes'] ?? []),
+            'failure_modes_present' => (bool) ($snapshot['failure_modes_present'] ?? false),
         ];
     }
 
@@ -375,7 +442,7 @@ class AgentDoctorReadinessHistoryService
     }
 
     /**
-     * @return array{warning_check_ids:list<string>,critical_check_ids:list<string>,output_quality:array<string,int>}
+     * @return array{warning_check_ids:list<string>,critical_check_ids:list<string>,output_quality:array<string,int>,failure_modes:array<string,int>,failure_modes_present:bool}
      */
     private function decodeChecksSummary(mixed $value): array
     {
@@ -385,14 +452,190 @@ class AgentDoctorReadinessHistoryService
                 'warning_check_ids' => [],
                 'critical_check_ids' => [],
                 'output_quality' => $this->emptyOutputQuality(),
+                'failure_modes' => [],
+                'failure_modes_present' => false,
             ];
         }
+        $failureModes = $decoded['failure_modes'] ?? null;
 
         return [
             'warning_check_ids' => $this->stringList($decoded['warning_check_ids'] ?? []),
             'critical_check_ids' => $this->stringList($decoded['critical_check_ids'] ?? []),
             'output_quality' => $this->outputQuality($decoded['output_quality'] ?? []),
+            'failure_modes' => $this->failureModes($failureModes ?? []),
+            'failure_modes_present' => is_array($failureModes),
         ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $snapshots
+     * @return array{snapshot_count:int,coverage_percent:?float,delta_status:string,delta_reason:string}
+     */
+    private function failureModeCoverage(array $snapshots): array
+    {
+        $total = count($snapshots);
+        if ($total === 0) {
+            return [
+                'snapshot_count' => 0,
+                'coverage_percent' => null,
+                'delta_status' => 'insufficient_data',
+                'delta_reason' => 'no_snapshots',
+            ];
+        }
+
+        $presentCount = count(array_filter(
+            $snapshots,
+            fn (array $snapshot): bool => (bool) ($snapshot['failure_modes_present'] ?? false)
+        ));
+        $latestPresent = (bool) ($snapshots[0]['failure_modes_present'] ?? false);
+        $oldestPresent = (bool) ($snapshots[$total - 1]['failure_modes_present'] ?? false);
+
+        if ($total < 2) {
+            $status = 'insufficient_data';
+            $reason = 'fewer_than_two_snapshots';
+        } elseif (! $latestPresent) {
+            $status = 'insufficient_data';
+            $reason = 'latest_missing_failure_modes';
+        } elseif (! $oldestPresent) {
+            $status = 'partial_history';
+            $reason = 'oldest_missing_failure_modes';
+        } else {
+            $status = 'complete';
+            $reason = $presentCount === $total ? 'all_snapshots_have_failure_modes' : 'endpoint_snapshots_have_failure_modes';
+        }
+
+        return [
+            'snapshot_count' => $presentCount,
+            'coverage_percent' => round(($presentCount / $total) * 100, 1),
+            'delta_status' => $status,
+            'delta_reason' => $reason,
+        ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function failureModes(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $modes = [];
+        foreach ($value as $key => $count) {
+            if (! is_numeric($count)) {
+                continue;
+            }
+
+            $code = $this->failureModeCode($key);
+            if ($code === null) {
+                continue;
+            }
+
+            $normalized = max(0, (int) $count);
+            if ($normalized <= 0) {
+                continue;
+            }
+
+            $modes[$code] = $normalized;
+            if (count($modes) >= 20) {
+                break;
+            }
+        }
+
+        ksort($modes);
+
+        return $modes;
+    }
+
+    private function failureModeCode(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $code = strtolower(trim((string) $value));
+
+        return preg_match('/^[a-z][a-z0-9_]{0,80}$/', $code) === 1 ? $code : null;
+    }
+
+    /**
+     * @param  array<string, int>  $latest
+     * @param  array<string, int>  $oldest
+     * @return array<string, int>
+     */
+    private function failureModeDeltas(array $latest, array $oldest): array
+    {
+        $deltas = [];
+        foreach (array_unique([...array_keys($latest), ...array_keys($oldest)]) as $mode) {
+            $delta = (int) ($latest[$mode] ?? 0) - (int) ($oldest[$mode] ?? 0);
+            if ($delta !== 0) {
+                $deltas[$mode] = $delta;
+            }
+        }
+
+        ksort($deltas);
+
+        return $deltas;
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function failureModeDeltasFromValue(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $deltas = [];
+        foreach ($value as $key => $delta) {
+            if (! is_numeric($delta)) {
+                continue;
+            }
+
+            $code = $this->failureModeCode($key);
+            if ($code === null) {
+                continue;
+            }
+
+            $normalized = (int) $delta;
+            if ($normalized !== 0) {
+                $deltas[$code] = $normalized;
+            }
+
+            if (count($deltas) >= 20) {
+                break;
+            }
+        }
+
+        ksort($deltas);
+
+        return $deltas;
+    }
+
+    /**
+     * @param  array<string, int>  $deltas
+     * @return array<string, int>
+     */
+    private function topFailureModeDeltas(array $deltas, bool $rising): array
+    {
+        $filtered = array_filter(
+            $deltas,
+            fn (int $delta): bool => $rising ? $delta > 0 : $delta < 0
+        );
+
+        if ($filtered === []) {
+            return [];
+        }
+
+        if ($rising) {
+            arsort($filtered);
+        } else {
+            asort($filtered);
+        }
+
+        return array_slice($filtered, 0, 8, preserve_keys: true);
     }
 
     /**

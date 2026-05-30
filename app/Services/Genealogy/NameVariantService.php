@@ -1022,6 +1022,8 @@ Return JSON array with format:
                 'temperature' => 0.7,
                 'max_tokens' => 1000,
                 'purpose' => 'name_variant_generation',
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_name_variant_generation',
             ]);
 
             // Parse JSON from response

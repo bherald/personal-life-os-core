@@ -8,6 +8,7 @@
         class="bg-black/50 border border-ops-peach/40 rounded px-2 py-1 text-xs text-ops-text"
       >
         <option value="all">All Clusters</option>
+        <option value="mixed">Mixed Names</option>
         <option value="unidentified">Unidentified</option>
         <option value="identified">Identified</option>
       </select>
@@ -74,6 +75,14 @@
             </span>
             <span class="text-xs text-ops-text-muted">{{ cluster.face_count }}</span>
           </div>
+        </div>
+
+        <div
+          v-if="cluster.mixed_names?.length"
+          class="px-3 py-1 border-b border-ops-plum/30 bg-red-950/25 text-[11px] text-red-200 break-words"
+        >
+          <span class="font-semibold">{{ cluster.mixed_name_count }} names:</span>
+          <span class="ml-1">{{ cluster.mixed_names.join(' | ') }}</span>
         </div>
 
         <!-- Face grid (up to 6 samples) -->

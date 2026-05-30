@@ -990,7 +990,8 @@ class FileRegistryService
             SELECT
                 COUNT(*) as total_duplicates,
                 SUM(CASE WHEN status = 'pending_review' THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as resolved,
+                SUM(CASE WHEN status = 'keep_both' THEN 1 ELSE 0 END) as keep_both,
+                SUM(CASE WHEN status = 'merged' THEN 1 ELSE 0 END) as merged,
                 SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END) as ignored
             FROM file_registry_duplicates
         ");
@@ -998,7 +999,9 @@ class FileRegistryService
         return [
             'total' => (int) ($stats->total_duplicates ?? 0),
             'pending' => (int) ($stats->pending ?? 0),
-            'resolved' => (int) ($stats->resolved ?? 0),
+            'resolved' => (int) ($stats->merged ?? 0),
+            'merged' => (int) ($stats->merged ?? 0),
+            'keep_both' => (int) ($stats->keep_both ?? 0),
             'ignored' => (int) ($stats->ignored ?? 0),
         ];
     }

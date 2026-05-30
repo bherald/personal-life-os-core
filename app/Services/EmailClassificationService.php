@@ -98,6 +98,8 @@ class EmailClassificationService
                 'factual_mode' => true,
                 'max_tokens' => 500,
                 'system_prompt' => 'You are an email classification AI. Analyze emails and provide structured categorization.',
+                'sensitive_data' => true,
+                'data_class' => 'email_classification',
             ]);
 
             if (!$result['success']) {
@@ -406,6 +408,8 @@ PROMPT;
             $result = $this->aiService->process($prompt, [
                 'temperature' => 0.7,
                 'max_tokens' => 1000,
+                'sensitive_data' => true,
+                'data_class' => 'email_reply_draft',
             ]);
 
             if (!$result['success']) {

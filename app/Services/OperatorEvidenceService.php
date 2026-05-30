@@ -5,8 +5,10 @@ namespace App\Services;
 use App\Services\AgentMetrics\AwoReplayService;
 use App\Services\AgentMetrics\GenealogyAgentTriageService;
 use App\Services\Genealogy\GenealogyEvidenceSprintReadinessService;
+use App\Services\Ops\AgentDoctorReadinessHistoryService;
 use App\Services\Ops\AgentDoctorService;
 use App\Services\Ops\AgentRecursionCallsRetentionService;
+use App\Services\Ops\AgentToolPolicyTelemetryService;
 use App\Services\Ops\DbaTelemetryReportService;
 use App\Services\Ops\ReviewBacklogReportService;
 use App\Services\Ops\SchedulerOptimizeReportService;
@@ -43,6 +45,10 @@ class OperatorEvidenceService
 
     private const AGENT_DOCTOR_CACHE_KEY = 'operator_evidence:agent_doctor:v1';
 
+    private const AGENT_DOCTOR_HISTORY_CACHE_KEY = 'operator_evidence:agent_doctor_history:v1';
+
+    private const AGENT_TOOL_POLICY_TELEMETRY_CACHE_KEY = 'operator_evidence:agent_tool_policy_telemetry:v1';
+
     private const REVIEW_BACKLOG_CACHE_KEY = 'operator_evidence:review_backlog:v1';
 
     private const RAG_SCALE_CACHE_KEY = 'operator_evidence:rag_scale:v1';
@@ -72,6 +78,8 @@ class OperatorEvidenceService
         private readonly ?AwoReplayService $awoReplay = null,
         private readonly ?NewsBiasCoverageService $newsBiasCoverage = null,
         private readonly ?AgentDoctorService $agentDoctor = null,
+        private readonly ?AgentDoctorReadinessHistoryService $agentDoctorHistory = null,
+        private readonly ?AgentToolPolicyTelemetryService $agentToolPolicyTelemetry = null,
         private readonly ?LLMPoolManagerService $llmPool = null,
         private readonly ?ReviewBacklogReportService $reviewBacklog = null,
         private readonly ?GenealogyEvidenceSprintReadinessService $genealogyEvidenceSprint = null,
@@ -101,6 +109,8 @@ class OperatorEvidenceService
             'genealogy_evidence_sprint' => $this->collectGenealogyEvidenceSprint($sampledAt),
             'awo_replay' => $this->collectAwoReplay($sampledAt),
             'agent_doctor' => $this->collectAgentDoctor($sampledAt),
+            'agent_doctor_history' => $this->collectAgentDoctorHistory($sampledAt),
+            'agent_tool_policy_telemetry' => $this->collectAgentToolPolicyTelemetry($sampledAt),
             'review_backlog' => $this->collectReviewBacklog($sampledAt),
             'news_bias_coverage' => $this->collectNewsBiasCoverage($sampledAt),
             'face_match_link_backlog' => $this->collectFaceMatchLinkBacklog($sampledAt),
@@ -152,6 +162,12 @@ class OperatorEvidenceService
 
         if (is_array($sections['agent_doctor'] ?? null)) {
             $headlines['agent_doctor'] = $this->compactAgentDoctorHeadline($sections);
+        }
+        if (is_array($sections['agent_doctor_history'] ?? null)) {
+            $headlines['agent_doctor_history'] = $this->compactAgentDoctorHistoryHeadline($sections);
+        }
+        if (is_array($sections['agent_tool_policy_telemetry'] ?? null)) {
+            $headlines['agent_tool_policy_telemetry'] = $this->compactAgentToolPolicyTelemetryHeadline($sections);
         }
         $headlines['genealogy_no_decision_gates'] = $this->compactGenealogyNoDecisionGatesHeadline($headlines);
 
@@ -233,6 +249,9 @@ class OperatorEvidenceService
         $materializableHandoff = $safeHandoffs['materializable_remediation'] ?? [];
         $typedRemediationHandoff = $safeHandoffs['typed_remediation'] ?? [];
         $agedReviewHandoff = $safeHandoffs['aged_review'] ?? [];
+        $packetSelfCheckScore = is_numeric($counts['packet_self_check_score_percent'] ?? null)
+            ? (float) $counts['packet_self_check_score_percent']
+            : null;
 
         return [
             'status' => $this->compactStatus($section),
@@ -250,6 +269,23 @@ class OperatorEvidenceService
             'packet_blocked_rows' => (int) ($counts['packet_blocked_rows'] ?? 0),
             'packet_preview_only_rows' => (int) ($counts['packet_preview_only_rows'] ?? 0),
             'packet_canonical_mutation_rows' => (int) ($counts['packet_canonical_mutation_rows'] ?? 0),
+            'packet_identity_present_rows' => (int) ($counts['packet_identity_present_rows'] ?? 0),
+            'packet_privacy_present_rows' => (int) ($counts['packet_privacy_present_rows'] ?? 0),
+            'packet_privacy_cleared_rows' => (int) ($counts['packet_privacy_cleared_rows'] ?? 0),
+            'packet_validation_present_rows' => (int) ($counts['packet_validation_present_rows'] ?? 0),
+            'packet_validation_valid_rows' => (int) ($counts['packet_validation_valid_rows'] ?? 0),
+            'packet_self_check_status' => $this->safeOperatorEvidenceCode($counts['packet_self_check_status'] ?? null),
+            'packet_self_check_score_percent' => $packetSelfCheckScore,
+            'packet_self_check_total_rows' => (int) ($counts['packet_self_check_total_rows'] ?? 0),
+            'packet_self_check_blocked_rows' => (int) ($counts['packet_self_check_blocked_rows'] ?? 0),
+            'packet_self_check_gate_total' => (int) ($counts['packet_self_check_gate_total'] ?? 0),
+            'packet_self_check_gate_ok_count' => (int) ($counts['packet_self_check_gate_ok_count'] ?? 0),
+            'packet_self_check_gate_gap_count' => (int) ($counts['packet_self_check_gate_gap_count'] ?? 0),
+            'packet_self_check_gate_counts' => $this->integerCountMap($counts['packet_self_check_gate_counts'] ?? []),
+            'packet_self_check_gap_counts' => $this->integerCountMap($counts['packet_self_check_gap_counts'] ?? []),
+            'packet_self_check_details_included' => (bool) ($counts['packet_self_check_details_included'] ?? false),
+            'packet_self_check_tokens_included' => (bool) ($counts['packet_self_check_tokens_included'] ?? false),
+            'packet_self_check_locators_included' => (bool) ($counts['packet_self_check_locators_included'] ?? false),
             'source_backed_packet_handoff_available' => (bool) ($sourcePacketHandoff['available'] ?? false),
             'source_backed_packet_handoff_state' => $this->safeOperatorEvidenceCode($sourcePacketHandoff['query_state'] ?? null),
             'source_backed_packet_review_pass_state' => $this->safeOperatorEvidenceCode($sourcePacketHandoff['review_pass_state'] ?? null),
@@ -430,7 +466,11 @@ class OperatorEvidenceService
         return [
             'status' => $this->compactStatus($section),
             'active_files' => (int) ($counts['active_files'] ?? 0),
-            'move_or_duplicate_candidate_groups' => (int) ($counts['same_filename_content_multi_path_groups'] ?? 0),
+            'move_or_duplicate_candidate_groups' => (int) ($counts['same_filename_content_unmaterialized_groups'] ?? $counts['same_filename_content_multi_path_groups'] ?? 0),
+            'duplicate_review_pending_pairs' => (int) ($counts['pending_duplicate_review_pairs'] ?? $counts['duplicate_review_pending_pairs'] ?? 0),
+            'duplicate_keep_both_pairs' => (int) ($counts['keep_both_duplicate_pairs'] ?? $counts['duplicate_keep_both_pairs'] ?? 0),
+            'same_filename_content_multi_path_groups' => (int) ($counts['same_filename_content_multi_path_groups'] ?? 0),
+            'same_filename_content_materialized_groups' => (int) ($counts['same_filename_content_materialized_groups'] ?? 0),
             'identity_conflict_groups' => (int) ($counts['duplicate_asset_groups'] ?? $counts['duplicate_asset_uuid_groups'] ?? 0)
                 + (int) ($counts['duplicate_fileid_groups'] ?? $counts['duplicate_nextcloud_fileid_groups'] ?? 0),
             'missing_identity_or_path' => (int) ($counts['active_missing_identity_or_path'] ?? 0),
@@ -717,8 +757,17 @@ class OperatorEvidenceService
             'sessions_stalled' => (int) ($counts['sessions_stalled'] ?? 0),
             'review_queue_pending' => (int) ($counts['review_queue_pending'] ?? 0),
             'review_queue_aged' => (int) ($counts['review_queue_aged'] ?? 0),
+            'tools_unavailable_total' => (int) ($counts['tools_unavailable_total'] ?? 0),
+            'tools_degraded_total' => (int) ($counts['tools_degraded_total'] ?? 0),
             'memory_error_episodes_window' => (int) ($counts['memory_error_episodes_window'] ?? 0),
             'memory_undistilled_episodes_window' => (int) ($counts['memory_undistilled_episodes_window'] ?? 0),
+            'memory_undistilled_sessions_window' => (int) ($counts['memory_undistilled_sessions_window'] ?? 0),
+            'memory_undistilled_tokens_window' => (int) ($counts['memory_undistilled_tokens_window'] ?? 0),
+            'memory_oldest_undistilled_age_hours' => isset($counts['memory_oldest_undistilled_age_hours'])
+                ? (float) $counts['memory_oldest_undistilled_age_hours']
+                : null,
+            'memory_undistilled_age_buckets' => $this->integerCountMap($counts['memory_undistilled_age_buckets'] ?? []),
+            'memory_low_signal_undistilled_sessions_window' => (int) ($counts['memory_low_signal_undistilled_sessions_window'] ?? 0),
             'procedures_low_quality_total' => (int) ($counts['procedures_low_quality_total'] ?? 0),
             'scheduled_success_runs_window' => (int) ($counts['scheduled_success_runs_window'] ?? 0),
             'scheduled_empty_success_outputs_window' => (int) ($counts['scheduled_empty_success_outputs_window'] ?? 0),
@@ -744,11 +793,88 @@ class OperatorEvidenceService
                 (array) ($counts['top_issue_codes'] ?? []),
                 fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
             )),
+            'failure_mode_counts' => $this->integerCountMap($counts['failure_mode_counts'] ?? []),
+            'top_failure_modes' => array_values(array_filter(
+                (array) ($counts['top_failure_modes'] ?? []),
+                fn (mixed $mode): bool => is_string($mode) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $mode) === 1
+            )),
             'top_agent_reasons_critical' => $this->compactAgentReasonList($counts['top_agent_reasons_critical'] ?? []),
             'top_agent_reasons_warning' => $this->compactAgentReasonList($counts['top_agent_reasons_warning'] ?? []),
             'recursion_status' => $this->nullableString($counts['recursion_status'] ?? null),
             'trace_status' => $this->nullableString($counts['trace_status'] ?? null),
             'trace_files_over_retention' => $counts['trace_files_over_retention'] ?? null,
+        ];
+    }
+
+    private function compactAgentToolPolicyTelemetryHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'agent_tool_policy_telemetry');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'tools_total' => (int) ($counts['tools_total'] ?? 0),
+            'enabled_total' => (int) ($counts['enabled_total'] ?? 0),
+            'enabled_unavailable_total' => (int) ($counts['enabled_unavailable_total'] ?? 0),
+            'enabled_degraded_total' => (int) ($counts['enabled_degraded_total'] ?? 0),
+            'enabled_unknown_availability_total' => (int) ($counts['enabled_unknown_availability_total'] ?? 0),
+            'freshness_stale_enabled_total' => (int) ($counts['freshness_stale_enabled_total'] ?? 0),
+            'freshness_unchecked_enabled_total' => (int) ($counts['freshness_unchecked_enabled_total'] ?? 0),
+            'privacy_unspecified_enabled_total' => (int) ($counts['privacy_unspecified_enabled_total'] ?? 0),
+            'policy_gap_enabled_total' => (int) ($counts['policy_gap_enabled_total'] ?? 0),
+            'last_error_enabled_total' => (int) ($counts['last_error_enabled_total'] ?? 0),
+            'oldest_checked_age_hours' => isset($counts['oldest_checked_age_hours'])
+                ? (float) $counts['oldest_checked_age_hours']
+                : null,
+            'availability_counts' => $this->integerCountMap($counts['availability_counts'] ?? []),
+            'privacy_class_counts' => $this->integerCountMap($counts['privacy_class_counts'] ?? []),
+            'risk_level_counts' => $this->integerCountMap($counts['risk_level_counts'] ?? []),
+        ];
+    }
+
+    private function compactAgentDoctorHistoryHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'agent_doctor_history');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'snapshot_count' => (int) ($counts['snapshot_count'] ?? 0),
+            'latest_status' => $this->safeOperatorEvidenceCode($counts['latest_status'] ?? null),
+            'latest_captured_at' => $this->nullableString($counts['latest_captured_at'] ?? null),
+            'trend' => $this->safeOperatorEvidenceCode($counts['trend'] ?? null),
+            'status_counts' => $this->safeOperatorEvidenceCodeCountMap($counts['status_counts'] ?? []),
+            'latest_warning_count' => isset($counts['latest_warning_count']) ? (int) $counts['latest_warning_count'] : null,
+            'latest_critical_count' => isset($counts['latest_critical_count']) ? (int) $counts['latest_critical_count'] : null,
+            'warning_delta' => isset($counts['warning_delta']) ? (int) $counts['warning_delta'] : null,
+            'critical_delta' => isset($counts['critical_delta']) ? (int) $counts['critical_delta'] : null,
+            'agent_count_delta' => isset($counts['agent_count_delta']) ? (int) $counts['agent_count_delta'] : null,
+            'latest_failure_modes' => $this->safeOperatorEvidenceCodeCountMap($counts['latest_failure_modes'] ?? []),
+            'oldest_failure_modes' => $this->safeOperatorEvidenceCodeCountMap($counts['oldest_failure_modes'] ?? []),
+            'failure_mode_snapshot_count' => (int) ($counts['failure_mode_snapshot_count'] ?? 0),
+            'failure_mode_coverage_percent' => isset($counts['failure_mode_coverage_percent'])
+                ? (float) $counts['failure_mode_coverage_percent']
+                : null,
+            'failure_mode_delta_status' => $this->safeOperatorEvidenceCode($counts['failure_mode_delta_status'] ?? null),
+            'failure_mode_delta_reason' => $this->safeOperatorEvidenceCode($counts['failure_mode_delta_reason'] ?? null),
+            'failure_mode_deltas' => $this->safeOperatorEvidenceCodeCountMap($counts['failure_mode_deltas'] ?? []),
+            'top_rising_failure_modes' => $this->safeOperatorEvidenceCodeCountMap($counts['top_rising_failure_modes'] ?? []),
+            'top_falling_failure_modes' => $this->safeOperatorEvidenceCodeCountMap($counts['top_falling_failure_modes'] ?? []),
+            'trace_status' => $this->safeOperatorEvidenceCode($counts['trace_status'] ?? null),
+            'trace_events_24h' => isset($counts['trace_events_24h']) ? (int) $counts['trace_events_24h'] : null,
+            'trace_events_24h_delta' => isset($counts['trace_events_24h_delta']) ? (int) $counts['trace_events_24h_delta'] : null,
+            'recursion_status' => $this->safeOperatorEvidenceCode($counts['recursion_status'] ?? null),
+            'recursion_calls_7d' => isset($counts['recursion_calls_7d']) ? (int) $counts['recursion_calls_7d'] : null,
+            'recursion_calls_7d_delta' => isset($counts['recursion_calls_7d_delta']) ? (int) $counts['recursion_calls_7d_delta'] : null,
+            'scheduled_non_ascii_output_runs_window' => (int) ($counts['scheduled_non_ascii_output_runs_window'] ?? 0),
+            'scheduled_guarded_output_runs_window' => (int) ($counts['scheduled_guarded_output_runs_window'] ?? 0),
+            'posture_scope' => $this->safeOperatorEvidenceCode($counts['posture_scope'] ?? null),
+            'snapshot_ids_included' => (bool) ($counts['snapshot_ids_included'] ?? false),
+            'check_ids_included' => (bool) ($counts['check_ids_included'] ?? false),
+            'per_agent_details_included' => (bool) ($counts['per_agent_details_included'] ?? false),
+            'raw_traces_included' => (bool) ($counts['raw_traces_included'] ?? false),
+            'prompts_or_completions_included' => (bool) ($counts['prompts_or_completions_included'] ?? false),
+            'filesystem_paths_included' => (bool) ($counts['filesystem_paths_included'] ?? false),
         ];
     }
 
@@ -787,8 +913,17 @@ class OperatorEvidenceService
                 'review_queue_aged' => (int) ($summary['review_queue_aged'] ?? 0),
                 'tools_missing_total' => (int) ($summary['tools_missing_total'] ?? 0),
                 'tools_blocked_total' => (int) ($summary['tools_blocked_total'] ?? 0),
+                'tools_unavailable_total' => (int) ($summary['tools_unavailable_total'] ?? 0),
+                'tools_degraded_total' => (int) ($summary['tools_degraded_total'] ?? 0),
                 'memory_error_episodes_window' => (int) ($summary['memory_error_episodes_window'] ?? 0),
                 'memory_undistilled_episodes_window' => (int) ($summary['memory_undistilled_episodes_window'] ?? 0),
+                'memory_undistilled_sessions_window' => (int) ($summary['memory_undistilled_sessions_window'] ?? 0),
+                'memory_undistilled_tokens_window' => (int) ($summary['memory_undistilled_tokens_window'] ?? 0),
+                'memory_oldest_undistilled_age_hours' => isset($summary['memory_oldest_undistilled_age_hours'])
+                    ? (float) $summary['memory_oldest_undistilled_age_hours']
+                    : null,
+                'memory_undistilled_age_buckets' => $this->integerCountMap($summary['memory_undistilled_age_buckets'] ?? []),
+                'memory_low_signal_undistilled_sessions_window' => (int) ($summary['memory_low_signal_undistilled_sessions_window'] ?? 0),
                 'procedures_low_quality_total' => (int) ($summary['procedures_low_quality_total'] ?? 0),
                 'scheduled_success_runs_window' => (int) ($summary['scheduled_success_runs_window'] ?? 0),
                 'scheduled_empty_success_outputs_window' => (int) ($summary['scheduled_empty_success_outputs_window'] ?? 0),
@@ -815,6 +950,11 @@ class OperatorEvidenceService
                 'top_issue_codes' => array_values(array_filter(
                     (array) ($summary['top_issue_codes'] ?? []),
                     fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
+                )),
+                'failure_mode_counts' => $this->integerCountMap($summary['failure_mode_counts'] ?? []),
+                'top_failure_modes' => array_values(array_filter(
+                    (array) ($summary['top_failure_modes'] ?? []),
+                    fn (mixed $mode): bool => is_string($mode) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $mode) === 1
                 )),
                 'top_agent_reasons_critical' => AgentDoctorService::compactAgentReasonSummaries($payload, 'critical'),
                 'top_agent_reasons_warning' => AgentDoctorService::compactAgentReasonSummaries($payload, 'warning'),
@@ -846,12 +986,16 @@ class OperatorEvidenceService
                 $status = $this->maxStatus($status, 'degraded');
             }
 
+            if ($counts['tools_unavailable_total'] > 0 || $counts['tools_degraded_total'] > 0) {
+                $status = $this->maxStatus($status, 'watch');
+            }
+
             return $this->section(
                 $status,
                 $sampledAt,
                 ['AgentDoctorService', 'agent_sessions', 'scheduled_jobs', 'agent_review_queue', 'agent_episodes', 'dev_agent_traces'],
                 $counts,
-                $status === 'healthy' ? null : 'Review ops:agent-doctor --json --since=24 before expanding agent autonomy.',
+                $status === 'healthy' ? null : 'Review ops:agent-doctor --json --compact --since=24 before expanding agent autonomy.',
                 [
                     'generated_at' => $this->nullableString($payload['generated_at'] ?? null),
                     'cache_ttl_minutes' => 15,
@@ -859,6 +1003,174 @@ class OperatorEvidenceService
             );
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['AgentDoctorService'], $e, 'Agent Doctor query failed.');
+        }
+    }
+
+    private function collectAgentDoctorHistory(Carbon $sampledAt): array
+    {
+        try {
+            $service = $this->agentDoctorHistory ?? app(AgentDoctorReadinessHistoryService::class);
+            $payload = Cache::remember(
+                self::AGENT_DOCTOR_HISTORY_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => $service->collect(7, 30)
+            );
+            $compact = $service->compactPayload($payload);
+            $summary = is_array($compact['summary'] ?? null) ? $compact['summary'] : [];
+            $window = is_array($compact['window'] ?? null) ? $compact['window'] : [];
+            $trace = is_array($compact['trace'] ?? null) ? $compact['trace'] : [];
+            $recursion = is_array($compact['recursion'] ?? null) ? $compact['recursion'] : [];
+            $outputQuality = is_array($compact['output_quality'] ?? null) ? $compact['output_quality'] : [];
+            $posture = is_array($compact['posture'] ?? null) ? $compact['posture'] : [];
+            $source = is_array($compact['source'] ?? null) ? $compact['source'] : [];
+
+            $counts = [
+                'window_days' => isset($window['days']) ? (int) $window['days'] : 7,
+                'window_limit' => isset($window['limit']) ? (int) $window['limit'] : 30,
+                'snapshot_count' => (int) ($summary['snapshot_count'] ?? 0),
+                'latest_status' => $this->safeOperatorEvidenceCode($summary['latest_status'] ?? null),
+                'latest_captured_at' => $this->nullableString($summary['latest_captured_at'] ?? null),
+                'trend' => $this->safeOperatorEvidenceCode($summary['trend'] ?? null),
+                'status_counts' => $this->safeOperatorEvidenceCodeCountMap($summary['status_counts'] ?? []),
+                'latest_warning_count' => isset($summary['latest_warning_count']) ? (int) $summary['latest_warning_count'] : null,
+                'latest_critical_count' => isset($summary['latest_critical_count']) ? (int) $summary['latest_critical_count'] : null,
+                'warning_delta' => isset($summary['warning_delta']) ? (int) $summary['warning_delta'] : null,
+                'critical_delta' => isset($summary['critical_delta']) ? (int) $summary['critical_delta'] : null,
+                'agent_count_delta' => isset($summary['agent_count_delta']) ? (int) $summary['agent_count_delta'] : null,
+                'latest_failure_modes' => $this->safeOperatorEvidenceCodeCountMap($summary['latest_failure_modes'] ?? []),
+                'oldest_failure_modes' => $this->safeOperatorEvidenceCodeCountMap($summary['oldest_failure_modes'] ?? []),
+                'failure_mode_snapshot_count' => (int) ($summary['failure_mode_snapshot_count'] ?? 0),
+                'failure_mode_coverage_percent' => isset($summary['failure_mode_coverage_percent'])
+                    ? (float) $summary['failure_mode_coverage_percent']
+                    : null,
+                'failure_mode_delta_status' => $this->safeOperatorEvidenceCode($summary['failure_mode_delta_status'] ?? null),
+                'failure_mode_delta_reason' => $this->safeOperatorEvidenceCode($summary['failure_mode_delta_reason'] ?? null),
+                'failure_mode_deltas' => $this->safeOperatorEvidenceCodeCountMap($summary['failure_mode_deltas'] ?? []),
+                'top_rising_failure_modes' => $this->safeOperatorEvidenceCodeCountMap($summary['top_rising_failure_modes'] ?? []),
+                'top_falling_failure_modes' => $this->safeOperatorEvidenceCodeCountMap($summary['top_falling_failure_modes'] ?? []),
+                'trace_status' => $this->safeOperatorEvidenceCode($trace['latest_status'] ?? null),
+                'trace_events_24h' => isset($trace['latest_events_24h']) ? (int) $trace['latest_events_24h'] : null,
+                'trace_events_24h_delta' => isset($trace['events_24h_delta']) ? (int) $trace['events_24h_delta'] : null,
+                'recursion_status' => $this->safeOperatorEvidenceCode($recursion['latest_status'] ?? null),
+                'recursion_calls_7d' => isset($recursion['latest_calls_7d']) ? (int) $recursion['latest_calls_7d'] : null,
+                'recursion_calls_7d_delta' => isset($recursion['calls_7d_delta']) ? (int) $recursion['calls_7d_delta'] : null,
+                'scheduled_success_runs_window' => (int) ($outputQuality['scheduled_success_runs_window'] ?? 0),
+                'scheduled_empty_success_outputs_window' => (int) ($outputQuality['scheduled_empty_success_outputs_window'] ?? 0),
+                'scheduled_cjk_output_runs_window' => (int) ($outputQuality['scheduled_cjk_output_runs_window'] ?? 0),
+                'scheduled_non_ascii_output_runs_window' => (int) ($outputQuality['scheduled_non_ascii_output_runs_window'] ?? 0),
+                'scheduled_guarded_output_runs_window' => (int) ($outputQuality['scheduled_guarded_output_runs_window'] ?? 0),
+                'posture_scope' => $this->safeOperatorEvidenceCode($posture['scope'] ?? null),
+                'snapshot_ids_included' => (bool) ($posture['snapshot_ids_included'] ?? false),
+                'check_ids_included' => (bool) ($posture['check_ids_included'] ?? false),
+                'per_agent_details_included' => (bool) ($posture['per_agent_details_included'] ?? false),
+                'raw_traces_included' => (bool) ($posture['raw_traces_included'] ?? false),
+                'prompts_or_completions_included' => (bool) ($posture['prompts_or_completions_included'] ?? false),
+                'command_output_included' => (bool) ($posture['command_output_included'] ?? false),
+                'filesystem_paths_included' => (bool) ($posture['filesystem_paths_included'] ?? false),
+            ];
+
+            $status = match ($counts['latest_status']) {
+                'critical' => 'degraded',
+                'warning' => 'watch',
+                'healthy' => 'healthy',
+                default => 'watch',
+            };
+
+            if ($counts['trend'] === 'degrading') {
+                $status = 'degraded';
+            } elseif ($counts['trend'] === 'watch_worsening') {
+                $status = $this->maxStatus($status, 'watch');
+            }
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['AgentDoctorReadinessHistoryService', 'dev_agent_readiness_snapshots'],
+                $counts,
+                $status === 'healthy' ? null : 'Review ops:agent-doctor-history --compact --days=7 before expanding agent autonomy.',
+                [
+                    'generated_at' => $this->nullableString($compact['generated_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                    'mode' => $this->safeOperatorEvidenceCode($compact['mode'] ?? null),
+                    'projection' => $this->safeOperatorEvidenceCode($source['projection'] ?? null),
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection(
+                $sampledAt,
+                ['AgentDoctorReadinessHistoryService', 'dev_agent_readiness_snapshots'],
+                $e,
+                'Agent Doctor history query failed.'
+            );
+        }
+    }
+
+    private function collectAgentToolPolicyTelemetry(Carbon $sampledAt): array
+    {
+        try {
+            $payload = Cache::remember(
+                self::AGENT_TOOL_POLICY_TELEMETRY_CACHE_KEY,
+                now()->addMinutes(15),
+                fn (): array => ($this->agentToolPolicyTelemetry ?? app(AgentToolPolicyTelemetryService::class))->collect()
+            );
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+            $counts = [
+                'stale_hours' => (int) ($payload['stale_hours'] ?? 168),
+                'tools_total' => (int) ($summary['tools_total'] ?? 0),
+                'enabled_total' => (int) ($summary['enabled_total'] ?? 0),
+                'disabled_total' => (int) ($summary['disabled_total'] ?? 0),
+                'enabled_unavailable_total' => (int) ($summary['enabled_unavailable_total'] ?? 0),
+                'enabled_degraded_total' => (int) ($summary['enabled_degraded_total'] ?? 0),
+                'enabled_unknown_availability_total' => (int) ($summary['enabled_unknown_availability_total'] ?? 0),
+                'freshness_recent_total' => (int) ($summary['freshness_recent_total'] ?? 0),
+                'freshness_stale_total' => (int) ($summary['freshness_stale_total'] ?? 0),
+                'freshness_stale_enabled_total' => (int) ($summary['freshness_stale_enabled_total'] ?? 0),
+                'freshness_unchecked_total' => (int) ($summary['freshness_unchecked_total'] ?? 0),
+                'freshness_unchecked_enabled_total' => (int) ($summary['freshness_unchecked_enabled_total'] ?? 0),
+                'oldest_checked_age_hours' => isset($summary['oldest_checked_age_hours'])
+                    ? (float) $summary['oldest_checked_age_hours']
+                    : null,
+                'last_error_total' => (int) ($summary['last_error_total'] ?? 0),
+                'last_error_enabled_total' => (int) ($summary['last_error_enabled_total'] ?? 0),
+                'allows_private_data_total' => (int) ($summary['allows_private_data_total'] ?? 0),
+                'denies_private_data_total' => (int) ($summary['denies_private_data_total'] ?? 0),
+                'privacy_unspecified_enabled_total' => (int) ($summary['privacy_unspecified_enabled_total'] ?? 0),
+                'max_result_bytes_missing_enabled_total' => (int) ($summary['max_result_bytes_missing_enabled_total'] ?? 0),
+                'schema_generation_missing_total' => (int) ($summary['schema_generation_missing_total'] ?? 0),
+                'policy_gap_enabled_total' => (int) ($summary['policy_gap_enabled_total'] ?? 0),
+                'registry_columns_present' => (int) ($summary['registry_columns_present'] ?? 0),
+                'availability_counts' => $this->integerCountMap($summary['availability_counts'] ?? []),
+                'privacy_class_counts' => $this->integerCountMap($summary['privacy_class_counts'] ?? []),
+                'risk_level_counts' => $this->integerCountMap($summary['risk_level_counts'] ?? []),
+                'source_counts' => $this->integerCountMap($summary['source_counts'] ?? []),
+                'warnings' => array_values(array_filter(
+                    (array) ($payload['warnings'] ?? []),
+                    fn (mixed $warning): bool => is_string($warning) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $warning) === 1
+                )),
+            ];
+
+            $status = match ((string) ($payload['status'] ?? 'watch')) {
+                'healthy' => 'healthy',
+                'watch' => 'watch',
+                'degraded' => 'degraded',
+                'blocked' => 'blocked',
+                default => 'watch',
+            };
+
+            return $this->section(
+                $status,
+                $sampledAt,
+                ['AgentToolPolicyTelemetryService', 'agent_tool_registry'],
+                $counts,
+                $status === 'healthy' ? null : 'Review agent tool registry freshness/privacy telemetry before expanding agent autonomy.',
+                [
+                    'generated_at' => $this->nullableString($payload['generated_at'] ?? null),
+                    'cache_ttl_minutes' => 15,
+                    'mode' => 'observe',
+                ]
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, ['AgentToolPolicyTelemetryService', 'agent_tool_registry'], $e, 'Agent tool policy telemetry query failed.');
         }
     }
 
@@ -930,6 +1242,15 @@ class OperatorEvidenceService
             $packetReadiness = is_array($payload['packet_readiness'] ?? null)
                 ? $payload['packet_readiness']
                 : [];
+            $packetReviewPass = is_array($packetReadiness['review_pass'] ?? null)
+                ? $packetReadiness['review_pass']
+                : [];
+            $packetSelfCheck = is_array($packetReviewPass['self_check'] ?? null)
+                ? $packetReviewPass['self_check']
+                : [];
+            $packetSelfCheckScore = is_numeric($packetSelfCheck['score_percent'] ?? null)
+                ? (float) $packetSelfCheck['score_percent']
+                : null;
             $recommendations = array_values(array_filter((array) ($payload['recommendations'] ?? []), 'is_string'));
             $status = $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning'));
             $staleDays = (int) ($payload['stale_days'] ?? 7);
@@ -978,8 +1299,25 @@ class OperatorEvidenceService
                 'packet_source_backed_rows' => (int) ($packetReadiness['source_backed_rows'] ?? 0),
                 'packet_preview_only_rows' => (int) ($packetReadiness['preview_only_rows'] ?? 0),
                 'packet_canonical_mutation_rows' => (int) ($packetReadiness['canonical_mutation_rows'] ?? 0),
+                'packet_identity_present_rows' => (int) ($packetReadiness['identity_present_rows'] ?? 0),
+                'packet_privacy_present_rows' => (int) ($packetReadiness['privacy_present_rows'] ?? 0),
+                'packet_privacy_cleared_rows' => (int) ($packetReadiness['privacy_cleared_rows'] ?? 0),
+                'packet_validation_present_rows' => (int) ($packetReadiness['validation_present_rows'] ?? 0),
+                'packet_validation_valid_rows' => (int) ($packetReadiness['validation_valid_rows'] ?? 0),
                 'packet_reason_code_counts' => $this->integerCountMap($packetReadiness['reason_code_counts'] ?? []),
                 'packet_blocker_code_counts' => $this->integerCountMap($packetReadiness['blocker_code_counts'] ?? []),
+                'packet_self_check_status' => $this->safeOperatorEvidenceCode($packetSelfCheck['status'] ?? null),
+                'packet_self_check_score_percent' => $packetSelfCheckScore,
+                'packet_self_check_total_rows' => (int) ($packetSelfCheck['total_rows'] ?? 0),
+                'packet_self_check_blocked_rows' => (int) ($packetSelfCheck['blocked_rows'] ?? 0),
+                'packet_self_check_gate_total' => (int) ($packetSelfCheck['gate_total'] ?? 0),
+                'packet_self_check_gate_ok_count' => (int) ($packetSelfCheck['gate_ok_count'] ?? 0),
+                'packet_self_check_gate_gap_count' => (int) ($packetSelfCheck['gate_gap_count'] ?? 0),
+                'packet_self_check_gate_counts' => $this->integerCountMap($packetSelfCheck['gate_counts'] ?? []),
+                'packet_self_check_gap_counts' => $this->integerCountMap($packetSelfCheck['gap_counts'] ?? []),
+                'packet_self_check_details_included' => (bool) ($packetSelfCheck['details_included'] ?? false),
+                'packet_self_check_tokens_included' => (bool) ($packetSelfCheck['tokens_included'] ?? false),
+                'packet_self_check_locators_included' => (bool) ($packetSelfCheck['locators_included'] ?? false),
                 'next_safe_handoffs' => $nextSafeHandoffs,
                 'recommendations' => count($recommendations),
             ];
@@ -991,7 +1329,7 @@ class OperatorEvidenceService
                 $counts,
                 $status === 'healthy'
                     ? null
-                    : 'Review ops:review-backlog-report --json before clearing aged or high-priority review rows.',
+                    : 'Review ops:review-backlog-report --json --compact before clearing aged or high-priority review rows.',
                 [
                     'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
                     'cache_ttl_minutes' => 15,
@@ -1501,10 +1839,10 @@ class OperatorEvidenceService
                 $this->mapObserveStatus((string) ($payload['status'] ?? 'observe_warning')),
                 $this->mapArcRetentionStatus((string) ($arcRetention['status'] ?? 'unknown')),
             ]);
-            $nextAction = $status === 'healthy' ? null : 'Review ops:dba-telemetry-report --json before DBA cleanup, partition, or retention changes.';
+            $nextAction = $status === 'healthy' ? null : 'Review ops:dba-telemetry-report --json --compact before DBA cleanup, partition, or retention changes.';
 
             if ($counts['arc_retention_has_eligible_rows']) {
-                $nextAction = 'Run ops:arc-retention --json; execute one bounded cleanup chunk only when heavy jobs are idle and health is clean.';
+                $nextAction = 'Run ops:arc-retention --json --compact; execute one bounded cleanup chunk only when heavy jobs are idle and health is clean.';
             }
 
             return $this->section(
@@ -1563,7 +1901,7 @@ class OperatorEvidenceService
                 $sampledAt,
                 ['SchedulerOptimizeReportService', 'scheduled_jobs', 'scheduled_job_runs'],
                 $counts,
-                $status === 'healthy' ? null : 'Review scheduler:optimize-report --json before schedule, timeout, queue, or batch-size changes.',
+                $status === 'healthy' ? null : 'Review scheduler:optimize-report --json --compact before schedule, timeout, queue, or batch-size changes.',
                 [
                     'captured_at' => $this->nullableString($payload['captured_at'] ?? null),
                     'cache_ttl_minutes' => 15,
@@ -1595,6 +1933,10 @@ class OperatorEvidenceService
                 'duplicate_fileid_groups' => (int) ($counts['duplicate_nextcloud_fileid_groups'] ?? 0),
                 'same_content_multi_path_groups' => (int) ($counts['same_content_multi_path_groups'] ?? 0),
                 'same_filename_content_multi_path_groups' => (int) ($counts['same_filename_content_multi_path_groups'] ?? 0),
+                'same_filename_content_materialized_groups' => (int) ($counts['same_filename_content_materialized_groups'] ?? 0),
+                'same_filename_content_unmaterialized_groups' => (int) ($counts['same_filename_content_unmaterialized_groups'] ?? $counts['same_filename_content_multi_path_groups'] ?? 0),
+                'pending_duplicate_review_pairs' => (int) ($counts['pending_duplicate_review_pairs'] ?? 0),
+                'keep_both_duplicate_pairs' => (int) ($counts['keep_both_duplicate_pairs'] ?? 0),
                 'mysql_downstream_orphan_rows' => (int) ($counts['mysql_downstream_orphan_rows'] ?? 0),
                 'rag_file_documents' => (int) ($counts['rag_file_documents'] ?? 0),
                 'rag_source_id_checked_sample' => (int) ($counts['rag_source_id_checked_sample'] ?? 0),
@@ -1612,7 +1954,8 @@ class OperatorEvidenceService
             $attentionCount = $sectionCounts['active_missing_identity_or_path']
                 + $sectionCounts['duplicate_asset_groups']
                 + $sectionCounts['duplicate_fileid_groups']
-                + $sectionCounts['same_content_multi_path_groups']
+                + $sectionCounts['same_filename_content_unmaterialized_groups']
+                + $sectionCounts['pending_duplicate_review_pairs']
                 + $sectionCounts['mysql_downstream_orphan_rows']
                 + $sectionCounts['rag_source_id_missing_registry_in_sample']
                 + $sectionCounts['rag_uuid_missing_registry_in_sample'];

@@ -1013,6 +1013,34 @@ class ReviewContextEnrichmentService
         $reasonCode = $this->safeReviewPassCode($readiness['reason_code'] ?? null);
         $state = $this->safeReviewPassCode($readiness['state'] ?? null) ?? 'unknown';
         $blockerCodes = $this->reviewPassBlockerCodes($reviewFocus);
+        $blockerCount = $this->nonNegativeInt($readiness['blocker_count'] ?? null) ?? count($blockerCodes);
+        $counts = [
+            'claim_count' => $this->nonNegativeInt($proofSummary['claim_count'] ?? null) ?? 0,
+            'source_count' => $this->nonNegativeInt($proofSummary['source_count'] ?? null) ?? 0,
+            'claims_with_source_context' => $this->nonNegativeInt($proofSummary['claims_with_source_context'] ?? null) ?? 0,
+            'resolved_media_count' => $this->nonNegativeInt($proofSummary['resolved_media_count'] ?? null) ?? 0,
+            'missing_media_count' => $this->nonNegativeInt($proofSummary['missing_media_count'] ?? null) ?? 0,
+            'checklist_row_count' => $this->nonNegativeInt($proofSummary['checklist_row_count'] ?? null)
+                ?? $this->nonNegativeInt($reviewChecklist['row_count'] ?? null)
+                ?? 0,
+        ];
+        $signals = [
+            'review_ready' => ($proofSummary['review_ready'] ?? null) === true,
+            'source_backed' => ($proofSummary['source_backed'] ?? null) === true,
+            'all_claims_source_linked' => ($proofSummary['all_claims_source_linked'] ?? null) === true,
+            'boundary_present' => ($proofSummary['boundary_present'] ?? null) === true,
+            'identity_present' => ($proofSummary['identity_present'] ?? null) === true,
+            'privacy_cleared' => ($proofSummary['privacy_cleared'] ?? null) === true,
+            'preview_only' => ($proofSummary['preview_only'] ?? null) === true,
+            'canonical_mutation' => ($proofSummary['canonical_mutation'] ?? null) === true,
+            'validation_state' => $this->safeReviewPassCode($proofSummary['validation_state'] ?? null) ?? 'unknown',
+            'outcome_state' => $this->safeReviewPassCode($packetOutcome['outcome_state'] ?? null) ?? 'unknown',
+            'conflict_signal' => ($evidenceSummary['has_conflict'] ?? null) === true,
+            'negative_evidence' => ($evidenceSummary['has_negative_evidence'] ?? null) === true,
+            'locator_present' => ($evidenceSummary['locator_present'] ?? null) === true,
+            'extract_present' => ($evidenceSummary['extract_present'] ?? null) === true,
+        ];
+        $posture = $this->reviewPassPosture();
 
         return [
             'schema' => 'genealogy_review_packet_review_pass.v1',
@@ -1022,36 +1050,152 @@ class ReviewContextEnrichmentService
             'state' => $state,
             'label' => $this->reviewPassLabel($state, $reasonCode),
             'reason_code' => $reasonCode,
-            'blocker_count' => $this->nonNegativeInt($readiness['blocker_count'] ?? null) ?? count($blockerCodes),
+            'blocker_count' => $blockerCount,
             'blocker_codes' => $blockerCodes,
-            'counts' => [
-                'claim_count' => $this->nonNegativeInt($proofSummary['claim_count'] ?? null) ?? 0,
-                'source_count' => $this->nonNegativeInt($proofSummary['source_count'] ?? null) ?? 0,
-                'claims_with_source_context' => $this->nonNegativeInt($proofSummary['claims_with_source_context'] ?? null) ?? 0,
-                'resolved_media_count' => $this->nonNegativeInt($proofSummary['resolved_media_count'] ?? null) ?? 0,
-                'missing_media_count' => $this->nonNegativeInt($proofSummary['missing_media_count'] ?? null) ?? 0,
-                'checklist_row_count' => $this->nonNegativeInt($proofSummary['checklist_row_count'] ?? null)
-                    ?? $this->nonNegativeInt($reviewChecklist['row_count'] ?? null)
-                    ?? 0,
-            ],
-            'signals' => [
-                'review_ready' => ($proofSummary['review_ready'] ?? null) === true,
-                'source_backed' => ($proofSummary['source_backed'] ?? null) === true,
-                'all_claims_source_linked' => ($proofSummary['all_claims_source_linked'] ?? null) === true,
-                'boundary_present' => ($proofSummary['boundary_present'] ?? null) === true,
-                'identity_present' => ($proofSummary['identity_present'] ?? null) === true,
-                'privacy_cleared' => ($proofSummary['privacy_cleared'] ?? null) === true,
-                'preview_only' => ($proofSummary['preview_only'] ?? null) === true,
-                'canonical_mutation' => ($proofSummary['canonical_mutation'] ?? null) === true,
-                'validation_state' => $this->safeReviewPassCode($proofSummary['validation_state'] ?? null) ?? 'unknown',
-                'outcome_state' => $this->safeReviewPassCode($packetOutcome['outcome_state'] ?? null) ?? 'unknown',
-                'conflict_signal' => ($evidenceSummary['has_conflict'] ?? null) === true,
-                'negative_evidence' => ($evidenceSummary['has_negative_evidence'] ?? null) === true,
-                'locator_present' => ($evidenceSummary['locator_present'] ?? null) === true,
-                'extract_present' => ($evidenceSummary['extract_present'] ?? null) === true,
-            ],
-            'posture' => $this->reviewPassPosture(),
+            'counts' => $counts,
+            'signals' => $signals,
+            'self_check' => $this->reviewPacketSelfCheck($reviewChecklist, $evidenceLens, $reviewProof, $signals, $blockerCount),
+            'posture' => $posture,
         ];
+    }
+
+    /**
+     * Display-only aggregate self-check for packet review quality.
+     *
+     * This uses only already-sanitized checklist/evidence/proof state counts
+     * and review-pass signals. It does not include source text, locators,
+     * person ids, review ids, tokens, or raw packet details.
+     *
+     * @param  array<string, mixed>  $reviewChecklist
+     * @param  array<string, mixed>  $evidenceLens
+     * @param  array<string, mixed>  $reviewProof
+     * @param  array<string, mixed>  $signals
+     * @return array<string, mixed>
+     */
+    private function reviewPacketSelfCheck(
+        array $reviewChecklist,
+        array $evidenceLens,
+        array $reviewProof,
+        array $signals,
+        int $blockerCount
+    ): array {
+        $sectionStateCounts = [
+            'checklist' => $this->reviewPacketSelfCheckStateCounts($reviewChecklist['state_counts'] ?? []),
+            'evidence_lens' => $this->reviewPacketSelfCheckStateCounts($evidenceLens['state_counts'] ?? []),
+            'review_proof' => $this->reviewPacketSelfCheckStateCounts($reviewProof['state_counts'] ?? []),
+        ];
+
+        $okCount = 0;
+        $warningCount = 0;
+        $blockedCount = 0;
+        $missingCount = 0;
+        $unknownCount = 0;
+        foreach ($sectionStateCounts as $counts) {
+            $okCount += $counts['ok'] ?? 0;
+            $warningCount += $counts['warning'] ?? 0;
+            $blockedCount += $counts['blocked'] ?? 0;
+            $missingCount += $counts['missing'] ?? 0;
+            $unknownCount += $counts['unknown'] ?? 0;
+        }
+
+        $totalRows = $okCount + $warningCount + $blockedCount + $missingCount + $unknownCount;
+        [$signalTotal, $signalOkCount, $signalWatchCount] = $this->reviewPacketSelfCheckSignalCounts($signals);
+        $riskSignalCount = (($signals['conflict_signal'] ?? false) === true ? 1 : 0)
+            + (($signals['negative_evidence'] ?? false) === true ? 1 : 0);
+        $status = match (true) {
+            $blockerCount > 0 || $blockedCount > 0 || $missingCount > 0 => 'blocked',
+            $warningCount > 0 || $unknownCount > 0 || $signalWatchCount > 0 || $riskSignalCount > 0 => 'warning',
+            default => 'ok',
+        };
+
+        return [
+            'schema' => 'genealogy_review_packet_self_check.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'status' => $status,
+            'score_percent' => $totalRows > 0 ? round(($okCount / $totalRows) * 100, 1) : null,
+            'total_rows' => $totalRows,
+            'ok_count' => $okCount,
+            'warning_count' => $warningCount,
+            'blocked_count' => $blockedCount,
+            'missing_count' => $missingCount,
+            'unknown_count' => $unknownCount,
+            'blocker_count' => max(0, $blockerCount),
+            'signal_total' => $signalTotal,
+            'signal_ok_count' => $signalOkCount,
+            'signal_watch_count' => $signalWatchCount,
+            'risk_signal_count' => $riskSignalCount,
+            'section_state_counts' => $sectionStateCounts,
+            'canonical_write_allowed' => false,
+            'apply_enabled' => false,
+            'details_included' => false,
+            'raw_identifiers_included' => false,
+            'tokens_included' => false,
+            'locators_included' => false,
+            'review_decisions_included' => false,
+        ];
+    }
+
+    /**
+     * @return array{ok:int,warning:int,blocked:int,missing:int,unknown:int}
+     */
+    private function reviewPacketSelfCheckStateCounts(mixed $counts): array
+    {
+        $safe = [
+            'ok' => 0,
+            'warning' => 0,
+            'blocked' => 0,
+            'missing' => 0,
+            'unknown' => 0,
+        ];
+
+        if (! is_array($counts)) {
+            return $safe;
+        }
+
+        foreach ($counts as $state => $count) {
+            $state = $this->safeReviewPassCode($state) ?? 'unknown';
+            $count = $this->nonNegativeInt($count) ?? 0;
+            if (! array_key_exists($state, $safe)) {
+                $state = 'unknown';
+            }
+            $safe[$state] += $count;
+        }
+
+        return $safe;
+    }
+
+    /**
+     * @param  array<string, mixed>  $signals
+     * @return array{0:int,1:int,2:int}
+     */
+    private function reviewPacketSelfCheckSignalCounts(array $signals): array
+    {
+        $expectations = [
+            'review_ready' => true,
+            'source_backed' => true,
+            'all_claims_source_linked' => true,
+            'identity_present' => true,
+            'privacy_cleared' => true,
+            'preview_only' => true,
+            'locator_present' => true,
+            'extract_present' => true,
+            'canonical_mutation' => false,
+        ];
+
+        $total = 0;
+        $ok = 0;
+        foreach ($expectations as $signal => $expected) {
+            if (! array_key_exists($signal, $signals)) {
+                continue;
+            }
+            $total++;
+            if (($signals[$signal] === true) === $expected) {
+                $ok++;
+            }
+        }
+
+        return [$total, $ok, max(0, $total - $ok)];
     }
 
     /**

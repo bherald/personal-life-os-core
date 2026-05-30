@@ -164,6 +164,7 @@ class AgentDoctorReadinessSnapshotService
                 'scheduled_non_ascii_output_runs_window' => $this->boundedInt($summary['scheduled_non_ascii_output_runs_window'] ?? 0),
                 'scheduled_guarded_output_runs_window' => $this->boundedInt($summary['scheduled_guarded_output_runs_window'] ?? 0),
             ],
+            'failure_modes' => $this->safeCodeCountMap($summary['failure_mode_counts'] ?? []),
         ];
     }
 
@@ -225,10 +226,34 @@ class AgentDoctorReadinessSnapshotService
         }
 
         $raw = trim((string) $value);
-        if ($raw === '' || preg_match('/(?:^~[\/\\\\]|[\/\\\\]|^[A-Za-z]:[\/\\\\]|^file:)/', $raw) === 1) {
+        if ($raw === '' || preg_match('/(?:^~[\/\\\\]|^[\/\\\\]|^[A-Za-z]:[\/\\\\]|^file:|(?:^|[\/\\\\])(?:home|Users|var|tmp|storage)[\/\\\\])/i', $raw) === 1) {
             return null;
         }
 
         return $this->nullableBounded($raw, $limit);
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function safeCodeCountMap(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $safe = [];
+        foreach ($value as $code => $count) {
+            if (! is_string($code) || preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) !== 1 || ! is_numeric($count)) {
+                continue;
+            }
+
+            $safe[$code] = $this->boundedInt($count);
+            if (count($safe) >= 12) {
+                break;
+            }
+        }
+
+        return $safe;
     }
 }

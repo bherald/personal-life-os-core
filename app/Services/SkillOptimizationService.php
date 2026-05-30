@@ -21,23 +21,35 @@ use Illuminate\Support\Facades\Log;
 class SkillOptimizationService implements ReviewApprovalHandler
 {
     private const MIN_BENCHMARK_SAMPLES = 3;
+
     private const UNUSED_TOOL_DAYS = 30;
+
     private const PHASE_IMBALANCE_HIGH = 0.80;
+
     private const PHASE_IMBALANCE_LOW = 0.05;
+
     private const ITERATION_WASTE_THRESHOLD = 0.50;
+
     private const TOOL_GAP_MIN_OCCURRENCES = 3;
+
     private const SIGNIFICANCE_THRESHOLD = 0.15; // Minimum relative change to submit review
+
     private const REJECTED_REVIEW_TTL_DAYS = 14; // Auto-delete rejected items after 14 days
 
     private ?SkillLoaderService $skillLoader = null;
+
     private ?SkillVersionService $skillVersion = null;
+
     private ?ToolProposalService $toolProposal = null;
+
+    private ?SkillCandidateLifecycleService $candidateLifecycle = null;
 
     private function getSkillLoader(): SkillLoaderService
     {
         if ($this->skillLoader === null) {
             $this->skillLoader = app(SkillLoaderService::class);
         }
+
         return $this->skillLoader;
     }
 
@@ -46,6 +58,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
         if ($this->skillVersion === null) {
             $this->skillVersion = app(SkillVersionService::class);
         }
+
         return $this->skillVersion;
     }
 
@@ -54,7 +67,17 @@ class SkillOptimizationService implements ReviewApprovalHandler
         if ($this->toolProposal === null) {
             $this->toolProposal = app(ToolProposalService::class);
         }
+
         return $this->toolProposal;
+    }
+
+    private function getCandidateLifecycle(): SkillCandidateLifecycleService
+    {
+        if ($this->candidateLifecycle === null) {
+            $this->candidateLifecycle = app(SkillCandidateLifecycleService::class);
+        }
+
+        return $this->candidateLifecycle;
     }
 
     // =========================================================================
@@ -67,7 +90,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
     public function analyzeAgent(string $agentId): array
     {
         $skill = $this->getSkillLoader()->loadSkill($agentId);
-        if (!$skill) {
+        if (! $skill) {
             return ['success' => false, 'error' => "Skill not found: {$agentId}"];
         }
 
@@ -104,7 +127,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
      */
     public function getPerformanceProfile(string $agentId): array
     {
-        $benchmarks = DB::select("
+        $benchmarks = DB::select('
             SELECT workflow_mode,
                    COUNT(*) as runs,
                    AVG(accuracy_score) as avg_accuracy,
@@ -116,9 +139,9 @@ class SkillOptimizationService implements ReviewApprovalHandler
             FROM agent_benchmarks
             WHERE agent_id = ? AND accuracy_score IS NOT NULL
             GROUP BY workflow_mode
-        ", [$agentId]);
+        ', [$agentId]);
 
-        $bestWorst = DB::select("
+        $bestWorst = DB::select('
             SELECT task_key, workflow_mode,
                    accuracy_score, completeness_score, relevance_score,
                    duration_ms, tokens_used
@@ -126,7 +149,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
             WHERE agent_id = ? AND accuracy_score IS NOT NULL
             ORDER BY (accuracy_score + completeness_score + relevance_score) DESC
             LIMIT 10
-        ", [$agentId]);
+        ', [$agentId]);
 
         $totalRuns = 0;
         $modeData = [];
@@ -146,7 +169,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
         return [
             'total_benchmark_runs' => $totalRuns,
             'by_mode' => $modeData,
-            'task_rankings' => array_map(fn($r) => [
+            'task_rankings' => array_map(fn ($r) => [
                 'task' => $r->task_key,
                 'mode' => $r->workflow_mode,
                 'score' => (float) $r->accuracy_score + (float) $r->completeness_score + (float) $r->relevance_score,
@@ -176,8 +199,10 @@ class SkillOptimizationService implements ReviewApprovalHandler
         $tools = [];
         foreach ($usage as $u) {
             $name = $u->tool_name;
-            if (!$name) continue;
-            if (!isset($tools[$name])) {
+            if (! $name) {
+                continue;
+            }
+            if (! isset($tools[$name])) {
                 $tools[$name] = [
                     'total_calls' => 0,
                     'phases' => [],
@@ -241,8 +266,8 @@ class SkillOptimizationService implements ReviewApprovalHandler
         $errorCount = (int) ($errors->cnt ?? 0);
 
         // Calculate avg iterations per session
-        $iterationCounts = array_map(fn($s) => (int) $s->tool_calls, $sessions);
-        $completedSessions = array_filter($sessions, fn($s) => (int) $s->completed === 1);
+        $iterationCounts = array_map(fn ($s) => (int) $s->tool_calls, $sessions);
+        $completedSessions = array_filter($sessions, fn ($s) => (int) $s->completed === 1);
 
         $skill = $this->getSkillLoader()->getSkillConfig($agentId);
         $maxIter = (int) ($skill['max_iterations'] ?? 15);
@@ -307,7 +332,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
      */
     public function recommendMode(string $agentId): array
     {
-        $benchmarks = DB::select("
+        $benchmarks = DB::select('
             SELECT task_key, workflow_mode,
                    AVG(accuracy_score) as avg_accuracy,
                    AVG(completeness_score) as avg_completeness,
@@ -317,7 +342,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
             FROM agent_benchmarks
             WHERE agent_id = ? AND accuracy_score IS NOT NULL
             GROUP BY task_key, workflow_mode
-        ", [$agentId]);
+        ', [$agentId]);
 
         if (empty($benchmarks)) {
             return ['sufficient_data' => false, 'message' => 'No benchmark data available. Run agent:benchmark first.'];
@@ -339,15 +364,16 @@ class SkillOptimizationService implements ReviewApprovalHandler
         $recommendations = [];
         foreach ($byTask as $task => $modes) {
             // Need minimum samples per mode to recommend
-            $validModes = array_filter($modes, fn($m) => $m['sample_count'] >= self::MIN_BENCHMARK_SAMPLES);
+            $validModes = array_filter($modes, fn ($m) => $m['sample_count'] >= self::MIN_BENCHMARK_SAMPLES);
 
             if (empty($validModes)) {
                 $recommendations[$task] = [
                     'recommended_mode' => null,
                     'confidence' => 0,
-                    'reasoning' => 'Insufficient benchmark data (need ' . self::MIN_BENCHMARK_SAMPLES . '+ runs per mode)',
+                    'reasoning' => 'Insufficient benchmark data (need '.self::MIN_BENCHMARK_SAMPLES.'+ runs per mode)',
                     'data' => $modes,
                 ];
+
                 continue;
             }
 
@@ -398,7 +424,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
             array_filter(array_column($recommendations, 'recommended_mode'))
         );
         arsort($modeCounts);
-        $overallMode = !empty($modeCounts) ? array_key_first($modeCounts) : null;
+        $overallMode = ! empty($modeCounts) ? array_key_first($modeCounts) : null;
 
         return [
             'sufficient_data' => true,
@@ -406,7 +432,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
             'overall_recommendation' => $overallMode,
             'overall_confidence' => $overallMode
                 ? round(array_sum(array_column(
-                    array_filter($recommendations, fn($r) => $r['recommended_mode'] === $overallMode),
+                    array_filter($recommendations, fn ($r) => $r['recommended_mode'] === $overallMode),
                     'confidence'
                 )) / max(1, $modeCounts[$overallMode]), 2)
                 : 0,
@@ -423,7 +449,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
     public function proposeSkillAmendments(string $agentId): array
     {
         $skill = $this->getSkillLoader()->loadSkill($agentId);
-        if (!$skill) {
+        if (! $skill) {
             return ['success' => false, 'error' => "Skill not found: {$agentId}"];
         }
 
@@ -557,7 +583,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
                 $amendments[] = [
                     'type' => 'phase_rebalance',
                     'agent_id' => $agentId,
-                    'current_value' => "{$phase}: {$calls}/{$totalCalls} calls (" . round($ratio * 100) . '%)',
+                    'current_value' => "{$phase}: {$calls}/{$totalCalls} calls (".round($ratio * 100).'%)',
                     'proposed_value' => 'Consider splitting heavy phase or moving tools to distribute load',
                     'reasoning' => sprintf(
                         'Phase "%s" accounts for %.0f%% of all tool calls. This may cause phase starvation for other phases.',
@@ -577,12 +603,29 @@ class SkillOptimizationService implements ReviewApprovalHandler
      */
     public function submitAmendmentForReview(string $agentId, array $amendment): array
     {
+        $lifecycle = $this->getCandidateLifecycle()->prepareForReview($agentId, $amendment);
+        if (($lifecycle['state'] ?? null) === SkillCandidateLifecycleService::STATE_REJECTED) {
+            Log::warning('SkillOptimization: Amendment blocked by candidate lifecycle scan', [
+                'agent_id' => $agentId,
+                'type' => $amendment['type'] ?? null,
+                'findings' => $lifecycle['scan']['findings'] ?? [],
+            ]);
+
+            return [
+                'success' => false,
+                'skipped' => true,
+                'reason' => 'candidate_lifecycle_blocked',
+                'candidate_lifecycle' => $lifecycle,
+            ];
+        }
+
         // AG-23: Significance gate — skip low-impact amendments
-        if (!$this->isSignificantAmendment($amendment)) {
+        if (! $this->isSignificantAmendment($amendment)) {
             Log::info('SkillOptimization: Amendment below significance threshold, skipping', [
                 'agent_id' => $agentId,
                 'type' => $amendment['type'],
             ]);
+
             return ['success' => false, 'skipped' => true, 'reason' => 'below significance threshold'];
         }
 
@@ -592,10 +635,15 @@ class SkillOptimizationService implements ReviewApprovalHandler
             WHERE agent_id = ? AND review_type = 'skill_optimization' AND status = 'pending'
               AND title LIKE ?
             LIMIT 1
-        ", [$agentId, '%' . $amendment['type'] . '%']);
+        ", [$agentId, '%'.$amendment['type'].'%']);
 
         if ($existing) {
-            return ['success' => false, 'skipped' => true, 'reason' => 'duplicate pending amendment'];
+            return [
+                'success' => false,
+                'skipped' => true,
+                'reason' => 'duplicate pending amendment',
+                'candidate_lifecycle' => $lifecycle,
+            ];
         }
 
         $token = bin2hex(random_bytes(16));
@@ -608,13 +656,16 @@ class SkillOptimizationService implements ReviewApprovalHandler
             'current_value' => $amendment['current_value'],
             'proposed_value' => $amendment['proposed_value'],
             'metrics' => $amendment['metrics'] ?? [],
+            'candidate_lifecycle' => $lifecycle,
         ];
+        $now = now()->toDateTimeString();
+        $expiresAt = now()->addDays(7)->toDateTimeString();
 
         try {
             DB::insert("
                 INSERT INTO agent_review_queue
                 (agent_id, review_type, title, summary, details, confidence, priority, status, token, expires_at, created_at, updated_at)
-                VALUES (?, 'skill_optimization', ?, ?, ?, ?, 1, 'pending', ?, DATE_ADD(NOW(), INTERVAL 7 DAY), NOW(), NOW())
+                VALUES (?, 'skill_optimization', ?, ?, ?, ?, 1, 'pending', ?, ?, ?, ?)
             ", [
                 $agentId,
                 substr($title, 0, 500),
@@ -622,6 +673,9 @@ class SkillOptimizationService implements ReviewApprovalHandler
                 json_encode($details),
                 0.8,
                 $token,
+                $expiresAt,
+                $now,
+                $now,
             ]);
 
             Log::info('SkillOptimization: Amendment submitted for review', [
@@ -636,6 +690,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
                 'agent_id' => $agentId,
                 'error' => $e->getMessage(),
             ]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -659,6 +714,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
         // Numeric comparison: require >= 15% relative change
         if (is_numeric($current) && is_numeric($proposed) && $current != 0) {
             $relativeChange = abs($proposed - $current) / abs($current);
+
             return $relativeChange >= self::SIGNIFICANCE_THRESHOLD;
         }
 
@@ -694,12 +750,25 @@ class SkillOptimizationService implements ReviewApprovalHandler
         $type = $details['amendment_type'] ?? null;
         $proposedValue = $details['proposed_value'] ?? null;
 
-        if (!$agentId || !$type) {
+        if (! $agentId || ! $type) {
             return ['success' => false, 'error' => 'Missing agent_id or amendment_type in details'];
         }
 
+        $lifecycle = $this->getCandidateLifecycle()->prepareForReview($agentId, [
+            'type' => $type,
+            'current_value' => $details['current_value'] ?? null,
+            'proposed_value' => $proposedValue,
+            'metrics' => $details['metrics'] ?? [],
+            'candidate_lifecycle' => $details['candidate_lifecycle'] ?? null,
+        ], 'skill_optimization_approval');
+        if (($lifecycle['state'] ?? null) === SkillCandidateLifecycleService::STATE_REJECTED) {
+            $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_REJECTED, 'approval scan blocked candidate');
+
+            return ['success' => false, 'error' => 'Candidate blocked by lifecycle scan', 'candidate_lifecycle' => $lifecycle];
+        }
+
         $skill = $this->getSkillLoader()->loadSkill($agentId);
-        if (!$skill) {
+        if (! $skill) {
             return ['success' => false, 'error' => "Skill not found: {$agentId}"];
         }
 
@@ -711,11 +780,11 @@ class SkillOptimizationService implements ReviewApprovalHandler
             case 'tool_removal':
                 $toolName = $details['current_value'] ?? null;
                 if ($toolName && isset($config['tools']) && is_array($config['tools'])) {
-                    $config['tools'] = array_values(array_filter($config['tools'], fn($t) => $t !== $toolName));
+                    $config['tools'] = array_values(array_filter($config['tools'], fn ($t) => $t !== $toolName));
                     // Also remove from tool_phases
                     if (isset($config['tool_phases'])) {
                         foreach ($config['tool_phases'] as $phase => $tools) {
-                            $config['tool_phases'][$phase] = array_values(array_filter($tools, fn($t) => $t !== $toolName));
+                            $config['tool_phases'][$phase] = array_values(array_filter($tools, fn ($t) => $t !== $toolName));
                         }
                     }
                     $modified = true;
@@ -748,13 +817,15 @@ class SkillOptimizationService implements ReviewApprovalHandler
                 Log::info('SkillOptimization: Phase rebalance approved — requires manual SKILL.md edit', [
                     'agent_id' => $agentId,
                 ]);
+                $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_APPROVED, 'phase rebalance approved for manual edit');
+
                 return ['success' => true, 'message' => 'Phase rebalance approved. Manual SKILL.md edit required.'];
 
             default:
                 return ['success' => false, 'error' => "Unknown amendment type: {$type}"];
         }
 
-        if (!$modified) {
+        if (! $modified) {
             return ['success' => false, 'error' => 'No changes to apply'];
         }
 
@@ -778,6 +849,8 @@ class SkillOptimizationService implements ReviewApprovalHandler
             'proposed_value' => $proposedValue,
         ]);
 
+        $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_INSTALLED, 'approved candidate installed to SKILL.md');
+
         return ['success' => true, 'message' => "Applied {$type} change to {$agentId}"];
     }
 
@@ -794,6 +867,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
             'type' => $type,
             'item_id' => $itemId,
         ]);
+        $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_REJECTED, 'operator rejected skill candidate');
 
         return ['success' => true, 'message' => "Rejection logged for {$agentId} ({$type})"];
     }
@@ -812,10 +886,10 @@ class SkillOptimizationService implements ReviewApprovalHandler
                 $val = $config[$field];
                 if ($val === null) {
                     $lines[] = "{$field}: null";
-                } elseif (is_numeric($val) && !is_string($val)) {
+                } elseif (is_numeric($val) && ! is_string($val)) {
                     $lines[] = "{$field}: {$val}";
                 } elseif (is_bool($val)) {
-                    $lines[] = "{$field}: " . ($val ? 'true' : 'false');
+                    $lines[] = "{$field}: ".($val ? 'true' : 'false');
                 } else {
                     // Quote strings that contain special chars
                     if (preg_match('/[:#{}[\],&*?|>!%@`]/', (string) $val)) {
@@ -828,7 +902,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
         }
 
         // Permissions (list)
-        if (!empty($config['permissions'])) {
+        if (! empty($config['permissions'])) {
             $lines[] = 'permissions:';
             foreach ($config['permissions'] as $perm) {
                 $lines[] = "  - {$perm}";
@@ -836,7 +910,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
         }
 
         // Tool phases (nested map)
-        if (!empty($config['tool_phases'])) {
+        if (! empty($config['tool_phases'])) {
             $lines[] = 'tool_phases:';
             foreach ($config['tool_phases'] as $phase => $tools) {
                 $lines[] = "  {$phase}:";
@@ -847,7 +921,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
         }
 
         // Tools (list)
-        if (!empty($config['tools'])) {
+        if (! empty($config['tools'])) {
             $lines[] = 'tools:';
             foreach ($config['tools'] as $tool) {
                 $lines[] = "  - {$tool}";
@@ -889,9 +963,11 @@ class SkillOptimizationService implements ReviewApprovalHandler
         foreach ($errors as $error) {
             $keywords = $this->extractKeywords($error->summary);
             $key = implode(',', array_slice($keywords, 0, 3));
-            if (!$key) continue;
+            if (! $key) {
+                continue;
+            }
 
-            if (!isset($patterns[$key])) {
+            if (! isset($patterns[$key])) {
                 $patterns[$key] = [
                     'keywords' => array_slice($keywords, 0, 3),
                     'count' => 0,
@@ -905,24 +981,24 @@ class SkillOptimizationService implements ReviewApprovalHandler
         }
 
         // Filter to recurring patterns (3+ occurrences)
-        $gaps = array_filter($patterns, fn($p) => $p['count'] >= self::TOOL_GAP_MIN_OCCURRENCES);
+        $gaps = array_filter($patterns, fn ($p) => $p['count'] >= self::TOOL_GAP_MIN_OCCURRENCES);
 
         // Cross-reference: find tools this agent doesn't have but others do
         $skill = $this->getSkillLoader()->getSkillConfig($agentId);
         $agentTools = $skill['tools'] ?? [];
 
-        $otherTools = DB::select("
+        $otherTools = DB::select('
             SELECT DISTINCT name, description, category
             FROM agent_tool_registry
-            WHERE enabled = 1 AND name NOT IN (" . implode(',', array_fill(0, max(1, count($agentTools)), '?')) . ")
+            WHERE enabled = 1 AND name NOT IN ('.implode(',', array_fill(0, max(1, count($agentTools)), '?')).')
             ORDER BY category, name
-        ", $agentTools ?: ['__none__']);
+        ', $agentTools ?: ['__none__']);
 
         return [
             'gaps' => array_values($gaps),
             'recurring_error_patterns' => count($gaps),
             'total_errors_30d' => count($errors),
-            'available_tools_not_assigned' => array_map(fn($t) => [
+            'available_tools_not_assigned' => array_map(fn ($t) => [
                 'name' => $t->name,
                 'description' => $t->description,
                 'category' => $t->category,
@@ -949,7 +1025,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
         // Check if any available tools match gap keywords
         foreach ($gapPatterns as $gap) {
             foreach ($availableTools as $tool) {
-                $toolWords = $this->extractKeywords($tool['name'] . ' ' . $tool['description']);
+                $toolWords = $this->extractKeywords($tool['name'].' '.$tool['description']);
                 $overlap = array_intersect($gap['keywords'], $toolWords);
 
                 if (count($overlap) >= 1) {
@@ -992,7 +1068,8 @@ class SkillOptimizationService implements ReviewApprovalHandler
             'it', 'its', 'null', 'true', 'false', 'error', 'failed', 'calling'];
 
         $words = preg_split('/[\s_\-:,.\/()]+/', strtolower($text));
-        $words = array_filter($words, fn($w) => strlen($w) > 2 && !in_array($w, $stopWords));
+        $words = array_filter($words, fn ($w) => strlen($w) > 2 && ! in_array($w, $stopWords));
+
         return array_values(array_unique($words));
     }
 
@@ -1006,7 +1083,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
     public function analyzeSkillPerformance(array $params): array
     {
         $agentId = $params['agent_id'] ?? $params['target_agent'] ?? null;
-        if (!$agentId) {
+        if (! $agentId) {
             return ['success' => false, 'error' => 'agent_id or target_agent is required'];
         }
 
@@ -1021,12 +1098,12 @@ class SkillOptimizationService implements ReviewApprovalHandler
         $agentId = $params['agent_id'] ?? $params['target_agent'] ?? null;
         $dryRun = (bool) ($params['dry_run'] ?? false);
 
-        if (!$agentId) {
+        if (! $agentId) {
             return ['success' => false, 'error' => 'agent_id or target_agent is required'];
         }
 
         $result = $this->proposeSkillAmendments($agentId);
-        if (!($result['success'] ?? false)) {
+        if (! ($result['success'] ?? false)) {
             return $result;
         }
 
@@ -1098,11 +1175,11 @@ class SkillOptimizationService implements ReviewApprovalHandler
 
         return [
             'success' => true,
-            'pending_by_agent' => array_map(fn($p) => ['agent_id' => $p->agent_id, 'count' => (int) $p->cnt], $pending),
+            'pending_by_agent' => array_map(fn ($p) => ['agent_id' => $p->agent_id, 'count' => (int) $p->cnt], $pending),
             'total_pending' => array_sum(array_column($pending, 'cnt')),
             'total_approved' => (int) ($approved->cnt ?? 0),
             'total_rejected' => (int) ($rejected->cnt ?? 0),
-            'recent_proposals' => array_map(fn($r) => [
+            'recent_proposals' => array_map(fn ($r) => [
                 'agent_id' => $r->agent_id,
                 'title' => $r->title,
                 'status' => $r->status,
@@ -1128,18 +1205,18 @@ class SkillOptimizationService implements ReviewApprovalHandler
         $bindings = [];
 
         if ($agentFilter) {
-            $sql .= " AND agent_id = ?";
+            $sql .= ' AND agent_id = ?';
             $bindings[] = $agentFilter;
         }
 
-        $sql .= " ORDER BY created_at DESC LIMIT 50";
+        $sql .= ' ORDER BY created_at DESC LIMIT 50';
 
         $proposals = DB::select($sql, $bindings);
 
         return [
             'success' => true,
             'count' => count($proposals),
-            'proposals' => array_map(fn($p) => [
+            'proposals' => array_map(fn ($p) => [
                 'id' => $p->id,
                 'agent_id' => $p->agent_id,
                 'title' => $p->title,

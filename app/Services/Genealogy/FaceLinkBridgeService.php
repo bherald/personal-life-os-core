@@ -15,7 +15,7 @@ class FaceLinkBridgeService
     {
         $face = DB::selectOne(
             'SELECT frf.id, frf.file_registry_id, frf.person_name, frf.region_x, frf.region_y, frf.region_w, frf.region_h, frf.cluster_id,
-                    fr.current_path, fr.original_path, fr.filename, fr.mime_type, fr.file_size
+                    fr.current_path, fr.original_path, fr.filename, fr.mime_type, fr.file_size, fr.status AS file_status
              FROM file_registry_faces frf
              JOIN file_registry fr ON fr.id = frf.file_registry_id
              WHERE frf.id = ?',
@@ -185,8 +185,8 @@ class FaceLinkBridgeService
 
         DB::insert(
             "INSERT INTO genealogy_media
-             (tree_id, media_type, nextcloud_path, original_path, local_filename, mime_type, file_size, has_faces, face_count, imported_at, created_at, updated_at)
-             VALUES (?, 'photo', ?, ?, ?, ?, ?, 1, 0, NOW(), NOW(), NOW())",
+             (tree_id, media_type, nextcloud_path, original_path, local_filename, mime_type, file_size, file_exists, has_faces, face_count, imported_at, created_at, updated_at)
+             VALUES (?, 'photo', ?, ?, ?, ?, ?, ?, 1, 0, NOW(), NOW(), NOW())",
             [
                 $treeId,
                 $path,
@@ -194,6 +194,7 @@ class FaceLinkBridgeService
                 $face->filename ?: basename((string) $path),
                 $face->mime_type,
                 $this->normalizeFileSize($face->file_size),
+                $face->file_status === 'active' ? 1 : 0,
             ]
         );
 

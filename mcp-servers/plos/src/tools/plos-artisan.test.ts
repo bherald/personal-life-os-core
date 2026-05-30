@@ -5,12 +5,39 @@ import {
   ALLOWED_COMMANDS,
   ALLOWLIST_REVISION,
   COMPACT_SCORECARD_COMMANDS,
+  allowlistFreshness,
+  extractAllowlistRevision,
   plosArtisan,
 } from './plos-artisan.js';
 
+test('allowlist freshness detects loaded source and dist revision drift', () => {
+  const current = `export const ALLOWLIST_REVISION = '${ALLOWLIST_REVISION}';`;
+  const stale = "export const ALLOWLIST_REVISION = '2026-05-01-stale-test';";
+
+  assert.equal(extractAllowlistRevision(current), ALLOWLIST_REVISION);
+  assert.equal(extractAllowlistRevision(stale), '2026-05-01-stale-test');
+
+  assert.deepEqual(allowlistFreshness({ sourceText: current, distText: current }), {
+    status: 'current',
+    loaded_revision: ALLOWLIST_REVISION,
+    source_revision: ALLOWLIST_REVISION,
+    dist_revision: ALLOWLIST_REVISION,
+    mismatched_revision_count: 0,
+  });
+
+  assert.deepEqual(allowlistFreshness({ sourceText: stale, distText: current }), {
+    status: 'stale',
+    loaded_revision: ALLOWLIST_REVISION,
+    source_revision: '2026-05-01-stale-test',
+    dist_revision: ALLOWLIST_REVISION,
+    mismatched_revision_count: 1,
+  });
+
+  assert.equal(allowlistFreshness({ sourceText: null, distText: null }).status, 'unknown');
+});
+
 test('read-only planning evidence commands stay allowlisted', async () => {
   for (const command of [
-    'ops:operator-evidence --json',
     'ops:operator-evidence --compact',
     'ops:operator-evidence --json --compact',
     'ops:review-backlog-report --json',
@@ -27,21 +54,22 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:review-backlog-report --next-target --focus=source-backed-packet --json',
     'ops:review-backlog-report --next-target --focus=aged-review --json',
     'ops:offline-status --json',
-    'ops:offline-smoke --json',
-    'ops:agent-doctor --json --since=24',
     'ops:agent-doctor --compact',
     'ops:agent-doctor --json --compact',
     'ops:agent-doctor --json --compact --since=24',
+    'ops:offline-smoke --json --compact',
     'plos:agent-doctor --compact',
     'plos:agent-doctor --json --compact',
     'ops:agent-doctor-snapshot --dry-run --json',
-    'ops:agent-doctor-history --json --days=7',
-    'plos:agent-trace-tail --limit=20 --since=24 --json',
+    'ops:agent-doctor-history --json --compact --days=7',
+    'plos:agent-trace-tail --limit=20 --since=24 --json --compact',
     'ops:mcp-health --compact',
     'ops:mcp-health --json --compact',
     'llm:sync-providers --json --compact',
     'llm:sync-providers --json --compact --no-live',
     'codex:exec-smoke --json',
+    'ops:local-runtime-scorecard --json --compact',
+    'ops:scheduled-output-audit --json --compact --fail-on-violations',
     'ollama:drift-check --json --compact --no-fail',
     'ollama:eval-scorecard --json --compact',
     'ops:capacity-report --json',
@@ -55,12 +83,13 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:face-telemetry-report --compact',
     'ops:face-telemetry-report --json --compact',
     'ops:face-telemetry-report --markdown --compact',
-    'ops:dba-telemetry-report --json',
+    'ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json',
+    'ops:face-named-only-slice --limit=10 --json',
     'ops:dba-telemetry-report --compact',
     'ops:dba-telemetry-report --json --compact',
     'ops:dba-telemetry-report --markdown --compact',
     'ops:dba-telemetry-report --markdown --dry-run',
-    'ops:arc-retention --json',
+    'ops:arc-retention --json --compact',
     'ops:audit-privacy-routing --json',
     'genealogy:reject-codes --json',
     'genealogy:reject-codes --json --days=30',
@@ -129,13 +158,18 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'files:reconcile-lifecycle --compact',
     'files:reconcile-lifecycle --json --compact',
     'files:reconcile-lifecycle --markdown --compact',
+    'files:resolve-duplicates --status --json --compact',
+    'files:materialize-duplicate-candidates --json --compact --limit=1000',
+    'joplin:rag-reconcile --json --event-hours=24',
+    'joplin:rag-reconcile --json --event-hours=24 --triggered-only',
+    'joplin:rag-reconcile --json --event-hours=24 --triggered-only --limit=50 --max-delete-candidates=50 --max-dependent-rows=5000',
     'rag:scale-baseline --json',
     'rag:scale-baseline --markdown',
     'rag:scale-review --json',
     'rag:scale-review --markdown',
     'rag:scale-review --compact',
     'rag:scale-review --json --compact',
-    'graph:audit-provenance --json',
+    'graph:audit-provenance --json --compact',
     'graph:snapshot-provenance --dry-run --json',
     'graph:quality-metrics --stats --json',
     'agent:procedures --stats --json --compact',
@@ -147,6 +181,10 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   const listing = await plosArtisan({ command: 'list', on_prod: false });
 
   assert.match(listing, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
+  assert.match(
+    listing,
+    new RegExp(`Allowlist freshness: status=current loaded=${ALLOWLIST_REVISION} source=${ALLOWLIST_REVISION} dist=${ALLOWLIST_REVISION} mismatches=0`),
+  );
   assert.match(listing, new RegExp(`Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}`));
   assert.match(listing, /Compact scorecard commands \(exact forms only\):/);
   assert.match(
@@ -161,7 +199,6 @@ test('read-only planning evidence commands stay allowlisted', async () => {
       new RegExp(`php artisan ${command.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
     );
   }
-  assert.match(listing, /php artisan ops:operator-evidence --json/);
   assert.match(listing, /php artisan ops:operator-evidence --compact/);
   assert.match(listing, /php artisan ops:operator-evidence --json --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --json/);
@@ -175,35 +212,42 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=materializable-remediation --json/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=aged-review --json/);
-  assert.match(listing, /php artisan ops:offline-smoke --json/);
-  assert.match(listing, /php artisan ops:agent-doctor --json --since=24/);
+  assert.match(listing, /php artisan ops:offline-smoke --json --compact/);
   assert.match(listing, /php artisan ops:agent-doctor --compact/);
   assert.match(listing, /php artisan ops:agent-doctor --json --compact/);
   assert.match(listing, /php artisan ops:agent-doctor --json --compact --since=24/);
   assert.match(listing, /php artisan plos:agent-doctor --compact/);
   assert.match(listing, /php artisan plos:agent-doctor --json --compact/);
   assert.match(listing, /php artisan ops:agent-doctor-snapshot --dry-run --json/);
-  assert.match(listing, /php artisan ops:agent-doctor-history --json --days=7/);
   assert.match(listing, /php artisan ops:agent-doctor-history --json --compact --days=7/);
-  assert.match(listing, /php artisan plos:agent-trace-tail --limit=20 --since=24 --json/);
+  assert.match(listing, /php artisan plos:agent-trace-tail --limit=20 --since=24 --json --compact/);
   assert.match(listing, /php artisan ops:mcp-health --compact/);
   assert.match(listing, /php artisan ops:mcp-health --json --compact/);
   assert.match(listing, /php artisan llm:sync-providers --json --compact/);
   assert.match(listing, /php artisan llm:sync-providers --json --compact --no-live/);
   assert.match(listing, /php artisan codex:exec-smoke --json/);
+  assert.match(listing, /php artisan ops:local-runtime-scorecard --json --compact/);
+  assert.match(listing, /php artisan ops:scheduled-output-audit --json --compact --fail-on-violations/);
   assert.match(listing, /php artisan ollama:drift-check --json --compact --no-fail/);
   assert.match(listing, /php artisan ollama:eval-scorecard --json --compact/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --json/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --json --compact/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --markdown/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --dry-run --json/);
-  assert.match(listing, /php artisan ops:arc-retention --json/);
+  assert.match(listing, /php artisan ops:arc-retention --json --compact/);
   assert.match(listing, /php artisan ops:face-telemetry-report --compact/);
+  assert.match(listing, /php artisan ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json/);
+  assert.match(listing, /php artisan ops:face-named-only-slice --limit=10 --json/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --markdown --dry-run/);
   assert.match(listing, /php artisan files:reconcile-lifecycle --compact/);
   assert.match(listing, /php artisan files:reconcile-lifecycle --json --compact/);
   assert.match(listing, /php artisan files:reconcile-lifecycle --markdown --compact/);
+  assert.match(listing, /php artisan files:resolve-duplicates --status --json --compact/);
+  assert.match(listing, /php artisan files:materialize-duplicate-candidates --json --compact --limit=1000/);
+  assert.match(listing, /php artisan joplin:rag-reconcile --json --event-hours=24/);
+  assert.match(listing, /php artisan joplin:rag-reconcile --json --event-hours=24 --triggered-only/);
+  assert.match(listing, /php artisan joplin:rag-reconcile --json --event-hours=24 --triggered-only --limit=50 --max-delete-candidates=50 --max-dependent-rows=5000/);
   assert.match(listing, /php artisan rag:scale-baseline --json/);
   assert.match(listing, /php artisan rag:scale-review --json/);
   assert.match(listing, /php artisan rag:scale-review --markdown/);
@@ -255,7 +299,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --markdown --compact/);
   assert.match(listing, /php artisan awo:replay --window=7d --limit=500 --markdown/);
   assert.match(listing, /php artisan awo:replay --compare-scheduled --window=7d --limit=500 --json/);
-  assert.match(listing, /php artisan graph:audit-provenance --json/);
+  assert.match(listing, /php artisan graph:audit-provenance --json --compact/);
   assert.match(listing, /php artisan graph:snapshot-provenance --dry-run --json/);
   assert.match(listing, /php artisan graph:quality-metrics --stats --json/);
   assert.match(listing, /php artisan agent:procedures --stats --json --compact/);
@@ -286,6 +330,7 @@ test('next-target focus variants stay blocked unless they are canonical allowlis
 
     assert.match(result, /Blocked:/, `${command} should be blocked`);
     assert.match(result, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
+    assert.match(result, /Allowlist freshness: status=current /);
     assert.match(result, new RegExp(`Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}`));
     assert.match(result, /Use command "list"/, `${command} should show allowlist guidance`);
   }
@@ -298,6 +343,33 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
     'files:reconcile-lifecycle --limit=100 --json --compact',
     'files:reconcile-lifecycle --execute',
     'files:reconcile-lifecycle --compact --json',
+    'files:materialize-duplicate-candidates --json --limit=1000',
+    'files:materialize-duplicate-candidates --json --compact --limit=5000',
+    'files:materialize-duplicate-candidates --compact --json --limit=1000',
+    'files:materialize-duplicate-candidates --json --compact --limit=1000 --execute',
+    'joplin:rag-reconcile --execute --json --event-hours=24',
+    'joplin:rag-reconcile --json --event-hours=24 --execute',
+    'joplin:rag-reconcile --json --event-hours=24 --triggered-only --execute',
+    'joplin:rag-reconcile --json --event-hours=24 --triggered-only --limit=100 --max-delete-candidates=50 --max-dependent-rows=5000',
+    'joplin:rag-reconcile --json --event-hours=72 --triggered-only',
+    'ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json --execute',
+    'ops:face-mixed-cluster-report --limit=10 --sample-faces=3 --json',
+    'ops:face-mixed-cluster-report --limit=5 --sample-faces=10 --json',
+    'ops:face-named-only-slice --limit=25 --json',
+    'ops:face-named-only-slice --limit=10 --json --cluster=80',
+    'ops:scheduled-output-audit --json --compact',
+    'ops:scheduled-output-audit --compact --json --fail-on-violations',
+    'ops:scheduled-output-audit --json --fail-on-violations --compact',
+    'ops:scheduled-output-audit --json --compact --details --fail-on-violations',
+    'ops:operator-evidence --json',
+    'ops:offline-smoke --json',
+    'ops:agent-doctor --json --since=24',
+    'ops:agent-doctor-history --json --days=7',
+    'ops:dba-telemetry-report --json',
+    'graph:audit-provenance --json',
+    'graph:audit-provenance --compact --json',
+    'graph:audit-provenance --json --compact --samples=50',
+    'graph:audit-provenance --json --compact --strict',
   ]) {
     const result = await plosArtisan({ command, on_prod: false });
 
@@ -477,7 +549,7 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(memoryArchiveSuffixResult, /Use command "list"/);
 
   const traceTailWiderWindowResult = await plosArtisan({
-    command: 'plos:agent-trace-tail --limit=20 --since=168 --json',
+    command: 'plos:agent-trace-tail --limit=20 --since=168 --json --compact',
     on_prod: false,
   });
 
@@ -485,7 +557,7 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(traceTailWiderWindowResult, /Use command "list"/);
 
   const traceTailReorderedResult = await plosArtisan({
-    command: 'plos:agent-trace-tail --since=24 --limit=20 --json',
+    command: 'plos:agent-trace-tail --since=24 --limit=20 --json --compact',
     on_prod: false,
   });
 
@@ -493,7 +565,7 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(traceTailReorderedResult, /Use command "list"/);
 
   const traceTailSpecificTraceResult = await plosArtisan({
-    command: 'plos:agent-trace-tail --limit=20 --since=24 --trace=trc_example --json',
+    command: 'plos:agent-trace-tail --limit=20 --since=24 --trace=trc_example --json --compact',
     on_prod: false,
   });
 
@@ -501,12 +573,20 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(traceTailSpecificTraceResult, /Use command "list"/);
 
   const traceTailHigherLimitResult = await plosArtisan({
-    command: 'plos:agent-trace-tail --limit=50 --since=24 --json',
+    command: 'plos:agent-trace-tail --limit=50 --since=24 --json --compact',
     on_prod: false,
   });
 
   assert.match(traceTailHigherLimitResult, /Blocked:/);
   assert.match(traceTailHigherLimitResult, /Use command "list"/);
+
+  const traceTailRawResult = await plosArtisan({
+    command: 'plos:agent-trace-tail --limit=20 --since=24 --json',
+    on_prod: false,
+  });
+
+  assert.match(traceTailRawResult, /Blocked:/);
+  assert.match(traceTailRawResult, /Use command "list"/);
 
   const traceReadResult = await plosArtisan({
     command: 'plos:agent-trace-read trc_example --since=24 --json',
@@ -563,6 +643,46 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(arcExecuteResult, /Blocked:/);
   assert.match(arcExecuteResult, /Use command "list"/);
+
+  const arcRawResult = await plosArtisan({
+    command: 'ops:arc-retention --json',
+    on_prod: false,
+  });
+
+  assert.match(arcRawResult, /Blocked:/);
+  assert.match(arcRawResult, /Use command "list"/);
+
+  const arcReorderedCompactResult = await plosArtisan({
+    command: 'ops:arc-retention --compact --json',
+    on_prod: false,
+  });
+
+  assert.match(arcReorderedCompactResult, /Blocked:/);
+  assert.match(arcReorderedCompactResult, /Use command "list"/);
+
+  const duplicateResolverRawResult = await plosArtisan({
+    command: 'files:resolve-duplicates --status',
+    on_prod: false,
+  });
+
+  assert.match(duplicateResolverRawResult, /Blocked:/);
+  assert.match(duplicateResolverRawResult, /Use command "list"/);
+
+  const duplicateResolverReorderedResult = await plosArtisan({
+    command: 'files:resolve-duplicates --status --compact --json',
+    on_prod: false,
+  });
+
+  assert.match(duplicateResolverReorderedResult, /Blocked:/);
+  assert.match(duplicateResolverReorderedResult, /Use command "list"/);
+
+  const duplicateResolverCustomScopeResult = await plosArtisan({
+    command: 'files:resolve-duplicates --status --json --compact --folder-filter=Family Tree Maker',
+    on_prod: false,
+  });
+
+  assert.match(duplicateResolverCustomScopeResult, /Blocked:/);
+  assert.match(duplicateResolverCustomScopeResult, /Use command "list"/);
 
   const dbaDeepDryRunResult = await plosArtisan({
     command: 'ops:dba-telemetry-report --markdown --dry-run --deep',
@@ -804,6 +924,19 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(mcpHealthProcessDetailsResult, /Blocked:/);
   assert.match(mcpHealthProcessDetailsResult, /Use command "list"/);
 
+  for (const command of [
+    'ops:offline-smoke --compact',
+    'ops:offline-smoke --compact --json',
+    'ops:offline-smoke --json --compact --hours=168',
+    'ops:offline-smoke --json --compact --profile=default',
+  ]) {
+    const result = await plosArtisan({ command, on_prod: false });
+
+    assert.match(result, /Blocked:/, `${command} should be blocked`);
+    assert.match(result, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
+    assert.match(result, /Use command "list"/);
+  }
+
   const llmSyncReorderedResult = await plosArtisan({
     command: 'llm:sync-providers --compact --json',
     on_prod: false,
@@ -835,6 +968,20 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(ollamaDriftFullJsonResult, /Blocked:/);
   assert.match(ollamaDriftFullJsonResult, /Use command "list"/);
+
+  for (const command of [
+    'ops:local-runtime-scorecard --json',
+    'ops:local-runtime-scorecard --compact',
+    'ops:local-runtime-scorecard --compact --json',
+    'ops:local-runtime-scorecard --json --compact --details',
+    'ops:local-runtime-scorecard --json --compact --execute',
+  ]) {
+    const result = await plosArtisan({ command, on_prod: false });
+
+    assert.match(result, /Blocked:/, `${command} should be blocked`);
+    assert.match(result, new RegExp(`Allowlist revision: ${ALLOWLIST_REVISION}`));
+    assert.match(result, /Use command "list"/);
+  }
 
   const ollamaScorecardFullJsonResult = await plosArtisan({
     command: 'ollama:eval-scorecard --json',

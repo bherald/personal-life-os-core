@@ -97,7 +97,7 @@ class OperatorEvidenceCommand extends Command
 
         $review = is_array($headlines['review_backlog'] ?? null) ? $headlines['review_backlog'] : [];
         $this->line(sprintf(
-            'review-backlog: %s pending=%s stale=%s high_priority=%s typed=%s typed_blocked=%s typed_blockers=%s rem_candidates=%s rem_ready=%s rem_validation_blocked=%s rem_unsupported=%s packets=%s packet_ready=%s packet_blocked=%s',
+            'review-backlog: %s pending=%s stale=%s high_priority=%s typed=%s typed_blocked=%s typed_blockers=%s rem_candidates=%s rem_ready=%s rem_validation_blocked=%s rem_unsupported=%s packets=%s packet_ready=%s packet_blocked=%s packet_self=%s packet_score=%s packet_gate_gaps=%s',
             $review['status'] ?? 'unavailable',
             $review['pending_total'] ?? '-',
             $review['stale_pending'] ?? '-',
@@ -111,7 +111,10 @@ class OperatorEvidenceCommand extends Command
             $review['materializable_remediation_unsupported_operation_rows'] ?? '-',
             $review['packet_rows'] ?? '-',
             $review['packet_ready_rows'] ?? '-',
-            $review['packet_blocked_rows'] ?? '-'
+            $review['packet_blocked_rows'] ?? '-',
+            $review['packet_self_check_status'] ?? '-',
+            $review['packet_self_check_score_percent'] ?? '-',
+            $review['packet_self_check_gate_gap_count'] ?? '-'
         ));
 
         $face = is_array($headlines['face'] ?? null) ? $headlines['face'] : [];
@@ -238,13 +241,55 @@ class OperatorEvidenceCommand extends Command
         if (is_array($headlines['agent_doctor'] ?? null)) {
             $agentDoctor = $headlines['agent_doctor'];
             $this->line(sprintf(
-                'agent-doctor: %s agents=%s active_sessions=%s stalled=%s pending_reviews=%s memory_errors=%s',
+                'agent-doctor: %s agents=%s active_sessions=%s stalled=%s pending_reviews=%s tools_unavailable=%s tools_degraded=%s memory_errors=%s undistilled_sessions=%s low_signal_memory=%s failure_modes=%s',
                 $agentDoctor['status'] ?? 'unavailable',
                 $agentDoctor['agents_total'] ?? '-',
                 $agentDoctor['sessions_active'] ?? '-',
                 $agentDoctor['sessions_stalled'] ?? '-',
                 $agentDoctor['review_queue_pending'] ?? '-',
-                $agentDoctor['memory_error_episodes_window'] ?? '-'
+                $agentDoctor['tools_unavailable_total'] ?? '-',
+                $agentDoctor['tools_degraded_total'] ?? '-',
+                $agentDoctor['memory_error_episodes_window'] ?? '-',
+                $agentDoctor['memory_undistilled_sessions_window'] ?? '-',
+                $agentDoctor['memory_low_signal_undistilled_sessions_window'] ?? '-',
+                $this->formatCountMap($agentDoctor['failure_mode_counts'] ?? [])
+            ));
+        }
+
+        if (is_array($headlines['agent_doctor_history'] ?? null)) {
+            $history = $headlines['agent_doctor_history'];
+            $this->line(sprintf(
+                'agent-doctor-history: %s snapshots=%s latest=%s trend=%s warning_delta=%s critical_delta=%s agent_delta=%s mode_delta=%s mode_coverage=%s mode_snapshots=%s rising=%s falling=%s',
+                $history['status'] ?? 'unavailable',
+                $history['snapshot_count'] ?? '-',
+                $history['latest_status'] ?? '-',
+                $history['trend'] ?? '-',
+                $this->signedOrDash($history['warning_delta'] ?? null),
+                $this->signedOrDash($history['critical_delta'] ?? null),
+                $this->signedOrDash($history['agent_count_delta'] ?? null),
+                $history['failure_mode_delta_status'] ?? '-',
+                $this->percentOrDash($history['failure_mode_coverage_percent'] ?? null),
+                $history['failure_mode_snapshot_count'] ?? '-',
+                $this->formatCountMap($history['top_rising_failure_modes'] ?? []),
+                $this->formatCountMap($history['top_falling_failure_modes'] ?? [])
+            ));
+        }
+
+        if (is_array($headlines['agent_tool_policy_telemetry'] ?? null)) {
+            $toolPolicy = $headlines['agent_tool_policy_telemetry'];
+            $this->line(sprintf(
+                'agent-tool-policy: %s tools=%s enabled=%s unavailable=%s degraded=%s unknown=%s stale=%s unchecked=%s privacy_unspecified=%s policy_gap=%s last_error=%s',
+                $toolPolicy['status'] ?? 'unavailable',
+                $toolPolicy['tools_total'] ?? '-',
+                $toolPolicy['enabled_total'] ?? '-',
+                $toolPolicy['enabled_unavailable_total'] ?? '-',
+                $toolPolicy['enabled_degraded_total'] ?? '-',
+                $toolPolicy['enabled_unknown_availability_total'] ?? '-',
+                $toolPolicy['freshness_stale_enabled_total'] ?? '-',
+                $toolPolicy['freshness_unchecked_enabled_total'] ?? '-',
+                $toolPolicy['privacy_unspecified_enabled_total'] ?? '-',
+                $toolPolicy['policy_gap_enabled_total'] ?? '-',
+                $toolPolicy['last_error_enabled_total'] ?? '-'
             ));
         }
     }
@@ -283,5 +328,36 @@ class OperatorEvidenceCommand extends Command
     private function yesNo(mixed $value): string
     {
         return $value === null ? '-' : ((bool) $value ? 'yes' : 'no');
+    }
+
+    private function signedOrDash(mixed $value): string
+    {
+        return is_numeric($value) ? sprintf('%+d', (int) $value) : '-';
+    }
+
+    private function percentOrDash(mixed $value): string
+    {
+        return is_numeric($value) ? rtrim(rtrim(sprintf('%.1f', (float) $value), '0'), '.').'%' : '-';
+    }
+
+    private function formatCountMap(mixed $value): string
+    {
+        if (! is_array($value)) {
+            return '-';
+        }
+
+        $items = [];
+        foreach ($value as $key => $count) {
+            if (! is_string($key) || preg_match('/^[a-z][a-z0-9_]{1,80}$/', $key) !== 1 || ! is_numeric($count)) {
+                continue;
+            }
+
+            $items[] = $key.'='.(int) $count;
+            if (count($items) >= 8) {
+                break;
+            }
+        }
+
+        return $items === [] ? 'none' : implode(',', $items);
     }
 }

@@ -33,6 +33,21 @@ class OrchestratorService
         $this->emailService = $emailService;
     }
 
+    private function normalizePrivacyOptions(array $options, ?int $conversationId): array
+    {
+        if (array_key_exists('sensitive_data', $options)) {
+            return $options;
+        }
+
+        if ($conversationId !== null) {
+            $options['sensitive_data'] = true;
+            $options['data_class'] = $options['data_class'] ?? 'chat_orchestration';
+            $options['sensitive_data_reason'] = $options['sensitive_data_reason'] ?? 'conversation_context';
+        }
+
+        return $options;
+    }
+
     /**
      * Process a user request with intelligent routing
      *
@@ -44,13 +59,14 @@ class OrchestratorService
     public function process(string $request, ?int $conversationId = null, array $options = []): array
     {
         $startTime = microtime(true);
+        $options = $this->normalizePrivacyOptions($options, $conversationId);
 
         try {
             // 1. Load conversation context if provided
             $context = $this->loadContext($conversationId);
 
             // 2. Classify intent using AI
-            $intent = $this->classifyIntent($request, $context);
+            $intent = $this->classifyIntent($request, $context, $options);
 
             // 3. Route to appropriate handler based on intent
             $result = $this->routeRequest($intent, $request, $context, $options);
@@ -95,7 +111,7 @@ class OrchestratorService
      * @param array $context Conversation context
      * @return array Intent classification with confidence and parameters
      */
-    private function classifyIntent(string $request, array $context): array
+    private function classifyIntent(string $request, array $context, array $options): array
     {
         $systemPrompt = <<<PROMPT
 You are an intent classifier for an AI automation framework. Analyze the user's request and classify it into one of these intents:
@@ -155,7 +171,7 @@ PROMPT;
                 'system_prompt' => $systemPrompt,
                 'temperature' => 0.1,
                 'max_tokens' => 500,
-            ]);
+            ] + $options);
 
             if (!$result['success']) {
                 throw new \Exception($result['error'] ?? 'AI classification failed');
@@ -417,7 +433,7 @@ PROMPT;
 
         if (empty($steps)) {
             // Use AI to break down the request into steps
-            $steps = $this->planMultiStepTask($request, $context);
+            $steps = $this->planMultiStepTask($request, $context, $options);
         }
 
         $results = [];
@@ -450,7 +466,7 @@ PROMPT;
                 'system_prompt' => $systemPrompt,
                 'temperature' => $options['temperature'] ?? 0.7,
                 'max_tokens' => $options['max_tokens'] ?? 2000,
-            ]);
+            ] + $options);
 
             if (!$result['success']) {
                 return [
@@ -626,7 +642,7 @@ PROMPT;
      * Decomposes a complex request into sequential sub-intents that
      * can be routed individually through handleMultiStep().
      */
-    private function planMultiStepTask(string $request, array $context): array
+    private function planMultiStepTask(string $request, array $context, array $options): array
     {
         $availableIntents = 'rag_search, workflow_execution, mcp_tool, email_classify, email_reply, email_search, general_conversation';
         $contextSummary = !empty($context['previous_steps'])
@@ -662,7 +678,7 @@ PROMPT;
                 'max_tokens' => 1000,
                 'temperature' => 0.3,
                 'skip_if_busy' => true,
-            ]);
+            ] + $options);
 
             if (!$result['success']) {
                 Log::warning('OrchestratorService: AI task planning failed', ['error' => $result['error']]);

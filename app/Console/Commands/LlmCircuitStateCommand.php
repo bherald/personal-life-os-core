@@ -55,13 +55,14 @@ class LlmCircuitStateCommand extends Command
     {
         $summary = (array) ($payload['summary'] ?? []);
         $this->line(sprintf(
-            'LLM circuit state: %s active=%d healthy=%d open=%d half_open=%d retry_due=%d issues=%d',
+            'LLM circuit state: %s active=%d healthy=%d open=%d half_open=%d retry_due=%d quarantined=%d issues=%d',
             strtoupper((string) ($payload['status'] ?? 'unknown')),
             (int) ($summary['active'] ?? 0),
             (int) ($summary['healthy_active'] ?? 0),
             (int) ($summary['open'] ?? 0),
             (int) ($summary['half_open'] ?? 0),
             (int) ($summary['retry_due_still_open'] ?? 0),
+            (int) ($summary['quarantined'] ?? 0),
             count((array) ($payload['issues'] ?? []))
         ));
 

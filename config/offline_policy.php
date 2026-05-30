@@ -97,16 +97,17 @@ return [
     |
     | OfflinePolicyService::evaluateProvider() maps llm_instances rows to one
     | of these three classes and refuses those not in the active profile's
-    | `allowed_provider_classes`. `cloud_sensitive_safe` = sensitive_safe=true
-    | providers (Anthropic Claude CLI, Codex Exec, Groq, SambaNova, Cerebras).
+    | `allowed_provider_classes`. `cloud_sensitive_safe` means the provider's
+    | table row has allows_private_data=true. Public/free external providers
+    | remain `cloud_external` unless explicitly reviewed and updated.
     | Everything else that is not a local Ollama host is `cloud_external`.
     |
     */
 
     'provider_classes' => [
         'local_llm' => 'Ollama hosts on the PLOS LAN',
-        'cloud_sensitive_safe' => 'sensitive_safe=true cloud providers',
-        'cloud_external' => 'sensitive_safe=false cloud providers',
+        'cloud_sensitive_safe' => 'allows_private_data=true cloud providers',
+        'cloud_external' => 'allows_private_data=false cloud providers',
     ],
 
     /*

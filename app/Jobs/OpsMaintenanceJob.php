@@ -1949,19 +1949,22 @@ class OpsMaintenanceJob implements ShouldQueue
      *
      * Table grows ~400K rows/day (11.6M rows, 12.8GB as of 2026-03-29).
      * Summary data already exists in recursion_effectiveness table.
-     * Deletes in batches of 50K to avoid long table locks, max 500K per run.
+     * Deletes through the shared bounded retention service to avoid long table locks.
      */
     private function purgeOldRecursionCalls(): int
     {
         $retentionDays = (int) config('recursion.retention_days', 30);
+        $batchSize = (int) config('recursion.retention_maintenance_batch_size', 5000);
+        $maxRows = (int) config('recursion.retention_maintenance_max_rows', 500000);
+        $sleepMs = (int) config('recursion.retention_maintenance_sleep_ms', 100);
 
         try {
             $result = app(AgentRecursionCallsRetentionService::class)->collect(
                 execute: true,
                 retentionDays: $retentionDays,
-                batchSize: 10_000,
-                maxRows: 50_000,
-                sleepMs: 100,
+                batchSize: $batchSize,
+                maxRows: $maxRows,
+                sleepMs: $sleepMs,
             );
             $totalDeleted = (int) ($result['deleted_rows'] ?? 0);
 
@@ -1969,6 +1972,9 @@ class OpsMaintenanceJob implements ShouldQueue
                 Log::info('Ops: Purged old agent_recursion_calls', [
                     'deleted' => $totalDeleted,
                     'retention_days' => $retentionDays,
+                    'batch_size' => $batchSize,
+                    'max_rows' => $maxRows,
+                    'sleep_ms' => $sleepMs,
                     'status' => $result['status'] ?? 'unknown',
                     'stopped_reason' => $result['stopped_reason'] ?? 'unknown',
                 ]);

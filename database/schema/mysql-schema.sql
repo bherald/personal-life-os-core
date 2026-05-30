@@ -55,11 +55,14 @@ CREATE TABLE `agent_benchmarks` (
   `metadata` json DEFAULT NULL,
   `success` tinyint(1) NOT NULL DEFAULT '1',
   `error_message` text,
+  `is_speculative` tinyint(1) NOT NULL DEFAULT '0',
+  `spec_run_id` varchar(64) DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `agent_id` (`agent_id`),
   KEY `task_key_workflow` (`task_key`,`workflow_mode`),
-  KEY `run_id_workflow` (`run_id`,`workflow_mode`)
+  KEY `run_id_workflow` (`run_id`,`workflow_mode`),
+  KEY `idx_speculative` (`is_speculative`,`spec_run_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `agent_episode_summaries`;
@@ -115,12 +118,12 @@ DROP TABLE IF EXISTS `agent_execution_log`;
 CREATE TABLE `agent_execution_log` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `session_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
-  `agent_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `action_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'tool_call',
-  `action_detail` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `risk_level` enum('read','write','destructive','blocked') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `agent_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `action_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'tool_call',
+  `action_detail` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `risk_level` enum('read','write','destructive','blocked') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `context` json DEFAULT NULL,
-  `outcome` enum('success','failure','denied','timeout','skipped') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'success',
+  `outcome` enum('success','failure','denied','timeout','skipped') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'success',
   `role` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `input_summary` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `output_summary` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
@@ -142,9 +145,9 @@ DROP TABLE IF EXISTS `agent_handoff_agents`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `agent_handoff_agents` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `agent_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `description` text COLLATE utf8mb4_unicode_ci,
+  `agent_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `description` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `capabilities` json NOT NULL,
   `max_concurrent_handoffs` tinyint NOT NULL DEFAULT '5',
   `timeout_seconds` int NOT NULL DEFAULT '300',
@@ -161,7 +164,7 @@ DROP TABLE IF EXISTS `agent_handoff_contexts`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `agent_handoff_contexts` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `handoff_id` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `handoff_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `context_payload` json NOT NULL,
   `created_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
@@ -189,12 +192,12 @@ DROP TABLE IF EXISTS `agent_handoff_routing_rules`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `agent_handoff_routing_rules` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `task_pattern` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `target_agent_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `task_pattern` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `target_agent_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `conditions` json DEFAULT NULL,
   `confidence` decimal(3,2) NOT NULL DEFAULT '0.90',
-  `reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `reason` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `priority` tinyint NOT NULL DEFAULT '0',
   `is_active` tinyint(1) NOT NULL DEFAULT '1',
   `created_at` timestamp NULL DEFAULT NULL,
@@ -209,16 +212,16 @@ DROP TABLE IF EXISTS `agent_handoffs`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `agent_handoffs` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `handoff_id` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `source_agent_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `target_agent_id` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `reason` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `context_summary` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'initiated',
-  `priority` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'normal',
+  `handoff_id` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `source_agent_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `target_agent_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `reason` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `context_summary` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'initiated',
+  `priority` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'normal',
   `duration_ms` int DEFAULT NULL,
-  `result_summary` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `error` text COLLATE utf8mb4_unicode_ci,
+  `result_summary` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `error` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `created_at` timestamp NULL DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT NULL,
   `completed_at` timestamp NULL DEFAULT NULL,
@@ -233,12 +236,12 @@ DROP TABLE IF EXISTS `agent_memory_links`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `agent_memory_links` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `agent_id` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `source_type` enum('episodic','procedural') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'episodic',
+  `agent_id` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `source_type` enum('episodic','procedural') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'episodic',
   `source_id` bigint unsigned NOT NULL,
-  `target_type` enum('episodic','procedural') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'episodic',
+  `target_type` enum('episodic','procedural') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'episodic',
   `target_id` bigint unsigned NOT NULL,
-  `link_type` enum('related','extends','evolved_from') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'related',
+  `link_type` enum('related','extends','evolved_from') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'related',
   `strength` decimal(3,2) NOT NULL DEFAULT '0.50',
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -279,7 +282,7 @@ CREATE TABLE `agent_procedures` (
   `name` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `trigger_pattern` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'When to use this procedure',
   `action_sequence` json NOT NULL COMMENT 'Steps: [{tool, params, expected_output}]',
-  `strategy_insight` text COLLATE utf8mb4_unicode_ci,
+  `strategy_insight` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `procedure_type` enum('success','failure') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'success' COMMENT 'success=do this, failure=avoid this',
   `source_session_id` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Session that originated this procedure',
   `is_canonical` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Promoted to canonical after proven reliability',
@@ -306,21 +309,21 @@ DROP TABLE IF EXISTS `agent_recursion_calls`;
 CREATE TABLE `agent_recursion_calls` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `session_id` bigint unsigned DEFAULT NULL,
-  `service_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `service_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `parent_call_id` bigint unsigned DEFAULT NULL,
   `depth` int unsigned NOT NULL DEFAULT '0',
-  `strategy` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `input_summary` text COLLATE utf8mb4_unicode_ci,
-  `output_summary` text COLLATE utf8mb4_unicode_ci,
+  `strategy` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `input_summary` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `output_summary` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `novelty_score` decimal(5,4) DEFAULT NULL,
   `tokens_used` int unsigned DEFAULT '0',
   `context_window_size` int unsigned DEFAULT '0',
-  `provider_used` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `model_role` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `provider_used` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `model_role` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `time_seconds` decimal(8,2) DEFAULT '0.00',
   `cost_usd` decimal(8,4) DEFAULT '0.0000',
   `move_on_triggered` tinyint(1) DEFAULT '0',
-  `move_on_reason` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `move_on_reason` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `completed_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
@@ -340,7 +343,7 @@ CREATE TABLE `agent_review_queue` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `agent_id` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `review_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'finding, action, suggestion, alert',
-  `finding_type` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `finding_type` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `title` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `summary` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `details` json DEFAULT NULL COMMENT 'Full context: evidence, sources, confidence scores',
@@ -353,7 +356,7 @@ CREATE TABLE `agent_review_queue` (
   `expires_at` timestamp NULL DEFAULT NULL COMMENT 'Auto-expire pending items after TTL',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `pending_dedup_key` varchar(250) COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (if((`status` = _utf8mb4'pending'),concat(`agent_id`,_utf8mb4'|',`review_type`,_utf8mb4'|',left(ifnull(`title`,_utf8mb4''),80)),NULL)) VIRTUAL,
+  `pending_dedup_key` varchar(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (if((`status` = _utf8mb4'pending'),concat(`agent_id`,_utf8mb4'|',`review_type`,_utf8mb4'|',left(ifnull(`title`,_utf8mb4''),80)),NULL)) VIRTUAL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_arq_pending_dedup` (`pending_dedup_key`),
   KEY `idx_review_agent` (`agent_id`),
@@ -436,19 +439,19 @@ DROP TABLE IF EXISTS `agent_sessions`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `agent_sessions` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `session_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `user_id` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `workflow_id` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `session_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'chat',
-  `agent_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `skill_version` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'SKILL.md version used for this session',
-  `messages` text COLLATE utf8mb4_unicode_ci,
-  `context` text COLLATE utf8mb4_unicode_ci,
-  `agent_state` text COLLATE utf8mb4_unicode_ci,
-  `metadata` text COLLATE utf8mb4_unicode_ci,
+  `session_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `user_id` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `workflow_id` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `session_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'chat',
+  `agent_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `skill_version` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'SKILL.md version used for this session',
+  `messages` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `context` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `agent_state` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `metadata` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `total_tokens` int unsigned NOT NULL DEFAULT '0',
   `message_count` int unsigned NOT NULL DEFAULT '0',
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active',
+  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'active',
   `expires_at` timestamp NULL DEFAULT NULL,
   `last_activity_at` timestamp NULL DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT NULL,
@@ -515,6 +518,22 @@ CREATE TABLE `ai_prompts` (
   KEY `ai_prompts_is_active_index` (`is_active`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `bias_rating_aliases`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `bias_rating_aliases` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `alias` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `canonical_source` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `active` tinyint(1) NOT NULL DEFAULT '1',
+  `notes` text COLLATE utf8mb4_unicode_ci,
+  `created_at` timestamp NULL DEFAULT NULL,
+  `updated_at` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `bias_rating_aliases_alias_unique` (`alias`),
+  KEY `bias_rating_aliases_canonical_source_active_index` (`canonical_source`,`active`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `bias_ratings`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
@@ -523,7 +542,7 @@ CREATE TABLE `bias_ratings` (
   `news_source` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `rating` enum('left','left-center','center','right-center','right','allsides') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `rating_num` tinyint DEFAULT NULL,
-  `data_source` enum('allsides','mbfc','both') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'allsides',
+  `data_source` enum('allsides','mbfc','both','manual') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'allsides',
   `mbfc_factual_rating` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `mbfc_credibility_score` int DEFAULT NULL,
   `is_polarizing_source` tinyint(1) NOT NULL DEFAULT '0',
@@ -541,6 +560,7 @@ CREATE TABLE `bias_ratings` (
   `wiki` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `facebook` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `screen_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `notes` text COLLATE utf8mb4_unicode_ci,
   `created_at` timestamp NULL DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
@@ -739,7 +759,7 @@ CREATE TABLE `conversations` (
   `model` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ollama:llama3.1:8b-instruct-q5_K_M',
   `system_prompt` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `is_private` tinyint(1) NOT NULL DEFAULT '0',
-  `model_mode` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT 'standard',
+  `model_mode` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'standard',
   `created_at` timestamp NULL DEFAULT NULL,
   `updated_at` timestamp NULL DEFAULT NULL,
   `deleted_at` timestamp NULL DEFAULT NULL,
@@ -821,22 +841,52 @@ DROP TABLE IF EXISTS `detected_bills`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `detected_bills` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
-  `payee` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `amount` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `payee` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `amount` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `due_date` date DEFAULT NULL,
-  `bill_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'other',
+  `bill_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'other',
   `confidence` decimal(3,2) DEFAULT NULL,
   `email_date` timestamp NULL DEFAULT NULL,
   `email_id` int unsigned DEFAULT NULL,
-  `status` enum('pending','paid','overdue','dismissed') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
+  `status` enum('pending','paid','overdue','dismissed') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
   `paid_at` timestamp NULL DEFAULT NULL,
-  `notes` text COLLATE utf8mb4_unicode_ci,
+  `notes` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `idx_bills_due_date` (`due_date`),
   KEY `idx_bills_status` (`status`),
   KEY `idx_bills_payee` (`payee`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+DROP TABLE IF EXISTS `dev_agent_readiness_snapshots`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `dev_agent_readiness_snapshots` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `captured_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `window_hours` smallint unsigned NOT NULL DEFAULT '24',
+  `overall_status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `agent_count` smallint unsigned NOT NULL DEFAULT '0',
+  `warning_count` smallint unsigned NOT NULL DEFAULT '0',
+  `critical_count` smallint unsigned NOT NULL DEFAULT '0',
+  `trace_status` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `trace_enabled` tinyint(1) NOT NULL DEFAULT '0',
+  `trace_directory_writable` tinyint(1) NOT NULL DEFAULT '0',
+  `trace_events_24h` int unsigned DEFAULT NULL,
+  `trace_malformed_lines_24h` int unsigned DEFAULT NULL,
+  `trace_scan_status` varchar(40) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `recursion_status` varchar(20) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `recursion_calls_7d` int unsigned DEFAULT NULL,
+  `checks_summary` json DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_dars_captured_status` (`captured_at`,`overall_status`),
+  KEY `idx_dars_trace_status_scan` (`trace_status`,`trace_scan_status`),
+  KEY `dev_agent_readiness_snapshots_captured_at_index` (`captured_at`),
+  KEY `dev_agent_readiness_snapshots_overall_status_index` (`overall_status`),
+  KEY `dev_agent_readiness_snapshots_trace_status_index` (`trace_status`),
+  KEY `dev_agent_readiness_snapshots_recursion_status_index` (`recursion_status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `devops_commands`;
@@ -870,7 +920,7 @@ CREATE TABLE `distributed_agent_health` (
   `active_tasks` int unsigned NOT NULL DEFAULT '0',
   `avg_response_time_ms` double DEFAULT NULL,
   `tasks_per_minute` int unsigned NOT NULL DEFAULT '0',
-  `custom_metrics` text COLLATE utf8mb4_unicode_ci,
+  `custom_metrics` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `recorded_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `distributed_agent_health_agent_id_foreign` (`agent_id`),
@@ -882,11 +932,11 @@ DROP TABLE IF EXISTS `distributed_agents`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `distributed_agents` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `agent_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `node_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'offline',
-  `capabilities` text COLLATE utf8mb4_unicode_ci,
-  `metadata` text COLLATE utf8mb4_unicode_ci,
+  `agent_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `node_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'offline',
+  `capabilities` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `metadata` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `max_concurrent_tasks` int unsigned NOT NULL DEFAULT '5',
   `current_load` int unsigned NOT NULL DEFAULT '0',
   `total_tasks_completed` int unsigned NOT NULL DEFAULT '0',
@@ -920,14 +970,14 @@ DROP TABLE IF EXISTS `distributed_task_batches`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `distributed_task_batches` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `batch_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `batch_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `batch_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `batch_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `total_tasks` int unsigned NOT NULL DEFAULT '0',
   `completed_tasks` int unsigned NOT NULL DEFAULT '0',
   `failed_tasks` int unsigned NOT NULL DEFAULT '0',
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
-  `aggregated_results` text COLLATE utf8mb4_unicode_ci,
-  `options` text COLLATE utf8mb4_unicode_ci,
+  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
+  `aggregated_results` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `options` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `created_at` timestamp NULL DEFAULT NULL,
   `completed_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`),
@@ -940,17 +990,17 @@ DROP TABLE IF EXISTS `distributed_tasks`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `distributed_tasks` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `task_id` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `task_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `payload` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `required_capabilities` text COLLATE utf8mb4_unicode_ci,
+  `task_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `task_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `payload` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `required_capabilities` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `assigned_agent_id` bigint unsigned DEFAULT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
+  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
   `priority` int NOT NULL DEFAULT '0',
   `retry_count` int unsigned NOT NULL DEFAULT '0',
   `max_retries` int unsigned NOT NULL DEFAULT '3',
-  `result` text COLLATE utf8mb4_unicode_ci,
-  `error_message` text COLLATE utf8mb4_unicode_ci,
+  `result` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `error_message` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `assigned_at` timestamp NULL DEFAULT NULL,
   `started_at` timestamp NULL DEFAULT NULL,
   `completed_at` timestamp NULL DEFAULT NULL,
@@ -1256,14 +1306,14 @@ DROP TABLE IF EXISTS `expected_outputs_catalog`;
 CREATE TABLE `expected_outputs_catalog` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `scheduled_job_id` int unsigned DEFAULT NULL,
-  `job_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `expected_item` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `check_type` enum('table_row_recent','job_run_recent','log_pattern_recent') COLLATE utf8mb4_unicode_ci NOT NULL,
+  `job_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `expected_item` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `check_type` enum('table_row_recent','job_run_recent','log_pattern_recent') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `check_params` json NOT NULL,
   `freshness_window_minutes` int unsigned NOT NULL,
-  `severity` enum('info','warn','critical') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'warn',
+  `severity` enum('info','warn','critical') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'warn',
   `enabled` tinyint(1) NOT NULL DEFAULT '1',
-  `notes` text COLLATE utf8mb4_unicode_ci,
+  `notes` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -1696,8 +1746,8 @@ DROP TABLE IF EXISTS `file_registry_tags`;
 CREATE TABLE `file_registry_tags` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `file_registry_id` bigint unsigned NOT NULL,
-  `tag` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `source` enum('ai','manual','exif','import') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ai',
+  `tag` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `source` enum('ai','manual','exif','import') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'ai',
   `confidence` decimal(3,2) DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1755,20 +1805,20 @@ DROP TABLE IF EXISTS `folder_research_queue`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `folder_research_queue` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `folder_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `full_path` text COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Path where this unknown folder was encountered',
+  `folder_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `full_path` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Path where this unknown folder was encountered',
   `file_count` int unsigned DEFAULT '0',
   `total_size_bytes` bigint unsigned DEFAULT '0',
-  `status` enum('pending','researching','completed','failed','skipped') COLLATE utf8mb4_unicode_ci DEFAULT 'pending',
+  `status` enum('pending','researching','completed','failed','skipped') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'pending',
   `research_result` json DEFAULT NULL COMMENT 'Web research findings',
-  `suggested_meaning` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `suggested_category` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `suggested_meaning` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `suggested_category` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `confidence` tinyint unsigned DEFAULT NULL COMMENT 'Research confidence 0-100',
   `queued_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `researched_at` timestamp NULL DEFAULT NULL,
-  `research_source` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Which source provided the answer: rag, llm, web',
-  `error_message` text COLLATE utf8mb4_unicode_ci,
-  `folder_name_lower` varchar(255) COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (lower(`folder_name`)) STORED,
+  `research_source` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Which source provided the answer: rag, llm, web',
+  `error_message` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `folder_name_lower` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (lower(`folder_name`)) STORED,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_folder_pending` (`folder_name_lower`,`status`),
   KEY `idx_status` (`status`),
@@ -1781,17 +1831,17 @@ DROP TABLE IF EXISTS `folder_semantics`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `folder_semantics` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `folder_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Folder name, e.g., GTA5',
-  `folder_name_lower` varchar(255) COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (lower(`folder_name`)) STORED,
-  `path_pattern` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Optional path pattern, e.g., */GTA5/*, */Desktop/GUIDE POST LINKS/*',
-  `semantic_meaning` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'What this folder represents, e.g., Grand Theft Auto 5 video game',
-  `semantic_category` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'High-level category: gaming, software, reference, work, etc.',
-  `suggested_destination` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Learned destination path when Human corrects AI',
-  `source` enum('human','ai_suggested','rag_inferred','llm_interpreted','web_research') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'human',
+  `folder_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Folder name, e.g., GTA5',
+  `folder_name_lower` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS (lower(`folder_name`)) STORED,
+  `path_pattern` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Optional path pattern, e.g., */GTA5/*, */Desktop/GUIDE POST LINKS/*',
+  `semantic_meaning` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'What this folder represents, e.g., Grand Theft Auto 5 video game',
+  `semantic_category` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'High-level category: gaming, software, reference, work, etc.',
+  `suggested_destination` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Learned destination path when Human corrects AI',
+  `source` enum('human','ai_suggested','rag_inferred','llm_interpreted','web_research') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'human',
   `confidence` tinyint unsigned DEFAULT '100' COMMENT '0-100, decreases if Human overrides',
   `times_used` int unsigned DEFAULT '0' COMMENT 'How often this semantic was applied',
   `times_overridden` int unsigned DEFAULT '0' COMMENT 'How often Human changed AI suggestion using this',
-  `learned_from_path` text COLLATE utf8mb4_unicode_ci COMMENT 'Original path where this was learned',
+  `learned_from_path` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci COMMENT 'Original path where this was learned',
   `learned_from_action_id` bigint unsigned DEFAULT NULL COMMENT 'FK to windows_file_actions if learned from correction',
   `is_active` tinyint(1) DEFAULT '1',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
@@ -2152,7 +2202,7 @@ CREATE TABLE `genealogy_external_connections` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `tree_id` int unsigned NOT NULL,
   `user_id` int unsigned NOT NULL,
-  `service_type` enum('familysearch','ancestry','findmypast','myheritage','geneanet','wikitree','findagrave','nara') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `service_type` enum('familysearch','ancestry','findmypast','myheritage','geneanet','wikitree','findagrave','nara') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `service_user_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `access_token` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `refresh_token` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
@@ -2194,7 +2244,7 @@ CREATE TABLE `genealogy_external_records` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `tree_id` int unsigned NOT NULL,
   `person_id` int unsigned DEFAULT NULL,
-  `service_type` enum('familysearch','ancestry','findmypast','myheritage','geneanet','wikitree','findagrave','nara') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `service_type` enum('familysearch','ancestry','findmypast','myheritage','geneanet','wikitree','findagrave','nara') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `external_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `record_type` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `title` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
@@ -2459,11 +2509,11 @@ DROP TABLE IF EXISTS `genealogy_intake_runs`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `genealogy_intake_runs` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `run_key` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `run_key` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `tree_id` int unsigned NOT NULL,
-  `root_path` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `packet_label` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `status` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'staged',
+  `root_path` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `packet_label` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `status` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'staged',
   `staged_snapshot` json NOT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -2500,9 +2550,9 @@ CREATE TABLE `genealogy_media` (
   `camera_make` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `camera_model` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `analysis_status` enum('pending','processing','completed','failed','skipped') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
-  `enrichment_status` enum('pending','processing','completed','failed','skipped') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `enrichment_status` enum('pending','processing','completed','failed','skipped') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `rag_indexed_at` timestamp NULL DEFAULT NULL,
-  `enrichment_error` text COLLATE utf8mb4_unicode_ci,
+  `enrichment_error` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `enriched_at` timestamp NULL DEFAULT NULL,
   `face_sync_status` enum('pending','synced','failed') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Status of face region XMP write-back',
   `face_sync_at` timestamp NULL DEFAULT NULL COMMENT 'Last successful face region sync',
@@ -2751,7 +2801,7 @@ DROP TABLE IF EXISTS `genealogy_person_external_links`;
 CREATE TABLE `genealogy_person_external_links` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `person_id` int unsigned NOT NULL,
-  `service_type` enum('familysearch','ancestry','findmypast','myheritage','geneanet','wikitree','findagrave','nara') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `service_type` enum('familysearch','ancestry','findmypast','myheritage','geneanet','wikitree','findagrave','nara') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `external_person_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `link_type` enum('confirmed','suggested','rejected') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'confirmed',
   `sync_enabled` tinyint(1) DEFAULT '1',
@@ -2947,6 +2997,7 @@ CREATE TABLE `genealogy_proposed_changes` (
   `proposed_value` text NOT NULL,
   `evidence_sources` text COMMENT 'JSON array',
   `evidence_summary` text NOT NULL,
+  `provenance_json` json DEFAULT NULL,
   `confidence` decimal(3,2) DEFAULT '0.50',
   `agent_id` varchar(100) DEFAULT NULL,
   `status` varchar(20) NOT NULL DEFAULT 'pending',
@@ -3194,23 +3245,23 @@ CREATE TABLE `genealogy_research_queue` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `tree_id` int unsigned NOT NULL,
   `person_id` int unsigned NOT NULL,
-  `person_name` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `person_name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `priority_score` decimal(5,3) NOT NULL DEFAULT '0.000',
-  `priority_reason` text COLLATE utf8mb4_unicode_ci,
-  `question_type` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `research_question` text COLLATE utf8mb4_unicode_ci,
-  `selection_reason` text COLLATE utf8mb4_unicode_ci,
-  `status` enum('pending','in_progress','completed','skipped','failed') COLLATE utf8mb4_unicode_ci DEFAULT 'pending',
+  `priority_reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `question_type` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `research_question` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `selection_reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `status` enum('pending','in_progress','completed','skipped','failed') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'pending',
   `assessed_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `started_at` timestamp NULL DEFAULT NULL,
   `completed_at` timestamp NULL DEFAULT NULL,
-  `session_id` varchar(36) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `session_id` varchar(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `findings_count` int unsigned DEFAULT '0',
   `review_items_count` int unsigned DEFAULT '0',
   `last_task_id` int unsigned DEFAULT NULL,
-  `last_outcome_state` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `last_outcome_reason` text COLLATE utf8mb4_unicode_ci,
-  `notes` text COLLATE utf8mb4_unicode_ci,
+  `last_outcome_state` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `last_outcome_reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `notes` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -3275,15 +3326,15 @@ CREATE TABLE `genealogy_research_tasks` (
   `person_id` int unsigned DEFAULT NULL,
   `queue_item_id` bigint unsigned DEFAULT NULL,
   `task_type` enum('find_records','verify_facts','find_relatives','analyze_dna','suggest_sources','transcribe_document') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
-  `research_question` text COLLATE utf8mb4_unicode_ci,
-  `selection_reason` text COLLATE utf8mb4_unicode_ci,
-  `scope_reason` text COLLATE utf8mb4_unicode_ci,
+  `research_question` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `selection_reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `scope_reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `related_people_used` json DEFAULT NULL,
   `sources_checked` json DEFAULT NULL,
-  `evidence_summary` text COLLATE utf8mb4_unicode_ci,
-  `conflicts_found` text COLLATE utf8mb4_unicode_ci,
-  `outcome_state` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `outcome_reason` text COLLATE utf8mb4_unicode_ci,
+  `evidence_summary` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `conflicts_found` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `outcome_state` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `outcome_reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `priority` enum('low','medium','high','urgent') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'medium',
   `status` enum('queued','processing','completed','failed','cancelled') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'queued',
   `parameters` json DEFAULT NULL,
@@ -3519,18 +3570,18 @@ DROP TABLE IF EXISTS `genealogy_source_registry`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `genealogy_source_registry` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
-  `archive_name` varchar(200) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `archive_url` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `archive_name` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `archive_url` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `record_types` json NOT NULL COMMENT 'Array of record types: vital, census, church, military, immigration, land, probate, newspaper, cemetery, death, family_tree, obituary, labor',
   `eras` json DEFAULT NULL COMMENT 'Array of applicable eras: colonial, revolutionary, antebellum, civil_war, gilded_age, progressive, interwar, modern, all',
   `regions` json DEFAULT NULL COMMENT 'Array of applicable regions: new_england, mid_atlantic, south, midwest, great_plains, southwest, west, uk_ireland, scandinavia, france, eastern_europe, italy, canada, german_origin, all',
   `ethnicities` json DEFAULT NULL COMMENT 'Array: african_american, jewish, default, all',
-  `tool_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'FK to agent_tool_registry.name — null if no automated tool',
+  `tool_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'FK to agent_tool_registry.name — null if no automated tool',
   `priority` tinyint unsigned NOT NULL DEFAULT '5' COMMENT '1=highest, 8=lowest',
   `coverage_start_year` smallint unsigned DEFAULT NULL COMMENT 'Earliest year of records',
   `coverage_end_year` smallint unsigned DEFAULT NULL COMMENT 'Latest year of records',
-  `access_type` enum('free','subscription','library','foia','mixed') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'free',
-  `notes` text COLLATE utf8mb4_unicode_ci,
+  `access_type` enum('free','subscription','library','foia','mixed') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'free',
+  `notes` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `search_count` int unsigned NOT NULL DEFAULT '0',
   `hit_count` int unsigned NOT NULL DEFAULT '0',
   `last_searched_at` timestamp NULL DEFAULT NULL,
@@ -3789,12 +3840,12 @@ DROP TABLE IF EXISTS `guardrail_confirmations`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `guardrail_confirmations` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `token` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `operation` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `context` text COLLATE utf8mb4_unicode_ci,
-  `agent_id` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `status` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
-  `confirmed_by` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `token` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `operation` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `context` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `agent_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
+  `confirmed_by` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `confirmed_at` timestamp NULL DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT NULL,
   `expires_at` timestamp NULL DEFAULT NULL,
@@ -3807,11 +3858,11 @@ DROP TABLE IF EXISTS `guardrail_events`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `guardrail_events` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `event_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `operation` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `context` text COLLATE utf8mb4_unicode_ci,
-  `reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `agent_id` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `event_type` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `operation` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `context` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `reason` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `agent_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -3821,13 +3872,13 @@ DROP TABLE IF EXISTS `guardrail_rules`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `guardrail_rules` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `operation_pattern` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `action` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'log',
-  `conditions` text COLLATE utf8mb4_unicode_ci,
-  `reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `severity` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'medium',
-  `agent_scope` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `operation_pattern` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `action` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'log',
+  `conditions` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
+  `reason` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `severity` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'medium',
+  `agent_scope` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `priority` tinyint NOT NULL DEFAULT '0',
   `is_active` tinyint(1) NOT NULL DEFAULT '1',
   `created_at` timestamp NULL DEFAULT NULL,
@@ -4024,14 +4075,14 @@ DROP TABLE IF EXISTS `llm_cascade_log`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `llm_cascade_log` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `prompt_hash` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'SHA-256 of prompt for dedup analysis',
-  `caller` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Agent name or service that called process()',
-  `initial_provider` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `initial_model` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `prompt_hash` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'SHA-256 of prompt for dedup analysis',
+  `caller` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Agent name or service that called process()',
+  `initial_provider` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `initial_model` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `escalated` tinyint(1) NOT NULL DEFAULT '0',
-  `escalation_reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `escalated_provider` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `escalated_model` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `escalation_reason` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `escalated_provider` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `escalated_model` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `quality_score` decimal(5,4) DEFAULT NULL COMMENT 'Aggregate quality score 0.0–1.0',
   `signals` json DEFAULT NULL COMMENT 'Per-signal scores',
   `latency_initial_ms` int unsigned DEFAULT NULL,
@@ -4051,23 +4102,27 @@ CREATE TABLE `llm_instances` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `instance_id` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Unique identifier (e.g., ollama_primary, ollama_secondary_1, claude_cli)',
   `instance_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Human-friendly name (e.g., Primary GPU Server)',
-  `instance_type` enum('ollama','claude_cli','codex_cli','anthropic_api','openai','azure_openai','google_gemini','local_llm','custom') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Provider type for adapter selection',
+  `instance_type` enum('ollama','claude_cli','codex_cli','anthropic_api','openai','azure_openai','google_gemini','local_llm','custom') COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Provider type for adapter selection',
   `base_url` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'API endpoint URL (null for CLI-based)',
   `port` int DEFAULT NULL COMMENT 'Port if separate from URL',
   `api_key_env` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Env var name for API key (never store keys directly)',
   `api_key` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `priority` tinyint NOT NULL DEFAULT '50' COMMENT 'Routing priority (1=highest, 100=lowest)',
   `is_active` tinyint(1) NOT NULL DEFAULT '1' COMMENT 'Manually enabled/disabled',
-  `routability` enum('allowed','bench_only','blocked') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'blocked',
-  `gpu_target` enum('pascal_6gb','ada_12gb','any','none') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'none',
-  `host_affinity` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `compat_runtime_family` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `compat_backend` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `compat_status` enum('authoritative','provisional','stale') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'provisional',
+  `routability` enum('allowed','bench_only','blocked') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'blocked',
+  `gpu_target` enum('pascal_6gb','ada_12gb','any','none') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'none',
+  `host_affinity` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `compat_runtime_family` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `compat_backend` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `compat_status` enum('authoritative','provisional','stale') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'provisional',
   `is_healthy` tinyint(1) NOT NULL DEFAULT '1' COMMENT 'Current health status',
   `health_score` tinyint NOT NULL DEFAULT '100' COMMENT 'Dynamic health score 0-100',
   `capabilities` json NOT NULL COMMENT '["text", "vision", "embedding", "tools", "streaming"]',
   `is_censored` tinyint(1) NOT NULL DEFAULT '1',
+  `allows_private_data` tinyint(1) NOT NULL DEFAULT '0',
+  `data_privacy_scope` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'public_only',
+  `privacy_reviewed_at` timestamp NULL DEFAULT NULL,
+  `privacy_notes` text COLLATE utf8mb4_unicode_ci,
   `supported_models` json DEFAULT NULL COMMENT 'List of model names this instance supports',
   `context_length` int unsigned DEFAULT NULL COMMENT 'Max context window in tokens for this provider',
   `embedding_context_length` int unsigned DEFAULT NULL COMMENT 'Max embedding input in tokens (if different from context_length)',
@@ -4379,26 +4434,24 @@ DROP TABLE IF EXISTS `offline_audit_events`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `offline_audit_events` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `event_type` varchar(30) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `profile` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `event_type` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `profile` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `offline_mode_active` tinyint(1) NOT NULL DEFAULT '0',
-  `operation` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `tool_class` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `mcp_server` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `mcp_trust_boundary` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `path_class` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `provider_class` varchar(40) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `remote_domain_class` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `target` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `actor` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `reason` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `operation` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `tool_class` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `mcp_server` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `mcp_trust_boundary` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `path_class` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `provider_class` varchar(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `remote_domain_class` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `target` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `actor` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `reason` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `context` json DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `offline_audit_events_profile_created_at_index` (`profile`,`created_at`),
   KEY `offline_audit_events_event_type_created_at_index` (`event_type`,`created_at`),
-  KEY `offline_audit_events_event_type_index` (`event_type`),
-  KEY `offline_audit_events_profile_index` (`profile`),
   KEY `offline_audit_events_operation_index` (`operation`),
   KEY `offline_audit_events_actor_index` (`actor`),
   KEY `offline_audit_events_created_at_index` (`created_at`)
@@ -4458,11 +4511,22 @@ DROP TABLE IF EXISTS `pipeline_metrics_snapshots`;
 CREATE TABLE `pipeline_metrics_snapshots` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `snapshot_date` date NOT NULL,
-  `pipeline` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `pipeline` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `pending` int unsigned NOT NULL DEFAULT '0',
   `total` int unsigned NOT NULL DEFAULT '0',
   `completion_pct` decimal(5,2) NOT NULL DEFAULT '0.00',
   `delta_from_prev` int DEFAULT NULL COMMENT 'Change in pending from previous snapshot (negative = progress)',
+  `kg_triples_total` int unsigned NOT NULL DEFAULT '0',
+  `kg_triples_active` int unsigned NOT NULL DEFAULT '0',
+  `kg_triples_missing_source_document` int unsigned NOT NULL DEFAULT '0',
+  `kg_triples_orphan_source_document` int unsigned NOT NULL DEFAULT '0',
+  `kg_active_missing_either_entity` int unsigned NOT NULL DEFAULT '0',
+  `kg_triples_stale_source_hash` int unsigned NOT NULL DEFAULT '0',
+  `kg_extracted_documents_without_triples` int unsigned NOT NULL DEFAULT '0',
+  `kg_pending_fresh_documents` int unsigned NOT NULL DEFAULT '0',
+  `kg_stale_documents` int unsigned NOT NULL DEFAULT '0',
+  `kg_hyperedges_total` int unsigned NOT NULL DEFAULT '0',
+  `kg_hyperedges_orphan_source_document` int unsigned NOT NULL DEFAULT '0',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_date_pipeline` (`snapshot_date`,`pipeline`)
@@ -4510,11 +4574,11 @@ DROP TABLE IF EXISTS `rag_email_index`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `rag_email_index` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
-  `message_hash` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `subject` varchar(500) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `sender` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `message_hash` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `subject` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `sender` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `message_date` timestamp NULL DEFAULT NULL,
-  `folder` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `folder` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `indexed_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_message_hash` (`message_hash`),
@@ -4527,7 +4591,7 @@ DROP TABLE IF EXISTS `recursion_config`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `recursion_config` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `service_name` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `service_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `enabled` tinyint(1) NOT NULL DEFAULT '0',
   `max_depth` tinyint unsigned NOT NULL DEFAULT '1',
   `max_tokens` int unsigned NOT NULL DEFAULT '30000',
@@ -4536,13 +4600,13 @@ CREATE TABLE `recursion_config` (
   `novelty_threshold` decimal(5,4) NOT NULL DEFAULT '0.1500',
   `repetition_threshold` decimal(5,4) NOT NULL DEFAULT '0.9000',
   `decay_window` tinyint unsigned NOT NULL DEFAULT '3',
-  `move_on_mode` enum('graceful','hard') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'graceful',
+  `move_on_mode` enum('graceful','hard') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'graceful',
   `strategies` json NOT NULL,
-  `sub_call_model_role` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'fast',
-  `synthesis_model_role` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'quality',
-  `disabled_reason` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `sub_call_model_role` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'fast',
+  `synthesis_model_role` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'quality',
+  `disabled_reason` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `disabled_at` timestamp NULL DEFAULT NULL,
-  `notes` text COLLATE utf8mb4_unicode_ci,
+  `notes` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -4555,7 +4619,7 @@ DROP TABLE IF EXISTS `recursion_effectiveness`;
 CREATE TABLE `recursion_effectiveness` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `session_id` bigint unsigned DEFAULT NULL,
-  `service_name` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `service_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `max_depth_reached` int unsigned NOT NULL DEFAULT '0',
   `total_sub_calls` int unsigned NOT NULL DEFAULT '0',
   `total_tokens` int unsigned NOT NULL DEFAULT '0',
@@ -4564,7 +4628,7 @@ CREATE TABLE `recursion_effectiveness` (
   `avg_novelty_score` decimal(5,4) DEFAULT NULL,
   `avg_context_window` int unsigned DEFAULT NULL,
   `move_on_count` int unsigned DEFAULT '0',
-  `primary_move_on_reason` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `primary_move_on_reason` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `quality_improvement_estimate` decimal(5,4) DEFAULT NULL,
   `local_provider_pct` decimal(5,2) DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
@@ -4579,12 +4643,12 @@ DROP TABLE IF EXISTS `remediation_actions`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `remediation_actions` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
-  `finding_type` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'The type of finding this remediates (e.g. circuit_breaker_open, stalled_job)',
-  `action_type` enum('artisan_command','service_method','sql_update') COLLATE utf8mb4_unicode_ci NOT NULL,
-  `action_target` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Command name, Class::method, or SQL template',
+  `finding_type` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'The type of finding this remediates (e.g. circuit_breaker_open, stalled_job)',
+  `action_type` enum('artisan_command','service_method','sql_update') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `action_target` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Command name, Class::method, or SQL template',
   `action_params` json DEFAULT NULL COMMENT 'Default parameters for the action',
-  `risk_level` enum('read','write','destructive') COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'read',
-  `description` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Human-readable description shown in Review Hub',
+  `risk_level` enum('read','write','destructive') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'read',
+  `description` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'Human-readable description shown in Review Hub',
   `requires_confirmation` tinyint(1) NOT NULL DEFAULT '0' COMMENT 'Show confirmation dialog in UI',
   `cooldown_minutes` int unsigned NOT NULL DEFAULT '0' COMMENT 'Min minutes between executions',
   `last_executed_at` timestamp NULL DEFAULT NULL,
@@ -4723,7 +4787,7 @@ CREATE TABLE `review_type_registry` (
   `fetch_sql` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL COMMENT 'SELECT query with placeholders',
   `approve_sql` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci COMMENT 'UPDATE query for approval',
   `reject_sql` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci COMMENT 'UPDATE query for rejection',
-  `ignore_sql` text COLLATE utf8mb4_unicode_ci COMMENT 'UPDATE query for ignore/dismiss',
+  `ignore_sql` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci COMMENT 'UPDATE query for ignore/dismiss',
   `field_mapping` json NOT NULL COMMENT 'Maps source columns to unified fields',
   `ui_schema` json DEFAULT NULL COMMENT 'Dynamic UI schema for Vue rendering',
   `vue_renderer` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Vue component for custom rendering',
@@ -4845,12 +4909,12 @@ CREATE TABLE `scheduled_jobs` (
   `notes` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci COMMENT 'Human notes about this job (why enabled/disabled, issues, etc)',
   `category` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Grouping category for UI organization',
   `source_module` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Framework module that owns this job (E13, E22, EA2, Genealogy, etc)',
-  `runtime_mode` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `workload_family` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `resource_profile` varchar(30) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `stall_policy` enum('strict','stall_exempt','adaptive_extend') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `backlog_metric` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `notification_mode` enum('silent','digest','high_priority') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `runtime_mode` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `workload_family` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `resource_profile` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `stall_policy` enum('strict','stall_exempt','adaptive_extend') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `backlog_metric` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `notification_mode` enum('silent','digest','high_priority') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
@@ -5118,7 +5182,7 @@ CREATE TABLE `system_issues` (
   `title` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `description` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `suggested_fix` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
-  `finding_type` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `finding_type` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'open',
   `detected_by` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `context` json DEFAULT NULL,
@@ -5182,19 +5246,19 @@ DROP TABLE IF EXISTS `task_custody_records`;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `task_custody_records` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `surface` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `surface_ref` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `owner_token` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `surface` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `surface_ref` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `owner_token` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
   `acquired_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `expires_at` timestamp NOT NULL,
   `released_at` timestamp NULL DEFAULT NULL,
-  `outcome` enum('success','failure','cancel') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `outcome` enum('success','failure','cancel') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `result_envelope` json DEFAULT NULL,
-  `notification_state` enum('pending','delivered','suppressed') COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `progress_note` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `notification_state` enum('pending','delivered','suppressed') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `progress_note` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `active_key` varchar(180) COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS ((case when (`released_at` is null) then concat(`surface`,_utf8mb4':',`surface_ref`) else NULL end)) STORED,
+  `active_key` varchar(180) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci GENERATED ALWAYS AS ((case when (`released_at` is null) then concat(`surface`,_utf8mb4':',`surface_ref`) else NULL end)) STORED,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uniq_task_custody_active` (`active_key`),
   KEY `task_custody_records_surface_surface_ref_index` (`surface`,`surface_ref`),
@@ -5391,9 +5455,9 @@ CREATE TABLE `workflow_connections` (
   `workflow_id` bigint unsigned NOT NULL,
   `source_node_id` bigint unsigned NOT NULL,
   `target_node_id` bigint unsigned NOT NULL,
-  `source_port` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT 'output',
-  `target_port` varchar(50) COLLATE utf8mb4_unicode_ci DEFAULT 'input',
-  `condition_expression` text COLLATE utf8mb4_unicode_ci,
+  `source_port` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'output',
+  `target_port` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT 'input',
+  `condition_expression` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   `sort_order` tinyint unsigned NOT NULL DEFAULT '0',
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -6043,3 +6107,213 @@ INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (583,'2026_04_23_09
 INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (584,'2026_04_23_091000_bump_research_analyst_agent_timeout',101);
 INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (585,'2026_04_24_153000_ensure_agent_sessions_skill_version_column',102);
 INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (586,'2026_04_24_160000_tune_knowledge_graph_catchup_budget',103);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (587,'2026_04_12_140500_split_routine_workflow_pushover_group',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (588,'2026_04_12_141500_split_youtube_success_pushover_group',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (589,'2026_04_12_190000_add_scheduler_synthetic_probe_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (590,'2026_04_15_120000_add_uncensored_profile_to_llm_model_profiles',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (591,'2026_04_16_073047_register_genealogy_merge_review_type',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (592,'2026_04_16_202238_seed_offline_mode_config',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (593,'2026_04_17_133522_backfill_ollama_compat_authority_by_url',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (594,'2026_04_20_151500_add_knowledge_graph_catchup_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (595,'2026_04_23_133000_reassert_research_analyst_timeout_90',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (596,'2026_04_24_103000_lock_research_analyst_timeout_at_90',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (597,'2026_04_24_120000_backfill_ollama_drift_check_runtime_metadata',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (598,'2026_04_24_121000_backfill_knowledge_graph_catchup_runtime_metadata',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (599,'2026_04_24_184500_add_ops_heavy_window_baseline_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (600,'2026_04_24_185452_retire_legacy_ops_host_baseline_jobs',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (601,'2026_04_24_185717_delete_legacy_ops_host_baseline_jobs',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (602,'2026_04_26_073000_stabilize_prod_scheduler_failures',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (603,'2026_04_26_190000_rename_ops_theme_tokens_in_review_registry',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (604,'2026_04_27_120000_remove_unworkable_genealogy_api_surfaces',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (605,'2026_04_27_130000_gate_manual_only_genealogy_sources',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (606,'2026_04_29_000001_register_genealogy_review_packet_review_type',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (607,'2026_04_29_120000_stabilize_genealogy_media_consolidate_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (608,'2026_04_29_230000_seed_awo_recording_config',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (609,'2026_04_30_000001_update_genealogy_review_packet_actions',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (610,'2026_04_30_120000_create_bias_rating_aliases_table',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (611,'2026_04_30_125834_seed_common_bias_source_aliases',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (612,'2026_04_30_130000_seed_news_bias_feed_aliases',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (613,'2026_04_30_183000_add_bias_data_refresh_scheduled_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (614,'2026_04_30_191500_seed_real_news_no_bullshit_bias_rating',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (615,'2026_04_30_202000_add_news_source_inventory_scheduled_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (616,'2026_04_30_213000_add_face_link_weekly_report_scheduled_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (617,'2026_04_30_221500_add_awo_replay_weekly_report_scheduled_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (618,'2026_05_01_000001_add_kg_provenance_columns_to_pipeline_snapshots',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (619,'2026_05_01_000002_add_kg_provenance_snapshot_scheduled_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (620,'2026_05_01_000003_add_scheduler_optimize_weekly_report_scheduled_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (621,'2026_05_01_110000_create_dev_agent_readiness_snapshots_table',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (622,'2026_05_01_230000_apply_scheduler_spacing_first_batch',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (623,'2026_05_02_180000_restore_enabled_agent_task_timeout_floor',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (624,'2026_05_03_200000_tighten_news_pushover_delivery_window',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (625,'2026_05_04_081800_repair_schema_drift_and_redundant_indexes',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (626,'2026_05_04_093000_restore_news_pushover_multipart_pacing',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (627,'2026_05_04_164500_ensure_news_pushover_routine_source_group',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (628,'2026_05_05_090000_increase_news_pushover_multipart_spacing',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (629,'2026_05_05_190000_enable_news_pushover_part_timestamps',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (630,'2026_05_06_184500_enable_news_pushover_part_headers',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (631,'2026_05_08_090000_cap_news_pushover_delivery_parts',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (632,'2026_05_09_093600_register_genealogy_evidence_asset_capture_review_type',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (633,'2026_05_09_143000_add_genealogy_media_enrichment_handoff_jobs',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (634,'2026_05_12_063000_schedule_genealogy_full_rag_reindex',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (635,'2026_05_12_071000_seed_genealogy_expert_procedures',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (636,'2026_05_12_073000_schedule_genealogy_health_and_media_rag_jobs',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (637,'2026_05_12_141500_schedule_genealogy_duplicate_and_export_jobs',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (638,'2026_05_12_161500_schedule_genealogy_media_review_jobs',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (639,'2026_05_12_173000_schedule_genealogy_evidence_score_job',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (640,'2026_05_12_184500_schedule_genealogy_all_rag_index',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (641,'2026_05_13_120000_add_provenance_json_to_genealogy_proposed_changes',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (642,'2026_05_14_090000_register_genealogy_mcp_capture_agent_tools',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (643,'2026_05_14_091000_register_genealogy_source_gap_memory_agent_tools',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (644,'2026_05_14_093000_register_genealogy_direct_evidence_capture_tool',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (645,'2026_05_15_190000_register_genealogy_research_memo_tools',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (646,'2026_05_16_064000_register_genealogy_source_media_backfill_tool_and_schedule',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (647,'2026_05_16_070000_update_genealogy_source_media_backfill_retry_and_schedule',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (648,'2026_05_17_093000_register_genealogy_coverage_rebuild_tool',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (649,'2026_05_17_094500_register_genealogy_research_task_create_tool',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (650,'2026_05_17_131500_register_genealogy_lesson_memory_tools',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (651,'2026_05_17_132500_register_genealogy_lesson_memory_context_tool',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (652,'2026_05_17_134000_register_genealogy_memory_backfill_batch',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (653,'2026_05_20_101500_register_genealogy_mcp_agent_tool_access',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (654,'2026_05_20_193500_schedule_agent_doctor_readiness_snapshot',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (655,'2026_05_21_090000_register_codex_exec_llm_provider',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (656,'2026_05_21_093000_enable_codex_exec_git_repo_check_skip',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (657,'2026_05_21_100000_remove_news_pushover_delivery_cap',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (658,'2026_05_23_160000_add_llm_provider_privacy_gate',104);
+INSERT INTO `migrations` (`id`, `migration`, `batch`) VALUES (659,'2026_05_25_100500_reseed_genealogy_external_service_registry',104);
+
+--
+-- Required lookup/config seed data
+--
+
+INSERT INTO `agent_procedures` (`id`, `agent_id`, `name`, `trigger_pattern`, `action_sequence`, `strategy_insight`, `procedure_type`, `source_session_id`, `is_canonical`, `is_shared`, `is_retired`, `success_rate`, `times_used`, `times_succeeded`, `last_used_at`, `created_at`, `updated_at`) VALUES (1,'genealogy-researcher','GPS identity resolution before fact proposals','genealogy identity matching nickname married name face label media person link duplicate spouse parent child uncertain subject match','[{\"tool\": \"recall_procedures\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"recall_episodes\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_person_full\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"surname_phonetic_matches\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_siblings\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"fan_get_cooccurrences\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"evidence_build_chain\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"detect_duplicates\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"submit_for_review\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}]','Resolve the subject identity before accepting any fact. Require name plus date, place, relationship, FAN, occupation, media context, or source-chain anchors; never link from name alone.','success','genealogy-expert-seed-2026-05-12',1,1,0,0.8000,5,4,'2026-05-25 14:11:40','2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `agent_procedures` (`id`, `agent_id`, `name`, `trigger_pattern`, `action_sequence`, `strategy_insight`, `procedure_type`, `source_session_id`, `is_canonical`, `is_shared`, `is_retired`, `success_rate`, `times_used`, `times_succeeded`, `last_used_at`, `created_at`, `updated_at`) VALUES (2,'genealogy-researcher','Source-backed fact update workflow','genealogy birth death burial place spouse parent child fact update found record source citation evidence confidence','[{\"tool\": \"get_repositories_for_person\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"source_search_all\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_person_sources\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"evidence_build_chain\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"assess_gps_compliance\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"detect_source_conflicts\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"propose_change\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"submit_for_review\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"save_procedure\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}]','A fact update needs a real source, source quality, information quality, evidence type, temporal fit, conflict check, and provenance. Weak but useful evidence becomes a proposal or research task.','success','genealogy-expert-seed-2026-05-12',1,1,0,0.8000,5,4,'2026-05-25 14:11:40','2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `agent_procedures` (`id`, `agent_id`, `name`, `trigger_pattern`, `action_sequence`, `strategy_insight`, `procedure_type`, `source_session_id`, `is_canonical`, `is_shared`, `is_retired`, `success_rate`, `times_used`, `times_succeeded`, `last_used_at`, `created_at`, `updated_at`) VALUES (3,'genealogy-researcher','Negative search coverage workflow','genealogy no records found empty search negative evidence exhausted repository coverage repeat search avoid duplicate research','[{\"tool\": \"get_recent_searches\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_search_coverage\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_repositories_for_person\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"source_search_all\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"log_research_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"update_search_coverage\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"update_hint_status\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"create_research_task\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}]','No-result searches are useful GPS evidence when logged with repository, query, date range, geography, and rationale. Do not submit negative results as fact proposals.','success','genealogy-expert-seed-2026-05-12',1,1,0,0.8000,5,4,'2026-05-25 14:11:40','2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `agent_procedures` (`id`, `agent_id`, `name`, `trigger_pattern`, `action_sequence`, `strategy_insight`, `procedure_type`, `source_session_id`, `is_canonical`, `is_shared`, `is_retired`, `success_rate`, `times_used`, `times_succeeded`, `last_used_at`, `created_at`, `updated_at`) VALUES (4,'genealogy-records','Primary-record jurisdiction sweep','genealogy records census vital military immigration naturalization land pension jurisdiction original record image download attach source','[{\"tool\": \"recall_procedures\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_repositories_for_person\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"source_search_all\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"nara_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"nara_get_objects\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"nara_download_best\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"nara_copy_to_tree\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"log_research_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"update_search_coverage\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}]','Route by era and jurisdiction first, search the highest-yield repository, prefer source images over indexes, and capture downloadable originals into the FT folder before relying on them.','success','genealogy-expert-seed-2026-05-12',1,1,0,0.8000,5,4,'2026-05-25 14:11:40','2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `agent_procedures` (`id`, `agent_id`, `name`, `trigger_pattern`, `action_sequence`, `strategy_insight`, `procedure_type`, `source_session_id`, `is_canonical`, `is_shared`, `is_retired`, `success_rate`, `times_used`, `times_succeeded`, `last_used_at`, `created_at`, `updated_at`) VALUES (5,'genealogy-newspapers','Newspaper identity anchor workflow','genealogy newspaper obituary article marriage birth legal notice ocr publication date named relatives identity anchor','[{\"tool\": \"recall_procedures\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_person_full\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"surname_phonetic_matches\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"newspaper_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"newspaper_search_obituaries\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"internet_archive_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"log_research_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"update_search_coverage\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"submit_for_review\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"save_procedure\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}]','Use publication date, place, named relatives, and article context as identity anchors. Treat OCR snippets as leads until corroborated by page image, publication metadata, and tree context.','success','genealogy-expert-seed-2026-05-12',1,1,0,0.8000,5,4,'2026-05-25 14:11:40','2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `agent_procedures` (`id`, `agent_id`, `name`, `trigger_pattern`, `action_sequence`, `strategy_insight`, `procedure_type`, `source_session_id`, `is_canonical`, `is_shared`, `is_retired`, `success_rate`, `times_used`, `times_succeeded`, `last_used_at`, `created_at`, `updated_at`) VALUES (6,'genealogy-web','Community profile lead extraction workflow','genealogy wikitree web search community profile fan graph rag source citations lead extraction identity match','[{\"tool\": \"recall_procedures\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_person_full\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"wikitree_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"wikitree_get_person\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"mcp_searxng_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"rag_search\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"fan_analyze_cluster\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"submit_for_review\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"save_procedure\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}]','Treat community profiles and web pages as leads. Extract their cited sources, verify identity with lifetime/place/relationship anchors, and route uncertain web claims to review.','success','genealogy-expert-seed-2026-05-12',1,1,0,0.8000,5,4,'2026-05-25 14:11:40','2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `agent_procedures` (`id`, `agent_id`, `name`, `trigger_pattern`, `action_sequence`, `strategy_insight`, `procedure_type`, `source_session_id`, `is_canonical`, `is_shared`, `is_retired`, `success_rate`, `times_used`, `times_succeeded`, `last_used_at`, `created_at`, `updated_at`) VALUES (7,'genealogy-analyst','Conflict-first GPS proof analysis','genealogy evidence conflict proof conclusion gps source disagreement birth death parent spouse place duplicate merge','[{\"tool\": \"recall_procedures\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_person_full\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_person_sources\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"evidence_build_chain\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"detect_source_conflicts\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_source_conflicts\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"generate_gps_proof\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"submit_for_review\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"save_procedure\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}]','Analyze the claim, source classes, subject identity, conflicts, and weakest required link before writing a proof or proposing a resolution.','success','genealogy-expert-seed-2026-05-12',1,1,0,0.8000,5,4,'2026-05-25 14:11:40','2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `agent_procedures` (`id`, `agent_id`, `name`, `trigger_pattern`, `action_sequence`, `strategy_insight`, `procedure_type`, `source_session_id`, `is_canonical`, `is_shared`, `is_retired`, `success_rate`, `times_used`, `times_succeeded`, `last_used_at`, `created_at`, `updated_at`) VALUES (8,'genealogy-assessor','Research queue triage by genealogical value','genealogy research queue priority missing data direct ancestor relationship blocker source conflict export readiness media unlinked','[{\"tool\": \"recall_procedures\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_research_landscape\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_recent_searches\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_missing_data_report\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_open_research_tasks\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_priority_persons\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"get_search_coverage\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"create_research_task\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}, {\"tool\": \"save_procedure\", \"params\": [], \"params_source\": \"active_person_or_task_context\"}]','Prioritize by genealogical value: direct ancestors, relationship blockers, conflicts, export readiness, and media that can prove facts. Avoid duplicate tasks by checking coverage and open work first.','success','genealogy-expert-seed-2026-05-12',1,1,0,0.8000,5,4,'2026-05-25 14:11:40','2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (1,'evidence_capture_plan','App\\Engine\\MCPRouter','callTool','Plan capture-ready genealogy review evidence media for FT-local storage. Read-only; use before review or execution.','{\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 50, \"description\": \"Maximum review rows to scan\"}, \"compact\": {\"type\": \"boolean\", \"default\": true, \"description\": \"Return count-only payload by default\"}, \"dry_run\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Return query posture without scanning rows\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Optional tree ID used to scope review packets\"}, \"eligible_only\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Only count capture-ready candidates\"}}}','Returns the genealogy MCP tool payload, including success/error status and any dry-run or write-audit receipt.','[\"genealogy:read\"]','read','genealogy',0,20,'genealogy','evidence_capture_plan',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for Genea agent intake/citation workflow; dry-run and confirmation are enforced by the MCP service and offline policy.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (2,'evidence_capture_review','App\\Engine\\MCPRouter','callTool','Materialize tree-scoped approval rows for evidence media capture. No downloads or canonical media writes.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 50, \"description\": \"Maximum review rows to scan\"}, \"compact\": {\"type\": \"boolean\", \"default\": true, \"description\": \"Return count-only payload by default\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required true when execute=true\"}, \"execute\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Create noncanonical approval rows when true\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to scope capture approval rows\"}, \"eligible_only\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Only materialize capture-ready candidates\"}}}','Returns the genealogy MCP tool payload, including success/error status and any dry-run or write-audit receipt.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','evidence_capture_review',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for Genea agent intake/citation workflow; dry-run and confirmation are enforced by the MCP service and offline policy.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (3,'evidence_capture_execute','App\\Engine\\MCPRouter','callTool','Preflight or execute already-approved tree-scoped evidence media capture into FT storage with optional genealogy linking.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 25, \"description\": \"Maximum approved capture rows to inspect\"}, \"compact\": {\"type\": \"boolean\", \"default\": true, \"description\": \"Return count-only payload by default\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID stamped on approved capture review rows\"}, \"max_bytes\": {\"type\": \"integer\", \"description\": \"Optional per-file download byte cap\"}, \"save_preflight\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Stamp noncanonical executor preflight details only\"}, \"execute_capture\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Download/save approved assets when confirmed\"}, \"confirm_download\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required for execute_capture\"}, \"confirm_storage_write\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required for execute_capture\"}, \"confirm_genealogy_link\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Create person/family/source media links when executing\"}, \"confirm_noncanonical_write\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required for save_preflight\"}}}','Returns the genealogy MCP tool payload, including success/error status and any dry-run or write-audit receipt.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','evidence_capture_execute',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for Genea agent intake/citation workflow; dry-run and confirmation are enforced by the MCP service and offline policy.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (4,'source_citation_link_apply','App\\Engine\\MCPRouter','callTool','Dry-run-first bounded source citation plus person/family source link creation for already-vetted same-tree evidence.','{\"type\": \"object\", \"required\": [\"tree_id\", \"source_id\", \"text\"], \"properties\": {\"page\": {\"type\": \"string\", \"description\": \"Optional page, URL section, or review locator\"}, \"text\": {\"type\": \"string\", \"description\": \"Required evidence text explaining exactly what the source supports\"}, \"actor\": {\"type\": \"string\", \"default\": \"genea-agent\", \"description\": \"Audit actor label\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required true when dry_run=false\"}, \"dry_run\": {\"type\": \"boolean\", \"default\": true, \"description\": \"Preview only when true\"}, \"quality\": {\"type\": \"integer\", \"description\": \"Optional citation quality 0-100\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns all targets\"}, \"media_id\": {\"type\": \"integer\", \"description\": \"Optional cited media row in the same tree\"}, \"fact_type\": {\"type\": \"string\", \"default\": \"person_source_context\", \"description\": \"Citation fact type\"}, \"source_id\": {\"type\": \"integer\", \"description\": \"Existing genealogy source ID in the same tree\"}, \"family_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}, \"description\": \"Optional family IDs to cite/link\"}, \"person_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}, \"description\": \"Optional person IDs to cite/link\"}, \"evidence_type\": {\"type\": \"string\", \"default\": \"direct\", \"description\": \"direct, indirect, or negative\"}, \"information_type\": {\"type\": \"string\", \"default\": \"secondary\", \"description\": \"primary, secondary, or indeterminate\"}}}','Returns the genealogy MCP tool payload, including success/error status and any dry-run or write-audit receipt.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','source_citation_link_apply',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for Genea agent intake/citation workflow; dry-run and confirmation are enforced by the MCP service and offline policy.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (5,'source_gap_decision_lookup','App\\Engine\\MCPRouter','callTool','Read compact genealogy source-gap decision memory so agents avoid repeating weak or collateral evidence reviews.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 50, \"description\": \"Maximum matches to return\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to search\"}, \"decision\": {\"type\": \"string\", \"default\": \"all\", \"description\": \"Optional decision filter or all\"}, \"person_id\": {\"type\": \"integer\", \"description\": \"Optional person ID to inspect\"}}}','Returns the genealogy MCP tool payload with dry-run/write-audit status where applicable.','[\"genealogy:read\"]','read','genealogy',0,30,'genealogy','source_gap_decision_lookup',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for Genea source-gap memory so agents can avoid repeated weak/collateral checks.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (6,'source_gap_decision_add','App\\Engine\\MCPRouter','callTool','Dry-run-first source-gap review memory writer for collateral-only, weak evidence, deferred, and external-research decisions.','{\"type\": \"object\", \"required\": [\"tree_id\", \"person_id\", \"decision\", \"reason\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-agent\", \"description\": \"Audit actor label\"}, \"reason\": {\"type\": \"string\", \"description\": \"Evidence review reason\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required true when dry_run=false\"}, \"dry_run\": {\"type\": \"boolean\", \"default\": true, \"description\": \"Preview only when true\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID this decision applies to\"}, \"decision\": {\"type\": \"string\", \"description\": \"Decision code\"}, \"person_id\": {\"type\": \"integer\", \"description\": \"Person ID this source-gap decision applies to\"}, \"confidence\": {\"type\": \"number\", \"default\": 0.8, \"description\": \"Memory confidence 0..1\"}, \"source_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}, \"description\": \"Optional related source IDs reviewed\"}}}','Returns the genealogy MCP tool payload with dry-run/write-audit status where applicable.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','source_gap_decision_add',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for Genea source-gap memory so agents can avoid repeated weak/collateral checks.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (7,'evidence_capture_direct','App\\Engine\\MCPRouter','callTool','Dry-run-first one-off capture of a vetted evidence URL into tree-scoped FT storage with optional source/person/family linking.','{\"type\": \"object\", \"required\": [\"tree_id\", \"url\"], \"properties\": {\"url\": {\"type\": \"string\", \"description\": \"Vetted http/https evidence asset URL to capture\"}, \"actor\": {\"type\": \"string\", \"default\": \"genea-agent\", \"description\": \"Audit actor label\"}, \"label\": {\"type\": \"string\", \"description\": \"Optional media title/filename label\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required true when dry_run=false\"}, \"dry_run\": {\"type\": \"boolean\", \"default\": true, \"description\": \"Preview only when true\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns all link targets\"}, \"family_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree family ID\"}, \"max_bytes\": {\"type\": \"integer\", \"description\": \"Optional per-file download byte cap\"}, \"person_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree person ID\"}, \"source_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree genealogy source ID\"}, \"asset_type\": {\"type\": \"string\", \"description\": \"Optional asset type hint\"}, \"content_type\": {\"type\": \"string\", \"description\": \"Optional MIME hint such as image/jp2\"}, \"confirm_download\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required true when dry_run=false\"}, \"confirm_storage_write\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required true when dry_run=false\"}, \"confirm_genealogy_link\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Create person/family/source media links when executing\"}}}','Returns a dry-run preview or an execution payload with saved media IDs, link scopes, and write-audit receipt.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','evidence_capture_direct',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for direct vetted Genea evidence media capture; service enforces dry-run and download/storage confirmation flags.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (8,'research_memo_save','App\\Engine\\MCPRouter','callTool','Dry-run-first Genea MCP tool to save a reviewed research memo inside the FT tree root, append target notes, and optionally record source-gap memory.','{\"type\": \"object\", \"required\": [\"tree_id\", \"title\", \"body\"], \"properties\": {\"body\": {\"type\": \"string\", \"description\": \"Reviewed research memo body\"}, \"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"title\": {\"type\": \"string\", \"description\": \"Short memo title\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns the memo\"}, \"family_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree family ID\"}, \"overwrite\": {\"type\": \"boolean\", \"default\": false}, \"person_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree person ID\"}, \"confidence\": {\"type\": \"number\", \"default\": 0.8}, \"source_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"notes_append\": {\"type\": \"string\", \"description\": \"Optional note appended to the target person/family record\"}, \"relative_path\": {\"type\": \"string\", \"description\": \"Optional safe .md path below the tree media root\"}, \"source_gap_reason\": {\"type\": \"string\", \"description\": \"Required when source_gap_decision is provided\"}, \"source_gap_decision\": {\"type\": \"string\", \"description\": \"Optional source-gap decision code for person_id\"}}}','Returns the planned or applied FT-local memo path, note update counts, and optional source-gap memory result.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','research_memo_save',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for safe Genea research memo persistence without ad hoc tinker filesystem writes.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (9,'family_duplicate_retire','App\\Engine\\MCPRouter','callTool','Dry-run-first Genea MCP tool to retire an isolated duplicate family row after strict same-spouse and no-reference checks.','{\"type\": \"object\", \"required\": [\"tree_id\", \"keep_family_id\", \"duplicate_family_id\", \"reason\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"reason\": {\"type\": \"string\", \"description\": \"Evidence/review reason for retiring the duplicate\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns both families\"}, \"keep_family_id\": {\"type\": \"integer\", \"description\": \"Canonical family ID to keep\"}, \"duplicate_family_id\": {\"type\": \"integer\", \"description\": \"Isolated duplicate family ID to delete\"}}}','Returns the planned or applied duplicate-family cleanup with dependent row counts.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','family_duplicate_retire',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for safe duplicate-family cleanup without raw DELETE commands.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (10,'person_source_link_retire','App\\Engine\\MCPRouter','callTool','Dry-run-first Genea MCP tool to retire invalid uncited person-source link rows after strict tree and citation checks.','{\"type\": \"object\", \"required\": [\"tree_id\", \"person_source_ids\", \"reason\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"reason\": {\"type\": \"string\", \"description\": \"Evidence/review reason for retiring these source links\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns the person-source links\"}, \"person_source_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}, \"description\": \"genealogy_person_sources IDs to retire, max 50\"}}}','Returns a planned or applied uncited person-source link cleanup with citation blocking checks.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','person_source_link_retire',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for safe person-source link cleanup without raw DELETE commands.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (11,'source_media_backfill','App\\Engine\\MCPRouter','callTool','Dry-run-first bounded backfill of URL-only genealogy sources into tree-scoped FT storage, using NARA API digital objects when available.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 25, \"description\": \"Maximum source rows per batch\"}, \"order\": {\"type\": \"string\", \"default\": \"oldest\", \"description\": \"oldest or newest\"}, \"since\": {\"type\": \"string\", \"default\": \"14d\", \"description\": \"Window to scan, e.g. 24h, 14d, all\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID whose URL-only sources should be backfilled\"}, \"max_bytes\": {\"type\": \"integer\"}, \"source_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"link_sources\": {\"type\": \"boolean\", \"default\": true}, \"retry_blocked\": {\"type\": \"boolean\", \"default\": false}, \"confirm_download\": {\"type\": \"boolean\", \"default\": false}, \"confirm_storage_write\": {\"type\": \"boolean\", \"default\": false}, \"nara_metadata_snapshot\": {\"type\": \"boolean\", \"default\": true}}}','Returns source capture batch counts, saved/reused media IDs, NARA API activity, and blockers.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','source_media_backfill',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for source URL media backfill; skips previously blocked failures by default unless retry_blocked is requested.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (12,'coverage_rebuild','App\\Engine\\MCPRouter','callTool','Dry-run-first rebuild of genealogy ancestor paths and person coverage for one tree.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"confirm\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Required true when dry_run=false\"}, \"dry_run\": {\"type\": \"boolean\", \"default\": true, \"description\": \"Preview status and write requirements only\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to rebuild\"}, \"root_person_id\": {\"type\": \"integer\", \"description\": \"Optional root person override; defaults to genealogy_trees.root_person_id\"}}}','Returns before/after ancestor path and person coverage counts, stale-row counts, and rebuild timings.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','coverage_rebuild',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for safe Genea coverage maintenance; service enforces dry-run and confirm flags.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (13,'research_task_create','App\\Engine\\MCPRouter','callTool','Dry-run-first creation of guarded genealogy research tasks.','{\"type\": \"object\", \"required\": [\"tree_id\", \"task_type\", \"priority\", \"research_question\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID for the task\"}, \"priority\": {\"type\": \"string\", \"description\": \"urgent, high, medium, or low\"}, \"person_id\": {\"type\": \"integer\", \"description\": \"Optional person ID the task is about\"}, \"task_type\": {\"type\": \"string\", \"description\": \"find_records, verify_facts, find_relatives, analyze_dna, suggest_sources, or transcribe_document\"}, \"parameters\": {\"type\": \"object\"}, \"scope_reason\": {\"type\": \"string\", \"description\": \"Scope boundaries and evidence standard\"}, \"outcome_state\": {\"type\": \"string\", \"default\": \"needs_research\"}, \"outcome_reason\": {\"type\": \"string\"}, \"conflicts_found\": {\"type\": \"string\"}, \"sources_checked\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"evidence_summary\": {\"type\": \"string\"}, \"selection_reason\": {\"type\": \"string\", \"description\": \"Why this task should be queued\"}, \"research_question\": {\"type\": \"string\", \"description\": \"Research question to queue\"}, \"related_people_used\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}}}','Returns the task creation dry-run plan or created genealogy_research_tasks id.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','research_task_create',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for safe Genea research-task queueing; service enforces dry-run and confirm flags.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (14,'lesson_memory_lookup','App\\Engine\\MCPRouter','callTool','Read compact reusable Genea research, OCR/document, source-capture, identity, and offline workflow lessons for a tree.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 20, \"description\": \"Maximum lessons to return\"}, \"query\": {\"type\": \"string\", \"description\": \"Optional text search over lesson title/value\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to search\"}, \"lesson_type\": {\"type\": \"string\", \"default\": \"all\", \"description\": \"all or one lesson type\"}}}','Returns the Genea lesson-memory MCP payload with compact lookup rows or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,50,'genealogy','lesson_memory_lookup',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for reusable local Genea lessons so agents can reuse research, OCR/document, source-capture, identity, and offline workflow wisdom.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (15,'lesson_memory_save','App\\Engine\\MCPRouter','callTool','Dry-run-first Genea MCP tool to store reusable research, document/OCR, source-capture, identity, and offline workflow lessons in tree-scoped semantic memory.','{\"type\": \"object\", \"required\": [\"tree_id\", \"lesson_type\", \"title\", \"lesson\"], \"properties\": {\"tags\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}, \"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"title\": {\"type\": \"string\", \"description\": \"Short reusable lesson title\"}, \"lesson\": {\"type\": \"string\", \"description\": \"Reviewed lesson text with enough context to reuse safely\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID the lesson applies to\"}, \"task_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"media_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"confidence\": {\"type\": \"number\", \"default\": 0.8}, \"person_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"source_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"lesson_type\": {\"type\": \"string\", \"description\": \"research_process_lesson, document_interpretation_lesson, source_capture_lesson, identity_decision_lesson, or offline_workflow_lesson\"}}}','Returns the Genea lesson-memory MCP payload with compact lookup rows or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','lesson_memory_save',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for reusable local Genea lessons so agents can reuse research, OCR/document, source-capture, identity, and offline workflow wisdom.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (16,'lesson_memory_context','App\\Engine\\MCPRouter','callTool','Read compact reusable Genea lessons for a tree/person/media/source/task context without exposing raw memory tables.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 8, \"description\": \"Maximum lessons to return\"}, \"query\": {\"type\": \"string\", \"description\": \"Optional extra text query\"}, \"task_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree research task ID\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to search\"}, \"media_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree media ID\"}, \"person_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree person ID\"}, \"source_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree source ID\"}, \"lesson_type\": {\"type\": \"string\", \"default\": \"all\", \"description\": \"all or one lesson type\"}}}','Returns compact lesson rows and a prompt-ready guardrail context_text for the requested tree/entity context.','[\"genealogy:read\"]','read','genealogy',0,50,'genealogy','lesson_memory_context',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for context-aware Genea lesson retrieval so agents can inject relevant local lessons without raw memory SQL.','2026-05-25 14:11:41','2026-05-25 14:11:41');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (17,'memory_backfill_batch','App\\Engine\\MCPRouter','callTool','Run compact bounded Genea learning-memory backfills across canonical lessons, health-audit findings, media-intake outcomes, source-media capture outcomes, and review decisions.','{\"type\": \"object\", \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"lanes\": {\"type\": \"string\", \"default\": \"all\", \"description\": \"all or comma-separated lanes\"}, \"limit\": {\"type\": \"integer\", \"default\": 25, \"description\": \"Maximum candidates per lane\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Optional tree ID. Omit only in trusted scheduled contexts.\"}}}','Returns per-tree lane summaries, candidate counts, recorded memory IDs, and errors without exposing raw memory tables.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','memory_backfill_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration for scheduled/local Genea learning backfills so agents can grow memory without raw SQL or multi-tool orchestration.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (18,'family_profile','App\\Engine\\MCPRouter','callTool','Read a complete tree-scoped family profile with spouses, children, family/member media, sources, and citations.','{\"type\": \"object\", \"required\": [\"tree_id\", \"family_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 25, \"description\": \"Maximum rows per related section\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns the family\"}, \"family_id\": {\"type\": \"integer\", \"description\": \"Family ID to inspect\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,30,'genealogy','family_profile',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (19,'rag_status','App\\Engine\\MCPRouter','callTool','Read genealogy person/source/media RAG and person embedding coverage for one tree or all trees.','{\"type\": \"object\", \"properties\": {\"tree_id\": {\"type\": \"integer\", \"description\": \"Optional tree ID to inspect\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,20,'genealogy','rag_status',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (20,'media_profile','App\\Engine\\MCPRouter','callTool','Read one genealogy media row with paths, text excerpts, links, citations, and face-match hints.','{\"type\": \"object\", \"required\": [\"tree_id\", \"media_id\"], \"properties\": {\"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns the media row\"}, \"media_id\": {\"type\": \"integer\", \"description\": \"Genealogy media ID to inspect\"}, \"face_limit\": {\"type\": \"integer\", \"default\": 25, \"description\": \"Maximum face-match rows\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,40,'genealogy','media_profile',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (21,'media_review_packet','App\\Engine\\MCPRouter','callTool','Read a compact document/OCR/media evidence packet with text quality, links, citations, hints, and next actions.','{\"type\": \"object\", \"required\": [\"tree_id\", \"media_id\"], \"properties\": {\"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns the media row\"}, \"media_id\": {\"type\": \"integer\", \"description\": \"Genealogy media ID to inspect\"}, \"text_limit\": {\"type\": \"integer\", \"default\": 1600, \"description\": \"Maximum characters per text excerpt\"}, \"summary_only\": {\"type\": \"boolean\", \"default\": false, \"description\": \"Suppress long text excerpts while preserving counts and hints\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,40,'genealogy','media_review_packet',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (22,'media_ocr_escalation_batch','App\\Engine\\MCPRouter','callTool','Read compact OCR/HTR/vision escalation candidates for weak or missing media text.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 50, \"description\": \"Maximum candidates\"}, \"bucket\": {\"type\": \"string\", \"default\": \"all\", \"description\": \"all, weak_text, html_text_extraction, document_text_extraction, image_ocr_or_vision, or processing_failed\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to inspect\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,20,'genealogy','media_ocr_escalation_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (23,'person_fact_extract','App\\Engine\\MCPRouter','callTool','Read candidate DOB/DOD/place/name/family facts from one media, source, or reviewed text packet with conflict flags.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns the evidence and target person\"}, \"media_id\": {\"type\": \"integer\", \"description\": \"Optional media packet to inspect\"}, \"person_id\": {\"type\": \"integer\", \"description\": \"Optional target person\"}, \"source_id\": {\"type\": \"integer\", \"description\": \"Optional source packet to inspect\"}, \"text_limit\": {\"type\": \"integer\", \"default\": 5000, \"description\": \"Maximum evidence text characters\"}, \"document_text\": {\"type\": \"string\", \"description\": \"Optional reviewed text packet\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,30,'genealogy','person_fact_extract',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (24,'proposal_queue','App\\Engine\\MCPRouter','callTool','Read tree-scoped genealogy proposal queue rows for pending, approved, rejected, or applied proposals.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 50, \"description\": \"Maximum rows per proposal type\"}, \"status\": {\"type\": \"string\", \"default\": \"pending\", \"description\": \"pending, approved, rejected, or applied\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to inspect\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,30,'genealogy','proposal_queue',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (25,'memory_report','App\\Engine\\MCPRouter','callTool','Read Genea memory signals: semantic facts, non-FT name guardrails, review signals, learned procedures, and episodes.','{\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 20, \"description\": \"Maximum recent semantic memories\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Optional tree ID for tree-scoped memory\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\"]','read','genealogy',0,20,'genealogy','memory_report',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (26,'name_variant_add','App\\Engine\\MCPRouter','callTool','Dry-run-first addition of a vetted maiden, married, alias, nickname, religious, or phonetic name variant for one tree-scoped person.','{\"type\": \"object\", \"required\": [\"tree_id\", \"person_id\", \"name_type\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"notes\": {\"type\": \"string\", \"description\": \"Evidence note explaining why this variant is valid\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"surname\": {\"type\": \"string\", \"description\": \"Variant surname\"}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns the person\"}, \"name_type\": {\"type\": \"string\", \"description\": \"birth, married, maiden, alias, nickname, religious, or phonetic\"}, \"person_id\": {\"type\": \"integer\", \"description\": \"Person ID to receive the variant\"}, \"source_id\": {\"type\": \"integer\", \"description\": \"Optional same-tree source ID\"}, \"given_names\": {\"type\": \"string\", \"description\": \"Variant given names\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','name_variant_add',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (27,'nara_placeholder_capture_batch','App\\Engine\\MCPRouter','callTool','Dry-run-first bounded capture of NARA Catalog URL-only genealogy_media placeholders into tree-scoped FT storage.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 25, \"description\": \"Maximum placeholder media rows\"}, \"compact\": {\"type\": \"boolean\", \"default\": true}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID whose NARA placeholder media rows should be captured\"}, \"max_bytes\": {\"type\": \"integer\"}, \"media_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"confirm_download\": {\"type\": \"boolean\", \"default\": false}, \"metadata_snapshot\": {\"type\": \"boolean\", \"default\": true}, \"confirm_storage_write\": {\"type\": \"boolean\", \"default\": false}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','nara_placeholder_capture_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (28,'person_media_link_retire','App\\Engine\\MCPRouter','callTool','Dry-run-first retirement of bad person-media link rows with optional matching imported-media citation cleanup.','{\"type\": \"object\", \"required\": [\"tree_id\", \"person_media_ids\", \"reason\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"reason\": {\"type\": \"string\", \"description\": \"Evidence/review reason\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID that owns the person-media links\"}, \"person_media_ids\": {\"type\": \"array\", \"items\": {\"type\": \"integer\"}}, \"retire_imported_citations\": {\"type\": \"boolean\", \"default\": true}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','person_media_link_retire',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (29,'media_link_integrity','App\\Engine\\MCPRouter','callTool','Dry-run-first audit and deterministic repair of missing person-media links from primary photos, citations, and approved face matches.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 25}, \"repair\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to inspect or repair\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','media_link_integrity',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (30,'person_source_link_integrity','App\\Engine\\MCPRouter','callTool','Dry-run-first audit and deterministic repair of missing person-source links from existing citation rows.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"limit\": {\"type\": \"integer\", \"default\": 25}, \"repair\": {\"type\": \"boolean\", \"default\": false}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to inspect or repair\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','person_source_link_integrity',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (31,'media_rag_batch','App\\Engine\\MCPRouter','callTool','Run bounded genealogy media RAG indexing stats, dry-run, or confirmed batch without shell access.','{\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 20}, \"stats\": {\"type\": \"boolean\", \"default\": false}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Optional tree ID to scope indexing\"}, \"max_seconds\": {\"type\": \"integer\", \"default\": 45}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','media_rag_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (32,'rag_index_batch','App\\Engine\\MCPRouter','callTool','Run bounded genealogy person/place/source RAG indexing stats, dry-run, or confirmed batch without shell access.','{\"type\": \"object\", \"properties\": {\"type\": {\"type\": \"string\", \"default\": \"persons\"}, \"limit\": {\"type\": \"integer\", \"default\": 20}, \"stats\": {\"type\": \"boolean\", \"default\": false}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"reindex\": {\"type\": \"boolean\", \"default\": false}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Optional tree ID to scope indexing\"}, \"exclude_living\": {\"type\": \"boolean\", \"default\": false}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','rag_index_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (33,'person_embedding_batch','App\\Engine\\MCPRouter','callTool','Run bounded genealogy person embedding stats, dry-run preview, or confirmed batch without shell access.','{\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 50}, \"stats\": {\"type\": \"boolean\", \"default\": false}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"reindex\": {\"type\": \"boolean\", \"default\": false}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Optional tree ID to scope embedding\"}, \"exclude_living\": {\"type\": \"boolean\", \"default\": false}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','person_embedding_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (34,'media_htr_batch','App\\Engine\\MCPRouter','callTool','Run bounded genealogy HTR transcription status, dry-run, or confirmed batch without shell access.','{\"type\": \"object\", \"properties\": {\"limit\": {\"type\": \"integer\", \"default\": 10}, \"status\": {\"type\": \"boolean\", \"default\": false}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Optional tree ID to scope transcription candidates\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,10,'genealogy','media_htr_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (35,'media_intake_memory_batch','App\\Engine\\MCPRouter','callTool','Backfill saved genealogy media-intake run outcomes into tree-scoped Genea semantic memory.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"limit\": {\"type\": \"integer\", \"default\": 50}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID whose saved intake runs should be memorized\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','media_intake_memory_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (36,'review_decision_memory_batch','App\\Engine\\MCPRouter','callTool','Backfill accepted/rejected genealogy proposal decisions into tree-scoped Genea semantic memory.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"limit\": {\"type\": \"integer\", \"default\": 50}, \"status\": {\"type\": \"string\", \"default\": \"applied,rejected\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to process\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','review_decision_memory_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `agent_tool_registry` (`id`, `name`, `service_class`, `method`, `description`, `parameters`, `returns_description`, `permissions`, `risk_level`, `category`, `requires_confirmation`, `max_calls_per_run`, `mcp_server`, `mcp_tool`, `max_tokens_per_call`, `enabled`, `source`, `proposed_by`, `approved_by`, `approved_at`, `notes`, `created_at`, `updated_at`) VALUES (37,'review_packet_memory_batch','App\\Engine\\MCPRouter','callTool','Backfill accepted/rejected genealogy review-packet outcomes into tree-scoped Genea semantic memory.','{\"type\": \"object\", \"required\": [\"tree_id\"], \"properties\": {\"actor\": {\"type\": \"string\", \"default\": \"genea-mcp\"}, \"limit\": {\"type\": \"integer\", \"default\": 50}, \"status\": {\"type\": \"string\", \"default\": \"reviewed,rejected\"}, \"confirm\": {\"type\": \"boolean\", \"default\": false}, \"dry_run\": {\"type\": \"boolean\", \"default\": true}, \"tree_id\": {\"type\": \"integer\", \"description\": \"Tree ID to process\"}}}','Returns the Genea MCP payload with compact read data or dry-run/write-audit status.','[\"genealogy:read\", \"genealogy:write\"]','write','genealogy',0,20,'genealogy','review_packet_memory_batch',NULL,1,'config',NULL,NULL,NULL,'MCP bridge registration so Genea agents can use current tree-scoped Genea review, media, memory, RAG, and ingestion tools without raw SQL or shell access.','2026-05-25 14:11:42','2026-05-25 14:11:42');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (1,'bbci.co.uk','BBC News',1,'BBC RSS feed host emitted by feeds.bbci.co.uk after source-host normalization.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (2,'abcnews.go.com','ABC News',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (3,'ap.org','Associated Press',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (4,'apnews.com','Associated Press',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (5,'bbc news','BBC',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (6,'bbc.co.uk','BBC',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (7,'bbc.com','BBC',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (8,'bloomberg.com','Bloomberg',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (9,'breitbart.com','Breitbart News',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (10,'businessinsider.com','Business Insider',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (11,'cbsnews.com','CBS News',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (12,'cnn','CNN',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (13,'cnn.com','CNN',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (14,'economist.com','The Economist',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (15,'forbes.com','Forbes',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (16,'fox news','Fox News',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (17,'foxnews.com','Fox Online News',1,'Fox RSS feed host emitted by feeds.foxnews.com after source-host normalization.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (18,'huffingtonpost.com','HuffPost',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (19,'huffpost.com','HuffPost',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (20,'latimes.com','Los Angeles Times',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (21,'msnbc.com','MSNBC',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (22,'nbcnews.com','NBC News',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (23,'newsweek.com','Newsweek',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (24,'npr.org','NPR',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (25,'nypost.com','New York Post',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (26,'nyt','The New York Times',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (27,'nytimes.com','The New York Times',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (28,'pbs.org','PBS',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (29,'politico.com','Politico',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (30,'reuters.com','Reuters',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (31,'slate.com','Slate',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (32,'theatlantic.com','The Atlantic',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (33,'theguardian.com','The Guardian',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (34,'thehill.com','The Hill',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (35,'time.com','Time',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (36,'usatoday.com','USA Today',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (37,'vox.com','Vox',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (38,'washingtonpost.com','Washington Post',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (39,'wsj.com','Wall Street Journal',1,'Seeded from legacy BiasRatingService source normalization; operator-editable alias.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (40,'moxie.foxnews.com','Fox Online News',1,'Fox News Google Publisher RSS host used by U.S. and world feed sections.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (41,'fox news - latest headlines','Fox Online News',1,'news_brief feed label for the general Fox News RSS feed.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (42,'fox news - politics','Fox Online News',1,'news_brief feed label for the Fox News politics RSS feed.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (43,'fox news - u.s. news','Fox Online News',1,'news_brief feed label for the Fox News U.S. RSS feed.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (44,'fox news - world','Fox Online News',1,'news_brief feed label for the Fox News world RSS feed.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (45,'realnewsnotbs.com','Real News No Bullshit',1,'Canonical feed/site host. Operator manual center rating for local news_brief feed coverage. No MBFC/AllSides-derived rating was matched as of 2026-04-30; revisit if a third-party dataset adds this source.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (46,'www.realnewsnotbs.com','Real News No Bullshit',1,'Canonical feed/site host with www prefix. Operator manual center rating for local news_brief feed coverage. No MBFC/AllSides-derived rating was matched as of 2026-04-30; revisit if a third-party dataset adds this source.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (47,'real news no bullshit','Real News No Bullshit',1,'news_brief feed label without subtitle. Operator manual center rating for local news_brief feed coverage. No MBFC/AllSides-derived rating was matched as of 2026-04-30; revisit if a third-party dataset adds this source.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_rating_aliases` (`id`, `alias`, `canonical_source`, `active`, `notes`, `created_at`, `updated_at`) VALUES (48,'real news no bullshit - unbiased news without agenda','Real News No Bullshit',1,'Full news_brief feed label. Operator manual center rating for local news_brief feed coverage. No MBFC/AllSides-derived rating was matched as of 2026-04-30; revisit if a third-party dataset adds this source.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `bias_ratings` (`id`, `news_source`, `rating`, `rating_num`, `data_source`, `mbfc_factual_rating`, `mbfc_credibility_score`, `is_polarizing_source`, `type`, `agree`, `disagree`, `perc_agree`, `url`, `editorial_review`, `blind_survey`, `third_party_analysis`, `independent_research`, `confidence_level`, `twitter`, `wiki`, `facebook`, `screen_name`, `notes`, `created_at`, `updated_at`) VALUES (1,'Real News No Bullshit','center',0,'manual',NULL,NULL,0,'News Media',NULL,NULL,NULL,'https://www.realnewsnotbs.com',0,0,0,0,'operator-manual',NULL,NULL,NULL,'realnewsnotbs.com','Operator manual center rating for local news_brief feed coverage. No MBFC/AllSides-derived rating was matched as of 2026-04-30; revisit if a third-party dataset adds this source.','2026-05-25 14:11:35','2026-05-25 14:11:35');
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (1,'wikitree','wikitree_id','%wikitree.com%','WikiTree',1);
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (2,'findagrave','findagrave_id','%findagrave.com%','Find A Grave',1);
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (3,'ancestry','ancestry_id','%ancestry.com%','Ancestry',1);
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (4,'familysearch','familysearch_id','%familysearch.org%','FamilySearch',1);
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (5,'geni','geni_id','%geni.com%','Geni',1);
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (6,'myheritage','myheritage_id','%myheritage.com%','MyHeritage',1);
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (7,'geneanet','geneanet_id','%geneanet.org%','Geneanet',1);
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (8,'findmypast','findmypast_id','%findmypast.com%','FindMyPast',1);
+INSERT INTO `genealogy_external_service_registry` (`id`, `service_type`, `field_alias`, `url_pattern`, `display_name`, `is_active`) VALUES (9,'nara','nara_id','%catalog.archives.gov%','National Archives (NARA)',1);
+INSERT INTO `llm_instances` (`id`, `instance_id`, `instance_name`, `instance_type`, `base_url`, `port`, `api_key_env`, `api_key`, `priority`, `is_active`, `routability`, `gpu_target`, `host_affinity`, `compat_runtime_family`, `compat_backend`, `compat_status`, `is_healthy`, `health_score`, `capabilities`, `is_censored`, `allows_private_data`, `data_privacy_scope`, `privacy_reviewed_at`, `privacy_notes`, `supported_models`, `context_length`, `embedding_context_length`, `avg_response_ms`, `p95_response_ms`, `total_requests`, `total_failures`, `consecutive_failures`, `success_rate`, `circuit_state`, `circuit_opened_at`, `circuit_retry_at`, `max_concurrent`, `rate_limit_rpm`, `rate_limit_tpm`, `cost_per_1k_input`, `cost_per_1k_output`, `cost_tier`, `config`, `notes`, `last_health_check`, `last_success_at`, `last_failure_at`, `created_at`, `updated_at`) VALUES (1,'codex_exec','OpenAI Codex Exec','codex_cli',NULL,NULL,'OPENAI_API_KEY',NULL,18,0,'allowed','none','prod','codex-cli','openai','authoritative',1,100,'[\"text\", \"code\", \"tools\", \"repository\", \"jsonl\", \"structured_output\"]',1,1,'private_allowed','2026-05-25 14:11:42','OpenAI Codex Exec is the approved external LLM partner for private PLOS/Genea/dev pipeline work.','[\"gpt-5.5\", \"gpt-5.4\", \"gpt-5.4-mini\", \"gpt-5.3-codex\", \"gpt-5.2\"]',128000,NULL,30000.00,90000.00,0,0,0,100.00,'closed',NULL,NULL,1,6,NULL,NULL,NULL,'premium','{\"models\": {\"fast\": \"gpt-5.4-mini\", \"coding\": \"gpt-5.5\", \"quality\": \"gpt-5.5\", \"standard\": \"gpt-5.5\"}, \"adapter\": \"codex_exec\", \"cwd_roots\": [\"/opt/plos/app\"], \"ephemeral\": true, \"executable\": \"codex\", \"default_cwd\": \"/opt/plos/app\", \"json_events\": true, \"default_profile\": null, \"default_sandbox\": \"read-only\", \"sandbox_by_role\": {\"fast\": \"read-only\", \"coding\": \"workspace-write\", \"quality\": \"read-only\", \"standard\": \"read-only\"}, \"max_prompt_bytes\": 200000, \"reasoning_effort\": {\"fast\": \"low\", \"coding\": \"high\", \"quality\": \"high\", \"standard\": \"medium\"}, \"structured_output\": {\"enabled\": true, \"schema_file_roots\": [\"/opt/plos/app/storage/app/codex-schemas\"]}, \"output_last_message\": true, \"skip_git_repo_check\": true, \"allow_live_extra_models\": true, \"default_approval_policy\": \"never\", \"default_timeout_seconds\": 900, \"supported_reasoning_efforts\": [\"low\", \"medium\", \"high\", \"xhigh\"]}','Codex Exec is a bounded online external LLM partner for PLOS/Genea/dev pipeline tasks. Model and reasoning effort are resolved from llm_instances.config; approval_policy must remain never for pipeline execution.','2026-05-25 14:11:42',NULL,NULL,'2026-05-25 14:11:42','2026-05-25 14:12:11');
+INSERT INTO `review_type_registry` (`id`, `name`, `label`, `icon`, `category`, `source_table`, `source_connection`, `count_sql`, `fetch_sql`, `approve_sql`, `reject_sql`, `ignore_sql`, `field_mapping`, `ui_schema`, `vue_renderer`, `vue_detail_component`, `actions`, `requires_image`, `image_field`, `batch_enabled`, `service_class`, `approve_method`, `reject_method`, `display_order`, `color`, `enabled`, `created_at`, `updated_at`) VALUES (1,'genealogy_merge','Genealogy Merges','mdi-call-merge','genealogy','agent_review_queue','mysql','SELECT COUNT(*) as total FROM agent_review_queue WHERE status = \'pending\' AND review_type = \'genealogy_merge\' AND (expires_at IS NULL OR expires_at > NOW())','SELECT id, agent_id, review_type, title, summary, details, confidence, priority, token, expires_at, created_at FROM agent_review_queue WHERE status = \'pending\' AND review_type = \'genealogy_merge\' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY priority DESC, created_at ASC LIMIT 100','UPDATE agent_review_queue SET status = \'approved\', reviewed_at = NOW(), updated_at = NOW() WHERE token = ?','UPDATE agent_review_queue SET status = \'rejected\', reviewed_at = NOW(), updated_at = NOW() WHERE token = ?',NULL,'{\"id\": \"id\", \"title\": \"title\", \"token\": \"token\", \"summary\": \"summary\", \"agent_id\": \"agent_id\", \"priority\": \"priority\", \"confidence\": \"confidence\", \"created_at\": \"created_at\", \"expires_at\": \"expires_at\", \"review_type\": \"review_type\", \"details_json\": \"details\", \"unified_id_template\": \"genealogy_merge:{{token}}\"}','{\"card\": {\"body\": [{\"type\": \"text\", \"class\": \"text-sm text-ops-text-muted\", \"source\": \"summary\"}], \"footer\": [{\"type\": \"timestamp\", \"label\": \"Created\", \"source\": \"created_at\"}, {\"type\": \"timestamp\", \"label\": \"Expires\", \"source\": \"expires_at\", \"warn_if_soon\": true}], \"header\": [{\"type\": \"badge\", \"class\": \"bg-ops-sky\", \"source\": \"agent_id\"}, {\"type\": \"badge\", \"class\": \"bg-ops-blue\", \"source\": \"review_type\"}, {\"type\": \"text\", \"class\": \"font-semibold text-ops-peach flex-1\", \"source\": \"title\"}, {\"type\": \"confidence\", \"source\": \"confidence\"}]}, \"detail\": [{\"type\": \"text\", \"label\": \"Agent\", \"source\": \"agent_id\"}, {\"type\": \"text\", \"label\": \"Review Type\", \"source\": \"review_type\"}, {\"type\": \"json\", \"label\": \"Details\", \"source\": \"details\", \"collapsible\": true}]}',NULL,NULL,'[\"approve\", \"reject\"]',0,NULL,1,NULL,NULL,NULL,36,'ops-blue',1,'2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `review_type_registry` (`id`, `name`, `label`, `icon`, `category`, `source_table`, `source_connection`, `count_sql`, `fetch_sql`, `approve_sql`, `reject_sql`, `ignore_sql`, `field_mapping`, `ui_schema`, `vue_renderer`, `vue_detail_component`, `actions`, `requires_image`, `image_field`, `batch_enabled`, `service_class`, `approve_method`, `reject_method`, `display_order`, `color`, `enabled`, `created_at`, `updated_at`) VALUES (2,'genealogy_review_packet','Genealogy Review Packets','mdi-file-document-check','genealogy','agent_review_queue','mysql','SELECT COUNT(*) as total FROM agent_review_queue WHERE status = \'pending\' AND review_type = \'genealogy_review_packet\' AND (expires_at IS NULL OR expires_at > NOW())','SELECT id, agent_id, review_type, title, summary, details, confidence, priority, token, expires_at, created_at FROM agent_review_queue WHERE status = \'pending\' AND review_type = \'genealogy_review_packet\' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY priority DESC, created_at ASC LIMIT 100',NULL,NULL,'UPDATE agent_review_queue SET status = \'ignored\', reviewed_at = NOW(), updated_at = NOW() WHERE token = ?','{\"id\": \"id\", \"title\": \"title\", \"token\": \"token\", \"summary\": \"summary\", \"agent_id\": \"agent_id\", \"priority\": \"priority\", \"confidence\": \"confidence\", \"created_at\": \"created_at\", \"expires_at\": \"expires_at\", \"review_type\": \"review_type\", \"details_json\": \"details\", \"unified_id_template\": \"genealogy_review_packet:{{token}}\"}','{\"card\": {\"body\": [{\"type\": \"text\", \"class\": \"text-sm text-ops-text-muted\", \"source\": \"summary\"}], \"footer\": [{\"type\": \"timestamp\", \"label\": \"Created\", \"source\": \"created_at\"}, {\"type\": \"timestamp\", \"label\": \"Expires\", \"source\": \"expires_at\", \"warn_if_soon\": true}], \"header\": [{\"type\": \"badge\", \"class\": \"bg-ops-green\", \"source\": \"review_type\"}, {\"type\": \"text\", \"class\": \"font-semibold text-ops-peach flex-1\", \"source\": \"title\"}, {\"type\": \"confidence\", \"source\": \"confidence\"}]}, \"detail\": [{\"type\": \"text\", \"label\": \"Agent\", \"source\": \"agent_id\"}, {\"type\": \"json\", \"label\": \"Packet Details\", \"source\": \"details\", \"expanded\": true}]}',NULL,NULL,'[\"approve\", \"reject\", \"clarify\", \"defer\", \"ignore\"]',0,NULL,0,'App\\Services\\Genealogy\\GenealogyReviewPacketDecisionService','approve','reject',37,'ops-green',1,'2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `review_type_registry` (`id`, `name`, `label`, `icon`, `category`, `source_table`, `source_connection`, `count_sql`, `fetch_sql`, `approve_sql`, `reject_sql`, `ignore_sql`, `field_mapping`, `ui_schema`, `vue_renderer`, `vue_detail_component`, `actions`, `requires_image`, `image_field`, `batch_enabled`, `service_class`, `approve_method`, `reject_method`, `display_order`, `color`, `enabled`, `created_at`, `updated_at`) VALUES (3,'genealogy_evidence_asset_capture','Genealogy Evidence Media Capture','mdi-file-image-plus','genealogy','agent_review_queue','mysql','SELECT COUNT(*) as total FROM agent_review_queue WHERE status = \'pending\' AND review_type = \'genealogy_evidence_asset_capture\' AND (expires_at IS NULL OR expires_at > NOW())','SELECT id, agent_id, review_type, title, summary, details, confidence, priority, token, expires_at, created_at FROM agent_review_queue WHERE status = \'pending\' AND review_type = \'genealogy_evidence_asset_capture\' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY priority DESC, created_at ASC LIMIT 100',NULL,NULL,'UPDATE agent_review_queue SET status = \'ignored\', reviewed_at = NOW(), updated_at = NOW() WHERE token = ?','{\"id\": \"id\", \"title\": \"title\", \"token\": \"token\", \"summary\": \"summary\", \"agent_id\": \"agent_id\", \"priority\": \"priority\", \"confidence\": \"confidence\", \"created_at\": \"created_at\", \"expires_at\": \"expires_at\", \"review_type\": \"review_type\", \"details_json\": \"details\", \"unified_id_template\": \"genealogy_evidence_asset_capture:{{token}}\"}','{\"card\": {\"body\": [{\"type\": \"text\", \"class\": \"text-sm text-ops-text-muted\", \"source\": \"summary\"}], \"footer\": [{\"type\": \"timestamp\", \"label\": \"Created\", \"source\": \"created_at\"}, {\"type\": \"timestamp\", \"label\": \"Expires\", \"source\": \"expires_at\", \"warn_if_soon\": true}], \"header\": [{\"type\": \"badge\", \"class\": \"bg-ops-amber\", \"source\": \"review_type\"}, {\"type\": \"text\", \"class\": \"font-semibold text-ops-peach flex-1\", \"source\": \"title\"}, {\"type\": \"confidence\", \"source\": \"confidence\"}]}, \"detail\": [{\"type\": \"text\", \"label\": \"Agent\", \"source\": \"agent_id\"}, {\"type\": \"json\", \"label\": \"Capture approval details\", \"source\": \"details\", \"expanded\": true}]}',NULL,NULL,'[\"approve\", \"reject\", \"ignore\"]',0,NULL,0,'App\\Services\\Genealogy\\GenealogyEvidenceAssetCaptureDecisionService','approve','reject',38,'ops-amber',1,'2026-05-25 14:11:40','2026-05-25 14:11:40');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (1,'scheduler_synthetic_probe','Lightweight synthetic scheduler proof job. Updates a heartbeat-style marker via scheduled execution.','command','ops:scheduler-synthetic-probe','*/15 * * * *',0,1,1,0,5,1,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,NULL,'Ops','Ops',NULL,NULL,NULL,NULL,NULL,NULL,'2026-05-25 14:11:33','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (2,'knowledge_graph_catchup','Offset stale-first knowledge graph catch-up pass for APL #1A backlog burn-down','command','rag:build-knowledge-graph --limit=100 --sleep=750 --min-chars=50 --max-chars=8000 --backlog=all --order=stale-first --budget-minutes=95','15 2-22/4 * * *',0,1,1,1,110,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'APL #1A catch-up lane: bounded stale-first KG pass between primary 4-hour runs. Target about +600 docs/day while leaving headroom before the next main KG slot.','RAG','KnowledgeGraph','cron','rag','rag','stall_exempt','none','digest','2026-05-25 14:11:34','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (3,'ops_host_baseline_jobs_heavy_window','Capture three host baseline samples during the 4 AM heavy scheduled-job window for TODO-011 capacity evidence','command','ops:host-baseline jobs --repeat=3 --interval=900','5 4 * * *',0,1,1,1,45,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'TODO-011 evidence collector: captures jobs baselines at about 04:05, 04:20, and 04:35 America/New_York. Non-mutating telemetry only; ops:capacity-report remains observe-only until enough heavy-window and deploy samples exist.','Maintenance','OpsCapacity','observe','ops','default','stall_exempt','none','digest','2026-05-25 14:11:34','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (4,'bias_data_refresh','Refresh free news-bias ratings and supporting bias data for news workflows','command','bias:maintenance --all --source=free','20 3 1 * *',0,1,1,1,60,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'NewsBias monthly free/default refresh uses the Idiap MBFC-derived GitHub dataset. AllSides is excluded from scheduled refresh and remains an explicit operator-selected enrichment source via --source=allsides or --source=both.','Maintenance','Maintenance','maintenance','news','default','stall_exempt','bias_ratings','digest','2026-05-25 14:11:35','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (5,'news_source_inventory','Read-only inventory of table-backed news RSS feeds, health, recent article counts, and bias-rating coverage','command','news:source-inventory --workflow=news_brief --days=7 --strict --json','40 5 * * 0',0,1,1,0,10,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Weekly observe-only check after RSS self-heal and before daily report. Verifies configured news_brief RSS feeds resolve through table-backed bias_ratings/bias_rating_aliases and have recent health/article telemetry.','Maintenance','News','maintenance','news','default','strict','rss_feeds','digest','2026-05-25 14:11:36','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (6,'face_link_weekly_report','Weekly observe-only face/genealogy bridge telemetry report captured in scheduled job output','command','ops:face-telemetry-report --markdown --hours=168','20 5 * * 1',0,1,1,0,5,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'TODO face/genealogy loop: weekly read-only 168-hour report after Sunday full recluster and Monday schema sync. Output is retained in scheduled_job_runs; no notification or remediation write is performed.','Maintenance','Genealogy','maintenance','genealogy','default','strict','face_links','digest','2026-05-25 14:11:36','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (7,'awo_replay_weekly_report','Weekly observe-only approval-worthy-output replay report captured in scheduled job output','command','awo:replay --window=7d --limit=500 --markdown','30 5 * * 1',0,1,1,0,5,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Agent output quality: weekly read-only AWO replay report retained in scheduled_job_runs. It does not enable awo.recording_enabled, promote agents, or mutate review state.','Maintenance','Agents','maintenance','agents','default','strict','agent_review_queue','digest','2026-05-25 14:11:36','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (8,'kg_provenance_snapshot','Capture daily knowledge-graph provenance audit counts into pipeline metrics snapshots','command','graph:snapshot-provenance --json','25 5 * * *',0,1,1,0,10,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Daily observe-only KG provenance evidence after the overnight heavy window. Writes one idempotent kg_provenance row per date to pipeline_metrics_snapshots.','Maintenance','RAG','maintenance','rag','default','strict','kg_provenance','digest','2026-05-25 14:11:38','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (9,'scheduler_optimize_weekly_report','Capture weekly observe-only scheduler optimization recommendations','command','scheduler:optimize-report --window=7d --json','45 5 * * 2',0,1,1,0,10,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Weekly observe-only TODO-012 evidence. Stores scheduler optimization recommendations in scheduled job history without changing cron expressions, timeouts, queues, or job limits.','Maintenance','Ops','maintenance','ops','default','strict','scheduled_jobs','digest','2026-05-25 14:11:38','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (10,'genealogy_media_enrichment_status','Observe-only genealogy media enrichment status and quarantine report for captured/source media handoff','command','genealogy:enrich-media --status --quarantined','35 6 * * *',0,1,1,0,5,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'TODO-9M observe-only post-capture handoff report. No downloads, FT storage writes, genealogy links, review decisions, AI calls, or canonical genealogy writes are performed by this status command.','Maintenance','Genealogy','maintenance','genealogy','db','strict','genealogy_media_enrichment','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (11,'genealogy_media_enrichment_batch','Disabled genealogy media enrichment batch lane for operator activation after post-capture preflight is clean','command','genealogy:enrich-media --limit=5','50 6 * * *',0,1,1,0,60,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'TODO-9M disabled by default. Enabling this row can generate genealogy media enrichment proposals from eligible captured/source media; activate only after operator review of observe-only status and dry-run output.','Maintenance','Genealogy','batch','genealogy','ai','strict','genealogy_media_enrichment','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (12,'genealogy_rag_full_reindex','Monthly full rebuild of genealogy person, place, and source RAG documents across all family trees.','command','genealogy:rag-index --type=all --reindex --limit=0','10 1 1 * *',0,1,1,0,240,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Runs monthly on the first at 01:10. Uses --type=all --limit=0 so all family-tree person, place, and source RAG docs are rebuilt, including living and deceased persons on the private system. Do not schedule with --exclude-living.','Genealogy','Genealogy','maintenance','rag','heavy','strict','genealogy_rag','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (13,'genealogy_embed_persons_full_reindex','Monthly full rebuild of genealogy person semantic embeddings across all family trees.','command','genealogy:embed-persons --reindex --limit=0','40 3 1 * *',0,1,1,0,180,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Runs monthly on the first at 03:40 after the person profile full reindex. Uses --limit=0 so all family-tree person embeddings are rebuilt, including living and deceased persons on the private system. Do not schedule with --exclude-living.','Genealogy','Genealogy','maintenance','rag','heavy','strict','genealogy_person_embeddings','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (14,'genealogy_health_audit','Daily read-only genealogy health audit across all family trees.','command','genealogy:health-audit --all-trees --json --compact --limit=20','05 5 * * *',0,1,1,0,15,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Observe-only control-panel audit. Runs for every known family tree and performs no downloads, storage writes, genealogy links, review decisions, privacy/export release, or canonical record writes.','Genealogy','Genealogy','maintenance','genealogy','db','strict','genealogy_health_audit','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (15,'genealogy_media_rag_index','Incremental genealogy media metadata and transcription RAG indexing across all family trees.','command','genealogy:media-rag-index --limit=1500','27 */6 * * *',0,1,1,0,120,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Indexes readable genealogy_media metadata, OCR/transcription text, AI descriptions, filenames, and rejected/non-FT name context into local RAG across all trees. No --tree filter so new family trees are covered automatically.','Genealogy','Genealogy','batch','rag','ai','strict','genealogy_media_rag','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (16,'genealogy_duplicate_candidate_scan','Daily genealogy duplicate-person candidate scan across all family trees.','command','genealogy:duplicate-scan --all-trees --min-score=0.75 --limit=250 --json','35 5 * * *',0,1,1,0,30,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Review-first scan only. Creates or refreshes pending genealogy_duplicate_pairs rows with score/reasons, but does not merge people or mutate canonical person/family facts.','Genealogy','Genealogy','maintenance','genealogy','db','strict','genealogy_duplicate_candidates','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (17,'genealogy_export_readiness_check','Daily export-readiness check for self-contained genealogy trees.','command','genealogy:health-audit --all-trees --sections=export --json --compact --limit=25','55 5 * * *',0,1,1,0,15,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Observe-only export preflight. Checks every tree for non-self-contained media paths and missing export blockers without downloads, link changes, or person/family fact writes.','Genealogy','Genealogy','maintenance','genealogy','db','strict','genealogy_export_readiness','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (18,'genealogy_htr_status_check','Daily genealogy HTR/OCR eligibility and availability status check.','command','genealogy:transcribe-media --status','15 6 * * *',0,1,1,0,15,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Observe-only HTR/OCR readiness check. Reports pending transcription and eligibility reasons; does not transcribe or mutate media rows.','Genealogy','Genealogy','maintenance','genealogy','db','strict','genealogy_htr_eligibility','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (19,'genealogy_unlinked_media_review','Daily unlinked and missing genealogy media review audit across all trees.','command','genealogy:health-audit --all-trees --sections=media --json --compact --limit=50','25 6 * * *',0,1,1,0,15,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Observe-only media review. Surfaces unlinked media, missing local files, and external-only media without deleting files, linking records, or changing person/family facts.','Genealogy','Genealogy','maintenance','genealogy','db','strict','genealogy_unlinked_media','digest','2026-05-25 14:11:40','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (20,'genealogy_evidence_score_report','Daily observe-only genealogy evidence score report across all family trees.','command','genealogy:evidence-score --all-trees --json --limit=100','5 6 * * *',0,1,1,0,15,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Observe-only evidence scoring. Summarizes strong/medium/weak/conflict/missing evidence bands for genealogy proposals; does not approve, reject, apply, or mutate person/family/media facts.','Genealogy','Genealogy','maintenance','genealogy','db','strict','genealogy_evidence_scores','digest','2026-05-25 14:11:41','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (21,'genealogy_backfill_source_media','Frequent bounded genealogy source URL media backfill across all trees.','command','genealogy:backfill-source-media --mode=sources --tree=all --since=30d --limit=25 --order=oldest --confirm-download --confirm-storage-write --nara-metadata-snapshot --json','*/10 * * * *',0,1,1,0,25,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,'2026-05-25 14:11:41',0,0,'Captures URL-only genealogy_sources into tree-local FT storage in small frequent batches. Failed rows are marked source_media_backfill_blocked and skipped until retry_blocked is requested.','Genealogy','Genealogy','batch','genealogy','network','strict','genealogy_source_media_backfill','digest','2026-05-25 14:11:41','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (22,'genealogy_memory_backfill','Frequent bounded local Genea learning-memory backfill across all family trees.','command','genealogy:memory-backfill --tree=all --lanes=all --limit=25 --confirm --json','37 */6 * * *',0,1,1,0,20,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Runs dry-run-first Genea memory backfill in confirmed scheduled mode. Captures canonical lessons and memorizes accepted/rejected review, media-intake, source-media capture, and health-audit signals without raw table work.','Genealogy','Genealogy','batch','genealogy','db','strict','genealogy_learning_memory','digest','2026-05-25 14:11:42','2026-05-25 14:12:11');
+INSERT INTO `scheduled_jobs` (`id`, `name`, `description`, `job_type`, `command`, `cron_expression`, `enabled`, `run_in_background`, `without_overlapping`, `stall_exempt`, `timeout_minutes`, `timeout_locked`, `last_run_at`, `last_completed_at`, `last_run_status`, `last_run_output`, `last_pid`, `max_parallel`, `running_pids`, `running_count`, `next_run_at`, `run_count`, `fail_count`, `notes`, `category`, `source_module`, `runtime_mode`, `workload_family`, `resource_profile`, `stall_policy`, `backlog_metric`, `notification_mode`, `created_at`, `updated_at`) VALUES (23,'agent_doctor_readiness_snapshot','Capture aggregate Agent Doctor readiness snapshots for trend history.','command','ops:agent-doctor-snapshot --json --since=24','17 */6 * * *',0,1,1,0,5,0,NULL,NULL,NULL,NULL,NULL,1,NULL,0,NULL,0,0,'Append-only observe snapshot for Agent Doctor history. Stores aggregate statuses, counts, check ids, and output-quality counts only; excludes per-agent detail, raw traces, prompts, completions, command output, and filesystem paths.','Maintenance','Ops','maintenance','ops','db','strict','agent_doctor_readiness','digest','2026-05-25 14:11:42','2026-05-25 14:12:11');
+INSERT INTO `system_configs` (`id`, `section`, `config_key`, `config_value`, `data_type`, `description`, `created_at`, `updated_at`) VALUES (1,'routing','offline_mode','disabled','string','Fail-closed offline kill switch for INTERNET-level cloud LLMs only. Values: disabled (default, cloud fallback active) | enabled (block external cloud LLM providers and APIs). LAN services (Nextcloud, MySQL, PostgreSQL, Redis, local Ollama instances, local MCP, queue workers, scheduled jobs) stay fully online. See docs/OLLAMA-COMPATIBILITY.md and docs/AIService-LLM-Gateway.md.','2026-05-25 14:11:34','2026-05-25 14:11:34');
+INSERT INTO `system_configs` (`id`, `section`, `config_key`, `config_value`, `data_type`, `description`, `created_at`, `updated_at`) VALUES (2,'awo','recording_enabled','false','bool','Default-off AWO operator-decision evidence recording. Stores compact awo_decision envelopes in agent_review_queue.details after final operator approve/reject only.','2026-05-25 14:11:34','2026-05-25 14:11:34');

@@ -61,6 +61,30 @@ return [
     // Adaptive timeout — allows agents to extend deadline mid-run when productive
     'adaptive_timeout_max_minutes' => (int) env('AGENT_ADAPTIVE_TIMEOUT_MAX', 150),
 
+    // HWR-003 DS/delegation governance marker defaults.
+    'delegation_governance' => [
+        'max_depth' => (int) env('AGENT_DELEGATION_MAX_DEPTH', 2),
+        'max_sidecar_depth' => (int) env('AGENT_DELEGATION_MAX_SIDECAR_DEPTH', 1),
+        'max_concurrent_sidecars' => (int) env('AGENT_DELEGATION_MAX_SIDECARS', 2),
+        'runtime_budget_seconds' => (int) env('AGENT_DELEGATION_RUNTIME_BUDGET', 900),
+        'max_runtime_budget_seconds' => (int) env('AGENT_DELEGATION_RUNTIME_BUDGET_MAX', 3600),
+        'max_iterations' => (int) env('AGENT_DELEGATION_MAX_ITERATIONS', 8),
+        'max_iterations_ceiling' => (int) env('AGENT_DELEGATION_MAX_ITERATIONS_CEILING', 20),
+        'default_profile' => env('AGENT_DELEGATION_DEFAULT_PROFILE', 'sidecar_read_only'),
+        'allowed_ds_lanes' => ['general_ds', 'agent_dev_ds', 'genea_ds'],
+    ],
+
+    // HWR-004 RAG/Joplin retrieved-context trust envelope.
+    'retrieved_context_fencing' => [
+        'enabled' => (bool) env('AGENT_RETRIEVED_CONTEXT_FENCING', true),
+        'max_items' => (int) env('AGENT_RETRIEVED_CONTEXT_MAX_ITEMS', 3),
+        'max_preview_chars' => (int) env('AGENT_RETRIEVED_CONTEXT_PREVIEW_CHARS', 500),
+        'stale_preview_chars' => (int) env('AGENT_RETRIEVED_CONTEXT_STALE_PREVIEW_CHARS', 250),
+        'memory_fragment_max_chars' => (int) env('AGENT_MEMORY_FRAGMENT_MAX_CHARS', 8000),
+        'reconcile_events_enabled' => (bool) env('AGENT_CONTEXT_RECONCILE_EVENTS', true),
+        'max_reconcile_events_per_run' => (int) env('AGENT_CONTEXT_RECONCILE_MAX_EVENTS', 25),
+    ],
+
     // Claude CLI auto-scaling thresholds (N119c — per-core normalized load averages)
     'claude_load_scale_up' => (float) env('CLAUDE_LOAD_SCALE_UP', 1.5),    // Scale up if per-core load < this
     'claude_load_scale_down' => (float) env('CLAUDE_LOAD_SCALE_DOWN', 3.0),   // Scale down if per-core load > this

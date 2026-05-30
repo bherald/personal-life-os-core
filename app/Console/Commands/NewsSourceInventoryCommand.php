@@ -467,18 +467,21 @@ class NewsSourceInventoryCommand extends Command
         $gaps = $payload['coverage_gaps'] ?? [];
         $missingBias = $gaps['missing_bias_feeds'] ?? [];
         $failedHealth = $gaps['failed_health_feeds'] ?? [];
+        $warningCodes = $this->compactWarningCodes($payload, $missingBias, $failedHealth);
+        $errorCodes = $this->compactErrorCodes($payload);
 
         return [
             'generated_at' => $payload['generated_at'] ?? now()->toIso8601String(),
+            'compact' => true,
             'status' => $payload['status'] ?? 'fail',
-            'warnings' => $payload['warnings'] ?? [],
-            'errors' => $payload['errors'] ?? [],
+            'warning_count' => count((array) ($payload['warnings'] ?? [])),
+            'warnings' => $warningCodes,
+            'error_count' => count((array) ($payload['errors'] ?? [])),
+            'errors' => $errorCodes,
             'summary' => $payload['summary'] ?? $this->emptySummary(),
             'coverage_gaps' => [
                 'missing_bias_feeds' => count($missingBias),
                 'failed_health_feeds' => count($failedHealth),
-                'missing_bias_labels' => $this->gapLabelList($missingBias),
-                'failed_health_labels' => $this->gapLabelList($failedHealth),
             ],
             'storage' => [
                 'rss_feed_config_table' => $payload['storage']['rss_feed_config_table'] ?? 'workflow_node_configs',
@@ -487,15 +490,68 @@ class NewsSourceInventoryCommand extends Command
                 'bias_ratings_table_present' => (bool) ($payload['storage']['bias_ratings_table_present'] ?? false),
                 'bias_rating_aliases_table_present' => (bool) ($payload['storage']['bias_rating_aliases_table_present'] ?? false),
             ],
+            'posture' => [
+                'aggregate_only' => true,
+                'feed_rows_included' => false,
+                'workflow_ids_included' => false,
+                'node_ids_included' => false,
+                'feed_urls_included' => false,
+                'article_urls_included' => false,
+                'feed_labels_included' => false,
+                'raw_warning_strings_included' => false,
+                'raw_health_errors_included' => false,
+                'raw_source_samples_included' => false,
+            ],
         ];
     }
 
-    private function gapLabelList(array $feeds): array
+    private function compactWarningCodes(array $payload, array $missingBias, array $failedHealth): array
     {
-        return array_values(array_map(
-            fn (array $feed): string => $this->shorten((string) ($feed['feed_label'] ?? $feed['lookup_source'] ?? 'unlabeled feed'), 80),
-            array_slice($feeds, 0, 5)
-        ));
+        $codes = [];
+        $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+        $storage = is_array($payload['storage'] ?? null) ? $payload['storage'] : [];
+
+        if ((int) ($summary['feeds'] ?? 0) === 0) {
+            $codes[] = 'no_configured_feeds';
+        }
+
+        if (! (bool) ($storage['bias_ratings_table_present'] ?? false)) {
+            $codes[] = 'bias_ratings_table_missing';
+        }
+
+        if (! (bool) ($storage['bias_rating_aliases_table_present'] ?? false)) {
+            $codes[] = 'bias_rating_aliases_table_missing';
+        }
+
+        if (count($missingBias) > 0) {
+            $codes[] = 'missing_bias_coverage';
+        }
+
+        if (count($failedHealth) > 0) {
+            $codes[] = 'failed_feed_health';
+        }
+
+        return array_values(array_unique($codes));
+    }
+
+    private function compactErrorCodes(array $payload): array
+    {
+        $codes = [];
+
+        foreach ((array) ($payload['errors'] ?? []) as $error) {
+            if (! is_scalar($error)) {
+                continue;
+            }
+
+            $message = strtolower((string) $error);
+            if (str_contains($message, 'missing required table')) {
+                $codes[] = 'missing_required_tables';
+            } else {
+                $codes[] = 'inventory_error';
+            }
+        }
+
+        return array_values(array_unique($codes));
     }
 
     private function missingTables(array $tables): array

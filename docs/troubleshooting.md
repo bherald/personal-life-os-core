@@ -146,7 +146,6 @@ Start with the narrow read-only status payload:
 
 ```bash
 php artisan ops:offline-status --json
-php artisan ops:offline-smoke --json
 php artisan ops:offline-smoke --json --compact
 ```
 
@@ -154,10 +153,11 @@ The same data is available to authenticated UI/API consumers at
 `GET /api/ops/offline-status`. The full Operator Evidence dashboard at
 `/operator-evidence` includes this offline/degraded section with the broader
 queue, backlog, review, and operational cards.
-`ops:offline-smoke --json` adds a manual report-only check of the audit reader,
-profile-filtered MCP catalog boundary, and local runtime scorecard; it does not
-change profiles or write audit receipts. Use `--json --compact` when sharing or
-logging the result; it keeps statuses, reason codes, and aggregate counts while
+`ops:offline-smoke --json --compact` adds a manual report-only check of the
+audit reader, profile-filtered MCP catalog boundary, and local runtime
+scorecard; it does not change profiles or write audit receipts. Use the compact
+form when sharing or logging the result; it keeps statuses, reason codes, and
+aggregate counts while
 omitting nested payloads, raw details, server lists, paths, prompts, traces, and
 environment values.
 
@@ -193,14 +193,16 @@ If an `offline:dev-assist --json` response includes `trace_written=false`, check
 the private trace reader before changing any policy:
 
 ```bash
-php artisan plos:agent-trace-tail --limit=20 --since=24 --json
+php artisan plos:agent-trace-tail --limit=20 --since=24 --json --compact
 ```
 
 An empty trace tail usually means tracing is disabled, the storage directory is
 unavailable, or the trace event was rejected because it contained a forbidden
 raw field. Trace failures should not be fixed by broadening profile permissions.
-Through the PLOS MCP `plos_artisan` wrapper, use only that exact redacted
-trace-tail form. If it is blocked while source allows it, check
+Through the PLOS MCP `plos_artisan` wrapper, use only that exact compact
+trace-tail form. Raw tail output, trace-specific filters, wider windows, higher
+limits, reordered flags, and detail-expanding forms stay blocked through MCP. If
+the compact form is blocked while source allows it, check
 `plos_artisan list` for the allowlist revision and treat the mismatch as a
 loaded-session freshness issue, not a reason to widen the trace command.
 If Operator Evidence reports files over `DEV_AGENT_TRACE_RETENTION_DAYS`, treat
@@ -224,7 +226,6 @@ aggregate fields, recursion status/count, and check ids in
 To review stored history without re-running Agent Doctor:
 
 ```bash
-php artisan ops:agent-doctor-history --json --days=7
 php artisan ops:agent-doctor-history --json --compact --days=7
 ```
 

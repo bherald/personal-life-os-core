@@ -20,6 +20,8 @@ max_tokens: 30000
 tools:
   - recall_procedures
   - recall_episodes
+  - agent_session_search
+  - agent_trajectory_build
   - list_trees
   - get_research_landscape
   - get_priority_persons

@@ -77,7 +77,7 @@ class JoplinYouTubeOrganize extends Command
                 $this->warn('Organization skipped: '.$reason);
                 $this->line('[ITEMS_PROCESSED:0]');
 
-                return self::SUCCESS;
+                return self::FAILURE;
             }
 
             $this->newLine();

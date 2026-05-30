@@ -1572,7 +1572,7 @@ class PublicExportPackagingTest extends TestCase
             'Brand path scan must not include private planning docs.'
         );
         $this->assertStringContainsString(
-            ':!docs/active-priority-list.md',
+            ':!docs/TODO.md',
             $script,
             'Private operator TODOs must stay excluded from broad public audit scans.'
         );

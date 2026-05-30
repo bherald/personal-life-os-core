@@ -21,7 +21,7 @@ use Illuminate\Support\Facades\Process;
  * - w, h represent width and height as fraction of image
  *
  * @see https://www.metadataworkinggroup.org/specs/
- * @see docs/future-enhancements.md E23
+ * Historical private backlog label: E23.
  */
 class FaceRegionService
 {

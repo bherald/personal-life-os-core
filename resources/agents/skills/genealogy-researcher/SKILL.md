@@ -46,6 +46,8 @@ tool_phases:
   assess:
     - recall_procedures
     - recall_episodes
+    - agent_session_search
+    - agent_trajectory_build
     - list_trees
     - get_research_landscape
     - get_priority_persons
@@ -110,7 +112,7 @@ tool_phases:
     - search_places
     - source_search
     - detect_duplicates
-    # DNA tools omitted — no kit data loaded yet (see N53 in future-enhancements.md)
+    # DNA tools omitted — no kit data loaded yet
     # Re-add dna_* tools here after first DNA kit is uploaded
     - fan_analyze_cluster
     - fan_suggest_research
@@ -271,6 +273,8 @@ tools:
   # Procedural & episodic memory
   - recall_procedures
   - recall_episodes
+  - agent_session_search
+  - agent_trajectory_build
   - save_procedure
   - procedure_stats
 ---
@@ -393,12 +397,14 @@ Metrics accumulate over time and guide where to focus research effort.
 
 1. Call `recall_procedures` — load prior successful tool sequences for this agent.
 2. Call `recall_episodes` — load summaries of recent runs to see what was researched.
-3. Call `list_trees` — discover all available trees. Each tree has a `root_person_id`
+3. Call `agent_session_search` — search bounded historical trace excerpts when the task may depend on recent session/job context; treat matches as leads only.
+4. Call `agent_trajectory_build` when recent failures/review outcomes affect the task — use redacted trajectory labels as regression context, not facts.
+5. Call `list_trees` — discover all available trees. Each tree has a `root_person_id`
    (the tree owner / central person) and `root_person_name`. **Never assume a tree_id.**
    If the task context provides a tree_id use it; otherwise research all trees in rotation.
    Call `get_person(root_person_id)` first to orient yourself in each tree — this person
    is the anchor for all bloodline tier assignments.
-4. For each tree to research:
+6. For each tree to research:
    a. Call `get_research_landscape` — surname distribution, era breakdown, persons never
       searched, hint summary. This is your primary self-orientation tool.
    b. Call `get_recent_searches` — see what was already searched in the last 30 days.
@@ -407,7 +413,7 @@ Metrics accumulate over time and guide where to focus research effort.
    d. Call `get_missing_data_report` — persons with data gaps.
    e. Call `get_research_hints` — unprocessed pending hints.
    f. Call `get_open_research_tasks` — pending research tasks.
-5. **Select priority persons using `get_priority_persons`.** This is your PRIMARY
+7. **Select priority persons using `get_priority_persons`.** This is your PRIMARY
    person selection tool — call it BEFORE choosing who to research. It returns
    persons ranked by computed priority score (bloodline tier × data gaps × staleness
    ÷ exhaustion). Exhausted brick-wall persons are filtered out automatically.
@@ -463,6 +469,18 @@ records. Never assume one spelling.
 - Try maiden names and all phonetic variants returned by surname_phonetic_matches
 - For common single-word surnames, always add location and year range to avoid noise
 - For pre-1700 persons, skip newspaper/NARA (no digital records exist) — use only internet_archive and rag_search
+
+**STEP 2B: Treat broad search hits as leads until identity is proven.**
+- `source_search_all`, LOC, and NARA same-name hits are not reviewable by themselves.
+- Do not create `source_add` when the target name appears only in a URL query string or search echo.
+- Create `source_add` only when the title, snippet, record text, downloaded object, or citation identifies the target person and supplies at least one bridge: date/lifetime fit, place, spouse, parent, child, sibling, FAN associate, occupation, or source chain.
+- If a hit lacks that bridge, record it as search coverage or a follow-up lead; do not send it to operator review.
+
+**STEP 2C: Let the search plan reason, but keep the source posture bounded.**
+- Use the per-person search plan to choose record type, era, location, name variants, and source-scoped web queries.
+- Public web/source catalog entries are discovery candidates only. Good catalogs include official archives, FamilySearch Research Wiki locality guidance, Cyndi's List-style directories, Archives Portal Europe, Europeana, and national archive portals.
+- A catalog listing can justify trying a domain; it cannot justify a fact or `source_add`.
+- Never plan login/session automation or scraping for manual-only domains. For public web hits, prefer source-scoped queries against vetted domains and require identity bridges before review.
 
 For EACH of the selected persons, use **at least 3 different tools**:
 

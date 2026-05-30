@@ -6,11 +6,16 @@ use App\DTOs\TrustEnvelope;
 use App\Engine\AIRouter;
 use App\Exceptions\AI\AIExceptionFactory;
 use App\Exceptions\AI\AIServiceException;
+use App\Exceptions\AI\RateLimitException;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
+use PhpOffice\PhpWord\Element\Text;
+use PhpOffice\PhpWord\Element\TextRun;
+use PhpOffice\PhpWord\IOFactory;
 
 /**
  * AIService - Production-Grade Multi-Provider LLM Gateway
@@ -191,7 +196,7 @@ class AIService
         if ($this->useDynamicPool) {
             try {
                 $this->poolManager = $poolManager ?? app(LLMPoolManagerService::class);
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('AIService: LLMPoolManager unavailable, using legacy routing', [
                     'error' => $e->getMessage(),
                 ]);
@@ -265,7 +270,7 @@ class AIService
 
                 return;
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService: Failed to load Ollama instances from DB, falling back to config', [
                 'error' => $e->getMessage(),
             ]);
@@ -383,7 +388,7 @@ class AIService
             if (! empty($result)) {
                 return (array) $result[0];
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService: Failed to query model registry for capability', [
                 'capability' => $capability,
                 'error' => $e->getMessage(),
@@ -516,7 +521,7 @@ class AIService
 
                 return $models;
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService: Failed to fetch available models', [
                 'error' => $e->getMessage(),
             ]);
@@ -701,7 +706,7 @@ class AIService
                 );
 
                 return ! empty($result) ? $result[0]->prompt_text : ($fallback ?? '');
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('AIService: Failed to load prompt from DB', [
                     'prompt_key' => $promptKey,
                     'error' => $e->getMessage(),
@@ -768,6 +773,68 @@ PROMPT;
         return $config;
     }
 
+    private function normalizePrivacyRoutingConfig(array $config): array
+    {
+        $config['disable_claude_fallback'] = $config['disable_claude_fallback'] ?? true;
+
+        if (array_key_exists('sensitive_data', $config)) {
+            return $config;
+        }
+
+        $classifiers = [
+            $config['task_type'] ?? null,
+            $config['data_class'] ?? null,
+            $config['context_type'] ?? null,
+            $config['caller'] ?? null,
+        ];
+
+        foreach ($classifiers as $classifier) {
+            $value = strtolower((string) $classifier);
+            if ($value === '') {
+                continue;
+            }
+
+            if (preg_match('/\b(genea|genealogy|rag|email|mail|joplin|file|document|attachment|private|personal|health|finance)\b/', $value)) {
+                $config['sensitive_data'] = true;
+                $config['sensitive_data_reason'] = $config['sensitive_data_reason'] ?? 'inferred_from_context';
+
+                return $config;
+            }
+        }
+
+        return $config;
+    }
+
+    private function truthyDbValue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value)) {
+            return $value === 1;
+        }
+
+        if (is_string($value)) {
+            $normalized = strtolower(trim($value));
+
+            return in_array($normalized, ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return (bool) $value;
+    }
+
+    private function rowAllowsPrivateData(object $row, array $capabilities, array $config): bool
+    {
+        if (property_exists($row, 'allows_private_data')) {
+            return $this->truthyDbValue($row->allows_private_data ?? false);
+        }
+
+        return in_array('sensitive_safe', $capabilities, true)
+            || $this->truthyDbValue($capabilities['sensitive_safe'] ?? false)
+            || $this->truthyDbValue($config['sensitive_safe'] ?? false);
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // MAIN PROCESSING METHODS
     // ═══════════════════════════════════════════════════════════════════
@@ -786,6 +853,7 @@ PROMPT;
      */
     public function process(string $prompt, array $config = []): array
     {
+        $config = $this->normalizePrivacyRoutingConfig($config);
         $startTime = microtime(true);
         $attempts = [];
 
@@ -1009,7 +1077,7 @@ PROMPT;
                                 'prompt_hash' => hash('sha256', $prompt),
                             ];
 
-                            continue; // Fall through to external/Claude fallback chain
+                            continue; // Fall through to the table-gated fallback chain
                         }
                     }
 
@@ -1033,40 +1101,13 @@ PROMPT;
             }
         }
 
-        // Step 2: Build remaining fallback chain — external APIs + Claude CLI, ordered by priority
+        // Step 2: Build remaining fallback chain — table-approved external APIs, ordered by priority
         // External API providers from llm_instances table (Groq, OpenRouter, Mistral, etc.)
-        // Claude CLI priority defaults to 20, so providers with lower priority run first
         $isSensitive = ! empty($config['sensitive_data']);
-        $fallbackProviders = $this->buildFallbackChain($isSensitive, $preferClaude);
+        $fallbackProviders = $this->buildFallbackChain($isSensitive, $preferClaude, $config);
 
         foreach ($fallbackProviders as $fallback) {
-            if ($fallback['type'] === 'claude_cli') {
-                // Claude CLI fallback — skip if already tried above
-                if ($preferClaude || $this->isCircuitOpen('claude_cli')) {
-                    if (! $preferClaude) {
-                        $attempts['claude_cli'] = 'Circuit open (cooldown)';
-                    }
-
-                    continue;
-                }
-
-                $result = $this->tryClaudeCLI($prompt, $config);
-
-                if ($result['success']) {
-                    $result['duration_ms'] = (int) ((microtime(true) - $startTime) * 1000);
-                    $result['from_cache'] = false;
-
-                    if ($useCache && $this->semanticCache) {
-                        $this->semanticCache->put($prompt, $result, $cacheContext);
-                    }
-
-                    $this->logCascadeResult($config, $result);
-
-                    return $result;
-                }
-
-                $attempts['claude_cli'] = $result['error'];
-            } elseif ($fallback['type'] === 'codex_exec') {
+            if ($fallback['type'] === 'codex_exec') {
                 $rpmKey = 'rpm_count_codex_exec';
                 $currentRpm = Cache::get($rpmKey, 0);
                 if (($fallback['rate_limit_rpm'] ?? null) && $currentRpm >= $fallback['rate_limit_rpm']) {
@@ -1193,6 +1234,8 @@ PROMPT;
      */
     public function processImage(string $imageContent, string $prompt, array $config = []): array
     {
+        $config = $this->normalizePrivacyRoutingConfig($config);
+        $config['sensitive_data'] = $config['sensitive_data'] ?? true;
         $startTime = microtime(true);
         $attempts = [];
         $requestId = uniqid('vision_', true);
@@ -1254,7 +1297,8 @@ PROMPT;
         }
 
         // External vision providers (OpenRouter, Gemini, Mistral pixtral, etc.)
-        // Personal photos: sensitiveData=false since user is data subject processing own files
+        // Images are private by default unless the caller explicitly classifies
+        // the payload as non-sensitive.
         $sensitiveData = $config['sensitive_data'] ?? false;
         $visionProviders = $this->getVisionCapableProviders($sensitiveData);
 
@@ -1889,6 +1933,7 @@ PROMPT;
      */
     public function processWithTools(string $prompt, array $config = [], int $maxIterations = 5): array
     {
+        $config = $this->normalizePrivacyRoutingConfig($config);
         $startTime = microtime(true);
 
         // Tool-calling defaults to the `coding` role so the host advertising the
@@ -1952,13 +1997,14 @@ PROMPT;
      */
     public function processWithToolsStreaming(string $prompt, array $config = [], int $maxIterations = 5): \Generator
     {
+        $config = $this->normalizePrivacyRoutingConfig($config);
         $providerId = 'ollama_primary';
         $requestId = uniqid('stream_', true);
 
         // Check circuit breaker first
         if ($this->isCircuitOpen($providerId)) {
-            Log::info('AIService: Streaming circuit open, falling back to non-streaming Claude');
-            yield from $this->streamingFallbackToClaude($prompt, $config);
+            Log::info('AIService: Streaming circuit open, falling back to table-gated non-streaming processing');
+            yield from $this->streamingFallbackToNonStreamingProcess($prompt, $config);
 
             return;
         }
@@ -1966,12 +2012,12 @@ PROMPT;
         // Streaming defaults to the `standard` role. selectOllamaInstanceForRole()
         // routes table-driven: the host whose standard model scores best wins.
         // If no local instance is available the existing cascade falls through to
-        // streamingFallbackToClaude().
+        // the table-gated non-streaming fallback.
         $role = $config['model_role'] ?? 'standard';
         $instance = $this->selectOllamaInstanceForRole($role, $config);
         if ($instance === null) {
-            Log::info('AIService: No healthy Ollama instances for streaming, falling back to Claude');
-            yield from $this->streamingFallbackToClaude($prompt, $config);
+            Log::info('AIService: No healthy Ollama instances for streaming, falling back to table-gated non-streaming processing');
+            yield from $this->streamingFallbackToNonStreamingProcess($prompt, $config);
 
             return;
         }
@@ -1986,24 +2032,24 @@ PROMPT;
 
         if (! $ollamaStatus['available']) {
             $this->recordFailure($providerId);
-            Log::info('AIService: Ollama not available for streaming, falling back to Claude');
-            yield from $this->streamingFallbackToClaude($prompt, $config);
+            Log::info('AIService: Ollama not available for streaming, falling back to table-gated non-streaming processing');
+            yield from $this->streamingFallbackToNonStreamingProcess($prompt, $config);
 
             return;
         }
 
         // Check if Ollama is busy
         if ($this->isOllamaBusy()) {
-            Log::info('AIService: Ollama busy, falling back to Claude for streaming');
-            yield from $this->streamingFallbackToClaude($prompt, $config);
+            Log::info('AIService: Ollama busy, falling back to table-gated non-streaming processing for streaming request');
+            yield from $this->streamingFallbackToNonStreamingProcess($prompt, $config);
 
             return;
         }
 
         // Try to acquire busy lock
         if (! $this->acquireOllamaBusyLock($requestId)) {
-            Log::info('AIService: Could not acquire Ollama lock for streaming, falling back to Claude');
-            yield from $this->streamingFallbackToClaude($prompt, $config);
+            Log::info('AIService: Could not acquire Ollama lock for streaming, falling back to table-gated non-streaming processing');
+            yield from $this->streamingFallbackToNonStreamingProcess($prompt, $config);
 
             return;
         }
@@ -2035,10 +2081,10 @@ PROMPT;
                 $this->recordSuccess($providerId, microtime(true) - $startTime);
             }
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->recordFailure($providerId);
             $correlationId = substr(uniqid('fallback_', true), 0, 24);
-            Log::error('AIService: Streaming failed, falling back to Claude', [
+            Log::error('AIService: Streaming failed, falling back to table-gated non-streaming processing', [
                 'error' => $e->getMessage(),
                 'correlation_id' => $correlationId,
                 'provider' => $providerId,
@@ -2046,9 +2092,9 @@ PROMPT;
 
             // Yield error and fall back
             yield json_encode(['type' => 'error', 'content' => 'Ollama streaming failed: '.$e->getMessage()])."\n";
-            yield json_encode(['type' => 'fallback', 'provider' => 'claude'])."\n";
+            yield json_encode(['type' => 'fallback', 'provider' => 'table_gated_non_streaming'])."\n";
 
-            yield from $this->streamingFallbackToClaude($prompt, $config, $correlationId);
+            yield from $this->streamingFallbackToNonStreamingProcess($prompt, $config, $correlationId);
 
         } finally {
             $this->releaseOllamaBusyLock($requestId);
@@ -2056,30 +2102,26 @@ PROMPT;
     }
 
     /**
-     * Fallback to Claude for streaming requests
+     * Fallback to table-gated non-streaming processing for streaming requests
      *
-     * Since Claude CLI doesn't support true streaming, this simulates streaming
-     * by processing the request and yielding the response in chunks.
+     * The normal process() chain enforces llm_instances privacy attributes and
+     * only uses private-approved providers when sensitive_data=true.
      *
      * @param  string  $prompt  User prompt
      * @param  array  $config  Configuration options
      * @return \Generator Yields SSE-formatted chunks
      */
-    private function streamingFallbackToClaude(string $prompt, array $config = [], ?string $correlationId = null): \Generator
+    private function streamingFallbackToNonStreamingProcess(string $prompt, array $config = [], ?string $correlationId = null): \Generator
     {
-        yield json_encode(['type' => 'provider', 'provider' => 'claude', 'model' => 'claude'])."\n";
-        yield json_encode(['type' => 'fallback_notice', 'message' => 'Using Claude fallback (non-streaming)'])."\n";
+        $config = $this->normalizePrivacyRoutingConfig($config);
+        yield json_encode(['type' => 'provider', 'provider' => 'table_gated_non_streaming', 'model' => $config['model_role'] ?? 'standard'])."\n";
+        yield json_encode(['type' => 'fallback_notice', 'message' => 'Using table-gated non-streaming fallback'])."\n";
 
         try {
-            // Resolve model via role (standard by default for streaming fallback)
-            $role = $config['model_role'] ?? 'standard';
-            $resolvedModel = $this->resolveModelForProvider('claude_cli', $role);
-            $claudeConfig = array_merge($config, ['ai_mode' => 'claude']);
-            if ($resolvedModel) {
-                $claudeConfig['claude_model'] = $resolvedModel;
-            }
-            // Use processWithTools for Claude (non-streaming but with tool support)
-            $result = $this->processWithTools($prompt, $claudeConfig);
+            $result = $this->process($prompt, array_merge($config, [
+                'sensitive_data' => $config['sensitive_data'] ?? true,
+                'skip_if_busy' => true,
+            ]));
 
             if ($result['success']) {
                 // Simulate streaming by chunking the response
@@ -2094,11 +2136,11 @@ PROMPT;
 
                 yield json_encode(['type' => 'done', 'content' => $response])."\n";
             } else {
-                yield json_encode(['type' => 'error', 'content' => $result['error'] ?? 'Claude processing failed'])."\n";
+                yield json_encode(['type' => 'error', 'content' => $result['error'] ?? 'Fallback processing failed'])."\n";
             }
 
-        } catch (\Exception $e) {
-            Log::error('AIService: Claude fallback also failed', [
+        } catch (Exception $e) {
+            Log::error('AIService: table-gated non-streaming fallback also failed', [
                 'error' => $e->getMessage(),
                 'correlation_id' => $correlationId,
             ]);
@@ -2309,7 +2351,7 @@ PROMPT;
         // (vision operations take longer and we don't want to block)
         if ($this->isOllamaBusy($baseProviderId)) {
             $busyInfo = $this->getOllamaBusyInfo($baseProviderId);
-            Log::info('AIService: Ollama instance busy, skipping vision to Claude fallback', [
+            Log::info('AIService: Ollama instance busy, skipping vision to table-gated fallback', [
                 'instance_id' => $baseProviderId,
                 'busy_since' => $busyInfo['started_at'] ?? 'unknown',
             ]);
@@ -2456,7 +2498,7 @@ PROMPT;
 
             return ['success' => false, 'error' => $lastError, 'context_length_exceeded' => $isContextLength];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->recordFailure($providerId);
 
             return ['success' => false, 'error' => $e->getMessage()];
@@ -2546,8 +2588,8 @@ PROMPT;
                     'error' => null,
                 ];
 
-            } catch (\Exception $e) {
-                $typed = $e instanceof \App\Exceptions\AI\AIServiceException
+            } catch (Exception $e) {
+                $typed = $e instanceof AIServiceException
                     ? $e
                     : AIExceptionFactory::fromMessage($e->getMessage(), $providerId, $provider['embedding_model'] ?? 'unknown');
                 $lastError = $typed->getMessage();
@@ -2782,6 +2824,7 @@ PROMPT;
 
         try {
             $config['ai_mode'] = 'claude';
+            $config['disable_claude_fallback'] = false;
 
             // AI-11: Build model fallback chain from DB roles.
             // Primary model from requested role, fallback to 'fast' role on rate limit.
@@ -2830,7 +2873,7 @@ PROMPT;
                         $lastError = $typed->getMessage();
 
                         // On rate limit with fallback available, skip retries and try next model
-                        if ($typed instanceof \App\Exceptions\AI\RateLimitException && $modelIndex === 0 && $fallbackModel) {
+                        if ($typed instanceof RateLimitException && $modelIndex === 0 && $fallbackModel) {
                             Log::info('AIService: claude_cli primary model rate-limited, falling back', [
                                 'primary' => $primaryModel,
                                 'fallback' => $fallbackModel,
@@ -2852,7 +2895,7 @@ PROMPT;
             // Skip circuit breaker increment for rate limits — they're transient and
             // opening the circuit would block all Claude CLI access until cooldown.
             // Also skip during cascade (3+ external providers rate-limited simultaneously).
-            $isRateLimit = isset($typed) && $typed instanceof \App\Exceptions\AI\RateLimitException;
+            $isRateLimit = isset($typed) && $typed instanceof RateLimitException;
             $allRateLimited = $this->countActiveRateLimitedProviders() >= 3;
 
             if ($isRateLimit) {
@@ -2903,9 +2946,24 @@ PROMPT;
             return $result;
         }
 
-        $this->recordFailure($providerId, (string) ($result['error'] ?? 'Unknown Codex Exec error'));
+        $retryAfterSeconds = null;
+        if (($result['error_type'] ?? null) === 'rate_limited') {
+            $retryAfterSeconds = $this->retryAfterSecondsFromProviderError((string) ($result['error'] ?? ''));
+            Cache::put('rate_limit_codex_exec', true, $retryAfterSeconds);
+        }
+
+        $this->recordFailure($providerId, (string) ($result['error'] ?? 'Unknown Codex Exec error'), $retryAfterSeconds);
 
         return $result;
+    }
+
+    private function retryAfterSecondsFromProviderError(string $error): int
+    {
+        if (preg_match('/retry[- ]?after[:= ]+(\d+)\s*s?/i', $error, $matches) === 1) {
+            return max(1, min(3600, (int) $matches[1]));
+        }
+
+        return 60;
     }
 
     /**
@@ -2924,33 +2982,33 @@ PROMPT;
     }
 
     /**
-     * Build the fallback chain: external API providers + Codex Exec + Claude CLI, ordered by priority.
+     * Build the fallback chain: table-approved OpenAI-compatible providers +
+     * Codex Exec, ordered by priority.
      *
-     * Local Ollama is tried before this chain. This method only ranks non-local
-     * fallback providers using table priority and observed health.
+     * Local Ollama is tried before this chain. Local OpenAI-compatible sidecars
+     * such as BitNet enter here as `instance_type=local_llm`; table route policy
+     * limits them to explicitly configured roles.
      *
-     * @param  bool  $sensitiveData  If true, skip providers marked as not safe for sensitive data
-     * @param  bool  $skipClaude  If true, omit Claude CLI from chain (already tried)
+     * @param  bool  $sensitiveData  If true, skip providers whose llm_instances row disallows private data
+     * @param  bool  $skipClaude  Retained for signature compatibility; Claude is not inserted into the fallback chain.
+     * @param  array<string,mixed>  $config
      * @return array Ordered list of providers with type, config, priority
      */
-    private function buildFallbackChain(bool $sensitiveData = false, bool $skipClaude = false): array
+    private function buildFallbackChain(bool $sensitiveData = false, bool $skipClaude = false, array $config = []): array
     {
-        // Offline kill switch: when enabled, NO external providers run — full
-        // stop. Cloud APIs and Claude CLI are both blocked; local Ollama
-        // instances continue to operate via the non-fallback routing path.
-        // Fail-closed: if the lookup errors, isOfflineMode() returns true so
-        // personal data never leaks through the fallback chain by accident.
-        if ($this->isOfflineMode()) {
-            return [];
-        }
+        // Offline kill switch: when enabled, cloud APIs are blocked but local
+        // OpenAI-compatible sidecars remain eligible if their table route_policy
+        // admits the requested role. Fail-closed: if the lookup errors,
+        // isOfflineMode() returns true and this method admits local_llm only.
+        $offlineMode = $this->isOfflineMode();
 
-        // 3b3 profile enforcement + Defect A (2026-04-19) per-provider gate:
+        // 3b3 profile enforcement + provider privacy gate:
         //   (a) instance_type allowlist — coarse first filter
-        //   (b) per-provider sensitive_safe filter when the active profile
+        //   (b) per-provider allows_private_data filter when the active profile
         //       allows `cloud_sensitive_safe` but NOT `cloud_external`.
         //       instance_type='custom' covers both privacy postures — only
-        //       the provider's real `sensitive_safe` flag is authoritative.
-        $profile = $this->getActiveProfile();
+        //       the provider's table privacy row is authoritative.
+        $profile = $offlineMode ? $this->failClosedLocalProfile('offline_mode', 'routing.offline_mode') : $this->getActiveProfile();
         $profileAllowedTypes = null;
         if ($profile !== null && isset($profile['allowed_instance_types']) && is_array($profile['allowed_instance_types'])) {
             $profileAllowedTypes = $profile['allowed_instance_types'];
@@ -2967,8 +3025,12 @@ PROMPT;
 
         // Add external API providers from DB
         foreach ($this->getExternalApiProviders() as $provider) {
-            // Skip providers unsafe for sensitive data (caller-level)
-            if ($sensitiveData && ! ($provider['sensitive_safe'] ?? false)) {
+            if ($offlineMode && ($provider['instance_type'] ?? '') !== 'local_llm') {
+                continue;
+            }
+
+            // Skip providers unsafe for sensitive/private data (caller-level)
+            if ($sensitiveData && ! ($provider['allows_private_data'] ?? false)) {
                 continue;
             }
 
@@ -2977,11 +3039,15 @@ PROMPT;
                 continue;
             }
 
-            // Defect A fix: profile-level per-provider sensitive_safe gate.
+            // Profile-level per-provider privacy gate.
             // Under hybrid_review / hybrid_dev_assist / cloud_escalation_only
-            // the provider's real `sensitive_safe` flag is the authoritative
+            // the provider's real `allows_private_data` table value is the authoritative
             // test — `custom` instance_type alone is not sufficient.
-            if ($requireSensitiveSafe && ! ($provider['sensitive_safe'] ?? false)) {
+            if ($requireSensitiveSafe && ! ($provider['allows_private_data'] ?? false)) {
+                continue;
+            }
+
+            if (! $this->providerRoutePolicyAllowsRequest($provider, $config)) {
                 continue;
             }
 
@@ -2999,44 +3065,19 @@ PROMPT;
             $chain[] = array_merge($provider, ['type' => 'external_api']);
         }
 
-        $codexProvider = $this->getCodexExecFallbackProvider();
+        $codexProvider = $offlineMode ? null : $this->getCodexExecFallbackProvider();
         if ($codexProvider !== null) {
-            if (! $sensitiveData || ($codexProvider['sensitive_safe'] ?? false)) {
+            if (! $sensitiveData || ($codexProvider['allows_private_data'] ?? false)) {
                 $codexAllowedByProfile = $profileAllowedTypes === null
                     || in_array('codex_cli', $profileAllowedTypes, true);
-                if ($codexAllowedByProfile && ! ($requireSensitiveSafe && ! ($codexProvider['sensitive_safe'] ?? false))) {
+                if ($codexAllowedByProfile
+                    && ! ($requireSensitiveSafe && ! ($codexProvider['allows_private_data'] ?? false))
+                    && $this->providerRoutePolicyAllowsRequest($codexProvider, $config)
+                ) {
                     if (! $this->isCircuitOpen('codex_exec') && ! Cache::has('rate_limit_codex_exec')) {
                         $chain[] = array_merge($codexProvider, ['type' => 'codex_exec']);
                     }
                 }
-            }
-        }
-
-        // Add Claude CLI — read priority, latency, success_rate from DB for scoring
-        if (! $skipClaude) {
-            $claudeData = ['priority' => 20, 'avg_response_ms' => 30000, 'success_rate' => 80, 'consecutive_failures' => 0];
-            try {
-                $row = DB::selectOne("SELECT is_active, priority, avg_response_ms, success_rate, consecutive_failures FROM llm_instances WHERE instance_id = 'claude_cli'");
-                if ($row) {
-                    $claudeData = [
-                        'priority' => (int) $row->priority,
-                        'avg_response_ms' => (float) ($row->avg_response_ms ?? 30000),
-                        'success_rate' => (float) ($row->success_rate ?? 80),
-                        'consecutive_failures' => (int) ($row->consecutive_failures ?? 0),
-                    ];
-                }
-            } catch (\Throwable $e) {
-                Log::debug('AIService: claude_cli lookup failed, using defaults', ['error' => $e->getMessage()]);
-            }
-
-            $claudeAllowedByProfile = $profileAllowedTypes === null
-                || in_array('claude_cli', $profileAllowedTypes, true);
-
-            if ($claudeAllowedByProfile && $this->isClaudeCliEnabled()) {
-                $chain[] = array_merge($claudeData, [
-                    'type' => 'claude_cli',
-                    'id' => 'claude_cli',
-                ]);
             }
         }
 
@@ -3052,13 +3093,67 @@ PROMPT;
         return $chain;
     }
 
+    /**
+     * Enforce optional per-provider table route policy from llm_instances.config.
+     *
+     * This is intentionally generic rather than BitNet-specific. A local sidecar
+     * can be routable/healthy while still refusing generic roles unless the DB
+     * row lists the role and the caller marks the payload appropriately.
+     *
+     * Supported config shapes:
+     *   route_policy.allowed_model_roles: ["privacy_deny_prefilter"]
+     *   route_policy.require_model_role: true
+     *   route_policy.require_redacted_input: true
+     *   route_policy.allow_generic_fallback: false
+     *
+     * @param  array<string,mixed>  $provider
+     * @param  array<string,mixed>  $requestConfig
+     */
+    private function providerRoutePolicyAllowsRequest(array $provider, array $requestConfig): bool
+    {
+        $providerConfig = is_array($provider['config'] ?? null) ? $provider['config'] : [];
+        $routePolicy = is_array($providerConfig['route_policy'] ?? null) ? $providerConfig['route_policy'] : [];
+        $role = (string) ($requestConfig['model_role'] ?? 'standard');
+
+        $allowedRoles = $routePolicy['allowed_model_roles']
+            ?? $providerConfig['allowed_model_roles']
+            ?? null;
+
+        if (is_array($allowedRoles) && $allowedRoles !== []) {
+            $allowedRoles = array_values(array_filter($allowedRoles, 'is_string'));
+            if (! in_array($role, $allowedRoles, true)) {
+                return false;
+            }
+        }
+
+        $allowGenericFallback = $this->truthyDbValue($routePolicy['allow_generic_fallback'] ?? true);
+        if (! $allowGenericFallback && in_array($role, ['standard', 'quality', 'coding', 'vision', 'embedding'], true)) {
+            return false;
+        }
+
+        $requireModelRole = $this->truthyDbValue($requestConfig['require_model_role'] ?? false)
+            || $this->truthyDbValue($routePolicy['require_model_role'] ?? false);
+        if ($requireModelRole) {
+            $models = is_array($providerConfig['models'] ?? null) ? $providerConfig['models'] : [];
+            if (! is_string($models[$role] ?? null) || trim((string) $models[$role]) === '') {
+                return false;
+            }
+        }
+
+        if ($this->truthyDbValue($routePolicy['require_redacted_input'] ?? false)
+            && ! $this->truthyDbValue($requestConfig['redacted_input'] ?? false)
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
     private function getCodexExecFallbackProvider(): ?array
     {
         try {
             $row = DB::selectOne("
-                SELECT instance_id, instance_name, instance_type, priority, capabilities, config,
-                       rate_limit_rpm, rate_limit_tpm, circuit_state, max_concurrent,
-                       avg_response_ms, consecutive_failures, success_rate
+                SELECT *
                 FROM llm_instances
                 WHERE instance_id = 'codex_exec'
                   AND is_active = 1
@@ -3071,20 +3166,28 @@ PROMPT;
                 return null;
             }
 
+            if ((string) ($row->quarantine_status ?? 'none') === 'quarantined') {
+                return null;
+            }
+
             $capabilities = json_decode($row->capabilities ?? '[]', true) ?: [];
+            $config = json_decode($row->config ?? '{}', true) ?: [];
+            $allowsPrivateData = $this->rowAllowsPrivateData($row, $capabilities, $config);
 
             return [
                 'id' => $row->instance_id,
                 'name' => $row->instance_name,
                 'instance_type' => $row->instance_type,
+                'data_privacy_scope' => $row->data_privacy_scope ?? null,
+                'allows_private_data' => $allowsPrivateData,
                 'priority' => (int) ($row->priority ?? 18),
                 'rate_limit_rpm' => $row->rate_limit_rpm,
                 'rate_limit_tpm' => $row->rate_limit_tpm,
                 'max_concurrent' => $row->max_concurrent,
                 'circuit_state' => $row->circuit_state,
-                'sensitive_safe' => in_array('sensitive_safe', $capabilities, true) || ($capabilities['sensitive_safe'] ?? false),
+                'sensitive_safe' => $allowsPrivateData,
                 'capabilities' => $capabilities,
-                'config' => json_decode($row->config ?? '{}', true) ?: [],
+                'config' => $config,
                 'avg_response_ms' => (float) ($row->avg_response_ms ?? 30000),
                 'consecutive_failures' => (int) ($row->consecutive_failures ?? 0),
                 'success_rate' => (float) ($row->success_rate ?? 80),
@@ -3105,9 +3208,10 @@ PROMPT;
         }
 
         try {
-            $row = DB::selectOne("SELECT is_active FROM llm_instances WHERE instance_id = 'claude_cli'");
+            $row = DB::selectOne("SELECT * FROM llm_instances WHERE instance_id = 'claude_cli'");
 
-            return (bool) ($row->is_active ?? false);
+            return (bool) ($row->is_active ?? false)
+                && (string) ($row->quarantine_status ?? 'none') !== 'quarantined';
         } catch (\Throwable $e) {
             Log::debug('AIService: claude_cli activation lookup failed', ['error' => $e->getMessage()]);
 
@@ -3122,11 +3226,12 @@ PROMPT;
         }
 
         try {
-            $row = DB::selectOne("SELECT is_active, is_healthy, routability FROM llm_instances WHERE instance_id = 'codex_exec'");
+            $row = DB::selectOne("SELECT * FROM llm_instances WHERE instance_id = 'codex_exec'");
 
             return (bool) ($row->is_active ?? false)
                 && (bool) ($row->is_healthy ?? false)
-                && (string) ($row->routability ?? 'blocked') === 'allowed';
+                && (string) ($row->routability ?? 'blocked') === 'allowed'
+                && (string) ($row->quarantine_status ?? 'none') !== 'quarantined';
         } catch (\Throwable $e) {
             Log::debug('AIService: codex_exec activation lookup failed', ['error' => $e->getMessage()]);
 
@@ -3166,7 +3271,7 @@ PROMPT;
     public function isOfflineMode(): bool
     {
         try {
-            $svc = app(\App\Services\SystemConfigService::class);
+            $svc = app(SystemConfigService::class);
             $value = $svc->get('routing.offline_mode', 'disabled');
             if (! is_string($value)) {
                 return true;
@@ -3194,7 +3299,8 @@ PROMPT;
      *      source for the six-rung ladder. Synthesized to the legacy shape
      *      (allowed_instance_types + allowed_capabilities) so the fallback-
      *      chain filter works end-to-end.
-     *   4. default / unknown → return null (no restriction).
+     *   4. default → return null (no restriction).
+     *   5. unknown/error → fail closed to local_llm only.
      *
      * R3 (2026-04-19 defect fix): previously only (1) + (2) existed, so
      * hybrid_review / hybrid_dev_assist / cloud_escalation_only all fell
@@ -3202,12 +3308,12 @@ PROMPT;
      * synthesis path now covers every rung the routing:profile command
      * accepts.
      *
-     * @return array<string,mixed>|null null when default / unknown / error
+     * @return array<string,mixed>|null null only when default
      */
     public function getActiveProfile(): ?array
     {
         try {
-            $svc = app(\App\Services\SystemConfigService::class);
+            $svc = app(SystemConfigService::class);
             $active = $svc->get('routing.active_profile', 'default');
 
             if (! is_string($active)) {
@@ -3235,11 +3341,11 @@ PROMPT;
             // config/offline_policy.php profile row.
             return $this->synthesizeLegacyProfileFromOfflinePolicy($active);
         } catch (\Throwable $e) {
-            Log::warning('AIService: active profile lookup failed, returning null', [
+            Log::warning('AIService: active profile lookup failed, failing closed to local-only profile', [
                 'error' => $e->getMessage(),
             ]);
 
-            return null;
+            return $this->failClosedLocalProfile('lookup_exception', 'system_configs:routing.active_profile:lookup_exception');
         }
     }
 
@@ -3250,18 +3356,18 @@ PROMPT;
      * + LLMPoolManagerService consume.
      *
      * Important: `instance_type` alone is NOT authoritative for privacy
-     * posture. `custom` covers providers with mixed sensitive_safe flags
+     * posture. `custom` covers providers with mixed table privacy settings
      * (OpenRouter, Groq, SambaNova, etc.). The coarse allowed_instance_types
      * list lets `custom` through under cloud_sensitive_safe profiles, and
-     * then buildFallbackChain applies a per-provider sensitive_safe filter
+     * then buildFallbackChain applies a per-provider allows_private_data filter
      * via the `allowed_provider_classes` field we preserve below. Tests in
      * AIServiceFallbackChainSensitiveSafeTest exercise this real behavior.
      *
      * Provider-class → instance_type coarse admission:
-     *   local_llm             → ollama
-     *   cloud_sensitive_safe  → claude_cli, codex_cli, anthropic_api, custom
+     *   local_llm             → ollama, local_llm
+     *   cloud_sensitive_safe  → codex_cli, anthropic_api, custom
      *                           (custom admission is coarse — per-provider
-     *                           sensitive_safe filter applies in
+     *                           allows_private_data filter applies in
      *                           buildFallbackChain)
      *   cloud_external        → openai, google_gemini, openrouter, azure_openai, custom
      */
@@ -3269,17 +3375,18 @@ PROMPT;
     {
         $profile = config('offline_policy.profiles.'.$profileName);
         if (! is_array($profile)) {
-            // Unknown profile name — fall through to null so behavior
-            // matches a missing row (no restriction applied — caller sees
-            // "no profile" and operates under default chain).
-            return null;
+            Log::warning('AIService: unknown routing profile; failing closed to local-only profile', [
+                'profile' => $profileName,
+            ]);
+
+            return $this->failClosedLocalProfile($profileName, 'config/offline_policy.php:fail_closed_unknown_profile');
         }
 
         $providerClasses = (array) ($profile['allowed_provider_classes'] ?? []);
 
         $classToTypes = [
-            'local_llm' => ['ollama'],
-            'cloud_sensitive_safe' => ['claude_cli', 'codex_cli', 'anthropic_api', 'custom'],
+            'local_llm' => ['ollama', 'local_llm'],
+            'cloud_sensitive_safe' => ['codex_cli', 'anthropic_api', 'custom'],
             'cloud_external' => ['openai', 'google_gemini', 'openrouter', 'azure_openai'],
         ];
 
@@ -3296,6 +3403,20 @@ PROMPT;
             'allowed_provider_classes' => $providerClasses,
             'description' => (string) ($profile['description'] ?? ''),
             'source' => 'config/offline_policy.php',
+        ];
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function failClosedLocalProfile(string $profileName, string $source): array
+    {
+        return [
+            'allowed_instance_types' => ['ollama', 'local_llm'],
+            'allowed_capabilities' => ['text'],
+            'allowed_provider_classes' => ['local_llm'],
+            'description' => "Profile '{$profileName}' failed closed to local_llm only.",
+            'source' => $source,
         ];
     }
 
@@ -3343,37 +3464,44 @@ PROMPT;
         }
 
         try {
-            $externalTypes = ['openai', 'anthropic_api', 'google_gemini', 'azure_openai', 'custom'];
-            $placeholders = implode(',', array_fill(0, count($externalTypes), '?'));
+            $apiTypes = ['openai', 'anthropic_api', 'google_gemini', 'azure_openai', 'custom', 'local_llm'];
+            $placeholders = implode(',', array_fill(0, count($apiTypes), '?'));
             $rows = DB::select("
-                SELECT instance_id, instance_name, instance_type, base_url, api_key, api_key_env,
-                       priority, supported_models, capabilities, config, rate_limit_rpm,
-                       rate_limit_tpm, circuit_state, max_concurrent, avg_response_ms,
-                       consecutive_failures, success_rate
+                SELECT *
                 FROM llm_instances
                 WHERE is_active = 1
                   AND is_healthy = 1
+                  AND routability = 'allowed'
                   AND instance_type IN ({$placeholders})
                 ORDER BY priority ASC
-            ", $externalTypes);
+            ", $apiTypes);
 
             $providers = [];
             foreach ($rows as $row) {
-                // API key: DB column first, .env fallback
+                if ((string) ($row->quarantine_status ?? 'none') === 'quarantined') {
+                    continue;
+                }
+
+                // API key: DB column first, .env fallback. Local sidecars such
+                // as llama-server are OpenAI-compatible but intentionally do
+                // not require an API key.
                 $apiKey = $row->api_key ?: $this->resolveRuntimeEnvValue($row->api_key_env ?? null);
-                if (! $apiKey) {
+                if (! $apiKey && $row->instance_type !== 'local_llm') {
                     continue; // Skip unconfigured providers (no key yet)
                 }
 
                 $config = json_decode($row->config ?? '{}', true) ?: [];
                 $capabilities = json_decode($row->capabilities ?? '{}', true) ?: [];
+                $allowsPrivateData = $this->rowAllowsPrivateData($row, $capabilities, $config);
 
                 $providers[] = [
                     'id' => $row->instance_id,
                     'name' => $row->instance_name,
                     'instance_type' => $row->instance_type,
+                    'data_privacy_scope' => $row->data_privacy_scope ?? null,
+                    'allows_private_data' => $allowsPrivateData,
                     'base_url' => $row->base_url,
-                    'api_key' => $apiKey,
+                    'api_key' => $apiKey ?: '',
                     'priority' => $row->priority,
                     'default_model' => $config['default_model'] ?? null,
                     'supported_models' => json_decode($row->supported_models ?? '[]', true) ?: [],
@@ -3381,7 +3509,7 @@ PROMPT;
                     'rate_limit_tpm' => $row->rate_limit_tpm,
                     'max_concurrent' => $row->max_concurrent,
                     'circuit_state' => $row->circuit_state,
-                    'sensitive_safe' => in_array('sensitive_safe', $capabilities) || ($capabilities['sensitive_safe'] ?? false),
+                    'sensitive_safe' => $allowsPrivateData,
                     'capabilities' => $capabilities,
                     'extra_headers' => $config['extra_headers'] ?? [],
                     'config' => $config,
@@ -3395,7 +3523,7 @@ PROMPT;
 
             return $providers;
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService: Failed to load external providers', ['error' => $e->getMessage()]);
 
             return [];
@@ -3477,10 +3605,10 @@ PROMPT;
                 'error' => null,
             ];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             // Extract Retry-After for rate limit errors — set cache AND circuit to provider's window
             $retryAfterSeconds = null;
-            if ($e instanceof \App\Exceptions\AI\RateLimitException) {
+            if ($e instanceof RateLimitException) {
                 $retryAfterSeconds = (int) round($e->getSuggestedBackoffMs() / 1000);
             } elseif (str_contains($e->getMessage(), 'Rate limit') || str_contains($e->getMessage(), '429')) {
                 $retryAfterSeconds = 60;
@@ -3575,10 +3703,10 @@ PROMPT;
                 'error' => null,
             ];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             // Extract Retry-After for rate limit errors
             $retryAfterSeconds = null;
-            if ($e instanceof \App\Exceptions\AI\RateLimitException) {
+            if ($e instanceof RateLimitException) {
                 $retryAfterSeconds = (int) round($e->getSuggestedBackoffMs() / 1000);
             } elseif (str_contains($e->getMessage(), 'Rate limit') || str_contains($e->getMessage(), '429')) {
                 $retryAfterSeconds = 60;
@@ -3625,8 +3753,8 @@ PROMPT;
                 continue;
             }
 
-            // Skip providers unsafe for sensitive data
-            if ($sensitiveData && ! ($provider['sensitive_safe'] ?? false)) {
+            // Skip providers unsafe for sensitive/private data
+            if ($sensitiveData && ! ($provider['allows_private_data'] ?? false)) {
                 continue;
             }
 
@@ -3832,7 +3960,7 @@ PROMPT;
                     'duration_ms' => $durationMs,
                 ]);
                 $allRateLimited = $this->countActiveRateLimitedProviders() >= 3;
-                if ($typed instanceof \App\Exceptions\AI\RateLimitException) {
+                if ($typed instanceof RateLimitException) {
                     Log::info('AIService: claude_web_research rate-limited — skipping circuit increment (transient)', [
                         'error' => $lastError,
                     ]);
@@ -3887,7 +4015,7 @@ PROMPT;
             $lastError = $typed->getMessage();
             $allRateLimited = $this->countActiveRateLimitedProviders() >= 3;
 
-            if ($typed instanceof \App\Exceptions\AI\RateLimitException) {
+            if ($typed instanceof RateLimitException) {
                 Log::info('AIService: claude_web_research rate-limited — skipping circuit increment (transient)', [
                     'error' => $lastError,
                 ]);
@@ -4012,7 +4140,7 @@ PROMPT;
         if ($this->useDynamicPool && $this->poolManager) {
             try {
                 $this->poolManager->recordSuccess($providerId, $durationMs);
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::debug('AIService: Pool manager recordSuccess failed', ['error' => $e->getMessage()]);
             }
         }
@@ -4054,7 +4182,7 @@ PROMPT;
         if ($this->useDynamicPool && $this->poolManager) {
             try {
                 $this->poolManager->recordFailure($providerId, $error ?? 'Unknown error', $retryAfterSeconds);
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::debug('AIService: Pool manager recordFailure failed', ['error' => $e->getMessage()]);
             }
         }
@@ -4489,7 +4617,7 @@ PROMPT;
         }
 
         // Last resort: try kill -0 via shell
-        return \Illuminate\Support\Facades\Process::timeout(5)->run(['kill', '-0', (string) $pid])->successful();
+        return Process::timeout(5)->run(['kill', '-0', (string) $pid])->successful();
     }
 
     /**
@@ -4879,7 +5007,7 @@ PROMPT;
                 : 0,
             'cpu_count' => function_exists('swoole_cpu_num')
                 ? swoole_cpu_num()
-                : ((int) \Illuminate\Support\Facades\Process::timeout(5)->run(['nproc'])->output() ?: 1),
+                : ((int) Process::timeout(5)->run(['nproc'])->output() ?: 1),
         ];
 
         Cache::put($cacheKey, $metrics, 5);
@@ -5165,7 +5293,7 @@ PROMPT;
                 return $b['health_score'] <=> $a['health_score'];
             });
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService: Pool manager query failed, falling back to legacy', [
                 'error' => $e->getMessage(),
             ]);
@@ -5303,7 +5431,7 @@ PROMPT;
                     'config' => $config,
                 ];
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService: Failed to load external embedding providers', [
                 'error' => $e->getMessage(),
             ]);
@@ -6111,7 +6239,7 @@ PROMPT;
                     if ($metaResponse->successful()) {
                         $metadata = $metaResponse->json() ?? [];
                     }
-                } catch (\Exception $e) {
+                } catch (Exception $e) {
                     // Metadata extraction is optional, don't fail
                     Log::debug('Tika metadata extraction failed', ['error' => $e->getMessage()]);
                 }
@@ -6124,7 +6252,7 @@ PROMPT;
                 'extractor' => 'tika',
             ];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->recordFailure('tika_server');
             Log::error('Tika extraction error', [
                 'filename' => $filename,
@@ -6157,7 +6285,7 @@ PROMPT;
 
             if ($extension === 'docx') {
                 // Extract from Word document
-                $phpWord = \PhpOffice\PhpWord\IOFactory::load($tempPath);
+                $phpWord = IOFactory::load($tempPath);
                 $sections = $phpWord->getSections();
 
                 foreach ($sections as $section) {
@@ -6214,7 +6342,7 @@ PROMPT;
                 'extractor' => 'phpoffice',
             ];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService::extractWithPhpOffice failed', [
                 'filename' => $filename,
                 'error' => $e->getMessage(),
@@ -6237,12 +6365,12 @@ PROMPT;
         $text = '';
 
         // Handle Text elements (leaf nodes with actual text)
-        if ($element instanceof \PhpOffice\PhpWord\Element\Text) {
+        if ($element instanceof Text) {
             return $element->getText() ?? '';
         }
 
         // Handle TextRun (container of Text elements)
-        if ($element instanceof \PhpOffice\PhpWord\Element\TextRun) {
+        if ($element instanceof TextRun) {
             foreach ($element->getElements() as $child) {
                 $text .= $this->extractTextFromPhpWordElement($child);
             }
@@ -6258,7 +6386,7 @@ PROMPT;
         }
 
         // Handle elements with getText() that aren't Text instances
-        if (method_exists($element, 'getText') && ! ($element instanceof \PhpOffice\PhpWord\Element\Text)) {
+        if (method_exists($element, 'getText') && ! ($element instanceof Text)) {
             $elementText = $element->getText();
             if (is_string($elementText)) {
                 $text .= $elementText."\n";
@@ -6278,7 +6406,7 @@ PROMPT;
         @mkdir($outputDir, 0755, true);
 
         try {
-            $result = \Illuminate\Support\Facades\Process::timeout(60)->run(
+            $result = Process::timeout(60)->run(
                 'pdftoppm -png -r 150 -l 1 '.escapeshellarg($pdfPath).' '.escapeshellarg($outputDir.'/page')
             );
 
@@ -6302,7 +6430,7 @@ PROMPT;
 
             return $imageData ? base64_encode($imageData) : null;
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService: PDF thumbnail extraction failed', ['error' => $e->getMessage()]);
             array_map('unlink', glob($outputDir.'/*') ?: []);
             @rmdir($outputDir);
@@ -6359,7 +6487,7 @@ PROMPT;
                 'provider' => $result['provider'] ?? 'unknown',
             ];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('Vision extraction error', [
                 'filename' => $filename,
                 'error' => $e->getMessage(),
@@ -6389,7 +6517,7 @@ PROMPT;
                 $text = $this->ocrPdf($filePath);
             } else {
                 // Direct OCR for images
-                $result = \Illuminate\Support\Facades\Process::timeout(120)
+                $result = Process::timeout(120)
                     ->run(['tesseract', $filePath, 'stdout', '-l', 'eng']);
 
                 $text = $result->successful() ? trim($result->output()) : '';
@@ -6400,7 +6528,7 @@ PROMPT;
                 'text' => $text,
             ];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('OCR extraction error', ['error' => $e->getMessage()]);
 
             return ['success' => false, 'error' => $e->getMessage()];
@@ -6444,7 +6572,7 @@ PROMPT;
 
             if ($isVideo) {
                 $audioFile = storage_path('app/temp/audio_'.uniqid().'.wav');
-                $ffmpegResult = \Illuminate\Support\Facades\Process::timeout(120)->run([
+                $ffmpegResult = Process::timeout(120)->run([
                     'ffmpeg', '-i', $filePath,
                     '-vn', '-acodec', 'pcm_s16le',
                     '-ar', '16000', '-ac', '1',
@@ -6465,7 +6593,7 @@ PROMPT;
             @mkdir($outputDir, 0755, true);
 
             $model = config('services.whisper.model', 'base');
-            $result = \Illuminate\Support\Facades\Process::timeout(300)->run([
+            $result = Process::timeout(300)->run([
                 $whisperPath, $audioFile,
                 '--model', $model,
                 '--output_dir', $outputDir,
@@ -6490,7 +6618,7 @@ PROMPT;
                 'metadata' => $metadata,
             ];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('Whisper extraction error', ['error' => $e->getMessage()]);
 
             return ['success' => false, 'error' => $e->getMessage()];
@@ -6545,7 +6673,7 @@ PROMPT;
 
         try {
             // Convert PDF to images
-            $result = \Illuminate\Support\Facades\Process::timeout(120)->run([
+            $result = Process::timeout(120)->run([
                 'pdftoppm',
                 '-png',
                 '-r',
@@ -6563,7 +6691,7 @@ PROMPT;
 
             $allText = [];
             foreach ($images as $i => $img) {
-                $ocrResult = \Illuminate\Support\Facades\Process::timeout(120)
+                $ocrResult = Process::timeout(120)
                     ->run(['tesseract', $img, 'stdout', '-l', 'eng']);
 
                 if ($ocrResult->successful() && trim($ocrResult->output())) {
@@ -6576,7 +6704,7 @@ PROMPT;
 
             return implode("\n\n", $allText);
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('AIService: PDF OCR extraction failed', ['error' => $e->getMessage()]);
             array_map('unlink', glob($outputDir.'/*'));
             @rmdir($outputDir);
@@ -6605,14 +6733,14 @@ PROMPT;
 
         // Try 'which'
         try {
-            $result = \Illuminate\Support\Facades\Process::timeout(5)->run(['which', 'whisper']);
+            $result = Process::timeout(5)->run(['which', 'whisper']);
             if ($result->successful()) {
                 $path = trim($result->output());
                 if (! empty($path) && file_exists($path) && is_executable($path)) {
                     return $path;
                 }
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::debug('AIService: whisper path lookup failed', ['error' => $e->getMessage()]);
         }
 
@@ -6625,7 +6753,7 @@ PROMPT;
     private function extractMediaMetadata(string $filePath): array
     {
         try {
-            $result = \Illuminate\Support\Facades\Process::timeout(30)->run([
+            $result = Process::timeout(30)->run([
                 'ffprobe', '-v', 'quiet', '-print_format', 'json',
                 '-show_format', '-show_streams', $filePath,
             ]);
@@ -6655,7 +6783,7 @@ PROMPT;
 
                 return $metadata;
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::debug('ffprobe failed', ['error' => $e->getMessage()]);
         }
 
@@ -6672,7 +6800,7 @@ PROMPT;
             $response = Http::connectTimeout(5)->timeout(5)->get("{$tikaUrl}/version");
 
             return $response->successful();
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::debug('AIService: Tika availability check failed', ['error' => $e->getMessage()]);
 
             return false;
@@ -6695,7 +6823,7 @@ PROMPT;
                     'url' => $tikaUrl,
                 ];
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             return [
                 'available' => false,
                 'error' => $e->getMessage(),

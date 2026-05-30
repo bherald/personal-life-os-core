@@ -60,4 +60,7 @@ return [
     // Retention: purge agent_recursion_calls older than this (days).
     // Temporarily shortened to protect backup/runtime health until DBA review.
     'retention_days' => 3,
+    'retention_maintenance_batch_size' => env('RECURSION_RETENTION_MAINTENANCE_BATCH_SIZE', 5000),
+    'retention_maintenance_max_rows' => env('RECURSION_RETENTION_MAINTENANCE_MAX_ROWS', 500000),
+    'retention_maintenance_sleep_ms' => env('RECURSION_RETENTION_MAINTENANCE_SLEEP_MS', 100),
 ];

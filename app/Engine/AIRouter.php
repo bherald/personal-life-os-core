@@ -9,6 +9,7 @@ use App\Exceptions\AI\TransientException;
 use App\Services\CircuitBreaker;
 use App\Services\LLMPoolManagerService;
 use App\Services\RetryService;
+use App\Services\SystemConfigService;
 use App\Services\TimeoutManager;
 use App\Services\TrustBoundaryFormatterService;
 use Exception;
@@ -508,6 +509,7 @@ class AIRouter
         $temperature = $config['temperature'] ?? 0.1;
         $maxTokens = $config['max_tokens'] ?? $this->defaultMaxTokens;
         $systemPrompt = $this->resolveSystemPrompt($config);
+        $allowClaudeFallback = empty($config['disable_claude_fallback']);
 
         // Support timeout override from node config (ai_timeout or timeout)
         $timeout = $config['ai_timeout'] ?? $config['timeout'] ?? $this->timeout;
@@ -534,12 +536,15 @@ class AIRouter
         } catch (Exception $e) {
             if ($mode === 'auto') {
                 // Fallback to the optional Claude CLI when operator-configured.
-                if ($this->isClaudeCLIAvailable()) {
+                if ($allowClaudeFallback && $this->isClaudeCLIAvailable()) {
                     Log::info('Ollama failed, falling back to Claude Code CLI', [
                         'error' => $e->getMessage(),
                     ]);
 
                     return $this->callClaudeCLI($prompt, $systemPrompt, $claudeModel, $timeout);
+                }
+                if (! $allowClaudeFallback) {
+                    throw new Exception('Ollama failed and Claude CLI fallback is disabled by provider table policy: '.$e->getMessage());
                 }
                 // No Claude CLI available - fail
                 throw new Exception('Ollama failed and Claude CLI not available: '.$e->getMessage());
@@ -548,11 +553,11 @@ class AIRouter
         }
 
         // For explicit 'claude' mode - use CLI only
-        if ($this->isClaudeCLIAvailable()) {
+        if ($allowClaudeFallback && $this->isClaudeCLIAvailable()) {
             return $this->callClaudeCLI($prompt, $systemPrompt, $claudeModel, $timeout);
         }
 
-        throw new Exception('Claude CLI not available');
+        throw new Exception($allowClaudeFallback ? 'Claude CLI not available' : 'Claude CLI disabled by provider table policy');
     }
 
     /**
@@ -569,6 +574,7 @@ class AIRouter
         $temperature = $config['temperature'] ?? 0.3;
         $maxTokens = $config['max_tokens'] ?? $this->defaultMaxTokens;
         $timeout = $config['timeout'] ?? $this->timeout;
+        $allowClaudeFallback = empty($config['disable_claude_fallback']);
 
         // Per-instance routing: AIService passes instance_url/instance_model when
         // it has selected a specific Ollama instance from the pool (e.g. the 4070
@@ -601,12 +607,15 @@ class AIRouter
         } catch (Exception $e) {
             if ($mode === 'auto') {
                 // Fallback to Claude CLI with image file (native multimodal support)
-                if ($this->isClaudeCLIAvailable()) {
+                if ($allowClaudeFallback && $this->isClaudeCLIAvailable()) {
                     Log::info('Ollama vision failed, falling back to Claude Code CLI', [
                         'error' => $e->getMessage(),
                     ]);
 
                     return $this->callClaudeCLIWithImage($imageContent, $prompt, $imagePath, $claudeModel);
+                }
+                if (! $allowClaudeFallback) {
+                    throw new Exception('Ollama vision failed and Claude CLI fallback is disabled by provider table policy: '.$e->getMessage());
                 }
                 throw new Exception('Ollama vision failed and Claude CLI not available: '.$e->getMessage());
             }
@@ -614,11 +623,11 @@ class AIRouter
         }
 
         // For explicit 'claude' mode - use CLI only
-        if ($this->isClaudeCLIAvailable()) {
+        if ($allowClaudeFallback && $this->isClaudeCLIAvailable()) {
             return $this->callClaudeCLIWithImage($imageContent, $prompt, $imagePath, $claudeModel);
         }
 
-        throw new Exception('Claude CLI not available for vision processing');
+        throw new Exception($allowClaudeFallback ? 'Claude CLI not available for vision processing' : 'Claude CLI disabled by provider table policy for vision processing');
     }
 
     /**
@@ -1166,7 +1175,7 @@ class AIRouter
         $text = $this->sanitizeUtf8($text);
 
         $baseUrl = rtrim($providerConfig['base_url'], '/');
-        $apiKey = $providerConfig['api_key'];
+        $apiKey = $providerConfig['api_key'] ?? '';
         $model = $providerConfig['embedding_model'];
         $extraHeaders = $providerConfig['extra_headers'] ?? [];
         $dimensions = $providerConfig['embedding_dimensions'] ?? null;
@@ -1381,10 +1390,11 @@ class AIRouter
                         }
                         $messages[] = ['role' => 'user', 'content' => $prompt];
 
-                        $headers = array_merge([
-                            'Authorization' => "Bearer {$apiKey}",
-                            'Content-Type' => 'application/json',
-                        ], $extraHeaders);
+                        $headers = ['Content-Type' => 'application/json'];
+                        if ($apiKey !== '') {
+                            $headers['Authorization'] = "Bearer {$apiKey}";
+                        }
+                        $headers = array_merge($headers, $extraHeaders);
 
                         $response = Http::withHeaders($headers)
                             ->timeout($requestTimeout)
@@ -1418,7 +1428,7 @@ class AIRouter
                             ?? null;
 
                         if ($content === null) {
-                            throw new \Exception('Invalid response format from '.$baseUrl);
+                            throw new Exception('Invalid response format from '.$baseUrl);
                         }
 
                         return $this->normalizeOpenAICompatibleContent($content);
@@ -1426,7 +1436,7 @@ class AIRouter
                     maxAttempts: 2,
                     backoffStrategy: 'exponential',
                     baseDelay: 1000,
-                    shouldRetry: function (\Exception $e) {
+                    shouldRetry: function (Exception $e) {
                         if ($e instanceof TransientException) {
                             return $e->isRetryable();
                         }
@@ -1446,7 +1456,7 @@ class AIRouter
 
             return $response;
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $duration = microtime(true) - $startTime;
             $timeoutManager->recordExecution('external_api', $duration, false);
             throw $e;
@@ -1543,7 +1553,7 @@ class AIRouter
                             ?? null;
 
                         if ($content === null) {
-                            throw new \Exception('Invalid vision response format from '.$baseUrl);
+                            throw new Exception('Invalid vision response format from '.$baseUrl);
                         }
 
                         return $this->normalizeOpenAICompatibleContent($content);
@@ -1551,7 +1561,7 @@ class AIRouter
                     maxAttempts: 2,
                     backoffStrategy: 'exponential',
                     baseDelay: 1000,
-                    shouldRetry: function (\Exception $e) {
+                    shouldRetry: function (Exception $e) {
                         if ($e instanceof TransientException) {
                             return $e->isRetryable();
                         }
@@ -1571,7 +1581,7 @@ class AIRouter
 
             return $response;
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $duration = microtime(true) - $startTime;
             $timeoutManager->recordExecution('external_vision', $duration, false);
             throw $e;
@@ -1823,7 +1833,7 @@ class AIRouter
     private function isOfflineModeEnabled(): bool
     {
         try {
-            $value = app(\App\Services\SystemConfigService::class)
+            $value = app(SystemConfigService::class)
                 ->get('routing.offline_mode', 'disabled');
             if (! is_string($value)) {
                 return true;
@@ -2138,8 +2148,9 @@ class AIRouter
 
                 // Fallback chain: Ollama failed → try Agent SDK Proxy → simple CLI
                 if ($iterations === 1) {
-                    // Try Agent SDK Proxy first (has MCP tool access)
-                    if ($this->isAgentProxyAvailable()) {
+                    // Try Agent SDK Proxy first (has MCP tool access) only when
+                    // caller explicitly permits Claude-family fallback.
+                    if (empty($config['disable_claude_fallback']) && $this->isAgentProxyAvailable()) {
                         Log::info('Ollama tool calling failed, falling back to Claude Agent SDK Proxy');
                         try {
                             return $this->callAgentProxy($prompt, array_merge($config, [
@@ -2231,7 +2242,7 @@ class AIRouter
 
             try {
                 // Call Ollama with streaming enabled using Guzzle directly
-                $client = new \GuzzleHttp\Client;
+                $client = new Client;
                 $response = $client->post("{$targetUrl}/api/chat", [
                     'json' => [
                         'model' => $streamModel,

@@ -10,7 +10,12 @@ return new class extends Migration
     public function up(): void
     {
         DB::transaction(function (): void {
-            foreach (self::ROUTINE_NODE_IDS as $nodeId) {
+            $nodeIds = DB::table('workflow_nodes')
+                ->whereIn('id', self::ROUTINE_NODE_IDS)
+                ->pluck('id')
+                ->all();
+
+            foreach ($nodeIds as $nodeId) {
                 DB::table('workflow_node_configs')->updateOrInsert(
                     [
                         'workflow_node_id' => $nodeId,

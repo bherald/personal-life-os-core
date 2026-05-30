@@ -26,6 +26,8 @@ tool_phases:
   assess:
     - recall_procedures
     - recall_episodes
+    - agent_session_search
+    - agent_trajectory_build
     - get_priority_persons
     - get_recent_searches
     - get_search_coverage
@@ -52,6 +54,8 @@ tool_phases:
 tools:
   - recall_procedures
   - recall_episodes
+  - agent_session_search
+  - agent_trajectory_build
   - get_priority_persons
   - get_recent_searches
   - get_search_coverage

@@ -17,6 +17,35 @@ class AgentDoctorService
 
     private const TRACE_READINESS_MAX_SCAN_BYTES = 1048576;
 
+    private const TOOL_UNAVAILABLE_STATUSES = ['disabled', 'unavailable'];
+
+    private const TOOL_DEGRADED_STATUSES = ['degraded'];
+
+    private const ISSUE_FAILURE_MODES = [
+        'session_critical_stalled' => 'session_health',
+        'session_stalled' => 'session_health',
+        'session_expired_unreaped' => 'session_health',
+        'scheduled_job_failures_critical' => 'schedule_reliability',
+        'scheduled_job_failures_warning' => 'schedule_reliability',
+        'scheduled_runtime_timeout' => 'schedule_reliability',
+        'scheduled_runtime_near_timeout' => 'schedule_reliability',
+        'review_queue_aged' => 'review_backlog',
+        'review_queue_high_priority_aged' => 'review_backlog',
+        'skill_missing' => 'tooling_registry',
+        'registry_tools_blocked' => 'tooling_registry',
+        'registry_tools_missing' => 'tooling_registry',
+        'registry_tools_disabled' => 'tooling_registry',
+        'registry_tools_unavailable' => 'tooling_registry',
+        'registry_tools_degraded' => 'tooling_registry',
+        'scheduled_output_cjk' => 'output_quality',
+        'scheduled_output_guarded' => 'output_quality',
+        'memory_error_episode' => 'memory_hygiene',
+        'memory_token_pressure' => 'memory_hygiene',
+        'memory_distillation_missing' => 'memory_hygiene',
+        'memory_distillation_stale' => 'memory_hygiene',
+        'procedure_low_quality' => 'procedure_quality',
+    ];
+
     public function __construct(
         private readonly SkillLoaderService $skillLoader,
         private readonly AgentDoctorRecursionTelemetryService $recursionTelemetry,
@@ -38,6 +67,7 @@ class AgentDoctorService
         $reviewQueues = $this->collectReviewQueues($now, $checks);
         $memory = $this->mergeMemorySummaries(
             $this->collectMemorySignals($since, $checks),
+            $this->collectUndistilledMemoryDebt($since, $now, $checks),
             $this->collectEpisodeSummarySignals($since, $now, $checks),
             $this->collectProcedureSignals($checks)
         );
@@ -338,6 +368,7 @@ class AgentDoctorService
             ->where('status', 'pending')
             ->get();
 
+        $highPriorityThreshold = max(1, (int) config('health_thresholds.agents.high_priority_threshold', 8));
         $summaries = [];
         foreach ($rows as $row) {
             $agentId = trim((string) ($row->agent_id ?? ''));
@@ -351,7 +382,7 @@ class AgentDoctorService
             $ageHours = $createdAt !== null ? round($createdAt->floatDiffInHours($now), 1) : null;
 
             $summary['pending']++;
-            if ((int) ($row->priority ?? 0) > 0) {
+            if ((int) ($row->priority ?? 0) >= $highPriorityThreshold) {
                 $summary['high_priority']++;
                 $summary['oldest_high_priority_age_hours'] = max(
                     (float) ($summary['oldest_high_priority_age_hours'] ?? 0.0),
@@ -410,6 +441,103 @@ class AgentDoctorService
                 'max_duration_ms_window' => $row->max_duration_ms_window !== null ? (int) $row->max_duration_ms_window : null,
                 'last_episode_at' => $this->timeString($row->last_episode_at ?? null),
             ];
+        }
+
+        return $summaries;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $checks
+     * @return array<string, array<string, mixed>>
+     */
+    private function collectUndistilledMemoryDebt(CarbonImmutable $since, CarbonImmutable $now, array &$checks): array
+    {
+        if (! Schema::hasTable('agent_episodes') || ! Schema::hasTable('agent_episode_summaries')) {
+            return [];
+        }
+
+        if (! $this->tableHasColumns('agent_episodes', ['agent_id', 'session_id', 'created_at'], $checks)
+            || ! $this->tableHasColumns('agent_episode_summaries', ['id', 'agent_id', 'session_id'], $checks)) {
+            return [];
+        }
+
+        $lowSignalMaxEpisodes = max(1, (int) config('health_thresholds.agents.low_signal_undistilled_max_episodes', 2));
+        $lowSignalMaxTokens = max(0, (int) config('health_thresholds.agents.low_signal_undistilled_max_tokens', 500));
+
+        $query = DB::table('agent_episodes as e')
+            ->leftJoin('agent_episode_summaries as s', function ($join): void {
+                $join->on('s.agent_id', '=', 'e.agent_id')
+                    ->on('s.session_id', '=', 'e.session_id');
+            });
+
+        if (
+            Schema::hasTable('agent_sessions')
+            && Schema::hasColumn('agent_sessions', 'session_id')
+            && Schema::hasColumn('agent_sessions', 'agent_name')
+            && Schema::hasColumn('agent_sessions', 'status')
+        ) {
+            $query
+                ->leftJoin('agent_sessions as active_session', function ($join): void {
+                    $join->on('active_session.session_id', '=', 'e.session_id')
+                        ->on('active_session.agent_name', '=', 'e.agent_id')
+                        ->where('active_session.status', '=', 'active');
+                })
+                ->whereNull('active_session.session_id');
+        }
+
+        $rows = $query
+            ->select(
+                'e.agent_id',
+                'e.session_id',
+                DB::raw('COUNT(*) AS episode_count'),
+                DB::raw('SUM(COALESCE(e.tokens_used, 0)) AS token_count'),
+                DB::raw('MIN(e.created_at) AS first_episode_at'),
+                DB::raw('MAX(e.created_at) AS last_episode_at')
+            )
+            ->where('e.created_at', '>=', $since->toDateTimeString())
+            ->whereNotNull('e.session_id')
+            ->whereNull('s.id')
+            ->groupBy('e.agent_id', 'e.session_id')
+            ->get();
+
+        $summaries = [];
+        foreach ($rows as $row) {
+            $agentId = trim((string) ($row->agent_id ?? ''));
+            if ($agentId === '') {
+                continue;
+            }
+
+            $summary = $summaries[$agentId] ?? [
+                'undistilled_sessions_window' => 0,
+                'undistilled_episodes_window' => 0,
+                'undistilled_tokens_window' => 0,
+                'oldest_undistilled_age_hours' => null,
+                'undistilled_age_buckets' => $this->emptyUndistilledAgeBuckets(),
+                'low_signal_undistilled_sessions_window' => 0,
+            ];
+
+            $episodeCount = (int) ($row->episode_count ?? 0);
+            $tokenCount = (int) ($row->token_count ?? 0);
+            $firstEpisodeAt = $this->parseTime($row->first_episode_at ?? null);
+            $ageHours = $firstEpisodeAt !== null ? round($firstEpisodeAt->floatDiffInHours($now), 1) : null;
+
+            $summary['undistilled_sessions_window']++;
+            $summary['undistilled_episodes_window'] += $episodeCount;
+            $summary['undistilled_tokens_window'] += $tokenCount;
+            if ($ageHours !== null) {
+                $summary['oldest_undistilled_age_hours'] = max(
+                    (float) ($summary['oldest_undistilled_age_hours'] ?? 0.0),
+                    $ageHours
+                );
+                $bucket = $this->undistilledAgeBucket($ageHours);
+                $summary['undistilled_age_buckets'][$bucket] = (int) ($summary['undistilled_age_buckets'][$bucket] ?? 0) + 1;
+            }
+
+            if ($episodeCount <= $lowSignalMaxEpisodes && $tokenCount <= $lowSignalMaxTokens) {
+                $summary['low_signal_undistilled_sessions_window']++;
+            }
+
+            $summaries[$agentId] = $summary;
         }
 
         return $summaries;
@@ -564,6 +692,8 @@ class AgentDoctorService
                 'tools_missing' => $tools,
                 'tools_disabled' => [],
                 'tools_blocked' => [],
+                'tools_unavailable' => [],
+                'tools_degraded' => [],
             ];
 
             foreach ($tools as $tool) {
@@ -590,8 +720,14 @@ class AgentDoctorService
             }
         }
 
+        $select = ['name', 'enabled', 'risk_level'];
+        $hasAvailabilityStatus = Schema::hasColumn('agent_tool_registry', 'availability_status');
+        if ($hasAvailabilityStatus) {
+            $select[] = 'availability_status';
+        }
+
         $registryRows = DB::table('agent_tool_registry')
-            ->select('name', 'enabled', 'risk_level')
+            ->select($select)
             ->whereIn('name', $declaredTools)
             ->get()
             ->keyBy(fn (object $row): string => (string) $row->name);
@@ -600,6 +736,8 @@ class AgentDoctorService
             $missing = [];
             $disabled = [];
             $blocked = [];
+            $unavailable = [];
+            $degraded = [];
             $registered = 0;
             $enabled = 0;
 
@@ -621,6 +759,15 @@ class AgentDoctorService
                 if ((string) ($row->risk_level ?? '') === 'blocked') {
                     $blocked[] = $tool;
                 }
+
+                if ($hasAvailabilityStatus) {
+                    $availability = strtolower(trim((string) ($row->availability_status ?? 'unknown')));
+                    if (in_array($availability, self::TOOL_UNAVAILABLE_STATUSES, true)) {
+                        $unavailable[] = $tool;
+                    } elseif (in_array($availability, self::TOOL_DEGRADED_STATUSES, true)) {
+                        $degraded[] = $tool;
+                    }
+                }
             }
 
             $coverage[$agentId]['tools_registered'] = $registered;
@@ -628,6 +775,8 @@ class AgentDoctorService
             $coverage[$agentId]['tools_missing'] = $this->capToolList($missing);
             $coverage[$agentId]['tools_disabled'] = $this->capToolList($disabled);
             $coverage[$agentId]['tools_blocked'] = $this->capToolList($blocked);
+            $coverage[$agentId]['tools_unavailable'] = $this->capToolList($unavailable);
+            $coverage[$agentId]['tools_degraded'] = $this->capToolList($degraded);
         }
 
         return $coverage;
@@ -716,6 +865,8 @@ class AgentDoctorService
         $missingTools = count($registry['tools_missing'] ?? []);
         $disabledTools = count($registry['tools_disabled'] ?? []);
         $blockedTools = count($registry['tools_blocked'] ?? []);
+        $unavailableTools = count($registry['tools_unavailable'] ?? []);
+        $degradedTools = count($registry['tools_degraded'] ?? []);
         $missingWarn = max(1, (int) config('health_thresholds.agents.tools_missing_warning', 1));
         $blockedCrit = max(1, (int) config('health_thresholds.agents.tools_blocked_critical', 1));
 
@@ -731,6 +882,14 @@ class AgentDoctorService
             $warnings[] = "{$disabledTools} declared tool(s) disabled in registry";
         }
 
+        if ($unavailableTools > 0) {
+            $warnings[] = "{$unavailableTools} declared tool(s) unavailable by registry freshness";
+        }
+
+        if ($degradedTools > 0) {
+            $warnings[] = "{$degradedTools} declared tool(s) degraded by registry freshness";
+        }
+
         $memoryErrors = (int) ($memory['error_episodes_window'] ?? 0);
         if ($memoryErrors > 0) {
             $warnings[] = "{$memoryErrors} memory/error episode(s) in the window";
@@ -743,13 +902,18 @@ class AgentDoctorService
         }
 
         $episodesWithoutDistillationWarn = (int) config('health_thresholds.agents.episodes_without_distillation_warning', 25);
-        $episodes = (int) ($memory['episodes_window'] ?? 0);
-        $summaries = (int) ($memory['summaries_window'] ?? 0);
-        if ($episodesWithoutDistillationWarn > 0 && $episodes >= $episodesWithoutDistillationWarn && $summaries === 0) {
-            $warnings[] = "{$episodes} episode(s) but no distillation in the window";
+        $undistilledEpisodes = (int) ($memory['undistilled_episodes_window'] ?? 0);
+        $undistilledSessions = (int) ($memory['undistilled_sessions_window'] ?? 0);
+        if ($episodesWithoutDistillationWarn > 0 && $undistilledEpisodes >= $episodesWithoutDistillationWarn) {
+            $warnings[] = "{$undistilledEpisodes} undistilled episode(s) across {$undistilledSessions} session(s)";
         }
 
         $distillationStaleHours = (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0);
+        $oldestUndistilledAgeHours = $memory['oldest_undistilled_age_hours'] ?? null;
+        if ($distillationStaleHours > 0 && $oldestUndistilledAgeHours !== null && (float) $oldestUndistilledAgeHours >= $distillationStaleHours) {
+            $warnings[] = "oldest undistilled session is {$oldestUndistilledAgeHours}h old";
+        }
+
         $hoursSinceLastSummary = $memory['hours_since_last_summary'] ?? null;
         if ($distillationStaleHours > 0 && $hoursSinceLastSummary !== null && (float) $hoursSinceLastSummary >= $distillationStaleHours) {
             $warnings[] = "distillation stale ({$hoursSinceLastSummary}h since last summary)";
@@ -775,6 +939,7 @@ class AgentDoctorService
         ];
 
         $report['issue_codes'] = self::agentReasonCodes($report);
+        $report['failure_modes'] = self::failureModesForIssueCodes($report['issue_codes']);
 
         return $report;
     }
@@ -888,6 +1053,14 @@ class AgentDoctorService
             self::addReasonCode($codes, 'registry_tools_disabled');
         }
 
+        if (count((array) ($registry['tools_unavailable'] ?? [])) > 0) {
+            self::addReasonCode($codes, 'registry_tools_unavailable');
+        }
+
+        if (count((array) ($registry['tools_degraded'] ?? [])) > 0) {
+            self::addReasonCode($codes, 'registry_tools_degraded');
+        }
+
         if ((int) ($scheduledJob['cjk_output_runs_24h'] ?? 0) > 0) {
             self::addReasonCode($codes, 'scheduled_output_cjk');
         }
@@ -906,13 +1079,17 @@ class AgentDoctorService
         }
 
         $episodesWithoutDistillationWarn = (int) config('health_thresholds.agents.episodes_without_distillation_warning', 25);
-        $episodes = (int) ($memory['episodes_window'] ?? 0);
-        $summaries = (int) ($memory['summaries_window'] ?? 0);
-        if ($episodesWithoutDistillationWarn > 0 && $episodes >= $episodesWithoutDistillationWarn && $summaries === 0) {
+        $undistilledEpisodes = (int) ($memory['undistilled_episodes_window'] ?? 0);
+        if ($episodesWithoutDistillationWarn > 0 && $undistilledEpisodes >= $episodesWithoutDistillationWarn) {
             self::addReasonCode($codes, 'memory_distillation_missing');
         }
 
         $distillationStaleHours = (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0);
+        $oldestUndistilledAgeHours = $memory['oldest_undistilled_age_hours'] ?? null;
+        if ($distillationStaleHours > 0 && $oldestUndistilledAgeHours !== null && (float) $oldestUndistilledAgeHours >= $distillationStaleHours) {
+            self::addReasonCode($codes, 'memory_distillation_stale');
+        }
+
         $hoursSinceLastSummary = $memory['hours_since_last_summary'] ?? null;
         if ($distillationStaleHours > 0 && $hoursSinceLastSummary !== null && (float) $hoursSinceLastSummary >= $distillationStaleHours) {
             self::addReasonCode($codes, 'memory_distillation_stale');
@@ -923,6 +1100,46 @@ class AgentDoctorService
         }
 
         return array_slice($codes, 0, 8);
+    }
+
+    /**
+     * @param  list<string>  $codes
+     * @return list<string>
+     */
+    public static function failureModesForIssueCodes(array $codes): array
+    {
+        $modes = [];
+
+        foreach (self::sanitizeReasonCodes($codes) as $code) {
+            $mode = self::ISSUE_FAILURE_MODES[$code] ?? 'unknown';
+            if (! in_array($mode, $modes, true)) {
+                $modes[] = $mode;
+            }
+        }
+
+        return $modes;
+    }
+
+    /**
+     * @param  array<string, int>  $issueCodeCounts
+     * @return array<string, int>
+     */
+    public static function failureModeCountsForIssueCodeCounts(array $issueCodeCounts): array
+    {
+        $counts = [];
+
+        foreach ($issueCodeCounts as $code => $count) {
+            if (! is_string($code) || preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) !== 1) {
+                continue;
+            }
+
+            $mode = self::ISSUE_FAILURE_MODES[$code] ?? 'unknown';
+            $counts[$mode] = ($counts[$mode] ?? 0) + max(0, (int) $count);
+        }
+
+        arsort($counts);
+
+        return $counts;
     }
 
     /**
@@ -1242,11 +1459,18 @@ class AgentDoctorService
         $reviewAged = 0;
         $toolsMissing = 0;
         $toolsBlocked = 0;
+        $toolsUnavailable = 0;
+        $toolsDegraded = 0;
         $memoryEpisodes = 0;
         $memoryErrors = 0;
         $memoryTokens = 0;
         $memorySummaries = 0;
         $memoryUndistilledEpisodes = 0;
+        $memoryUndistilledSessions = 0;
+        $memoryUndistilledTokens = 0;
+        $memoryLowSignalUndistilledSessions = 0;
+        $memoryOldestUndistilledAgeHours = null;
+        $memoryUndistilledAgeBuckets = $this->emptyUndistilledAgeBuckets();
         $proceduresLowQuality = 0;
         $scheduledSuccessRuns = 0;
         $scheduledEmptySuccessOutputs = 0;
@@ -1265,10 +1489,24 @@ class AgentDoctorService
             $reviewPending += (int) ($agent['review_queue']['pending'] ?? 0);
             $toolsMissing += count($agent['registry']['tools_missing'] ?? []);
             $toolsBlocked += count($agent['registry']['tools_blocked'] ?? []);
+            $toolsUnavailable += count($agent['registry']['tools_unavailable'] ?? []);
+            $toolsDegraded += count($agent['registry']['tools_degraded'] ?? []);
             $memoryEpisodes += (int) ($agent['memory']['episodes_window'] ?? 0);
             $memoryErrors += (int) ($agent['memory']['error_episodes_window'] ?? 0);
             $memoryTokens += (int) ($agent['memory']['tokens_window'] ?? 0);
             $memorySummaries += (int) ($agent['memory']['summaries_window'] ?? 0);
+            $agentUndistilledEpisodes = (int) ($agent['memory']['undistilled_episodes_window'] ?? 0);
+            $memoryUndistilledEpisodes += $agentUndistilledEpisodes;
+            $memoryUndistilledSessions += (int) ($agent['memory']['undistilled_sessions_window'] ?? 0);
+            $memoryUndistilledTokens += (int) ($agent['memory']['undistilled_tokens_window'] ?? 0);
+            $memoryLowSignalUndistilledSessions += (int) ($agent['memory']['low_signal_undistilled_sessions_window'] ?? 0);
+            $memoryOldestUndistilledAgeHours = max(
+                (float) ($memoryOldestUndistilledAgeHours ?? 0.0),
+                (float) ($agent['memory']['oldest_undistilled_age_hours'] ?? 0.0)
+            );
+            foreach ($this->emptyUndistilledAgeBuckets() as $bucket => $_count) {
+                $memoryUndistilledAgeBuckets[$bucket] += (int) (($agent['memory']['undistilled_age_buckets'] ?? [])[$bucket] ?? 0);
+            }
             $proceduresLowQuality += (int) ($agent['memory']['procedures_low_quality'] ?? 0);
             $scheduledSuccessRuns += (int) ($agent['scheduled_job']['successful_runs_24h'] ?? 0);
             $scheduledEmptySuccessOutputs += (int) ($agent['scheduled_job']['empty_success_output_runs_24h'] ?? 0);
@@ -1291,9 +1529,6 @@ class AgentDoctorService
                 $latestScheduledGuardedOutputAt,
                 $this->parseTime($agent['scheduled_job']['latest_guarded_output_at'] ?? null)
             );
-            if (((int) ($agent['memory']['episodes_window'] ?? 0)) > 0 && ((int) ($agent['memory']['summaries_window'] ?? 0)) === 0) {
-                $memoryUndistilledEpisodes += (int) ($agent['memory']['episodes_window'] ?? 0);
-            }
             if (($agent['review_queue']['oldest_age_hours'] ?? null) !== null && $agent['warnings'] !== []) {
                 $reviewAged++;
             }
@@ -1304,6 +1539,8 @@ class AgentDoctorService
         }
 
         arsort($issueCodeCounts);
+
+        $failureModeCounts = self::failureModeCountsForIssueCodeCounts($issueCodeCounts);
 
         return [
             'agents_total' => count($agents),
@@ -1316,11 +1553,20 @@ class AgentDoctorService
             'review_queue_aged' => $reviewAged,
             'tools_missing_total' => $toolsMissing,
             'tools_blocked_total' => $toolsBlocked,
+            'tools_unavailable_total' => $toolsUnavailable,
+            'tools_degraded_total' => $toolsDegraded,
             'memory_episodes_window' => $memoryEpisodes,
             'memory_error_episodes_window' => $memoryErrors,
             'memory_tokens_window' => $memoryTokens,
             'memory_summaries_window' => $memorySummaries,
             'memory_undistilled_episodes_window' => $memoryUndistilledEpisodes,
+            'memory_undistilled_sessions_window' => $memoryUndistilledSessions,
+            'memory_undistilled_tokens_window' => $memoryUndistilledTokens,
+            'memory_oldest_undistilled_age_hours' => $memoryOldestUndistilledAgeHours !== null && $memoryOldestUndistilledAgeHours > 0
+                ? round($memoryOldestUndistilledAgeHours, 1)
+                : null,
+            'memory_undistilled_age_buckets' => $memoryUndistilledAgeBuckets,
+            'memory_low_signal_undistilled_sessions_window' => $memoryLowSignalUndistilledSessions,
             'procedures_low_quality_total' => $proceduresLowQuality,
             'scheduled_success_runs_window' => $scheduledSuccessRuns,
             'scheduled_empty_success_outputs_window' => $scheduledEmptySuccessOutputs,
@@ -1337,6 +1583,8 @@ class AgentDoctorService
             'scheduled_latest_guarded_output_age_hours' => $this->ageHours($latestScheduledGuardedOutputAt, $now),
             'issue_code_counts' => $issueCodeCounts,
             'top_issue_codes' => array_slice(array_keys($issueCodeCounts), 0, 8),
+            'failure_mode_counts' => $failureModeCounts,
+            'top_failure_modes' => array_slice(array_keys($failureModeCounts), 0, 8),
         ];
     }
 
@@ -1352,15 +1600,24 @@ class AgentDoctorService
         $warningAgents = count(array_filter($agents, fn (array $agent): bool => ($agent['status'] ?? '') === 'warning'));
         $toolsMissing = array_sum(array_map(fn (array $agent): int => count($agent['registry']['tools_missing'] ?? []), $agents));
         $toolsBlocked = array_sum(array_map(fn (array $agent): int => count($agent['registry']['tools_blocked'] ?? []), $agents));
+        $toolsUnavailable = array_sum(array_map(fn (array $agent): int => count($agent['registry']['tools_unavailable'] ?? []), $agents));
+        $toolsDegraded = array_sum(array_map(fn (array $agent): int => count($agent['registry']['tools_degraded'] ?? []), $agents));
         $memoryErrors = array_sum(array_map(fn (array $agent): int => (int) ($agent['memory']['error_episodes_window'] ?? 0), $agents));
         $undistilledEpisodes = array_sum(array_map(function (array $agent): int {
             $memory = $agent['memory'] ?? [];
 
-            return ((int) ($memory['summaries_window'] ?? 0)) === 0
-                ? (int) ($memory['episodes_window'] ?? 0)
-                : 0;
+            return (int) ($memory['undistilled_episodes_window'] ?? 0);
         }, $agents));
+        $undistilledSessions = array_sum(array_map(fn (array $agent): int => (int) ($agent['memory']['undistilled_sessions_window'] ?? 0), $agents));
+        $lowSignalUndistilledSessions = array_sum(array_map(fn (array $agent): int => (int) ($agent['memory']['low_signal_undistilled_sessions_window'] ?? 0), $agents));
+        $episodesWithoutDistillationWarn = (int) config('health_thresholds.agents.episodes_without_distillation_warning', 25);
+        $undistilledEpisodesWarning = $episodesWithoutDistillationWarn > 0 && $undistilledEpisodes >= $episodesWithoutDistillationWarn;
         $staleDistillations = count(array_filter($agents, function (array $agent): bool {
+            $oldestUndistilled = $agent['memory']['oldest_undistilled_age_hours'] ?? null;
+            if ($oldestUndistilled !== null && (float) $oldestUndistilled >= (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0)) {
+                return true;
+            }
+
             $hours = $agent['memory']['hours_since_last_summary'] ?? null;
 
             return $hours !== null && (float) $hours >= (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0);
@@ -1387,14 +1644,19 @@ class AgentDoctorService
                 "{$toolsMissing} missing declared tool(s); {$toolsBlocked} blocked declared tool(s)"
             ),
             $this->check(
+                'registry_freshness',
+                $toolsUnavailable > 0 || $toolsDegraded > 0 ? 'warning' : 'ok',
+                "{$toolsUnavailable} unavailable declared tool(s); {$toolsDegraded} degraded declared tool(s)"
+            ),
+            $this->check(
                 'memory_errors',
                 $memoryErrors > 0 ? 'warning' : 'ok',
                 "{$memoryErrors} memory/error episode(s) in the window"
             ),
             $this->check(
                 'episodic_distillation',
-                $undistilledEpisodes > 0 || $staleDistillations > 0 ? 'warning' : 'ok',
-                "{$undistilledEpisodes} undistilled episode(s); {$staleDistillations} stale distillation agent(s)"
+                $undistilledEpisodesWarning || $staleDistillations > 0 ? 'warning' : 'ok',
+                "{$undistilledEpisodes} undistilled episode(s); {$undistilledSessions} undistilled session(s); {$lowSignalUndistilledSessions} low-signal session(s); {$staleDistillations} stale distillation agent(s)"
             ),
             $this->check(
                 'procedural_quality',
@@ -1552,6 +1814,8 @@ class AgentDoctorService
             'tools_missing' => [],
             'tools_disabled' => [],
             'tools_blocked' => [],
+            'tools_unavailable' => [],
+            'tools_degraded' => [],
         ];
     }
 
@@ -1567,6 +1831,12 @@ class AgentDoctorService
             'archived_summaries_window' => 0,
             'last_summary_at' => null,
             'hours_since_last_summary' => null,
+            'undistilled_sessions_window' => 0,
+            'undistilled_episodes_window' => 0,
+            'undistilled_tokens_window' => 0,
+            'oldest_undistilled_age_hours' => null,
+            'undistilled_age_buckets' => $this->emptyUndistilledAgeBuckets(),
+            'low_signal_undistilled_sessions_window' => 0,
             'procedures_total' => 0,
             'procedures_active' => 0,
             'procedures_canonical' => 0,
@@ -1574,6 +1844,29 @@ class AgentDoctorService
             'procedures_low_quality' => 0,
             'procedures_last_used_at' => null,
         ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function emptyUndistilledAgeBuckets(): array
+    {
+        return [
+            'lt_1h' => 0,
+            '1_6h' => 0,
+            '6_24h' => 0,
+            'gt_24h' => 0,
+        ];
+    }
+
+    private function undistilledAgeBucket(float $ageHours): string
+    {
+        return match (true) {
+            $ageHours < 1.0 => 'lt_1h',
+            $ageHours < 6.0 => '1_6h',
+            $ageHours < 24.0 => '6_24h',
+            default => 'gt_24h',
+        };
     }
 
     /**

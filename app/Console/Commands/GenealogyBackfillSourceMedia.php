@@ -44,7 +44,8 @@ class GenealogyBackfillSourceMedia extends Command
         {--nara-metadata-snapshot : For NARA URLs, save an API metadata snapshot when no digital object is downloadable}
         {--retry-blocked : Include sources already marked source_media_backfill_blocked}
         {--skip-link : Source mode: save/reuse media without creating the source citation link}
-        {--json : Emit compact JSON summary}
+        {--json : Emit JSON summary}
+        {--compact : With --json, emit aggregate-only scheduled-output JSON without per-source rows}
         {--puppeteer : Enable Puppeteer MCP fallback for Cloudflare-blocked hosts (slower; manual-run only)}
         {--dry-run : List targets without fetching}';
 
@@ -61,6 +62,7 @@ class GenealogyBackfillSourceMedia extends Command
         $usePuppeteer = (bool) $this->option('puppeteer');
         $dryRun = (bool) $this->option('dry-run');
         $json = (bool) $this->option('json');
+        $compact = (bool) $this->option('compact');
 
         if ($mode === '' || $mode === 'source') {
             $mode = 'sources';
@@ -81,7 +83,8 @@ class GenealogyBackfillSourceMedia extends Command
                 linkConfirmed: ! (bool) $this->option('skip-link'),
                 naraMetadataSnapshot: (bool) $this->option('nara-metadata-snapshot'),
                 retryBlocked: (bool) $this->option('retry-blocked'),
-                json: $json
+                json: $json,
+                compact: $compact
             );
         }
 
@@ -329,7 +332,8 @@ class GenealogyBackfillSourceMedia extends Command
         bool $linkConfirmed,
         bool $naraMetadataSnapshot,
         bool $retryBlocked,
-        bool $json
+        bool $json,
+        bool $compact
     ): int {
         if (! $dryRun && (! $downloadConfirmed || ! $storageConfirmed)) {
             $payload = [
@@ -337,7 +341,7 @@ class GenealogyBackfillSourceMedia extends Command
                 'error' => '--confirm-download and --confirm-storage-write are required unless --dry-run is used',
                 'items_processed' => 0,
             ];
-            $this->emitSourcePayload($payload, $json);
+            $this->emitSourcePayload($payload, $json, $compact);
 
             return self::FAILURE;
         }
@@ -458,7 +462,7 @@ class GenealogyBackfillSourceMedia extends Command
             $payload['status'] = 'partial';
         }
 
-        $this->emitSourcePayload($payload, $json);
+        $this->emitSourcePayload($payload, $json, $compact);
 
         return $payload['status'] === 'failed' ? self::FAILURE : self::SUCCESS;
     }
@@ -1004,9 +1008,13 @@ class GenealogyBackfillSourceMedia extends Command
         }
     }
 
-    private function emitSourcePayload(array $payload, bool $json): void
+    private function emitSourcePayload(array $payload, bool $json, bool $compact = false): void
     {
         if ($json) {
+            if ($compact) {
+                $payload = $this->compactSourcePayload($payload);
+            }
+
             $this->line(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
             return;
@@ -1027,6 +1035,100 @@ class GenealogyBackfillSourceMedia extends Command
             (int) ($summary['media_rows_reused'] ?? 0),
             (int) ($summary['failures'] ?? 0)
         ));
+    }
+
+    private function compactSourcePayload(array $payload): array
+    {
+        $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
+        $rawItems = $payload['items'] ?? [];
+        $items = array_values(array_filter(
+            is_array($rawItems) ? $rawItems : [],
+            static fn ($item): bool => is_array($item)
+        ));
+
+        $statusCounts = [];
+        $blockerCounts = [];
+        foreach ($items as $item) {
+            $status = $this->compactToken((string) ($item['status'] ?? 'unknown'));
+            $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+
+            $blockers = $item['blockers'] ?? [];
+            if (! is_array($blockers)) {
+                continue;
+            }
+
+            foreach ($blockers as $blocker) {
+                if (! is_scalar($blocker)) {
+                    continue;
+                }
+
+                $key = $this->compactToken((string) $blocker);
+                if ($key === 'unknown') {
+                    continue;
+                }
+
+                $blockerCounts[$key] = ($blockerCounts[$key] ?? 0) + 1;
+            }
+        }
+
+        ksort($statusCounts);
+        ksort($blockerCounts);
+
+        $compact = [
+            'schema' => (string) ($payload['schema'] ?? 'genealogy_source_media_backfill.v1'),
+            'compact' => true,
+            'mode' => (string) ($payload['mode'] ?? 'sources'),
+            'status' => (string) ($payload['status'] ?? 'unknown'),
+            'tree_scope' => $this->compactTreeScope($payload['tree_id'] ?? null),
+            'since' => $payload['since'] ?? null,
+            'limit' => isset($payload['limit']) ? (int) $payload['limit'] : null,
+            'order' => $payload['order'] ?? null,
+            'dry_run' => (bool) ($payload['dry_run'] ?? false),
+            'link_confirmed' => (bool) ($payload['link_confirmed'] ?? false),
+            'nara_metadata_snapshot' => (bool) ($payload['nara_metadata_snapshot'] ?? false),
+            'retry_blocked' => (bool) ($payload['retry_blocked'] ?? false),
+            'summary' => $summary,
+            'items_processed' => (int) ($payload['items_processed'] ?? count($items)),
+            'item_status_counts' => $statusCounts,
+            'blocker_counts' => $blockerCounts,
+            'posture' => [
+                'aggregate_only' => true,
+                'source_ids_included' => false,
+                'source_titles_included' => false,
+                'media_ids_included' => false,
+                'urls_included' => false,
+                'url_hosts_included' => false,
+                'local_paths_included' => false,
+                'raw_errors_included' => false,
+                'per_item_rows_included' => false,
+                'tree_identifiers_included' => false,
+            ],
+            'timestamp' => now()->toIso8601String(),
+        ];
+
+        if (($payload['status'] ?? null) === 'blocked') {
+            $compact['blocked_reason'] = 'confirmation_required';
+        }
+
+        return $compact;
+    }
+
+    private function compactTreeScope(mixed $treeId): string
+    {
+        if ($treeId === null || $treeId === '' || $treeId === 'all') {
+            return 'all_trees';
+        }
+
+        return 'single_tree';
+    }
+
+    private function compactToken(string $value): string
+    {
+        $value = strtolower(trim($value));
+        $value = preg_replace('/[^a-z0-9_]+/', '_', $value) ?: '';
+        $value = trim($value, '_');
+
+        return $value === '' ? 'unknown' : mb_substr($value, 0, 80);
     }
 
     /**

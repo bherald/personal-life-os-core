@@ -48,7 +48,7 @@ use Throwable;
  * API endpoints for family tree management.
  * Supports multiple trees, GEDCOM import, person/family CRUD, and media management.
  *
- * @see docs/future-enhancements.md E20
+ * Historical private backlog label: E20.
  */
 class GenealogyController extends Controller
 {

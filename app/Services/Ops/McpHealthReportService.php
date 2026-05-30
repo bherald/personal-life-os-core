@@ -2,10 +2,22 @@
 
 namespace App\Services\Ops;
 
+use App\Services\OfflinePolicyService;
 use Symfony\Component\Process\Process;
+use Throwable;
 
 class McpHealthReportService
 {
+    private const POLICY_PROFILES = [
+        'default',
+        'offline_review',
+        'offline_dev_assist',
+        'offline_genealogy_assist',
+        'hybrid_review',
+        'hybrid_dev_assist',
+        'cloud_escalation_only',
+    ];
+
     private const TRUST_BOUNDARY_LABELS = [
         'external_process',
         'internet',
@@ -58,6 +70,8 @@ class McpHealthReportService
         'unknown',
     ];
 
+    public function __construct(private readonly OfflinePolicyService $offlinePolicy) {}
+
     /**
      * @return array<string, mixed>
      */
@@ -102,6 +116,7 @@ class McpHealthReportService
             'process_check' => $payload['process_check'] ?? ['available' => false, 'source' => 'unknown'],
             'summary' => $payload['summary'] ?? [],
             'config_posture' => $this->configPostureSummary($servers->filter(fn (mixed $server): bool => is_array($server))->values()->all()),
+            'policy_posture' => $this->policyPostureSummary($servers->filter(fn (mixed $server): bool => is_array($server))->values()->all()),
             'attention' => $servers
                 ->filter(fn (mixed $server): bool => is_array($server)
                     && ! in_array(($server['status'] ?? null), ['ok', 'disabled'], true))
@@ -160,7 +175,51 @@ class McpHealthReportService
                 'running' => $matches !== [],
                 'matches' => count($matches),
             ],
+            'policy' => $this->policyReport($name),
             'status' => $this->serverStatus($enabled, $expectsProcess, $process['available'], $matches !== [], $missingEntries),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function policyReport(string $name): array
+    {
+        $profiles = [];
+
+        foreach (self::POLICY_PROFILES as $profile) {
+            try {
+                $decision = $this->offlinePolicy->evaluateMcpServer($name, $profile, false);
+                $profiles[$profile] = [
+                    'allowed' => $decision->allowed,
+                    'reason_code' => $this->policyReasonCode($decision->reason),
+                    'trust_boundary' => $this->normalizeLabel(
+                        $decision->mcpTrustBoundary,
+                        array_keys((array) config('offline_policy.mcp_trust_boundaries', []))
+                    ),
+                ];
+            } catch (Throwable) {
+                $profiles[$profile] = [
+                    'allowed' => false,
+                    'reason_code' => 'policy_error',
+                    'trust_boundary' => 'unknown',
+                ];
+            }
+        }
+
+        return [
+            'profiles' => $profiles,
+            'allowed_profiles' => array_keys(array_filter(
+                $profiles,
+                static fn (array $profile): bool => (bool) ($profile['allowed'] ?? false)
+            )),
+            'denied_profiles' => array_keys(array_filter(
+                $profiles,
+                static fn (array $profile): bool => ! (bool) ($profile['allowed'] ?? false)
+            )),
+            'denied_profile_count' => collect($profiles)
+                ->filter(fn (array $profile): bool => ! (bool) ($profile['allowed'] ?? false))
+                ->count(),
         ];
     }
 
@@ -428,6 +487,72 @@ class McpHealthReportService
 
     /**
      * @param  list<array<string, mixed>>  $servers
+     * @return array<string, mixed>
+     */
+    private function policyPostureSummary(array $servers): array
+    {
+        $profileCounts = [];
+        $enabledProfileCounts = [];
+        foreach (self::POLICY_PROFILES as $profile) {
+            $profileCounts[$profile] = ['allowed' => 0, 'denied' => 0];
+            $enabledProfileCounts[$profile] = ['allowed' => 0, 'denied' => 0];
+        }
+
+        $enabledDeniedDefault = 0;
+        $enabledNoNonDefaultProfile = 0;
+        $enabledDenialReasonCounts = [];
+
+        foreach ($servers as $server) {
+            $enabled = (bool) ($server['enabled'] ?? false);
+            $profiles = (array) data_get($server, 'policy.profiles', []);
+            $allowedNonDefault = false;
+
+            foreach (self::POLICY_PROFILES as $profile) {
+                $profilePayload = (array) ($profiles[$profile] ?? []);
+                $allowed = (bool) ($profilePayload['allowed'] ?? false);
+                $bucket = $allowed ? 'allowed' : 'denied';
+
+                $profileCounts[$profile][$bucket]++;
+
+                if (! $enabled) {
+                    continue;
+                }
+
+                $enabledProfileCounts[$profile][$bucket]++;
+
+                if ($profile === 'default' && ! $allowed) {
+                    $enabledDeniedDefault++;
+                }
+
+                if ($profile !== 'default' && $allowed) {
+                    $allowedNonDefault = true;
+                }
+
+                if (! $allowed) {
+                    $reason = (string) ($profilePayload['reason_code'] ?? 'policy_denied');
+                    $enabledDenialReasonCounts[$reason] = ($enabledDenialReasonCounts[$reason] ?? 0) + 1;
+                }
+            }
+
+            if ($enabled && ! $allowedNonDefault) {
+                $enabledNoNonDefaultProfile++;
+            }
+        }
+
+        ksort($enabledDenialReasonCounts);
+
+        return [
+            'profiles' => self::POLICY_PROFILES,
+            'profile_counts' => $profileCounts,
+            'enabled_profile_counts' => $enabledProfileCounts,
+            'enabled_servers_denied_default' => $enabledDeniedDefault,
+            'enabled_servers_with_no_non_default_profile' => $enabledNoNonDefaultProfile,
+            'enabled_denial_reason_counts' => $enabledDenialReasonCounts,
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $servers
      * @return array<string, int>
      */
     private function labelCounts(array $servers, string $key): array
@@ -462,6 +587,20 @@ class McpHealthReportService
         }
 
         return in_array($label, $allowed, true) ? $label : 'other';
+    }
+
+    private function policyReasonCode(string $reason): string
+    {
+        return match (true) {
+            str_contains($reason, 'is disabled') => 'server_disabled',
+            str_contains($reason, 'not found') => 'server_missing',
+            str_contains($reason, 'no trust_boundary') => 'missing_trust_boundary',
+            str_contains($reason, 'trust boundary') => 'trust_boundary_denied',
+            str_contains($reason, 'offline_profiles_allowed') => 'offline_profile_denied',
+            str_contains($reason, 'hybrid_profiles_allowed') => 'hybrid_profile_denied',
+            preg_match("/^MCP server '.+' allowed under profile/", $reason) === 1 => 'allowed',
+            default => 'policy_denied',
+        };
     }
 
     private function safeServerName(string $name): string

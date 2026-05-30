@@ -4,9 +4,9 @@ namespace App\Services;
 
 use App\Services\Genealogy\FaceLinkBridgeService;
 use App\Support\PgVector;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Process;
 
 /**
@@ -29,20 +29,29 @@ use Illuminate\Support\Facades\Process;
 class FaceEmbeddingService
 {
     private const VECTOR_LITERAL_PRECISION = 6;
+
     private const PYTHON_SCRIPT = 'scripts/face_detector.py';
+
     private const FACE_CROPS_DIR = 'storage/app/face_crops';
+
     private const MATCH_TOLERANCE = 0.6;  // dlib default
+
     private const HIGH_CONFIDENCE = 0.92;  // Tightened from 0.88 — dlib 128-dim needs stricter threshold
+
     private const LOW_CONFIDENCE = 0.65;
+
     private const CLUSTER_SOFT_CAP = 20;  // After this many faces, require stricter confidence
+
     private const CLUSTER_CAP_BOOST = 0.03; // Extra confidence required above soft cap (0.92+0.03=0.95)
 
     // Cache keys for tracking face detection availability
     private const CACHE_AVAILABILITY_KEY = 'face_recognition_available';
+
     private const CACHE_AVAILABILITY_TTL = 3600;
 
     // Lock for preventing concurrent heavy face detection batches
     private const FACE_BATCH_LOCK_KEY = 'face_detection_batch_lock';
+
     private const FACE_BATCH_LOCK_TTL = 600;  // Fallback — config/lock_ttls.php is primary (SC-2.3)
 
     public function __construct(
@@ -55,23 +64,23 @@ class FaceEmbeddingService
     /**
      * Detect faces in an image and generate embeddings
      *
-     * @param string $imagePath Local file path
-     * @param bool $saveCrops Save cropped face images
+     * @param  string  $imagePath  Local file path
+     * @param  bool  $saveCrops  Save cropped face images
      * @return array Detection result with faces and embeddings
      */
     public function detectFaces(string $imagePath, bool $saveCrops = true): array
     {
-        if (!file_exists($imagePath)) {
-            return ['success' => false, 'error' => 'File not found: ' . $imagePath];
+        if (! file_exists($imagePath)) {
+            return ['success' => false, 'error' => 'File not found: '.$imagePath];
         }
 
         $scriptPath = base_path(self::PYTHON_SCRIPT);
-        if (!file_exists($scriptPath)) {
+        if (! file_exists($scriptPath)) {
             return ['success' => false, 'error' => 'Python script not found'];
         }
 
         $outputDir = storage_path('app/face_crops');
-        if (!is_dir($outputDir)) {
+        if (! is_dir($outputDir)) {
             mkdir($outputDir, 0755, true);
         }
 
@@ -115,31 +124,31 @@ class FaceEmbeddingService
     /**
      * Process an image: detect faces, store embeddings, find matches
      *
-     * @param int $fileRegistryId file_registry.id
-     * @param string $imagePath Local file path
+     * @param  int  $fileRegistryId  file_registry.id
+     * @param  string  $imagePath  Local file path
      * @return array Processing result
      */
     public function processImage(int $fileRegistryId, string $imagePath): array
     {
         $detection = $this->detectFaces($imagePath, true);
 
-        if (!$detection['success']) {
+        if (! $detection['success']) {
             return $detection;
         }
 
         if (empty($detection['faces'])) {
             // Update file_registry to mark as scanned (no faces)
-            DB::update("
+            DB::update('
                 UPDATE file_registry
                 SET face_count = 0, face_scan_at = NOW(), updated_at = NOW()
                 WHERE id = ?
-            ", [$fileRegistryId]);
+            ', [$fileRegistryId]);
 
             return [
                 'success' => true,
                 'faces_detected' => 0,
                 'faces_matched' => 0,
-                'faces_new' => 0
+                'faces_new' => 0,
             ];
         }
 
@@ -158,7 +167,7 @@ class FaceEmbeddingService
             $matchedFaceId = null;
             $confidence = 0;
 
-            if (!empty($matches)) {
+            if (! empty($matches)) {
                 $bestMatch = $matches[0];
                 $confidence = $bestMatch['confidence'];
                 $candidateClusterId = $bestMatch['person_cluster_id'];
@@ -195,7 +204,7 @@ class FaceEmbeddingService
             }
 
             // Create new cluster if no match
-            if (!$personClusterId) {
+            if (! $personClusterId) {
                 $personClusterId = $this->createPersonCluster();
                 $facesNew++;
             }
@@ -213,26 +222,26 @@ class FaceEmbeddingService
         }
 
         // Update file_registry
-        DB::update("
+        DB::update('
             UPDATE file_registry
             SET face_count = ?, face_scan_at = NOW(), updated_at = NOW()
             WHERE id = ?
-        ", [count($detection['faces']), $fileRegistryId]);
+        ', [count($detection['faces']), $fileRegistryId]);
 
         return [
             'success' => true,
             'faces_detected' => count($detection['faces']),
             'faces_matched' => $facesMatched,
-            'faces_new' => $facesNew
+            'faces_new' => $facesNew,
         ];
     }
 
     /**
      * Find faces matching the given embedding using pgvector
      *
-     * @param array $embedding 128-dim face embedding
-     * @param float $tolerance Match tolerance (lower = stricter)
-     * @param int $limit Max results
+     * @param  array  $embedding  128-dim face embedding
+     * @param  float  $tolerance  Match tolerance (lower = stricter)
+     * @param  int  $limit  Max results
      * @return array Matching faces with confidence scores
      */
     public function findMatchingFaces(array $embedding, float $tolerance = self::MATCH_TOLERANCE, int $limit = 5): array
@@ -241,7 +250,7 @@ class FaceEmbeddingService
 
         try {
             // Use pgvector cosine distance for similarity search
-            $matches = DB::connection('pgsql_rag')->select("
+            $matches = DB::connection('pgsql_rag')->select('
                 SELECT
                     fe.id as face_id,
                     fe.person_cluster_id,
@@ -256,11 +265,12 @@ class FaceEmbeddingService
                 WHERE 1 - (fe.embedding <=> ?::vector) >= ?
                 ORDER BY fe.embedding <=> ?::vector
                 LIMIT ?
-            ", [$embeddingStr, $embeddingStr, 1 - $tolerance, $embeddingStr, $limit]);
+            ', [$embeddingStr, $embeddingStr, 1 - $tolerance, $embeddingStr, $limit]);
 
-            return array_map(fn($m) => (array) $m, $matches);
+            return array_map(fn ($m) => (array) $m, $matches);
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: pgvector search failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -274,15 +284,16 @@ class FaceEmbeddingService
         $embeddingStr = PgVector::literal($embedding, self::VECTOR_LITERAL_PRECISION);
 
         try {
-            $result = DB::connection('pgsql_rag')->selectOne("
+            $result = DB::connection('pgsql_rag')->selectOne('
                 SELECT AVG(1 - (fe.embedding <=> ?::vector)) as avg_similarity
                 FROM face_embeddings fe
                 WHERE fe.person_cluster_id = ?
-            ", [$embeddingStr, $clusterId]);
+            ', [$embeddingStr, $clusterId]);
 
             return $result ? (float) $result->avg_similarity : null;
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: cluster avg similarity failed', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -292,9 +303,9 @@ class FaceEmbeddingService
      */
     private function getClusterFaceCount(int $clusterId): int
     {
-        $result = DB::connection('pgsql_rag')->selectOne("
+        $result = DB::connection('pgsql_rag')->selectOne('
             SELECT face_count FROM person_clusters WHERE id = ?
-        ", [$clusterId]);
+        ', [$clusterId]);
 
         return $result ? (int) $result->face_count : 0;
     }
@@ -306,9 +317,9 @@ class FaceEmbeddingService
      * - A baby photo can match a cluster containing adult photos if ANY face in that cluster is similar
      * - Returns best match per cluster (not per face)
      *
-     * @param array $embedding 128-dim face embedding
-     * @param float $tolerance Match tolerance
-     * @param int $limit Max clusters to return
+     * @param  array  $embedding  128-dim face embedding
+     * @param  float  $tolerance  Match tolerance
+     * @param  int  $limit  Max clusters to return
      * @return array Matching clusters with best confidence per cluster
      */
     public function findMatchingClusters(array $embedding, float $tolerance = self::MATCH_TOLERANCE, int $limit = 10): array
@@ -337,9 +348,10 @@ class FaceEmbeddingService
                 LIMIT ?
             ", [$embeddingStr, $embeddingStr, $embeddingStr, 1 - $tolerance, $embeddingStr, $limit]);
 
-            return array_map(fn($m) => (array) $m, $matches);
+            return array_map(fn ($m) => (array) $m, $matches);
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: multi-centroid search failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -350,20 +362,20 @@ class FaceEmbeddingService
      * Called after confirming a cluster to suggest other clusters to merge.
      * Uses multi-centroid matching: compares ALL faces in unreviewed clusters against ALL faces in target.
      *
-     * @param int $confirmedClusterId The newly confirmed cluster
-     * @param float $tolerance Match tolerance
-     * @param int $limit Max suggestions
+     * @param  int  $confirmedClusterId  The newly confirmed cluster
+     * @param  float  $tolerance  Match tolerance
+     * @param  int  $limit  Max suggestions
      * @return array Similar unreviewed clusters with confidence scores
      */
     public function suggestSimilarClusters(int $confirmedClusterId, float $tolerance = 0.5, int $limit = 20): array
     {
         try {
             // Get all embeddings from the confirmed cluster
-            $clusterEmbeddings = DB::connection('pgsql_rag')->select("
+            $clusterEmbeddings = DB::connection('pgsql_rag')->select('
                 SELECT id, embedding::text as embedding_str
                 FROM face_embeddings
                 WHERE person_cluster_id = ?
-            ", [$confirmedClusterId]);
+            ', [$confirmedClusterId]);
 
             if (empty($clusterEmbeddings)) {
                 return [];
@@ -393,7 +405,7 @@ class FaceEmbeddingService
 
                 foreach ($matches as $m) {
                     $cid = $m->cluster_id;
-                    if (!isset($similarities[$cid])) {
+                    if (! isset($similarities[$cid])) {
                         $similarities[$cid] = [
                             'cluster_id' => $cid,
                             'name' => $m->name,
@@ -409,10 +421,12 @@ class FaceEmbeddingService
             }
 
             // Sort by confidence and return top results
-            usort($similarities, fn($a, $b) => $b['max_confidence'] <=> $a['max_confidence']);
+            usort($similarities, fn ($a, $b) => $b['max_confidence'] <=> $a['max_confidence']);
+
             return array_slice(array_values($similarities), 0, $limit);
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: suggestSimilarClusters failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -424,7 +438,7 @@ class FaceEmbeddingService
      * transitive chaining where one outlier face in an unreviewed cluster matches
      * a confirmed cluster face, causing the entire unreviewed cluster to be absorbed.
      *
-     * @param int $confirmedClusterId The confirmed cluster
+     * @param  int  $confirmedClusterId  The confirmed cluster
      * @return array Results of propagation
      */
     public function propagateClusterMatches(int $confirmedClusterId): array
@@ -436,12 +450,12 @@ class FaceEmbeddingService
             // Ensure confirmed cluster has up-to-date centroid
             $this->updateClusterCentroid($confirmedClusterId);
 
-            $confirmed = DB::connection('pgsql_rag')->selectOne("
+            $confirmed = DB::connection('pgsql_rag')->selectOne('
                 SELECT id, centroid::text as centroid_str, face_count
                 FROM person_clusters WHERE id = ? AND centroid IS NOT NULL
-            ", [$confirmedClusterId]);
+            ', [$confirmedClusterId]);
 
-            if (!$confirmed || !$confirmed->centroid_str) {
+            if (! $confirmed || ! $confirmed->centroid_str) {
                 return ['auto_merged' => [], 'suggested' => [], 'total_found' => 0];
             }
 
@@ -518,7 +532,7 @@ class FaceEmbeddingService
     ): int {
         $embeddingStr = PgVector::literal($embedding, self::VECTOR_LITERAL_PRECISION);
 
-        $result = DB::connection('pgsql_rag')->select("
+        $result = DB::connection('pgsql_rag')->select('
             INSERT INTO face_embeddings (
                 file_registry_id, person_cluster_id, embedding,
                 region_x, region_y, region_w, region_h,
@@ -526,7 +540,7 @@ class FaceEmbeddingService
                 embedding_model, created_at, updated_at
             ) VALUES (?, ?, ?::vector, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             RETURNING id
-        ", [
+        ', [
             $fileRegistryId,
             $personClusterId,
             $embeddingStr,
@@ -543,11 +557,11 @@ class FaceEmbeddingService
         $id = $result[0]->id;
 
         // Update cluster face count
-        DB::connection('pgsql_rag')->update("
+        DB::connection('pgsql_rag')->update('
             UPDATE person_clusters
             SET face_count = face_count + 1, updated_at = NOW()
             WHERE id = ?
-        ", [$personClusterId]);
+        ', [$personClusterId]);
 
         return $id;
     }
@@ -562,7 +576,7 @@ class FaceEmbeddingService
             'status' => 'unreviewed',
             'face_count' => 0,
             'created_at' => now(),
-            'updated_at' => now()
+            'updated_at' => now(),
         ]);
     }
 
@@ -574,13 +588,13 @@ class FaceEmbeddingService
      * - Circuit breaker protection
      * - Automatic retry with backoff
      *
-     * @param string $cropPath1 Path to first face crop
-     * @param string $cropPath2 Path to second face crop
+     * @param  string  $cropPath1  Path to first face crop
+     * @param  string  $cropPath2  Path to second face crop
      * @return bool True if AI confirms same person
      */
     private function verifyFaceMatchWithAI(string $cropPath1, string $cropPath2): bool
     {
-        if (!file_exists($cropPath1) || !file_exists($cropPath2)) {
+        if (! file_exists($cropPath1) || ! file_exists($cropPath2)) {
             return false;
         }
 
@@ -588,12 +602,13 @@ class FaceEmbeddingService
             // Create composite image for single AI call (more efficient than multiple images)
             $compositeImage = $this->createCompositeFaceImage($cropPath1, $cropPath2);
 
-            if (!$compositeImage) {
+            if (! $compositeImage) {
                 Log::warning('FaceEmbedding: Failed to create composite image');
+
                 return false;
             }
 
-            $prompt = <<<PROMPT
+            $prompt = <<<'PROMPT'
 This image shows two faces side by side for comparison. Determine if they show the SAME PERSON.
 
 Consider:
@@ -647,6 +662,7 @@ PROMPT;
             return false;
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: AI verification failed', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -661,7 +677,7 @@ PROMPT;
             $img1 = imagecreatefromstring(file_get_contents($path1));
             $img2 = imagecreatefromstring(file_get_contents($path2));
 
-            if (!$img1 || !$img2) {
+            if (! $img1 || ! $img2) {
                 return null;
             }
 
@@ -673,7 +689,7 @@ PROMPT;
             // Normalize heights
             $targetHeight = max($h1, $h2);
             if ($h1 !== $targetHeight) {
-                $newW1 = (int)($w1 * ($targetHeight / $h1));
+                $newW1 = (int) ($w1 * ($targetHeight / $h1));
                 $resized1 = imagecreatetruecolor($newW1, $targetHeight);
                 imagecopyresampled($resized1, $img1, 0, 0, 0, 0, $newW1, $targetHeight, $w1, $h1);
                 imagedestroy($img1);
@@ -681,7 +697,7 @@ PROMPT;
                 $w1 = $newW1;
             }
             if ($h2 !== $targetHeight) {
-                $newW2 = (int)($w2 * ($targetHeight / $h2));
+                $newW2 = (int) ($w2 * ($targetHeight / $h2));
                 $resized2 = imagecreatetruecolor($newW2, $targetHeight);
                 imagecopyresampled($resized2, $img2, 0, 0, 0, 0, $newW2, $targetHeight, $w2, $h2);
                 imagedestroy($img2);
@@ -702,13 +718,14 @@ PROMPT;
             imagedestroy($img2);
 
             // Save to temp file
-            $tempPath = sys_get_temp_dir() . '/face_composite_' . uniqid() . '.jpg';
+            $tempPath = sys_get_temp_dir().'/face_composite_'.uniqid().'.jpg';
             imagejpeg($composite, $tempPath, 90);
             imagedestroy($composite);
 
             return $tempPath;
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: Failed to create composite', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -716,9 +733,9 @@ PROMPT;
     /**
      * Get person clusters for review
      *
-     * @param string $status Filter by status (unreviewed, confirmed, merged)
-     * @param int $minFaces Minimum faces in cluster
-     * @param int $limit Max results
+     * @param  string  $status  Filter by status (unreviewed, confirmed, merged)
+     * @param  int  $minFaces  Minimum faces in cluster
+     * @param  int  $limit  Max results
      * @return array Clusters with sample faces
      */
     public function getClustersForReview(string $status = 'unreviewed', int $minFaces = 2, int $limit = 50, int $offset = 0): array
@@ -761,10 +778,12 @@ PROMPT;
                     Log::debug('FaceEmbeddingService: sample_faces JSON decode failed', ['error' => $e->getMessage()]);
                     $cluster['sample_faces'] = [];
                 }
+
                 return $cluster;
             }, $clusters);
         } catch (\Exception $e) {
             Log::error('FaceEmbedding: getClustersForReview failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -788,9 +807,11 @@ PROMPT;
             foreach ($rows as $row) {
                 $counts[$row->genealogy_person_id] = (int) $row->total_faces;
             }
+
             return $counts;
         } catch (\Exception $e) {
             Log::error('FaceEmbedding: getFaceCountsByGenealogyPerson failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -801,10 +822,10 @@ PROMPT;
      * IMPORTANT: This also writes face metadata back to the original image files
      * because media files are the source of truth.
      *
-     * @param int $clusterId Cluster ID
-     * @param string|null $name Person name
-     * @param int|null $genealogyPersonId Link to genealogy_persons
-     * @param bool $writeToMedia Write face regions to image files (default true)
+     * @param  int  $clusterId  Cluster ID
+     * @param  string|null  $name  Person name
+     * @param  int|null  $genealogyPersonId  Link to genealogy_persons
+     * @param  bool  $writeToMedia  Write face regions to image files (default true)
      */
     public function confirmCluster(
         int $clusterId,
@@ -845,6 +866,7 @@ PROMPT;
             return true;
         } catch (\Exception $e) {
             Log::error('FaceEmbedding: confirmCluster failed', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -852,8 +874,8 @@ PROMPT;
     /**
      * Merge multiple clusters into one
      *
-     * @param int $targetClusterId Keep this cluster
-     * @param array $sourceClusterIds Merge these into target
+     * @param  int  $targetClusterId  Keep this cluster
+     * @param  array  $sourceClusterIds  Merge these into target
      */
     public function mergeClusters(int $targetClusterId, array $sourceClusterIds, string $mergedBy = 'user'): bool
     {
@@ -873,18 +895,18 @@ PROMPT;
             ", array_merge([$targetClusterId], $sourceClusterIds));
 
             // Update target cluster face count
-            DB::connection('pgsql_rag')->update("
+            DB::connection('pgsql_rag')->update('
                 UPDATE person_clusters
                 SET face_count = (SELECT COUNT(*) FROM face_embeddings WHERE person_cluster_id = ?),
                     updated_at = NOW()
                 WHERE id = ?
-            ", [$targetClusterId, $targetClusterId]);
+            ', [$targetClusterId, $targetClusterId]);
 
             // Record merge history for each source (enables undo)
             foreach ($sourceClusterIds as $srcId) {
-                $srcCount = DB::connection('pgsql_rag')->selectOne("
+                $srcCount = DB::connection('pgsql_rag')->selectOne('
                     SELECT face_count FROM person_clusters WHERE id = ?
-                ", [$srcId]);
+                ', [$srcId]);
                 $this->recordMergeHistory((int) $srcId, $targetClusterId, (int) ($srcCount->face_count ?? 0), $mergedBy);
             }
 
@@ -923,6 +945,7 @@ PROMPT;
         } catch (\Exception $e) {
             DB::connection('pgsql_rag')->rollBack();
             Log::error('FaceEmbedding: mergeClusters failed', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -933,8 +956,8 @@ PROMPT;
      * Use for background people, crowds, or faces that don't need naming.
      * Ignored clusters won't appear in review queue or be matched during propagation.
      *
-     * @param int $clusterId Cluster ID to ignore
-     * @param string|null $reason Optional reason for ignoring
+     * @param  int  $clusterId  Cluster ID to ignore
+     * @param  string|null  $reason  Optional reason for ignoring
      */
     public function ignoreCluster(int $clusterId, ?string $reason = null): bool
     {
@@ -957,6 +980,7 @@ PROMPT;
             return true;
         } catch (\Exception $e) {
             Log::error('FaceEmbedding: ignoreCluster failed', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -994,15 +1018,15 @@ PROMPT;
     private function linkClusterToGenealogy(int $clusterId, int $genealogyPersonId): void
     {
         // Get all face embeddings in this cluster
-        $faces = DB::connection('pgsql_rag')->select("
+        $faces = DB::connection('pgsql_rag')->select('
             SELECT id, file_registry_id, file_registry_face_id, region_x, region_y, region_w, region_h
             FROM face_embeddings
             WHERE person_cluster_id = ?
-        ", [$clusterId]);
+        ', [$clusterId]);
 
         // Get person name from genealogy
-        $person = DB::selectOne("SELECT given_name, surname FROM genealogy_persons WHERE id = ?", [$genealogyPersonId]);
-        $personName = $person ? trim($person->given_name . ' ' . $person->surname) : null;
+        $person = DB::selectOne('SELECT given_name, surname FROM genealogy_persons WHERE id = ?', [$genealogyPersonId]);
+        $personName = $person ? trim($person->given_name.' '.$person->surname) : null;
 
         foreach ($faces as $face) {
             // Check if face already exists in file_registry_faces
@@ -1016,12 +1040,12 @@ PROMPT;
             }
 
             if (! $existing) {
-                $existing = DB::selectOne("
+                $existing = DB::selectOne('
                     SELECT id FROM file_registry_faces
                     WHERE file_registry_id = ?
                     AND ABS(region_x - ?) < 0.01
                     AND ABS(region_y - ?) < 0.01
-                ", [$face->file_registry_id, $face->region_x, $face->region_y]);
+                ', [$face->file_registry_id, $face->region_x, $face->region_y]);
             }
 
             if ($existing) {
@@ -1061,13 +1085,13 @@ PROMPT;
      * IMPORTANT: Media files are the source of truth. When faces are confirmed,
      * we write MWG-rs face regions back to the image file.
      *
-     * @param string $imagePath Path to image file
-     * @param array $faces Array of faces with regions and names
+     * @param  string  $imagePath  Path to image file
+     * @param  array  $faces  Array of faces with regions and names
      * @return array Result of metadata write operation
      */
     public function writeFaceMetadataToFile(string $imagePath, array $faces): array
     {
-        if (!file_exists($imagePath) || empty($faces)) {
+        if (! file_exists($imagePath) || empty($faces)) {
             return ['success' => false, 'error' => 'Invalid input'];
         }
 
@@ -1123,6 +1147,7 @@ PROMPT;
                 'path' => $imagePath,
                 'error' => $e->getMessage(),
             ]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -1133,7 +1158,7 @@ PROMPT;
      * Called when a cluster is confirmed with a name. Updates all
      * associated image files with the face region metadata.
      *
-     * @param int $clusterId The confirmed cluster
+     * @param  int  $clusterId  The confirmed cluster
      * @return array Sync results
      */
     public function syncClusterToMediaFiles(int $clusterId): array
@@ -1146,27 +1171,28 @@ PROMPT;
                 WHERE id = ? AND status = 'confirmed'
             ", [$clusterId]);
 
-            if (!$cluster || !$cluster->name) {
+            if (! $cluster || ! $cluster->name) {
                 return ['success' => false, 'error' => 'Cluster not confirmed or has no name'];
             }
 
             // Get distinct files affected by this cluster
-            $affectedFiles = DB::connection('pgsql_rag')->select("
+            $affectedFiles = DB::connection('pgsql_rag')->select('
                 SELECT DISTINCT file_registry_id
                 FROM face_embeddings
                 WHERE person_cluster_id = ?
-            ", [$clusterId]);
+            ', [$clusterId]);
 
             $updated = 0;
             $errors = 0;
 
             foreach ($affectedFiles as $af) {
-                $file = DB::selectOne("
+                $file = DB::selectOne('
                     SELECT current_path FROM file_registry WHERE id = ?
-                ", [$af->file_registry_id]);
+                ', [$af->file_registry_id]);
 
-                if (!$file || !file_exists($file->current_path)) {
+                if (! $file || ! file_exists($file->current_path)) {
                     $errors++;
+
                     continue;
                 }
 
@@ -1220,6 +1246,7 @@ PROMPT;
                 'cluster_id' => $clusterId,
                 'error' => $e->getMessage(),
             ]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -1230,13 +1257,13 @@ PROMPT;
     public function getStats(): array
     {
         try {
-            $stats = DB::connection('pgsql_rag')->selectOne("
+            $stats = DB::connection('pgsql_rag')->selectOne('
                 SELECT
                     COUNT(*) as total_faces,
                     COUNT(DISTINCT person_cluster_id) as total_clusters,
                     COUNT(DISTINCT file_registry_id) as files_with_faces
                 FROM face_embeddings
-            ");
+            ');
 
             $clusterStats = DB::connection('pgsql_rag')->selectOne("
                 SELECT
@@ -1256,13 +1283,13 @@ PROMPT;
                 'clusters_confirmed' => (int) ($clusterStats->confirmed ?? 0),
                 'clusters_merged' => (int) ($clusterStats->merged ?? 0),
                 'clusters_ignored' => (int) ($clusterStats->ignored ?? 0),
-                'clusters_linked' => (int) ($clusterStats->linked_to_genealogy ?? 0)
+                'clusters_linked' => (int) ($clusterStats->linked_to_genealogy ?? 0),
             ];
         } catch (\Exception $e) {
             return [
                 'error' => $e->getMessage(),
                 'total_faces' => 0,
-                'total_clusters' => 0
+                'total_clusters' => 0,
             ];
         }
     }
@@ -1273,10 +1300,10 @@ PROMPT;
      * Used by the undo stack to reverse confirm/ignore actions.
      * Restores the cluster to its previous state.
      *
-     * @param int $clusterId Cluster ID to revert
-     * @param string $previousStatus Status to revert to (default: unreviewed)
-     * @param string|null $previousName Previous name to restore
-     * @param int|null $previousGenealogyPersonId Previous genealogy link to restore
+     * @param  int  $clusterId  Cluster ID to revert
+     * @param  string  $previousStatus  Status to revert to (default: unreviewed)
+     * @param  string|null  $previousName  Previous name to restore
+     * @param  int|null  $previousGenealogyPersonId  Previous genealogy link to restore
      */
     public function revertCluster(
         int $clusterId,
@@ -1285,7 +1312,7 @@ PROMPT;
         ?int $previousGenealogyPersonId = null
     ): bool {
         try {
-            DB::connection('pgsql_rag')->update("
+            DB::connection('pgsql_rag')->update('
                 UPDATE person_clusters
                 SET status = ?,
                     name = ?,
@@ -1293,7 +1320,7 @@ PROMPT;
                     notes = NULL,
                     updated_at = NOW()
                 WHERE id = ?
-            ", [$previousStatus, $previousName, $previousGenealogyPersonId, $clusterId]);
+            ', [$previousStatus, $previousName, $previousGenealogyPersonId, $clusterId]);
 
             Log::info('FaceEmbedding: Cluster reverted', [
                 'cluster_id' => $clusterId,
@@ -1303,6 +1330,7 @@ PROMPT;
             return true;
         } catch (\Exception $e) {
             Log::error('FaceEmbedding: revertCluster failed', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -1310,8 +1338,8 @@ PROMPT;
     /**
      * Unmerge: reverse a merge by moving faces back to a restored source cluster
      *
-     * @param int $sourceClusterId The cluster that was merged away (will be restored)
-     * @param int $targetClusterId The cluster faces were merged into
+     * @param  int  $sourceClusterId  The cluster that was merged away (will be restored)
+     * @param  int  $targetClusterId  The cluster faces were merged into
      */
     public function unmergeCluster(int $sourceClusterId, int $targetClusterId): bool
     {
@@ -1328,15 +1356,15 @@ PROMPT;
             // Move faces back: faces that were originally in the source cluster
             // We identify them by checking cluster_merge_history or by face creation time
             // Since we don't track per-face origin, restore from merge history
-            $history = DB::connection('pgsql_rag')->selectOne("
+            $history = DB::connection('pgsql_rag')->selectOne('
                 SELECT faces_moved FROM cluster_merge_history
                 WHERE source_cluster_id = ? AND target_cluster_id = ?
                 ORDER BY merged_at DESC LIMIT 1
-            ", [$sourceClusterId, $targetClusterId]);
+            ', [$sourceClusterId, $targetClusterId]);
 
             if ($history && $history->faces_moved > 0) {
                 // Move the most recently updated faces (the ones that were merged in)
-                DB::connection('pgsql_rag')->update("
+                DB::connection('pgsql_rag')->update('
                     UPDATE face_embeddings
                     SET person_cluster_id = ?, updated_at = NOW()
                     WHERE id IN (
@@ -1345,17 +1373,17 @@ PROMPT;
                         ORDER BY updated_at DESC
                         LIMIT ?
                     )
-                ", [$sourceClusterId, $targetClusterId, $history->faces_moved]);
+                ', [$sourceClusterId, $targetClusterId, $history->faces_moved]);
             }
 
             // Recount both clusters
             foreach ([$sourceClusterId, $targetClusterId] as $cid) {
-                DB::connection('pgsql_rag')->update("
+                DB::connection('pgsql_rag')->update('
                     UPDATE person_clusters
                     SET face_count = (SELECT COUNT(*) FROM face_embeddings WHERE person_cluster_id = ?),
                         updated_at = NOW()
                     WHERE id = ?
-                ", [$cid, $cid]);
+                ', [$cid, $cid]);
             }
 
             DB::connection('pgsql_rag')->commit();
@@ -1369,6 +1397,7 @@ PROMPT;
         } catch (\Exception $e) {
             DB::connection('pgsql_rag')->rollBack();
             Log::error('FaceEmbedding: unmergeCluster failed', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -1376,8 +1405,8 @@ PROMPT;
     /**
      * Split faces out of a cluster into a new cluster
      *
-     * @param int $sourceClusterId Source cluster to split from
-     * @param array $faceIds Face IDs to move to the new cluster
+     * @param  int  $sourceClusterId  Source cluster to split from
+     * @param  array  $faceIds  Face IDs to move to the new cluster
      * @return array New cluster info or error
      */
     public function splitCluster(int $sourceClusterId, array $faceIds): array
@@ -1398,6 +1427,7 @@ PROMPT;
 
             if ((int) $validCount->cnt !== count($faceIds)) {
                 DB::connection('pgsql_rag')->rollBack();
+
                 return ['success' => false, 'error' => 'Some faces do not belong to this cluster'];
             }
 
@@ -1413,12 +1443,12 @@ PROMPT;
 
             // Recount both clusters
             foreach ([$sourceClusterId, $newClusterId] as $cid) {
-                DB::connection('pgsql_rag')->update("
+                DB::connection('pgsql_rag')->update('
                     UPDATE person_clusters
                     SET face_count = (SELECT COUNT(*) FROM face_embeddings WHERE person_cluster_id = ?),
                         updated_at = NOW()
                     WHERE id = ?
-                ", [$cid, $cid]);
+                ', [$cid, $cid]);
             }
 
             DB::connection('pgsql_rag')->commit();
@@ -1445,6 +1475,7 @@ PROMPT;
         } catch (\Exception $e) {
             DB::connection('pgsql_rag')->rollBack();
             Log::error('FaceEmbedding: splitCluster failed', ['error' => $e->getMessage()]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -1458,11 +1489,11 @@ PROMPT;
     {
         try {
             // Get the centroid of the new cluster
-            $faces = DB::connection('pgsql_rag')->select("
+            $faces = DB::connection('pgsql_rag')->select('
                 SELECT embedding::text as embedding_str
                 FROM face_embeddings
                 WHERE person_cluster_id = ?
-            ", [$clusterId]);
+            ', [$clusterId]);
 
             if (empty($faces)) {
                 return null;
@@ -1479,12 +1510,12 @@ PROMPT;
                 }
             }
             $count = count($faces);
-            $mean = array_map(fn($v) => $v / $count, $sum);
+            $mean = array_map(fn ($v) => $v / $count, $sum);
 
             // L2-normalize
-            $norm = sqrt(array_sum(array_map(fn($v) => $v * $v, $mean)));
+            $norm = sqrt(array_sum(array_map(fn ($v) => $v * $v, $mean)));
             if ($norm > 0) {
-                $mean = array_map(fn($v) => $v / $norm, $mean);
+                $mean = array_map(fn ($v) => $v / $norm, $mean);
             }
 
             // Find best matching confirmed cluster
@@ -1519,6 +1550,7 @@ PROMPT;
             return null;
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: evaluateSplitOrphan failed', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -1526,24 +1558,24 @@ PROMPT;
     /**
      * Get all faces in a cluster (for split UI)
      *
-     * @param int $clusterId
      * @return array Face details with crop info
      */
     public function getClusterFaces(int $clusterId): array
     {
         try {
-            $faces = DB::connection('pgsql_rag')->select("
+            $faces = DB::connection('pgsql_rag')->select('
                 SELECT fe.id, fe.file_registry_id, fe.crop_path,
                        fe.region_x, fe.region_y, fe.region_w, fe.region_h,
                        fe.match_confidence, fe.created_at
                 FROM face_embeddings fe
                 WHERE fe.person_cluster_id = ?
                 ORDER BY fe.match_confidence DESC NULLS LAST
-            ", [$clusterId]);
+            ', [$clusterId]);
 
-            return array_map(fn($f) => (array) $f, $faces);
+            return array_map(fn ($f) => (array) $f, $faces);
         } catch (\Exception $e) {
             Log::error('FaceEmbedding: getClusterFaces failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -1554,10 +1586,10 @@ PROMPT;
     public function recordMergeHistory(int $sourceClusterId, int $targetClusterId, int $facesMoved, string $mergedBy = 'user'): void
     {
         try {
-            DB::connection('pgsql_rag')->insert("
+            DB::connection('pgsql_rag')->insert('
                 INSERT INTO cluster_merge_history (source_cluster_id, target_cluster_id, faces_moved, merged_by, merged_at)
                 VALUES (?, ?, ?, ?, NOW())
-            ", [$sourceClusterId, $targetClusterId, $facesMoved, $mergedBy]);
+            ', [$sourceClusterId, $targetClusterId, $facesMoved, $mergedBy]);
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: recordMergeHistory failed', ['error' => $e->getMessage()]);
         }
@@ -1609,20 +1641,20 @@ PROMPT;
                 }
 
                 // Set cluster_id on MySQL faces
-                DB::update("
+                DB::update('
                     UPDATE file_registry_faces
                     SET cluster_id = ?
                     WHERE person_name = ? AND hidden = 0
-                ", [$clusterId, $person->person_name]);
+                ', [$clusterId, $person->person_name]);
 
                 // Set person_cluster_id on pgvector embeddings (via file_registry_face_id link)
-                $faceIds = DB::select("
+                $faceIds = DB::select('
                     SELECT id FROM file_registry_faces
                     WHERE person_name = ? AND hidden = 0
-                ", [$person->person_name]);
+                ', [$person->person_name]);
 
-                if (!empty($faceIds)) {
-                    $ids = array_map(fn($f) => $f->id, $faceIds);
+                if (! empty($faceIds)) {
+                    $ids = array_map(fn ($f) => $f->id, $faceIds);
                     $placeholders = implode(',', array_fill(0, count($ids), '?'));
 
                     DB::connection('pgsql_rag')->update("
@@ -1635,25 +1667,25 @@ PROMPT;
                 }
 
                 // Update cluster face count
-                DB::connection('pgsql_rag')->update("
+                DB::connection('pgsql_rag')->update('
                     UPDATE person_clusters
                     SET face_count = (SELECT COUNT(*) FROM face_embeddings WHERE person_cluster_id = ?),
                         updated_at = NOW()
                     WHERE id = ?
-                ", [$clusterId, $clusterId]);
+                ', [$clusterId, $clusterId]);
 
                 // Set representative face (highest quality)
-                $rep = DB::connection('pgsql_rag')->selectOne("
+                $rep = DB::connection('pgsql_rag')->selectOne('
                     SELECT id FROM face_embeddings
                     WHERE person_cluster_id = ?
                     ORDER BY quality_score DESC NULLS LAST, match_confidence DESC NULLS LAST
                     LIMIT 1
-                ", [$clusterId]);
+                ', [$clusterId]);
 
                 if ($rep) {
-                    DB::connection('pgsql_rag')->update("
+                    DB::connection('pgsql_rag')->update('
                         UPDATE person_clusters SET representative_face_id = ? WHERE id = ?
-                    ", [$rep->id, $clusterId]);
+                    ', [$rep->id, $clusterId]);
                 }
             } catch (\Exception $e) {
                 $errors++;
@@ -1676,7 +1708,7 @@ PROMPT;
      * Import HDBSCAN clustering results from Python.
      * Creates person_clusters for unnamed faces and sets cluster_id on MySQL.
      *
-     * @param array $clusterAssignments {face_embedding_id: cluster_label, ...}
+     * @param  array  $clusterAssignments  {face_embedding_id: cluster_label, ...}
      * @return array Import stats
      */
     public function importClusterAssignments(array $clusterAssignments): array
@@ -1712,27 +1744,27 @@ PROMPT;
                 ", array_merge([$clusterId], $faceEmbeddingIds));
 
                 // Set representative (pick most central embedding)
-                $rep = DB::connection('pgsql_rag')->selectOne("
+                $rep = DB::connection('pgsql_rag')->selectOne('
                     SELECT id FROM face_embeddings
                     WHERE person_cluster_id = ?
                     ORDER BY quality_score DESC NULLS LAST
                     LIMIT 1
-                ", [$clusterId]);
+                ', [$clusterId]);
 
                 if ($rep) {
-                    DB::connection('pgsql_rag')->update("
+                    DB::connection('pgsql_rag')->update('
                         UPDATE person_clusters SET representative_face_id = ? WHERE id = ?
-                    ", [$rep->id, $clusterId]);
+                    ', [$rep->id, $clusterId]);
                 }
 
                 // Set cluster_id on MySQL faces (via file_registry_face_id link)
-                $feRows = DB::connection('pgsql_rag')->select("
+                $feRows = DB::connection('pgsql_rag')->select('
                     SELECT file_registry_face_id FROM face_embeddings
                     WHERE person_cluster_id = ? AND file_registry_face_id IS NOT NULL
-                ", [$clusterId]);
+                ', [$clusterId]);
 
-                if (!empty($feRows)) {
-                    $mysqlIds = array_map(fn($r) => $r->file_registry_face_id, $feRows);
+                if (! empty($feRows)) {
+                    $mysqlIds = array_map(fn ($r) => $r->file_registry_face_id, $feRows);
                     $ph = implode(',', array_fill(0, count($mysqlIds), '?'));
                     DB::update("
                         UPDATE file_registry_faces SET cluster_id = ? WHERE id IN ({$ph})
@@ -1760,8 +1792,8 @@ PROMPT;
      * Assign a single face to the best matching cluster, or create a singleton.
      * Used for inline clustering during face detection pipeline.
      *
-     * @param int $faceEmbeddingId pgvector face_embeddings.id
-     * @param array $embedding 128-dim vector
+     * @param  int  $faceEmbeddingId  pgvector face_embeddings.id
+     * @param  array  $embedding  128-dim vector
      * @return array Assignment result
      */
     public function assignToCluster(int $faceEmbeddingId, array $embedding): array
@@ -1780,27 +1812,27 @@ PROMPT;
 
             if ($effectiveConf >= $threshold) {
                 // Assign to existing cluster
-                DB::connection('pgsql_rag')->update("
+                DB::connection('pgsql_rag')->update('
                     UPDATE face_embeddings
                     SET person_cluster_id = ?, match_confidence = ?, updated_at = NOW()
                     WHERE id = ?
-                ", [$match['cluster_id'], $effectiveConf, $faceEmbeddingId]);
+                ', [$match['cluster_id'], $effectiveConf, $faceEmbeddingId]);
 
-                DB::connection('pgsql_rag')->update("
+                DB::connection('pgsql_rag')->update('
                     UPDATE person_clusters
                     SET face_count = face_count + 1, updated_at = NOW()
                     WHERE id = ?
-                ", [$match['cluster_id']]);
+                ', [$match['cluster_id']]);
 
                 // Update MySQL cluster_id via file_registry_face_id link
-                $fe = DB::connection('pgsql_rag')->selectOne("
+                $fe = DB::connection('pgsql_rag')->selectOne('
                     SELECT file_registry_face_id FROM face_embeddings WHERE id = ?
-                ", [$faceEmbeddingId]);
+                ', [$faceEmbeddingId]);
 
                 if ($fe && $fe->file_registry_face_id) {
-                    DB::update("
+                    DB::update('
                         UPDATE file_registry_faces SET cluster_id = ? WHERE id = ?
-                    ", [$match['cluster_id'], $fe->file_registry_face_id]);
+                    ', [$match['cluster_id'], $fe->file_registry_face_id]);
                 }
 
                 return [
@@ -1814,24 +1846,24 @@ PROMPT;
         // No good match — create singleton cluster
         $clusterId = $this->createPersonCluster();
 
-        DB::connection('pgsql_rag')->update("
+        DB::connection('pgsql_rag')->update('
             UPDATE face_embeddings
             SET person_cluster_id = ?, updated_at = NOW()
             WHERE id = ?
-        ", [$clusterId, $faceEmbeddingId]);
+        ', [$clusterId, $faceEmbeddingId]);
 
-        DB::connection('pgsql_rag')->update("
+        DB::connection('pgsql_rag')->update('
             UPDATE person_clusters SET face_count = 1 WHERE id = ?
-        ", [$clusterId]);
+        ', [$clusterId]);
 
-        $fe = DB::connection('pgsql_rag')->selectOne("
+        $fe = DB::connection('pgsql_rag')->selectOne('
             SELECT file_registry_face_id FROM face_embeddings WHERE id = ?
-        ", [$faceEmbeddingId]);
+        ', [$faceEmbeddingId]);
 
         if ($fe && $fe->file_registry_face_id) {
-            DB::update("
+            DB::update('
                 UPDATE file_registry_faces SET cluster_id = ? WHERE id = ?
-            ", [$clusterId, $fe->file_registry_face_id]);
+            ', [$clusterId, $fe->file_registry_face_id]);
         }
 
         return [
@@ -1844,10 +1876,8 @@ PROMPT;
      * Get clusters with stats and sample faces for the unified UI.
      * Queries MySQL for cluster membership, pgvector for cluster metadata.
      *
-     * @param string $filter 'all', 'unidentified', 'identified', 'hidden'
-     * @param string $sort 'size_desc', 'size_asc', 'recent', 'name'
-     * @param int $limit
-     * @param int $offset
+     * @param  string  $filter  'all', 'unidentified', 'identified', 'hidden', 'mixed'
+     * @param  string  $sort  'size_desc', 'size_asc', 'recent', 'name'
      * @return array Clusters with face samples
      */
     public function getUnifiedClusters(
@@ -1859,6 +1889,7 @@ PROMPT;
     ): array {
         $where = "WHERE pc.status NOT IN ('merged')";
         $params = [];
+        $mixedClusterSummaries = [];
 
         switch ($filter) {
             case 'unidentified':
@@ -1870,10 +1901,22 @@ PROMPT;
             case 'hidden':
                 $where .= " AND pc.status = 'ignored'";
                 break;
+            case 'mixed':
+                $mixedClusterSummaries = $this->getMixedNameClusterSummaries();
+                $mixedClusterIds = array_keys($mixedClusterSummaries);
+
+                if ($mixedClusterIds === []) {
+                    $where .= ' AND 1 = 0';
+                    break;
+                }
+
+                $where .= ' AND pc.id IN ('.implode(',', array_fill(0, count($mixedClusterIds), '?')).')';
+                array_push($params, ...$mixedClusterIds);
+                break;
         }
 
         if ($minFaces > 1) {
-            $where .= " AND pc.face_count >= ?";
+            $where .= ' AND pc.face_count >= ?';
             $params[] = $minFaces;
         }
 
@@ -1920,27 +1963,75 @@ PROMPT;
             ", array_slice($params, 0, -2))->cnt;
 
             return [
-                'clusters' => array_map(function ($c) {
+                'clusters' => array_map(function ($c) use ($mixedClusterSummaries) {
                     $cluster = (array) $c;
                     $cluster['sample_faces'] = json_decode($cluster['sample_faces'] ?? '[]', true) ?? [];
+
+                    $clusterId = (int) $cluster['id'];
+                    if (isset($mixedClusterSummaries[$clusterId])) {
+                        $cluster['mixed_names'] = $mixedClusterSummaries[$clusterId]['names'];
+                        $cluster['mixed_name_count'] = $mixedClusterSummaries[$clusterId]['distinct_names'];
+                        $cluster['mixed_named_face_count'] = $mixedClusterSummaries[$clusterId]['named_faces'];
+                    }
+
                     return $cluster;
                 }, $clusters),
                 'total' => (int) $total,
             ];
         } catch (\Exception $e) {
             Log::error('FaceEmbedding: getUnifiedClusters failed', ['error' => $e->getMessage()]);
+
             return ['clusters' => [], 'total' => 0];
         }
+    }
+
+    /**
+     * Find active face clusters whose visible named faces disagree on person name.
+     *
+     * @return array<int, array{names: array<int, string>, distinct_names: int, named_faces: int}>
+     */
+    private function getMixedNameClusterSummaries(): array
+    {
+        $rows = DB::select("
+            SELECT
+                frf.cluster_id,
+                COUNT(*) AS named_faces,
+                COUNT(DISTINCT frf.person_name) AS distinct_names,
+                GROUP_CONCAT(DISTINCT frf.person_name ORDER BY frf.person_name SEPARATOR ' | ') AS names
+            FROM file_registry_faces frf
+            INNER JOIN file_registry fr ON fr.id = frf.file_registry_id
+            WHERE fr.status = 'active'
+              AND frf.hidden = 0
+              AND frf.cluster_id IS NOT NULL
+              AND TRIM(COALESCE(frf.person_name, '')) <> ''
+            GROUP BY frf.cluster_id
+            HAVING distinct_names > 1
+        ");
+
+        $summaries = [];
+        foreach ($rows as $row) {
+            $clusterId = (int) $row->cluster_id;
+            $summaries[$clusterId] = [
+                'names' => array_values(array_filter(
+                    array_map('trim', explode('|', (string) $row->names)),
+                    fn (string $name): bool => $name !== ''
+                )),
+                'distinct_names' => (int) $row->distinct_names,
+                'named_faces' => (int) $row->named_faces,
+            ];
+        }
+
+        return $summaries;
     }
 
     /**
      * Identify a cluster: set name, confirm status, update all MySQL faces.
      * If name matches an existing confirmed cluster, auto-merge.
      *
-     * @param int $clusterId Cluster to identify
-     * @param string $name Person name
-     * @param int|null $genealogyPersonId Optional genealogy link
-     * @param bool $writeToMedia Write face regions to image files
+     * @param  int  $clusterId  Cluster to identify
+     * @param  string  $name  Person name
+     * @param  int|null  $genealogyPersonId  Optional genealogy link
+     * @param  bool  $writeToMedia  Write face regions to image files
      * @return array Result with possible merge info
      */
     public function identifyCluster(
@@ -1960,24 +2051,24 @@ PROMPT;
             // bridge call inside mergeClusters picks up the new person if the
             // existing cluster wasn't yet linked.
             if ($genealogyPersonId !== null) {
-                DB::connection('pgsql_rag')->update("
+                DB::connection('pgsql_rag')->update('
                     UPDATE person_clusters
                     SET genealogy_person_id = COALESCE(genealogy_person_id, ?), updated_at = NOW()
                     WHERE id = ?
-                ", [$genealogyPersonId, $existingCluster->id]);
+                ', [$genealogyPersonId, $existingCluster->id]);
             }
 
             // Merge into existing named cluster
             $this->mergeClusters($existingCluster->id, [$clusterId]);
 
             // Update MySQL faces — set person_name and cluster_id
-            $feRows = DB::connection('pgsql_rag')->select("
+            $feRows = DB::connection('pgsql_rag')->select('
                 SELECT file_registry_face_id FROM face_embeddings
                 WHERE person_cluster_id = ? AND file_registry_face_id IS NOT NULL
-            ", [$existingCluster->id]);
+            ', [$existingCluster->id]);
 
-            $mysqlIds = array_map(fn($r) => $r->file_registry_face_id, $feRows);
-            if (!empty($mysqlIds)) {
+            $mysqlIds = array_map(fn ($r) => $r->file_registry_face_id, $feRows);
+            if (! empty($mysqlIds)) {
                 $ph = implode(',', array_fill(0, count($mysqlIds), '?'));
                 DB::update("
                     UPDATE file_registry_faces
@@ -2006,13 +2097,13 @@ PROMPT;
         $this->confirmCluster($clusterId, $name, $genealogyPersonId, $writeToMedia);
 
         // Update MySQL faces
-        $feRows = DB::connection('pgsql_rag')->select("
+        $feRows = DB::connection('pgsql_rag')->select('
             SELECT file_registry_face_id FROM face_embeddings
             WHERE person_cluster_id = ? AND file_registry_face_id IS NOT NULL
-        ", [$clusterId]);
+        ', [$clusterId]);
 
-        $mysqlIds = array_map(fn($r) => $r->file_registry_face_id, $feRows);
-        if (!empty($mysqlIds)) {
+        $mysqlIds = array_map(fn ($r) => $r->file_registry_face_id, $feRows);
+        if (! empty($mysqlIds)) {
             $ph = implode(',', array_fill(0, count($mysqlIds), '?'));
             DB::update("
                 UPDATE file_registry_faces
@@ -2041,13 +2132,13 @@ PROMPT;
 
         if ($result) {
             // Set hidden on MySQL faces
-            $feRows = DB::connection('pgsql_rag')->select("
+            $feRows = DB::connection('pgsql_rag')->select('
                 SELECT file_registry_face_id FROM face_embeddings
                 WHERE person_cluster_id = ? AND file_registry_face_id IS NOT NULL
-            ", [$clusterId]);
+            ', [$clusterId]);
 
-            if (!empty($feRows)) {
-                $mysqlIds = array_map(fn($r) => $r->file_registry_face_id, $feRows);
+            if (! empty($feRows)) {
+                $mysqlIds = array_map(fn ($r) => $r->file_registry_face_id, $feRows);
                 $ph = implode(',', array_fill(0, count($mysqlIds), '?'));
                 DB::update("UPDATE file_registry_faces SET hidden = 1 WHERE id IN ({$ph})", $mysqlIds);
             }
@@ -2064,13 +2155,13 @@ PROMPT;
         $result = $this->revertCluster($clusterId, 'unreviewed');
 
         if ($result) {
-            $feRows = DB::connection('pgsql_rag')->select("
+            $feRows = DB::connection('pgsql_rag')->select('
                 SELECT file_registry_face_id FROM face_embeddings
                 WHERE person_cluster_id = ? AND file_registry_face_id IS NOT NULL
-            ", [$clusterId]);
+            ', [$clusterId]);
 
-            if (!empty($feRows)) {
-                $mysqlIds = array_map(fn($r) => $r->file_registry_face_id, $feRows);
+            if (! empty($feRows)) {
+                $mysqlIds = array_map(fn ($r) => $r->file_registry_face_id, $feRows);
                 $ph = implode(',', array_fill(0, count($mysqlIds), '?'));
                 DB::update("UPDATE file_registry_faces SET hidden = 0 WHERE id IN ({$ph})", $mysqlIds);
             }
@@ -2085,7 +2176,7 @@ PROMPT;
      *
      * Periodic face-cluster optimization job. Run periodically (every 6h).
      *
-     * @param bool $dryRun Report what would happen without making changes
+     * @param  bool  $dryRun  Report what would happen without making changes
      * @return array Optimization results
      */
     public function optimizeClusters(bool $dryRun = false): array
@@ -2158,9 +2249,9 @@ PROMPT;
                 AND centroid IS NOT NULL
                 AND face_count > 0
                 AND (merge_retry IS NULL OR merge_retry < 3)
-                AND id NOT IN (" . (empty($mergedIds) ? '0' : implode(',', $mergedIds)) . ")
+                AND id NOT IN (".(empty($mergedIds) ? '0' : implode(',', $mergedIds)).')
                 ORDER BY face_count DESC
-            ");
+            ');
 
             foreach ($unreviewedForAnchors as $cluster) {
                 $bestAnchor = DB::connection('pgsql_rag')->selectOne("
@@ -2174,7 +2265,7 @@ PROMPT;
                     LIMIT 1
                 ", [$cluster->centroid_str, $cluster->centroid_str]);
 
-                if (!$bestAnchor) {
+                if (! $bestAnchor) {
                     continue;
                 }
 
@@ -2199,13 +2290,13 @@ PROMPT;
                     ];
 
                     // Increment merge_retry so we don't keep suggesting the same clusters
-                    if (!$dryRun) {
-                        DB::connection('pgsql_rag')->update("
+                    if (! $dryRun) {
+                        DB::connection('pgsql_rag')->update('
                             UPDATE person_clusters
                             SET merge_retry = COALESCE(merge_retry, 0) + 1,
                                 merge_notes = ?
                             WHERE id = ?
-                        ", ["Suggested match to '{$bestAnchor->name}' (sim={$similarity})", $cluster->id]);
+                        ', ["Suggested match to '{$bestAnchor->name}' (sim={$similarity})", $cluster->id]);
                     }
                 }
             }
@@ -2217,7 +2308,7 @@ PROMPT;
             ")->cnt;
 
             // Step 3: Recalculate stale centroids
-            if (!$dryRun) {
+            if (! $dryRun) {
                 $results['centroids_updated'] = $this->updateStaleCentroids(500);
             } else {
                 $results['centroids_updated'] = (int) DB::connection('pgsql_rag')->selectOne("
@@ -2259,9 +2350,9 @@ PROMPT;
      * from ONLY the authoritative (XMP-named) faces, then evicts any embedding
      * below the similarity threshold. Evicted faces become unclustered singletons.
      *
-     * @param float $bloatThreshold Min ratio of cluster_count/named_count to trigger (default 10)
-     * @param float $similarityThreshold Min similarity to authoritative centroid to keep (default 0.92)
-     * @param bool $dryRun Report without making changes
+     * @param  float  $bloatThreshold  Min ratio of cluster_count/named_count to trigger (default 10)
+     * @param  float  $similarityThreshold  Min similarity to authoritative centroid to keep (default 0.92)
+     * @param  bool  $dryRun  Report without making changes
      * @return array Purge results
      */
     public function purgeConfirmedBloat(
@@ -2283,10 +2374,10 @@ PROMPT;
                 $results['clusters_checked']++;
 
                 // Count XMP-named faces in MySQL for this person
-                $namedCount = (int) DB::selectOne("
+                $namedCount = (int) DB::selectOne('
                     SELECT COUNT(*) as cnt FROM file_registry_faces
                     WHERE person_name = ? AND hidden = 0
-                ", [$cluster->name])->cnt;
+                ', [$cluster->name])->cnt;
 
                 if ($namedCount < 2) {
                     continue; // Not enough authoritative faces to compute meaningful centroid
@@ -2298,11 +2389,11 @@ PROMPT;
                 }
 
                 // Get pgvector IDs for XMP-named faces (cross-DB via face_registry_face_id)
-                $namedFaceIds = DB::select("
+                $namedFaceIds = DB::select('
                     SELECT id FROM file_registry_faces
                     WHERE person_name = ? AND hidden = 0
-                ", [$cluster->name]);
-                $mysqlIds = array_map(fn($f) => $f->id, $namedFaceIds);
+                ', [$cluster->name]);
+                $mysqlIds = array_map(fn ($f) => $f->id, $namedFaceIds);
                 $ph = implode(',', $mysqlIds);
 
                 $authEmbeddings = DB::connection('pgsql_rag')->select("
@@ -2320,24 +2411,30 @@ PROMPT;
                 foreach ($authEmbeddings as $ae) {
                     $vec = array_map('floatval', explode(',', trim($ae->emb_str, '[]')));
                     if (count($vec) === 128) {
-                        for ($i = 0; $i < 128; $i++) $sum[$i] += $vec[$i];
+                        for ($i = 0; $i < 128; $i++) {
+                            $sum[$i] += $vec[$i];
+                        }
                         $n++;
                     }
                 }
-                if ($n < 2) continue;
+                if ($n < 2) {
+                    continue;
+                }
 
-                $mean = array_map(fn($v) => $v / $n, $sum);
-                $norm = sqrt(array_sum(array_map(fn($v) => $v * $v, $mean)));
-                if ($norm > 0) $mean = array_map(fn($v) => $v / $norm, $mean);
+                $mean = array_map(fn ($v) => $v / $n, $sum);
+                $norm = sqrt(array_sum(array_map(fn ($v) => $v * $v, $mean)));
+                if ($norm > 0) {
+                    $mean = array_map(fn ($v) => $v / $norm, $mean);
+                }
                 $centroidStr = PgVector::literal($mean, self::VECTOR_LITERAL_PRECISION);
 
                 // Find faces below threshold relative to authoritative centroid
-                $evictable = DB::connection('pgsql_rag')->select("
+                $evictable = DB::connection('pgsql_rag')->select('
                     SELECT id, file_registry_face_id
                     FROM face_embeddings
                     WHERE person_cluster_id = ?
                     AND 1 - (embedding <=> ?::vector) < ?
-                ", [$cluster->id, $centroidStr, $similarityThreshold]);
+                ', [$cluster->id, $centroidStr, $similarityThreshold]);
 
                 if (empty($evictable)) {
                     continue;
@@ -2355,8 +2452,8 @@ PROMPT;
                     'evictable' => $evictCount,
                 ];
 
-                if (!$dryRun) {
-                    $evictIds = array_map(fn($e) => $e->id, $evictable);
+                if (! $dryRun) {
+                    $evictIds = array_map(fn ($e) => $e->id, $evictable);
                     $evictPh = implode(',', $evictIds);
 
                     // Create singleton clusters for evicted faces
@@ -2368,25 +2465,25 @@ PROMPT;
                             'created_at' => now(),
                             'updated_at' => now(),
                         ]);
-                        DB::connection('pgsql_rag')->update("
+                        DB::connection('pgsql_rag')->update('
                             UPDATE face_embeddings SET person_cluster_id = ?, updated_at = NOW() WHERE id = ?
-                        ", [$newCluster, $eId]);
+                        ', [$newCluster, $eId]);
                     }
 
                     // Clear cluster_id on evicted MySQL faces
-                    $evictMysqlIds = array_filter(array_map(fn($e) => $e->file_registry_face_id, $evictable));
-                    if (!empty($evictMysqlIds)) {
+                    $evictMysqlIds = array_filter(array_map(fn ($e) => $e->file_registry_face_id, $evictable));
+                    if (! empty($evictMysqlIds)) {
                         $mysqlPh = implode(',', $evictMysqlIds);
                         DB::update("UPDATE file_registry_faces SET cluster_id = NULL WHERE id IN ({$mysqlPh})");
                     }
 
                     // Update cluster face count
-                    DB::connection('pgsql_rag')->update("
+                    DB::connection('pgsql_rag')->update('
                         UPDATE person_clusters
                         SET face_count = (SELECT COUNT(*) FROM face_embeddings WHERE person_cluster_id = ?),
                             updated_at = NOW()
                         WHERE id = ?
-                    ", [$cluster->id, $cluster->id]);
+                    ', [$cluster->id, $cluster->id]);
 
                     // Recompute centroid from remaining (now cleaner) faces
                     $this->updateClusterCentroid($cluster->id);
@@ -2410,11 +2507,11 @@ PROMPT;
     public function resetMergeRetry(int $clusterId): void
     {
         try {
-            DB::connection('pgsql_rag')->update("
+            DB::connection('pgsql_rag')->update('
                 UPDATE person_clusters
                 SET merge_retry = 0, merge_notes = NULL
                 WHERE id = ?
-            ", [$clusterId]);
+            ', [$clusterId]);
         } catch (\Exception $e) {
             // Non-critical, just log
             Log::warning('FaceEmbedding: resetMergeRetry failed', ['error' => $e->getMessage()]);
@@ -2427,12 +2524,14 @@ PROMPT;
     public function isAvailable(): bool
     {
         $cacheKey = 'face_recognition_available';
+
         return Cache::remember($cacheKey, 3600, function () {
             $result = Process::timeout(15)->run([
                 $this->pythonPath,
                 '-c',
                 "import face_recognition; print('OK')",
             ]);
+
             return trim($result->output()) === 'OK';
         });
     }
@@ -2441,17 +2540,16 @@ PROMPT;
      * Recompute centroid (mean embedding) and radius for a cluster.
      * Called after identify, merge, split, import assignments.
      *
-     * @param int $clusterId
      * @return bool Success
      */
     public function updateClusterCentroid(int $clusterId): bool
     {
         try {
-            $faces = DB::connection('pgsql_rag')->select("
+            $faces = DB::connection('pgsql_rag')->select('
                 SELECT embedding::text as embedding_str
                 FROM face_embeddings
                 WHERE person_cluster_id = ?
-            ", [$clusterId]);
+            ', [$clusterId]);
 
             if (empty($faces)) {
                 return false;
@@ -2477,12 +2575,12 @@ PROMPT;
                 return false;
             }
 
-            $mean = array_map(fn($v) => $v / $count, $sum);
+            $mean = array_map(fn ($v) => $v / $count, $sum);
 
             // L2-normalize
-            $norm = sqrt(array_sum(array_map(fn($v) => $v * $v, $mean)));
+            $norm = sqrt(array_sum(array_map(fn ($v) => $v * $v, $mean)));
             if ($norm > 0) {
-                $mean = array_map(fn($v) => $v / $norm, $mean);
+                $mean = array_map(fn ($v) => $v / $norm, $mean);
             }
 
             // Compute max cosine distance from centroid to any member
@@ -2491,23 +2589,23 @@ PROMPT;
 
             foreach ($vectors as $vec) {
                 $vecStr = PgVector::literal($vec, self::VECTOR_LITERAL_PRECISION);
-                $dist = DB::connection('pgsql_rag')->selectOne("
+                $dist = DB::connection('pgsql_rag')->selectOne('
                     SELECT ?::vector <=> ?::vector as distance
-                ", [$centroidStr, $vecStr]);
+                ', [$centroidStr, $vecStr]);
                 if ($dist && (float) $dist->distance > $maxDistance) {
                     $maxDistance = (float) $dist->distance;
                 }
             }
 
             // Store centroid, radius, and timestamp
-            DB::connection('pgsql_rag')->update("
+            DB::connection('pgsql_rag')->update('
                 UPDATE person_clusters
                 SET centroid = ?::vector,
                     centroid_radius = ?,
                     last_optimized_at = NOW(),
                     updated_at = NOW()
                 WHERE id = ?
-            ", [$centroidStr, $maxDistance, $clusterId]);
+            ', [$centroidStr, $maxDistance, $clusterId]);
 
             return true;
         } catch (\Exception $e) {
@@ -2515,6 +2613,7 @@ PROMPT;
                 'cluster_id' => $clusterId,
                 'error' => $e->getMessage(),
             ]);
+
             return false;
         }
     }
@@ -2523,7 +2622,7 @@ PROMPT;
      * Batch-update centroids for all clusters that need it.
      * Finds clusters where centroid is NULL or stale (last_optimized_at < updated_at).
      *
-     * @param int $limit Max clusters to update per run
+     * @param  int  $limit  Max clusters to update per run
      * @return int Number of clusters updated
      */
     public function updateStaleCentroids(int $limit = 500): int
@@ -2548,6 +2647,7 @@ PROMPT;
             return $updated;
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: updateStaleCentroids failed', ['error' => $e->getMessage()]);
+
             return 0;
         }
     }
@@ -2559,9 +2659,9 @@ PROMPT;
      * ~98% fewer distance evaluations than scanning all faces in all clusters.
      * Falls back to full scan if no centroids are populated yet.
      *
-     * @param array $embedding 128-dim face embedding
-     * @param float $tolerance Match tolerance
-     * @param int $limit Max clusters to return
+     * @param  array  $embedding  128-dim face embedding
+     * @param  float  $tolerance  Match tolerance
+     * @param  int  $limit  Max clusters to return
      * @return array Matching clusters with best confidence per cluster
      */
     public function findMatchingClustersCentroid(array $embedding, float $tolerance = self::MATCH_TOLERANCE, int $limit = 10): array
@@ -2607,7 +2707,7 @@ PROMPT;
             // Phase 2: Refine — for each candidate, check best per-face match
             $results = [];
             foreach ($candidates as $c) {
-                $best = DB::connection('pgsql_rag')->selectOne("
+                $best = DB::connection('pgsql_rag')->selectOne('
                     SELECT
                         MAX(1 - (fe.embedding <=> ?::vector)) as confidence,
                         (SELECT fe2.crop_path FROM face_embeddings fe2
@@ -2616,7 +2716,7 @@ PROMPT;
                     FROM face_embeddings fe
                     WHERE fe.person_cluster_id = ?
                     HAVING MAX(1 - (fe.embedding <=> ?::vector)) >= ?
-                ", [$embeddingStr, $c->cluster_id, $embeddingStr, $c->cluster_id, $embeddingStr, 1 - $tolerance]);
+                ', [$embeddingStr, $c->cluster_id, $embeddingStr, $c->cluster_id, $embeddingStr, 1 - $tolerance]);
 
                 if ($best && $best->confidence !== null) {
                     $results[] = [
@@ -2632,11 +2732,12 @@ PROMPT;
             }
 
             // Sort by confidence descending
-            usort($results, fn($a, $b) => $b['confidence'] <=> $a['confidence']);
+            usort($results, fn ($a, $b) => $b['confidence'] <=> $a['confidence']);
 
             return array_slice($results, 0, $limit);
         } catch (\Exception $e) {
             Log::warning('FaceEmbedding: findMatchingClustersCentroid failed, falling back', ['error' => $e->getMessage()]);
+
             return $this->findMatchingClusters($embedding, $tolerance, $limit);
         }
     }

@@ -24,9 +24,9 @@ use Illuminate\Support\Facades\Log;
  * Every evaluator returns a PolicyDecision DTO. Callers never apply their own
  * allow/deny logic beyond the decision fields.
  *
- * Fail-closed: any lookup error falls back to the `default` profile name but
- * the caller should combine this with routing.offline_mode (shipped in
- * commit f035ab31) which independently refuses cloud providers when set.
+ * Fail-closed: any lookup error falls back to `offline_review`, which keeps
+ * provider/tool/path policy local and read-mostly until system_configs can be
+ * trusted again.
  */
 class OfflinePolicyService
 {
@@ -60,7 +60,8 @@ class OfflinePolicyService
 
     /**
      * Read the active profile name from system_configs. Returns 'default' when
-     * no row exists, the value is empty, or SystemConfigService raises.
+     * no row exists or the value is empty. SystemConfigService exceptions fail
+     * closed to offline_review.
      */
     public function activeProfile(): string
     {
@@ -80,11 +81,11 @@ class OfflinePolicyService
 
             return array_key_exists($value, $profiles) ? $value : $default;
         } catch (\Throwable $e) {
-            Log::warning('OfflinePolicyService: active profile lookup failed', [
+            Log::warning('OfflinePolicyService: active profile lookup failed, failing closed to offline_review', [
                 'error' => $e->getMessage(),
             ]);
 
-            return $default;
+            return 'offline_review';
         }
     }
 
@@ -314,13 +315,22 @@ class OfflinePolicyService
     /**
      * Classify an llm_instances row into local_llm / cloud_sensitive_safe / cloud_external.
      *
+     * Newer rows use allows_private_data as the authoritative table-backed
+     * privacy gate. Legacy JSON sensitive_safe markers are read only as a
+     * backward-compatible fallback for pre-migration rows.
+     *
      * @param  object|array  $instance
      */
     public function classifyProvider($instance): string
     {
         $type = $this->readField($instance, 'instance_type');
-        if ($type === 'ollama') {
+        if (in_array($type, ['ollama', 'local_llm'], true)) {
             return 'local_llm';
+        }
+
+        $allowsPrivateData = $this->readField($instance, 'allows_private_data');
+        if ($allowsPrivateData !== null) {
+            return $this->truthy($allowsPrivateData) ? 'cloud_sensitive_safe' : 'cloud_external';
         }
 
         $capabilities = $this->decodeJsonField($instance, 'capabilities');
@@ -330,6 +340,23 @@ class OfflinePolicyService
             || in_array('sensitive_safe', $capabilities, true);
 
         return $sensitiveSafe ? 'cloud_sensitive_safe' : 'cloud_external';
+    }
+
+    private function truthy(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value)) {
+            return $value === 1;
+        }
+
+        if (is_string($value)) {
+            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return (bool) $value;
     }
 
     /**

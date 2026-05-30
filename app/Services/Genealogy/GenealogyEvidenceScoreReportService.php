@@ -54,6 +54,54 @@ class GenealogyEvidenceScoreReportService
         ];
     }
 
+    public function collectCompact(?int $treeId = null, int $limit = 50): array
+    {
+        return $this->compactPayload($this->collect($treeId, $limit));
+    }
+
+    public function compactPayload(array $payload): array
+    {
+        $trees = array_values(array_filter((array) ($payload['trees'] ?? []), 'is_array'));
+
+        return [
+            'version' => 1,
+            'tool' => 'genealogy_evidence_score_report',
+            'mode' => (string) ($payload['mode'] ?? 'observe'),
+            'compact' => true,
+            'read_only' => (bool) ($payload['read_only'] ?? true),
+            'mutation_allowed' => false,
+            'tree_scope' => $this->compactTreeScope($payload['tree_id'] ?? null),
+            'tree_count' => count($trees),
+            'score_levels' => self::LEVELS,
+            'summary' => $this->compactCounts($payload['summary'] ?? []),
+            'tree_summaries' => array_map(fn (array $tree): array => [
+                'counts' => $this->compactCounts($tree['counts'] ?? []),
+            ], $trees),
+            'posture' => [
+                'scope' => 'aggregate_only',
+                'tree_identifiers_included' => false,
+                'proposal_ids_included' => false,
+                'person_ids_included' => false,
+                'related_person_ids_included' => false,
+                'agent_ids_included' => false,
+                'source_locators_included' => false,
+                'evidence_excerpts_included' => false,
+                'row_samples_included' => false,
+                'writes_enabled' => false,
+            ],
+            'timestamp' => $payload['timestamp'] ?? now()->toIso8601String(),
+        ];
+    }
+
+    private function compactTreeScope(mixed $treeId): string
+    {
+        if ($treeId === null || $treeId === '' || $treeId === 'all') {
+            return 'all_trees';
+        }
+
+        return 'single_tree';
+    }
+
     public function collectTree(int $treeId, int $limit = 50): array
     {
         $limit = max(1, min(200, $limit));
@@ -302,5 +350,19 @@ class GenealogyEvidenceScoreReportService
         }
 
         return $summary;
+    }
+
+    private function compactCounts(mixed $value): array
+    {
+        $counts = is_array($value) ? $value : [];
+
+        return [
+            self::LEVEL_STRONG => max(0, (int) ($counts[self::LEVEL_STRONG] ?? 0)),
+            self::LEVEL_MEDIUM => max(0, (int) ($counts[self::LEVEL_MEDIUM] ?? 0)),
+            self::LEVEL_WEAK => max(0, (int) ($counts[self::LEVEL_WEAK] ?? 0)),
+            self::LEVEL_CONFLICT => max(0, (int) ($counts[self::LEVEL_CONFLICT] ?? 0)),
+            self::LEVEL_MISSING => max(0, (int) ($counts[self::LEVEL_MISSING] ?? 0)),
+            'total' => max(0, (int) ($counts['total'] ?? 0)),
+        ];
     }
 }

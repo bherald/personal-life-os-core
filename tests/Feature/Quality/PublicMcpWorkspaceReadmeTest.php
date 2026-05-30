@@ -77,13 +77,13 @@ class PublicMcpWorkspaceReadmeTest extends TestCase
     }
 
     #[Test]
-    public function operator_docs_pin_redacted_trace_tail_and_stale_allowlist_guidance(): void
+    public function operator_docs_pin_compact_trace_tail_and_stale_allowlist_guidance(): void
     {
         $operation = file_get_contents(base_path('docs/operation.md'));
         $troubleshooting = file_get_contents(base_path('docs/troubleshooting.md'));
         $combined = $operation.$troubleshooting;
 
-        $exactTraceTail = 'php artisan plos:agent-trace-tail --limit=20 --since=24 --json';
+        $exactTraceTail = 'php artisan plos:agent-trace-tail --limit=20 --since=24 --json --compact';
 
         $this->assertStringContainsString($exactTraceTail, $operation);
         $this->assertStringContainsString($exactTraceTail, $troubleshooting);

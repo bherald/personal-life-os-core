@@ -94,6 +94,8 @@ PROMPT;
                 'system_prompt' => self::GENEALOGIST_SYSTEM_PROMPT,
                 'factual_mode' => true, // Enforces temp=0.1 + anti-hallucination for genealogy accuracy
                 'model_role' => 'quality', // N120: Use quality-tier model for genealogy research accuracy
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_person_research',
             ]);
 
             if (! $result['success']) {
@@ -166,6 +168,8 @@ PROMPT;
                 'system_prompt' => self::GENEALOGIST_SYSTEM_PROMPT,
                 'factual_mode' => true, // Even brick wall strategies need factual grounding
                 'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_brick_wall',
             ]);
 
             if (! $result['success']) {
@@ -262,6 +266,8 @@ PROMPT;
                 'system_prompt' => self::GENEALOGIST_SYSTEM_PROMPT,
                 'factual_mode' => true, // Source evaluation requires strict accuracy
                 'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_source_evaluation',
             ]);
 
             if (! $result['success']) {
@@ -351,6 +357,8 @@ PROMPT;
                 'system_prompt' => self::GENEALOGIST_SYSTEM_PROMPT,
                 'factual_mode' => true, // Relationship analysis requires accuracy
                 'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_relationship_analysis',
             ]);
 
             if (! $result['success']) {
@@ -882,6 +890,8 @@ PROMPT;
             $result = $this->aiService->process($prompt, [
                 'factual_mode' => true, // Anti-hallucination mode for precise extraction
                 'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_proposal_extraction',
             ]);
 
             if (! $result['success']) {

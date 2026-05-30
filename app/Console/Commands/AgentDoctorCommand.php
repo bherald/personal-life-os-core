@@ -71,13 +71,24 @@ class AgentDoctorCommand extends Command
             (int) ($summary['scheduled_guarded_output_runs_window'] ?? 0),
         ));
         $this->line(sprintf(
-            'Memory evidence: episodes=%d  summaries=%d  undistilled=%d  memory_errors=%d  low_quality_procedures=%d',
+            'Registry tools: missing=%d  blocked=%d  unavailable=%d  degraded=%d',
+            (int) ($summary['tools_missing_total'] ?? 0),
+            (int) ($summary['tools_blocked_total'] ?? 0),
+            (int) ($summary['tools_unavailable_total'] ?? 0),
+            (int) ($summary['tools_degraded_total'] ?? 0),
+        ));
+        $this->line(sprintf(
+            'Memory evidence: episodes=%d  summaries=%d  undistilled=%d  undistilled_sessions=%d  oldest_undistilled_h=%s  low_signal_undistilled=%d  memory_errors=%d  low_quality_procedures=%d',
             (int) ($summary['memory_episodes_window'] ?? 0),
             (int) ($summary['memory_summaries_window'] ?? 0),
             (int) ($summary['memory_undistilled_episodes_window'] ?? 0),
+            (int) ($summary['memory_undistilled_sessions_window'] ?? 0),
+            $summary['memory_oldest_undistilled_age_hours'] ?? 'n/a',
+            (int) ($summary['memory_low_signal_undistilled_sessions_window'] ?? 0),
             (int) ($summary['memory_error_episodes_window'] ?? 0),
             (int) ($summary['procedures_low_quality_total'] ?? 0),
         ));
+        $this->line('Failure modes: '.$this->formatCountMap((array) ($summary['failure_mode_counts'] ?? [])));
 
         $recursion = $payload['recursion'] ?? null;
         if (is_array($recursion)) {
@@ -157,6 +168,12 @@ class AgentDoctorCommand extends Command
             'review_queue' => [
                 'pending' => (int) ($summary['review_queue_pending'] ?? 0),
             ],
+            'registry_tools' => [
+                'missing' => (int) ($summary['tools_missing_total'] ?? 0),
+                'blocked' => (int) ($summary['tools_blocked_total'] ?? 0),
+                'unavailable' => (int) ($summary['tools_unavailable_total'] ?? 0),
+                'degraded' => (int) ($summary['tools_degraded_total'] ?? 0),
+            ],
             'scheduled_output' => [
                 'success_runs' => (int) ($summary['scheduled_success_runs_window'] ?? 0),
                 'empty_success' => (int) ($summary['scheduled_empty_success_outputs_window'] ?? 0),
@@ -178,6 +195,11 @@ class AgentDoctorCommand extends Command
                 'episodes' => (int) ($summary['memory_episodes_window'] ?? 0),
                 'summaries' => (int) ($summary['memory_summaries_window'] ?? 0),
                 'undistilled' => (int) ($summary['memory_undistilled_episodes_window'] ?? 0),
+                'undistilled_sessions' => (int) ($summary['memory_undistilled_sessions_window'] ?? 0),
+                'undistilled_tokens' => (int) ($summary['memory_undistilled_tokens_window'] ?? 0),
+                'oldest_undistilled_age_hours' => $summary['memory_oldest_undistilled_age_hours'] ?? null,
+                'undistilled_age_buckets' => (array) ($summary['memory_undistilled_age_buckets'] ?? []),
+                'low_signal_undistilled_sessions' => (int) ($summary['memory_low_signal_undistilled_sessions_window'] ?? 0),
                 'memory_errors' => (int) ($summary['memory_error_episodes_window'] ?? 0),
                 'low_quality_procedures' => (int) ($summary['procedures_low_quality_total'] ?? 0),
             ],
@@ -190,9 +212,22 @@ class AgentDoctorCommand extends Command
                 10,
                 true
             ),
+            'failure_mode_counts' => array_slice(
+                array_filter(
+                    (array) ($summary['failure_mode_counts'] ?? []),
+                    fn (mixed $count): bool => is_numeric($count)
+                ),
+                0,
+                10,
+                true
+            ),
             'top_issue_codes' => array_values(array_filter(
                 (array) ($summary['top_issue_codes'] ?? []),
                 fn (mixed $code): bool => is_string($code) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $code) === 1
+            )),
+            'top_failure_modes' => array_values(array_filter(
+                (array) ($summary['top_failure_modes'] ?? []),
+                fn (mixed $mode): bool => is_string($mode) && preg_match('/^[a-z][a-z0-9_]{1,80}$/', $mode) === 1
             )),
             'recursion' => [
                 'status' => (string) ($recursion['status'] ?? 'unknown'),
@@ -245,12 +280,14 @@ class AgentDoctorCommand extends Command
         $agentCounts = $compact['agent_counts'];
         $sessions = $compact['sessions'];
         $reviewQueue = $compact['review_queue'];
+        $registryTools = $compact['registry_tools'];
         $scheduledOutput = $compact['scheduled_output'];
         $memory = $compact['memory_evidence'];
         $recursion = $compact['recursion'];
         $trace = $compact['trace_readiness'];
         $topAgents = $compact['top_agents'];
         $topAgentReasons = is_array($compact['top_agent_reasons'] ?? null) ? $compact['top_agent_reasons'] : [];
+        $failureModeCounts = is_array($compact['failure_mode_counts'] ?? null) ? $compact['failure_mode_counts'] : [];
         $moveOnRate = $recursion['move_on_rate_7d'] ?? null;
         $masterEnabled = match ($recursion['master_enabled'] ?? null) {
             true => 'on',
@@ -278,13 +315,24 @@ class AgentDoctorCommand extends Command
             (int) ($scheduledOutput['guarded'] ?? 0),
         ));
         $this->line(sprintf(
-            'Memory evidence: episodes=%d  summaries=%d  undistilled=%d  memory_errors=%d  low_quality_procedures=%d',
+            'Registry tools: missing=%d  blocked=%d  unavailable=%d  degraded=%d',
+            (int) ($registryTools['missing'] ?? 0),
+            (int) ($registryTools['blocked'] ?? 0),
+            (int) ($registryTools['unavailable'] ?? 0),
+            (int) ($registryTools['degraded'] ?? 0),
+        ));
+        $this->line(sprintf(
+            'Memory evidence: episodes=%d  summaries=%d  undistilled=%d  undistilled_sessions=%d  oldest_undistilled_h=%s  low_signal_undistilled=%d  memory_errors=%d  low_quality_procedures=%d',
             (int) ($memory['episodes'] ?? 0),
             (int) ($memory['summaries'] ?? 0),
             (int) ($memory['undistilled'] ?? 0),
+            (int) ($memory['undistilled_sessions'] ?? 0),
+            $memory['oldest_undistilled_age_hours'] ?? 'n/a',
+            (int) ($memory['low_signal_undistilled_sessions'] ?? 0),
             (int) ($memory['memory_errors'] ?? 0),
             (int) ($memory['low_quality_procedures'] ?? 0),
         ));
+        $this->line('Failure modes: '.$this->formatCountMap($failureModeCounts));
         $this->line(sprintf(
             'Recursion signal: %s  calls_7d=%d  move_on_7d=%s  master=%s',
             strtoupper((string) ($recursion['status'] ?? 'unknown')),
@@ -314,6 +362,26 @@ class AgentDoctorCommand extends Command
     private function formatAgentIdList(array $agentIds): string
     {
         return $agentIds === [] ? 'none' : implode(', ', $agentIds);
+    }
+
+    /**
+     * @param  array<string, mixed>  $counts
+     */
+    private function formatCountMap(array $counts): string
+    {
+        $items = [];
+        foreach ($counts as $key => $count) {
+            if (! is_string($key) || preg_match('/^[a-z][a-z0-9_]{1,80}$/', $key) !== 1 || ! is_numeric($count)) {
+                continue;
+            }
+
+            $items[] = $key.'='.(int) $count;
+            if (count($items) >= 8) {
+                break;
+            }
+        }
+
+        return $items === [] ? 'none' : implode(', ', $items);
     }
 
     /**

@@ -13,7 +13,8 @@ class GenealogyMemoryBackfillCommand extends Command
         {--limit=25 : Maximum candidates per lane}
         {--confirm : Apply writes; without this option the command runs as a dry-run}
         {--dry-run : Force preview mode even when --confirm is present}
-        {--json : Emit compact JSON summary}';
+        {--json : Emit compact JSON summary}
+        {--compact : With --json, emit aggregate-only scheduled-output JSON without raw error text}';
 
     protected $description = 'Backfill local Genea learning memory from health, intake, review, and canonical lesson signals';
 
@@ -51,7 +52,10 @@ class GenealogyMemoryBackfillCommand extends Command
         );
 
         if ((bool) $this->option('json')) {
-            $this->line(json_encode($this->compactResult($result), JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+            $this->line(json_encode(
+                $this->compactResult($result, (bool) $this->option('compact')),
+                JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT
+            ));
         } else {
             $this->line(sprintf(
                 'Genea memory backfill: %s | dry_run=%s | recorded=%d | candidates=%d | errors=%d',
@@ -88,19 +92,50 @@ class GenealogyMemoryBackfillCommand extends Command
      * @param  array<string, mixed>  $result
      * @return array<string, mixed>
      */
-    private function compactResult(array $result): array
+    private function compactResult(array $result, bool $scheduledCompact = false): array
     {
-        return [
+        $payload = [
             'tool' => $result['tool'] ?? 'memory_backfill_batch',
+            'compact' => $scheduledCompact,
             'success' => (bool) ($result['success'] ?? false),
             'dry_run' => (bool) ($result['dry_run'] ?? true),
-            'tree_id' => $result['tree_id'] ?? null,
             'lanes' => $result['lanes'] ?? [],
             'summary' => $result['summary'] ?? [],
-            'errors' => $this->compactErrors($result),
-            'error' => $result['error'] ?? null,
             'timestamp' => $result['timestamp'] ?? now()->toIso8601String(),
         ];
+
+        if ($scheduledCompact) {
+            $payload['tree_scope'] = $this->compactTreeScope($result['tree_id'] ?? null);
+            $payload['errors'] = $this->compactErrorSummary($result);
+            $payload['error'] = isset($result['error']) ? $this->errorCode((string) $result['error']) : null;
+            $payload['posture'] = [
+                'aggregate_only' => true,
+                'tree_identifiers_included' => false,
+                'runs_included' => false,
+                'memory_ids_included' => false,
+                'source_ids_included' => false,
+                'person_ids_included' => false,
+                'raw_error_text_included' => false,
+                'raw_lane_payloads_included' => false,
+            ];
+
+            return $payload;
+        }
+
+        $payload['tree_id'] = $result['tree_id'] ?? null;
+        $payload['errors'] = $this->compactErrors($result);
+        $payload['error'] = $result['error'] ?? null;
+
+        return $payload;
+    }
+
+    private function compactTreeScope(mixed $treeId): string
+    {
+        if ($treeId === null || $treeId === '' || $treeId === 'all') {
+            return 'all_trees';
+        }
+
+        return 'single_tree';
     }
 
     /**
@@ -129,5 +164,62 @@ class GenealogyMemoryBackfillCommand extends Command
         }
 
         return $errors;
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     * @return array<string, mixed>
+     */
+    private function compactErrorSummary(array $result): array
+    {
+        $errors = $this->compactErrors($result);
+        $byLane = [];
+        $codes = [];
+
+        foreach ($errors as $error) {
+            $lane = is_scalar($error['lane'] ?? null) && (string) $error['lane'] !== ''
+                ? (string) $error['lane']
+                : 'unknown';
+            $code = $this->errorCode((string) ($error['error'] ?? 'unknown'));
+
+            $byLane[$lane] = ($byLane[$lane] ?? 0) + 1;
+            $codes[$code] = ($codes[$code] ?? 0) + 1;
+        }
+
+        ksort($byLane);
+        ksort($codes);
+
+        return [
+            'count' => count($errors),
+            'by_lane' => $byLane,
+            'codes' => $codes,
+        ];
+    }
+
+    private function errorCode(string $error): string
+    {
+        $error = strtolower(trim($error));
+
+        if ($error === '') {
+            return 'unknown_error';
+        }
+
+        if (str_contains($error, 'missing') && str_contains($error, 'table')) {
+            return 'missing_table';
+        }
+
+        if (str_contains($error, 'permission') || str_contains($error, 'denied')) {
+            return 'permission_denied';
+        }
+
+        if (str_contains($error, 'timeout') || str_contains($error, 'timed out')) {
+            return 'timeout';
+        }
+
+        if (str_contains($error, 'connection') || str_contains($error, 'database')) {
+            return 'connection_error';
+        }
+
+        return 'lane_error';
     }
 }

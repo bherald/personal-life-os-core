@@ -188,6 +188,15 @@ class LLMPoolManagerService
                 continue;
             }
 
+            if (($instance->quarantine_status ?? 'none') === 'quarantined') {
+                Log::debug('LLMPoolManager: instance skipped (quarantined)', [
+                    'instance_id' => $instance->instance_id ?? null,
+                    'quarantine_source' => $instance->quarantine_source ?? null,
+                ]);
+
+                continue;
+            }
+
             // 3b P02d: provider-class gate via OfflinePolicyService. Under
             // offline profiles only local_llm is allowed; hybrid profiles add
             // cloud_sensitive_safe; cloud_external is only allowed under default.
@@ -491,7 +500,7 @@ class LLMPoolManagerService
     private function resolveActiveProfile(): ?array
     {
         try {
-            return app(\App\Services\AIService::class)->getActiveProfile();
+            return app(AIService::class)->getActiveProfile();
         } catch (\Throwable $e) {
             Log::debug('LLMPoolManager: active-profile lookup failed; treating as no profile', [
                 'error' => $e->getMessage(),
@@ -503,27 +512,31 @@ class LLMPoolManagerService
 
     /**
      * 3b P02d — defer to OfflinePolicyService for provider-class enforcement.
-     * Returns true when the service is unavailable (no regression for tests
-     * that omit the binding) or when the provider class is allowed under the
-     * active profile.
+     * Fails closed when policy resolution/evaluation is unavailable. Provider
+     * gates should never widen because the policy service had a transient error.
      */
     private function offlinePolicyAllowsProvider(object $instance): bool
     {
         try {
-            $policy = app(\App\Services\OfflinePolicyService::class);
+            $policy = app(OfflinePolicyService::class);
         } catch (\Throwable $e) {
-            return true;
+            Log::warning('LLMPoolManager: offline policy unavailable; blocking provider', [
+                'instance_id' => $instance->instance_id ?? null,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
         }
 
         try {
             $decision = $policy->evaluateProvider($instance);
         } catch (\Throwable $e) {
-            Log::debug('LLMPoolManager: offline policy evaluation failed; passing through', [
+            Log::warning('LLMPoolManager: offline policy evaluation failed; blocking provider', [
                 'instance_id' => $instance->instance_id ?? null,
                 'error' => $e->getMessage(),
             ]);
 
-            return true;
+            return false;
         }
 
         if (! $decision->allowed) {
@@ -1566,6 +1579,8 @@ class LLMPoolManagerService
             try {
                 if ($instance->instance_type === 'ollama') {
                     $success = $this->probeOllama($instance);
+                } elseif ($instance->instance_type === 'local_llm') {
+                    $success = $this->probeLocalOpenAICompatible($instance);
                 } elseif ($instance->instance_type === 'claude_cli') {
                     $success = $this->healthCheckClaudeCli($instance);
                 } else {
@@ -1618,6 +1633,24 @@ class LLMPoolManagerService
     private function probeOllama(object $instance): bool
     {
         $response = Http::connectTimeout(5)->timeout(10)->get(rtrim($instance->base_url, '/').'/api/tags');
+
+        return $response->successful();
+    }
+
+    /**
+     * Probe a local OpenAI-compatible sidecar, such as llama-server.
+     *
+     * Local sidecars do not require API keys and should not be classified as
+     * external API providers just to participate in health recovery.
+     */
+    private function probeLocalOpenAICompatible(object $instance): bool
+    {
+        $config = json_decode($instance->config ?? '{}', true) ?: [];
+        $healthPath = $config['health_path'] ?? '/health';
+        $healthBaseUrl = $config['health_base_url'] ?? $instance->base_url;
+
+        $response = Http::connectTimeout(3)->timeout(10)
+            ->get(rtrim($healthBaseUrl, '/').$healthPath);
 
         return $response->successful();
     }

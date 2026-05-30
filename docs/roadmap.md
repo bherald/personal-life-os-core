@@ -3,6 +3,9 @@
 PLOS is an alpha public-core extraction candidate. This roadmap describes the
 public direction without exporting the private active priority list.
 
+In the private source tree, this roadmap is represented as one operator TODO
+row. It should not be treated as a second private queue.
+
 ## Near Term
 
 - Keep Docker-first core install reproducible.

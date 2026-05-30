@@ -25,11 +25,22 @@ require_file() {
     fi
 }
 
+search_fixed() {
+    local term="$1"
+    shift
+
+    if command -v rg >/dev/null 2>&1; then
+        rg -F -q -- "$term" "$@"
+    else
+        grep -R -F -q -- "$term" "$@"
+    fi
+}
+
 require_mention() {
     local term="$1"
     shift
 
-    if rg -F -q "$term" "$@"; then
+    if search_fixed "$term" "$@"; then
         info "documented watch item: $term"
     else
         fail "watch item is not documented in provenance docs: $term"

@@ -501,6 +501,8 @@ PROMPT;
                 'temperature' => 0.3,
                 'max_tokens' => 1500,
                 'ai_timeout' => 30,
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_auto_research_topic',
             ]);
 
             if ($result['success'] && !empty($result['response'])) {

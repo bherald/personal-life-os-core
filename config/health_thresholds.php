@@ -77,6 +77,7 @@ return [
         'runtime_timeout_critical_ratio' => (float) env('AGENT_DOCTOR_RUNTIME_CRIT_RATIO', 1.00),
         'review_queue_warning_fraction' => (float) env('AGENT_DOCTOR_REVIEW_WARN_FRACTION', 0.50),
         'review_queue_critical_fraction' => (float) env('AGENT_DOCTOR_REVIEW_CRIT_FRACTION', 0.90),
+        'high_priority_threshold' => (int) env('AGENT_DOCTOR_HIGH_PRIORITY_THRESHOLD', 8),
         'high_priority_warning_hours' => (float) env('AGENT_DOCTOR_HIGH_PRIORITY_WARN_HOURS', 6.0),
         'high_priority_critical_hours' => (float) env('AGENT_DOCTOR_HIGH_PRIORITY_CRIT_HOURS', 24.0),
         'tools_missing_warning' => (int) env('AGENT_DOCTOR_TOOLS_MISSING_WARNING', 1),
@@ -85,6 +86,8 @@ return [
         'memory_tokens_warning' => (int) env('AGENT_DOCTOR_MEMORY_TOKENS_WARNING', 100_000),
         'episodes_without_distillation_warning' => (int) env('AGENT_DOCTOR_EPISODES_WITHOUT_DISTILLATION_WARNING', 25),
         'distillation_stale_hours_warning' => (float) env('AGENT_DOCTOR_DISTILLATION_STALE_HOURS_WARNING', 48.0),
+        'low_signal_undistilled_max_episodes' => (int) env('AGENT_DOCTOR_LOW_SIGNAL_UNDISTILLED_MAX_EPISODES', 2),
+        'low_signal_undistilled_max_tokens' => (int) env('AGENT_DOCTOR_LOW_SIGNAL_UNDISTILLED_MAX_TOKENS', 500),
         'procedure_min_success_rate' => (float) env('AGENT_DOCTOR_PROCEDURE_MIN_SUCCESS_RATE', 0.50),
         'procedure_min_uses_for_quality' => (int) env('AGENT_DOCTOR_PROCEDURE_MIN_USES_FOR_QUALITY', 3),
         'recursion' => [

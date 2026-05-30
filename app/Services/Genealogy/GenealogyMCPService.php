@@ -13549,7 +13549,7 @@ class GenealogyMCPService
             ],
             'genealogy_evidence_score_report' => [
                 'lane' => 'evidence',
-                'command_hint' => 'genealogy:evidence-score --all-trees --json --limit=100',
+                'command_hint' => 'genealogy:evidence-score --all-trees --json --compact --limit=100',
                 'required' => true,
             ],
             'genealogy_face_sync_101' => [

@@ -31,6 +31,7 @@ class GenealogyFaceScan extends Command
                             {--folder= : Nextcloud folder to scan (default: configured genealogy face sync root)}
                             {--recursive : Scan subfolders recursively}
                             {--sync : Run synchronously (for small scans)}
+                            {--dry-run : Preview scan settings without importing media or dispatching jobs}
                             {--status : Check status of running scan}';
 
     /**
@@ -49,6 +50,7 @@ class GenealogyFaceScan extends Command
         $folder = $this->option('folder') ?: config('genealogy.face_sync_root', '/Library/Media');
         $recursive = $this->option('recursive');
         $sync = $this->option('sync');
+        $dryRun = (bool) $this->option('dry-run');
         $checkStatus = $this->option('status');
 
         // Check status mode
@@ -62,6 +64,14 @@ class GenealogyFaceScan extends Command
         $this->info("Folder: {$folder}");
         $this->info('Recursive: '.($recursive ? 'Yes' : 'No'));
         $this->info('Mode: '.($sync ? 'Synchronous' : 'Background Job'));
+        $this->info('Dry run: '.($dryRun ? 'Yes' : 'No'));
+
+        if ($dryRun) {
+            $this->newLine();
+            $this->info('Dry run only: no media import, person/media link, or background job was started.');
+
+            return Command::SUCCESS;
+        }
 
         // Check for existing running job
         $cacheKey = GenealogyFaceScanJob::getStatusCacheKey($treeId);

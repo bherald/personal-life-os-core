@@ -15,7 +15,8 @@ class GenealogyDuplicateScanCommand extends Command
         {--min-score=0.75 : Minimum duplicate score to store}
         {--limit=200 : Maximum candidates per tree}
         {--dry-run : Preview candidates without writing pending duplicate rows}
-        {--json : Emit machine-readable JSON}';
+        {--json : Emit machine-readable JSON}
+        {--compact : With --json, emit aggregate-only scheduled-output JSON without per-tree rows}';
 
     protected $description = 'Scan genealogy people for duplicate candidates and queue pending review rows without merging records';
 
@@ -83,6 +84,10 @@ class GenealogyDuplicateScanCommand extends Command
         ];
 
         if ($this->option('json')) {
+            if ((bool) $this->option('compact')) {
+                $payload = $this->compactPayload($payload);
+            }
+
             $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
             return self::SUCCESS;
@@ -101,6 +106,45 @@ class GenealogyDuplicateScanCommand extends Command
         $this->line('[ITEMS_PROCESSED:'.array_sum(array_column($results, 'candidate_count')).']');
 
         return self::SUCCESS;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function compactPayload(array $payload): array
+    {
+        $results = array_values(array_filter(
+            is_array($payload['results'] ?? null) ? $payload['results'] : [],
+            static fn ($result): bool => is_array($result)
+        ));
+
+        return [
+            'command' => 'genealogy:duplicate-scan',
+            'compact' => true,
+            'mode' => (string) ($payload['mode'] ?? 'unknown'),
+            'mutation_allowed' => (bool) ($payload['mutation_allowed'] ?? false),
+            'canonical_record_mutation_allowed' => false,
+            'min_score' => (float) ($payload['min_score'] ?? 0),
+            'limit' => (int) ($payload['limit'] ?? 0),
+            'tree_count' => (int) ($payload['tree_count'] ?? count($results)),
+            'summary' => [
+                'candidate_count' => array_sum(array_map(static fn (array $row): int => (int) ($row['candidate_count'] ?? 0), $results)),
+                'created' => array_sum(array_map(static fn (array $row): int => (int) ($row['created'] ?? 0), $results)),
+                'updated' => array_sum(array_map(static fn (array $row): int => (int) ($row['updated'] ?? 0), $results)),
+                'skipped_resolved' => array_sum(array_map(static fn (array $row): int => (int) ($row['skipped_resolved'] ?? 0), $results)),
+            ],
+            'posture' => [
+                'aggregate_only' => true,
+                'per_tree_rows_included' => false,
+                'tree_ids_included' => false,
+                'person_ids_included' => false,
+                'person_names_included' => false,
+                'candidate_rows_included' => false,
+                'canonical_record_mutation_allowed' => false,
+            ],
+            'timestamp' => $payload['timestamp'] ?? now()->toIso8601String(),
+        ];
     }
 
     /**

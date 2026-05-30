@@ -1492,7 +1492,7 @@ class ScheduledJobService
             ."- Do NOT expand to unrelated branches or whole-tree research.\n"
             ."- Record negative searches as real progress when they narrow the field.\n"
             ."- Use GPS-style evidence analysis and note conflicts explicitly.\n"
-            ."- Use log_research_search with task_id={$taskId} when documenting searches.\n\n"
+            ."- Document searches in the outcome and use search-coverage tools when available; do not pass genealogy_research_tasks.id={$taskId} to GPS-only logging tools unless the runtime supplies a compatible GPS task ID.\n\n"
             ."At the END of your final response, include these exact lines:\n"
             ."OUTCOME_STATE: completed|deferred|requeue|needs_human_review\n"
             ."OUTCOME_REASON: <concise reason>\n"
@@ -1811,12 +1811,14 @@ class ScheduledJobService
 
         return match ($skillName) {
             'genealogy-researcher' => "Hybrid genealogy research run for tree {$treeId}.\n"
-                .'PHASE 1 ASSESS: get_source_metrics, recall_procedures, recall_episodes, list_trees, '
+                .'PHASE 1 ASSESS: get_source_metrics, recall_procedures, recall_episodes, agent_session_search, list_trees, '
                 .'get_research_landscape, get_recent_searches, get_tree_statistics, get_missing_data_report, '
                 ."get_research_hints, get_open_research_tasks. Select priority persons by bloodline tier.\n"
                 .'PHASE 2 RESEARCH: For each person — get_repositories_for_person, surname_phonetic_matches, '
                 .'then source_search_all + at least 3 targeted tools (wikitree_search, nara_search, '
                 ."newspaper_search, ellis_island_search, dar_search, etc.). Log coverage with update_search_coverage.\n"
+                .'When queue-mode search planning is available, let the LLM propose a bounded per-person plan using vetted public/API sources, then execute only validated tools/params. '
+                .'Treat source_search_all/LOC/NARA same-name hits as leads only unless the result text supplies an identity bridge beyond the query string. '
                 .'PHASE 3 ANALYZE: get_person_full, get_person_events, detect_source_conflicts, '
                 ."assess_gps_compliance, evidence_build_chain, detect_duplicates.\n"
                 .'PHASE 4 REPORT: For each person — log_research_search (use real task_id), update_hint_status, '

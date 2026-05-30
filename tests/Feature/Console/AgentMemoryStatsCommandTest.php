@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Console;
 
+use App\Services\AIService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Config;
@@ -21,6 +22,7 @@ class AgentMemoryStatsCommandTest extends TestCase
         DB::reconnect('sqlite');
 
         $this->createAgentEpisodeSummariesTable();
+        $this->createAgentEpisodesTable();
         $this->createAgentProceduresTable();
     }
 
@@ -95,6 +97,149 @@ class AgentMemoryStatsCommandTest extends TestCase
             'The --json/--compact options are only supported for read-only stats.',
             (string) Artisan::output()
         );
+    }
+
+    public function test_episodic_memory_backfill_requires_confirm_without_dry_run(): void
+    {
+        DB::table('agent_episodes')->insert([
+            [
+                'agent_id' => 'alpha-agent',
+                'session_id' => 'alpha-session',
+                'event_type' => 'task_completed',
+                'summary' => 'Completed task',
+                'details' => null,
+                'tokens_used' => 25,
+                'duration_ms' => 1250,
+                'created_at' => now()->subMinutes(10),
+            ],
+        ]);
+
+        $exit = Artisan::call('episodic:memory', [
+            '--backfill' => true,
+            '--days' => 2,
+        ]);
+
+        $this->assertSame(1, $exit);
+        $this->assertSame(0, DB::table('agent_episode_summaries')->count());
+        $this->assertStringContainsString(
+            'requires --confirm',
+            (string) Artisan::output()
+        );
+    }
+
+    public function test_episodic_memory_backfill_dry_run_reports_candidates_without_writes(): void
+    {
+        DB::table('agent_episodes')->insert([
+            [
+                'agent_id' => 'alpha-agent',
+                'session_id' => 'alpha-session',
+                'event_type' => 'task_started',
+                'summary' => 'Dry-run alpha task',
+                'details' => null,
+                'tokens_used' => 10,
+                'duration_ms' => 100,
+                'created_at' => now()->subMinutes(10),
+            ],
+            [
+                'agent_id' => 'alpha-agent',
+                'session_id' => 'alpha-session',
+                'event_type' => 'task_completed',
+                'summary' => 'Dry-run completed',
+                'details' => null,
+                'tokens_used' => 20,
+                'duration_ms' => 200,
+                'created_at' => now()->subMinutes(9),
+            ],
+        ]);
+
+        $exit = Artisan::call('episodic:memory', [
+            '--backfill' => true,
+            '--dry-run' => true,
+            '--days' => 2,
+            '--limit' => 1,
+        ]);
+
+        $output = (string) Artisan::output();
+
+        $this->assertSame(0, $exit, $output);
+        $this->assertSame(0, DB::table('agent_episode_summaries')->count());
+        $this->assertStringContainsString('Found 1 candidate session(s)', $output);
+        $this->assertStringContainsString('Dry run complete', $output);
+        $this->assertStringContainsString('alpha-agent', $output);
+        $this->assertStringNotContainsString('alpha-session', $output);
+    }
+
+    public function test_episodic_memory_backfill_matches_existing_summaries_by_agent_and_skips_null_sessions(): void
+    {
+        $this->mock(AIService::class, function ($mock): void {
+            $mock->shouldReceive('generateEmbedding')
+                ->andReturn(['success' => false]);
+        });
+
+        DB::table('agent_episode_summaries')->insert([
+            'agent_id' => 'alpha-agent',
+            'session_id' => 'shared-session',
+            'task' => 'Existing alpha task',
+            'summary' => 'Existing alpha summary.',
+            'outcome' => 'success',
+            'importance' => 0.50,
+            'tool_count' => 0,
+            'tokens_used' => 0,
+            'duration_ms' => 0,
+            'episode_count' => 1,
+            'is_archived' => 0,
+            'created_at' => now()->subHour(),
+        ]);
+
+        DB::table('agent_episodes')->insert([
+            [
+                'agent_id' => 'beta-agent',
+                'session_id' => 'shared-session',
+                'event_type' => 'task_started',
+                'summary' => 'Backfill beta task',
+                'details' => null,
+                'tokens_used' => 0,
+                'duration_ms' => 0,
+                'created_at' => now()->subMinutes(10),
+            ],
+            [
+                'agent_id' => 'beta-agent',
+                'session_id' => 'shared-session',
+                'event_type' => 'task_completed',
+                'summary' => 'Beta completed',
+                'details' => null,
+                'tokens_used' => 25,
+                'duration_ms' => 1250,
+                'created_at' => now()->subMinutes(9),
+            ],
+            [
+                'agent_id' => 'null-session-agent',
+                'session_id' => null,
+                'event_type' => 'task_completed',
+                'summary' => 'No session should not be backfilled',
+                'details' => null,
+                'tokens_used' => 25,
+                'duration_ms' => 1250,
+                'created_at' => now()->subMinutes(8),
+            ],
+        ]);
+
+        $exit = Artisan::call('episodic:memory', [
+            '--backfill' => true,
+            '--days' => 2,
+            '--confirm' => true,
+        ]);
+
+        $this->assertSame(0, $exit, (string) Artisan::output());
+        $this->assertSame(2, DB::table('agent_episode_summaries')->count());
+        $this->assertSame(1, DB::table('agent_episode_summaries')
+            ->where('agent_id', 'beta-agent')
+            ->where('session_id', 'shared-session')
+            ->where('outcome', 'success')
+            ->count());
+        $this->assertSame(0, DB::table('agent_episode_summaries')
+            ->where('agent_id', 'null-session-agent')
+            ->count());
     }
 
     public function test_procedural_memory_stats_emit_compact_json_without_procedure_details(): void
@@ -179,6 +324,21 @@ class AgentMemoryStatsCommandTest extends TestCase
             'The --json/--compact options are only supported for read-only stats.',
             (string) Artisan::output()
         );
+    }
+
+    private function createAgentEpisodesTable(): void
+    {
+        Schema::create('agent_episodes', function (Blueprint $table): void {
+            $table->id();
+            $table->string('agent_id', 100);
+            $table->string('session_id', 100)->nullable();
+            $table->string('event_type', 50);
+            $table->text('summary')->nullable();
+            $table->json('details')->nullable();
+            $table->unsignedInteger('tokens_used')->default(0);
+            $table->unsignedInteger('duration_ms')->default(0);
+            $table->timestamp('created_at')->nullable();
+        });
     }
 
     private function createAgentEpisodeSummariesTable(): void

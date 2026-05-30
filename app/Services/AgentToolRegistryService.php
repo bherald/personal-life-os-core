@@ -2,10 +2,12 @@
 
 namespace App\Services;
 
+use App\Engine\MCPRouter;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Agent Tool Registry Service
@@ -26,7 +28,9 @@ class AgentToolRegistryService
 
     private ?AgentGuardrailService $guardrailService = null;
 
-    private ?\App\Engine\MCPRouter $mcpRouter = null;
+    private ?MCPRouter $mcpRouter = null;
+
+    private ?AgentToolErrorSanitizerService $toolErrorSanitizer = null;
 
     private function getGuardrailService(): AgentGuardrailService
     {
@@ -37,13 +41,22 @@ class AgentToolRegistryService
         return $this->guardrailService;
     }
 
-    private function getMCPRouter(): \App\Engine\MCPRouter
+    private function getMCPRouter(): MCPRouter
     {
         if ($this->mcpRouter === null) {
-            $this->mcpRouter = app(\App\Engine\MCPRouter::class);
+            $this->mcpRouter = app(MCPRouter::class);
         }
 
         return $this->mcpRouter;
+    }
+
+    private function getToolErrorSanitizer(): AgentToolErrorSanitizerService
+    {
+        if ($this->toolErrorSanitizer === null) {
+            $this->toolErrorSanitizer = app(AgentToolErrorSanitizerService::class);
+        }
+
+        return $this->toolErrorSanitizer;
     }
 
     private function getToolConfig(): array
@@ -61,16 +74,35 @@ class AgentToolRegistryService
     private function loadToolsFromDB(): array
     {
         try {
-            $rows = DB::select('
-                SELECT name, service_class, method, description, parameters,
-                       returns_description, permissions, risk_level, category,
-                       requires_confirmation, max_calls_per_run, mcp_server,
-                       mcp_tool, max_tokens_per_call
-                FROM agent_tool_registry
-                WHERE enabled = 1
-            ');
+            $optionalColumns = $this->availableToolRegistryFreshnessColumns();
+            $select = array_merge([
+                'name',
+                'service_class',
+                'method',
+                'description',
+                'parameters',
+                'returns_description',
+                'permissions',
+                'risk_level',
+                'category',
+                'requires_confirmation',
+                'max_calls_per_run',
+                'mcp_server',
+                'mcp_tool',
+                'max_tokens_per_call',
+            ], $optionalColumns);
 
-            if (! empty($rows)) {
+            $query = DB::table('agent_tool_registry')
+                ->select($select)
+                ->where('enabled', 1);
+
+            if (in_array('availability_status', $optionalColumns, true)) {
+                $query->whereNotIn('availability_status', ['disabled', 'unavailable']);
+            }
+
+            $rows = $query->get();
+
+            if ($rows->isNotEmpty()) {
                 $tools = [];
                 foreach ($rows as $row) {
                     $tools[$row->name] = [
@@ -87,17 +119,47 @@ class AgentToolRegistryService
                         'mcp_server' => $row->mcp_server ?? null,
                         'mcp_tool' => $row->mcp_tool ?? null,
                         'max_tokens_per_call' => $row->max_tokens_per_call ?? null,
+                        'max_result_bytes' => $row->max_result_bytes ?? null,
+                        'availability_status' => $row->availability_status ?? 'unknown',
+                        'last_checked_at' => $row->last_checked_at ?? null,
+                        'last_error' => $row->last_error ?? null,
+                        'schema_generation' => $row->schema_generation ?? 1,
+                        'privacy_class' => $row->privacy_class ?? 'unspecified',
+                        'allows_private_data' => (bool) ($row->allows_private_data ?? false),
                     ];
                 }
 
                 return $tools;
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             // Table may not exist yet (pre-migration) — fall back to config
             Log::debug('AgentToolRegistry: DB read failed, using config fallback', ['error' => $e->getMessage()]);
         }
 
         return config('agent_tools', []);
+    }
+
+    private function availableToolRegistryFreshnessColumns(): array
+    {
+        if (! Schema::hasTable('agent_tool_registry')) {
+            return [];
+        }
+
+        $columns = [
+            'max_result_bytes',
+            'availability_status',
+            'last_checked_at',
+            'last_error',
+            'schema_generation',
+            'privacy_class',
+            'allows_private_data',
+        ];
+        $existing = array_flip(Schema::getColumnListing('agent_tool_registry'));
+
+        return array_values(array_filter(
+            $columns,
+            static fn (string $column): bool => isset($existing[$column])
+        ));
     }
 
     /**
@@ -153,7 +215,7 @@ class AgentToolRegistryService
             $this->toolConfig = null;
 
             return ['success' => true];
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -178,6 +240,33 @@ class AgentToolRegistryService
         $this->toolConfig = null;
 
         return ['success' => $affected > 0, 'enabled' => $name];
+    }
+
+    public function recordToolFreshness(string $name, string $availabilityStatus, ?string $lastError = null): array
+    {
+        $availabilityStatus = strtolower(trim($availabilityStatus));
+        if (! in_array($availabilityStatus, ['available', 'degraded', 'unavailable', 'disabled', 'unknown'], true)) {
+            return ['success' => false, 'error' => "Invalid availability status: {$availabilityStatus}"];
+        }
+
+        $requiredColumns = ['availability_status', 'last_checked_at', 'last_error'];
+        foreach ($requiredColumns as $column) {
+            if (! Schema::hasColumn('agent_tool_registry', $column)) {
+                return ['success' => false, 'error' => "agent_tool_registry.{$column} is missing"];
+            }
+        }
+
+        $affected = DB::table('agent_tool_registry')
+            ->where('name', $name)
+            ->update([
+                'availability_status' => $availabilityStatus,
+                'last_checked_at' => now(),
+                'last_error' => $lastError,
+                'updated_at' => now(),
+            ]);
+        $this->toolConfig = null;
+
+        return ['success' => $affected > 0, 'tool' => $name, 'availability_status' => $availabilityStatus];
     }
 
     /**
@@ -444,12 +533,52 @@ class AgentToolRegistryService
                 $params[] = "  - {$pName} ({$req}, {$type}): {$desc}";
             }
             $paramStr = ! empty($params) ? "\n".implode("\n", $params) : ' (no parameters)';
-            $lines[] = "### {$name}\n{$def['description']}{$paramStr}\n";
+            $metadata = $this->toolDescriptionMetadata($def);
+            $metadataStr = $metadata !== [] ? "\nMetadata: ".implode('; ', $metadata) : '';
+            $lines[] = "### {$name}\n{$def['description']}{$metadataStr}{$paramStr}\n";
         }
 
         $lines[] = "REMINDER: You MUST call tools using the JSON format above. Start by calling a tool NOW — do not respond with text only on your first turn. Example:\n```json\n{\"tool\": \"get_tree_statistics\", \"params\": {}}\n```\nWhen you have completed your analysis and have no more tools to call, respond with your final answer as plain text (no JSON tool block).";
 
         return implode("\n", $lines);
+    }
+
+    private function toolDescriptionMetadata(array $toolDef): array
+    {
+        $metadata = [];
+
+        $availability = (string) ($toolDef['availability_status'] ?? 'unknown');
+        if ($availability !== '' && $availability !== 'unknown') {
+            $metadata[] = 'availability='.$availability;
+        }
+
+        $privacyClass = (string) ($toolDef['privacy_class'] ?? 'unspecified');
+        if ($privacyClass !== '' && $privacyClass !== 'unspecified') {
+            $metadata[] = 'privacy_class='.$privacyClass;
+            $metadata[] = 'allows_private_data='.(($toolDef['allows_private_data'] ?? false) ? 'true' : 'false');
+        }
+
+        if (! empty($toolDef['schema_generation'])) {
+            $metadata[] = 'schema_generation='.(int) $toolDef['schema_generation'];
+        }
+
+        if (! empty($toolDef['max_calls_per_run'])) {
+            $metadata[] = 'max_calls_per_run='.(int) $toolDef['max_calls_per_run'];
+        }
+
+        if (! empty($toolDef['max_tokens_per_call'])) {
+            $metadata[] = 'max_tokens_per_call='.(int) $toolDef['max_tokens_per_call'];
+        }
+
+        if (! empty($toolDef['max_result_bytes'])) {
+            $metadata[] = 'max_result_bytes='.(int) $toolDef['max_result_bytes'];
+        }
+
+        if (! empty($toolDef['last_error'])) {
+            $metadata[] = 'last_error='.substr($this->sanitizeToolError($toolDef['last_error']), 0, 160);
+        }
+
+        return $metadata;
     }
 
     /**
@@ -474,6 +603,33 @@ class AgentToolRegistryService
 
         $toolDef = $tools[$toolName];
         $agentId = $context['agent_id'] ?? null;
+        $dsDecision = app(AgentDSGovernanceService::class)->evaluateToolExecution($toolName, $toolDef, $params, $context);
+        if (! ($dsDecision['allowed'] ?? false)) {
+            $reason = $this->sanitizeToolError($dsDecision['reason'] ?? 'Blocked by bounded governance');
+            Log::warning('AgentToolRegistry: bounded governance blocked tool', [
+                'tool' => $toolName,
+                'agent_id' => $agentId,
+                'profile' => $dsDecision['profile'] ?? null,
+                'tool_class' => $dsDecision['tool_class'] ?? null,
+                'reason' => $reason,
+            ]);
+            app(AgentAuditService::class)->recordGuardrail(
+                sessionId: (string) ($context['session_id'] ?? ''),
+                agentName: (string) ($agentId ?? 'agent'),
+                detail: "bounded governance blocked {$toolName}",
+                context: $dsDecision,
+            );
+            $this->recordToolCall($toolName, $toolDef['mcp_server'] ?? null, $toolDef['mcp_tool'] ?? null, $context, 'agent', false, $startTime, $reason, null, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
+
+            return [
+                'success' => false,
+                'result' => null,
+                'error' => $reason,
+                'result_text' => $this->toolErrorLine("Error: Tool '{$toolName}' blocked by bounded governance", $reason),
+                'guardrail_blocked' => true,
+                'ds_governance' => $dsDecision,
+            ];
+        }
 
         // AG-19: Simulation mode — validate params, check guardrails, but don't execute
         if ($simulate) {
@@ -521,8 +677,8 @@ class AgentToolRegistryService
                 return [
                     'success' => false,
                     'result' => null,
-                    'error' => $guardrailResult['reason'] ?? 'Blocked by guardrail',
-                    'result_text' => "Error: Tool '{$toolName}' blocked by guardrail: ".($guardrailResult['reason'] ?? 'policy violation'),
+                    'error' => $this->sanitizeToolError($guardrailResult['reason'] ?? 'Blocked by guardrail'),
+                    'result_text' => $this->toolErrorLine("Error: Tool '{$toolName}' blocked by guardrail", $guardrailResult['reason'] ?? 'policy violation'),
                     'guardrail_blocked' => true,
                 ];
             }
@@ -542,12 +698,13 @@ class AgentToolRegistryService
             }
         } catch (Exception $e) {
             // Guardrail service failure is fail-closed — block tool execution
-            Log::error('AgentToolRegistry: Guardrail check failed, blocking tool', ['tool' => $toolName, 'error' => $e->getMessage()]);
-            $this->recordToolCall($toolName, null, null, $context, 'agent', false, $startTime, 'Guardrail check error: '.$e->getMessage(), 0, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
+            $safeError = $this->sanitizeToolError($e->getMessage());
+            Log::error('AgentToolRegistry: Guardrail check failed, blocking tool', ['tool' => $toolName, 'error' => $safeError]);
+            $this->recordToolCall($toolName, null, null, $context, 'agent', false, $startTime, 'Guardrail check error: '.$safeError, 0, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
 
             return [
                 'success' => false,
-                'result_text' => "Tool '{$toolName}' blocked: guardrail service unavailable. Error: ".$e->getMessage(),
+                'result_text' => $this->toolErrorLine("Tool '{$toolName}' blocked: guardrail service unavailable", $safeError),
             ];
         }
 
@@ -559,7 +716,13 @@ class AgentToolRegistryService
                 $result = $compositionService->executeComposition($compositionParams);
                 $success = $result['success'] ?? false;
                 $resultText = $result['result_text'] ?? 'No output';
-                $this->recordToolCall($toolName, null, null, $context, 'agent', $success, $startTime, $success ? null : 'Composition failed', strlen($resultText), $params, riskLevel: $toolDef['risk_level'] ?? 'read');
+                if (! $success) {
+                    $resultText = $this->toolErrorLine(
+                        "Error executing composite tool {$toolName}",
+                        $result['error'] ?? $resultText
+                    );
+                }
+                $this->recordToolCall($toolName, null, null, $context, 'agent', $success, $startTime, $success ? null : $resultText, strlen($resultText), $params, riskLevel: $toolDef['risk_level'] ?? 'read');
 
                 return [
                     'success' => $success,
@@ -567,13 +730,14 @@ class AgentToolRegistryService
                     'result_text' => $resultText,
                 ];
             } catch (\Throwable $e) {
-                $this->recordToolCall($toolName, null, null, $context, 'agent', false, $startTime, $e->getMessage(), null, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
+                $safeError = $this->sanitizeToolError($e->getMessage());
+                $this->recordToolCall($toolName, null, null, $context, 'agent', false, $startTime, $safeError, null, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
 
                 return [
                     'success' => false,
                     'result' => null,
-                    'error' => $e->getMessage(),
-                    'result_text' => "Error executing composite tool {$toolName}: {$e->getMessage()}",
+                    'error' => $safeError,
+                    'result_text' => $this->toolErrorLine("Error executing composite tool {$toolName}", $safeError),
                 ];
             }
         }
@@ -601,6 +765,10 @@ class AgentToolRegistryService
             $serialized = $this->serializeResult($result);
             $toolSucceeded = ! $this->isLogicalFailureResult($result);
             $toolError = $toolSucceeded ? null : $this->extractLogicalFailureMessage($result);
+            if (! $toolSucceeded) {
+                $toolError = $this->sanitizeToolError($toolError ?? 'Tool reported failure');
+                $serialized = $this->toolErrorLine("Tool '{$toolName}' reported failure", $toolError);
+            }
 
             Log::debug('AgentToolRegistry: Tool executed', [
                 'tool' => $toolName,
@@ -618,18 +786,19 @@ class AgentToolRegistryService
             ];
 
         } catch (\Throwable $e) {
+            $safeError = $this->sanitizeToolError($e->getMessage());
             Log::warning('AgentToolRegistry: Tool execution failed', [
                 'tool' => $toolName,
-                'error' => $e->getMessage(),
+                'error' => $safeError,
             ]);
 
-            $this->recordToolCall($toolName, null, null, $context, 'agent', false, $startTime, $e->getMessage(), null, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
+            $this->recordToolCall($toolName, null, null, $context, 'agent', false, $startTime, $safeError, null, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
 
             return [
                 'success' => false,
                 'result' => null,
-                'error' => $e->getMessage(),
-                'result_text' => "Error executing {$toolName}: {$e->getMessage()}",
+                'error' => $safeError,
+                'result_text' => $this->toolErrorLine("Error executing {$toolName}", $safeError),
             ];
         }
     }
@@ -688,20 +857,31 @@ class AgentToolRegistryService
                 'result_text' => $serialized,
             ];
         } catch (Exception $e) {
+            $safeError = $this->sanitizeToolError($e->getMessage());
             Log::warning('AgentToolRegistry: MCP tool execution failed', [
                 'registry_name' => $registryName,
                 'mcp_server' => $mcpServer,
                 'mcp_tool' => $mcpTool,
-                'error' => $e->getMessage(),
+                'error' => $safeError,
             ]);
 
             return [
                 'success' => false,
                 'result' => null,
-                'error' => $e->getMessage(),
-                'result_text' => "Error executing MCP tool {$registryName} ({$mcpServer}/{$mcpTool}): {$e->getMessage()}",
+                'error' => $safeError,
+                'result_text' => $this->toolErrorLine("Error executing MCP tool {$registryName} ({$mcpServer}/{$mcpTool})", $safeError),
             ];
         }
+    }
+
+    private function sanitizeToolError(mixed $error): string
+    {
+        return $this->getToolErrorSanitizer()->sanitize($error);
+    }
+
+    private function toolErrorLine(string $prefix, mixed $error): string
+    {
+        return $this->getToolErrorSanitizer()->errorLine($prefix, $error);
     }
 
     /**
@@ -1159,6 +1339,7 @@ class AgentToolRegistryService
         ?string $riskLevel = null
     ): void {
         try {
+            $errorMessage = $errorMessage !== null ? $this->sanitizeToolError($errorMessage) : null;
             $durationMs = (int) round((microtime(true) - $startTime) * 1000);
             $paramsSummary = null;
             if ($params) {
@@ -1243,14 +1424,16 @@ class AgentToolRegistryService
             $results['checks'][] = [
                 'check' => 'guardrail',
                 'passed' => $guardrailResult['allowed'],
-                'detail' => $guardrailResult['reason'] ?? 'Allowed',
+                'detail' => isset($guardrailResult['reason'])
+                    ? $this->sanitizeToolError($guardrailResult['reason'])
+                    : 'Allowed',
                 'requires_confirmation' => $guardrailResult['requires_confirmation'] ?? false,
             ];
             if (! $guardrailResult['allowed']) {
                 $results['success'] = false;
             }
         } catch (\Throwable $e) {
-            $results['checks'][] = ['check' => 'guardrail', 'passed' => false, 'detail' => 'Guardrail unavailable: '.$e->getMessage()];
+            $results['checks'][] = ['check' => 'guardrail', 'passed' => false, 'detail' => $this->toolErrorLine('Guardrail unavailable', $e->getMessage())];
             $results['success'] = false;
         }
 

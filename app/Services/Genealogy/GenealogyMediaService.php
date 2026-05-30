@@ -26,7 +26,7 @@ use Illuminate\Support\Facades\Log;
  * - Extract face regions from photos (E23 integration)
  * - Link media to individuals, families, sources, etc.
  *
- * @see docs/future-enhancements.md E20
+ * Historical private backlog label: E20.
  */
 class GenealogyMediaService
 {
@@ -1954,7 +1954,11 @@ EOT;
 
             $result = $this->aiService->processImage(
                 base64_encode($imageData),
-                $prompt
+                $prompt,
+                [
+                    'sensitive_data' => true,
+                    'data_class' => 'genealogy_media_image',
+                ]
             );
 
             if ($result['success'] && ! empty($result['response'])) {
@@ -1993,7 +1997,11 @@ Example output: ["portrait", "1920s", "wedding", "formal attire", "group photo",
 Return only the JSON array, no other text:
 EOT;
 
-            $result = $this->aiService->process($prompt, ['ai_timeout' => 30]);
+            $result = $this->aiService->process($prompt, [
+                'ai_timeout' => 30,
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_media_tags',
+            ]);
 
             if ($result['success'] && ! empty($result['response'])) {
                 $response = trim($result['response']);
@@ -3326,7 +3334,11 @@ If you cannot determine a match with at least 50% confidence, respond:
 PROMPT;
 
         try {
-            $result = $this->aiService->process($prompt, ['factual_mode' => true]);
+            $result = $this->aiService->process($prompt, [
+                'factual_mode' => true,
+                'sensitive_data' => true,
+                'data_class' => 'genealogy_media_person_match',
+            ]);
 
             if ($result['success'] && ! empty($result['response'])) {
                 // Extract JSON from response

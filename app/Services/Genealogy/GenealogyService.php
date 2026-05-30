@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Log;
  * Main CRUD service for genealogy data management.
  * Uses RAW parameterized SQL only - no Eloquent/Query Builder.
  *
- * @see docs/future-enhancements.md E20
+ * Historical private backlog label: E20.
  */
 class GenealogyService
 {

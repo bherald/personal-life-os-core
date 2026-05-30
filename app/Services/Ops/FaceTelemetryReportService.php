@@ -132,6 +132,8 @@ class FaceTelemetryReportService
             $lines[] = '- Automatic link allowed: `'.(($namedOnlyNextAction['automatic_link_allowed'] ?? false) ? 'yes' : 'no').'`';
             $lines[] = '- Create-person allowed: `'.(($namedOnlyNextAction['create_person_allowed'] ?? false) ? 'yes' : 'no').'`';
             $lines[] = '- Writeback allowed: `'.(($namedOnlyNextAction['writeback_allowed'] ?? false) ? 'yes' : 'no').'`';
+            $lines[] = '- Mixed-cluster packet: `'.($namedOnlyNextAction['operator_packet_command'] ?? 'none').'`';
+            $lines[] = '- Named-only slice: `'.($namedOnlyNextAction['named_only_slice_command'] ?? 'none').'`';
         }
 
         $namedOnlyTriage = $payload['sections']['named_only_triage_buckets']['summary'] ?? null;
@@ -304,6 +306,9 @@ class FaceTelemetryReportService
                     'create_person_allowed' => (bool) ($nextAction['create_person_allowed'] ?? false),
                     'writeback_allowed' => (bool) ($nextAction['writeback_allowed'] ?? false),
                     'uses_row_identifiers' => (bool) ($nextAction['uses_row_identifiers'] ?? false),
+                    'operator_packet_command' => $this->nullableString($nextAction['operator_packet_command'] ?? null),
+                    'named_only_slice_command' => $this->nullableString($nextAction['named_only_slice_command'] ?? null),
+                    'ui_target_url' => $this->nullableString($nextAction['ui_target_url'] ?? null),
                     'open_named_only_faces' => $this->intValue($nextAction['open_named_only_faces'] ?? 0),
                     'stale_open_named_only_faces' => $this->intValue($nextAction['stale_open_named_only_faces'] ?? 0),
                     'stale_named_only_no_match_pending' => $this->intValue($nextAction['stale_named_only_no_match_pending'] ?? 0),
@@ -809,6 +814,9 @@ class FaceTelemetryReportService
                 'create_person_allowed' => false,
                 'writeback_allowed' => false,
                 'uses_row_identifiers' => false,
+                'operator_packet_command' => 'php artisan ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json',
+                'named_only_slice_command' => 'php artisan ops:face-named-only-slice --limit=10 --json',
+                'ui_target_url' => '/media/faces?tab=named_only',
                 'open_named_only_faces' => $openNamedOnly,
                 'stale_open_named_only_faces' => $staleOpenNamedOnly,
                 'terminal_decided_named_only_faces' => $terminalNamedOnly,
@@ -1008,6 +1016,7 @@ class FaceTelemetryReportService
                    ON gpm.person_id = frf.genealogy_person_id
                   AND gpm.media_id = gm.id
                  WHERE frf.hidden = 0
+                   AND fr.status = 'active'
                    AND frf.genealogy_person_id IS NOT NULL"
             );
 
@@ -1067,6 +1076,7 @@ class FaceTelemetryReportService
                            ON gpm.person_id = frf.genealogy_person_id
                           AND gpm.media_id = gm.id
                          WHERE frf.hidden = 0
+                           AND fr.status = 'active'
                            AND frf.genealogy_person_id IS NOT NULL
                            AND (gm.id IS NULL OR gpm.id IS NULL)
                          ORDER BY frf.updated_at DESC, frf.id DESC

@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\DB;
  * - gps_research_logs: Search activity logging including negative results
  * - gps_assessments: 5-element GPS compliance scoring
  *
- * @see docs/future-enhancements.md - Priority 4: Research Task Management
+ * Historical private backlog label: Priority 4 research task management.
  */
 return new class extends Migration
 {

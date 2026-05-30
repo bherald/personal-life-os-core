@@ -52,6 +52,8 @@ tools:
   - rag_index
   - recall_procedures
   - recall_episodes
+  - agent_session_search
+  - agent_trajectory_build
   - save_procedure
   - procedure_stats
 ---

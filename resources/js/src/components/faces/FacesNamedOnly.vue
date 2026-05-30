@@ -40,6 +40,43 @@
               {{ sort.label }}
             </button>
           </div>
+          <label class="inline-flex items-center gap-1.5 rounded border border-ops-plum/40 px-2 py-1 text-xs uppercase tracking-wide text-ops-text-muted">
+            <input
+              type="checkbox"
+              class="h-3.5 w-3.5 accent-ops-gold"
+              :checked="namedOnlyActiveOnly"
+              :disabled="namedOnlyLoading"
+              @change="changeActiveOnly($event.target.checked)"
+            />
+            Active files
+          </label>
+          <label class="inline-flex items-center gap-1.5 rounded border border-ops-plum/40 px-2 py-1 text-xs uppercase tracking-wide text-ops-text-muted">
+            <input
+              type="checkbox"
+              class="h-3.5 w-3.5 accent-ops-gold"
+              :checked="namedOnlyClusterScope === 'mixed'"
+              :disabled="namedOnlyLoading"
+              @change="changeMixedClusterOnly($event.target.checked)"
+            />
+            Mixed clusters
+          </label>
+          <form class="flex min-w-[14rem] items-center gap-2" @submit.prevent="applySearch">
+            <input
+              v-model="searchDraft"
+              type="search"
+              maxlength="100"
+              class="min-w-0 flex-1 rounded border border-ops-plum/40 bg-black/20 px-2 py-1 text-xs text-ops-text outline-none placeholder:text-ops-text-muted/70 focus:border-ops-peach/50"
+              placeholder="Name or file"
+              :disabled="namedOnlyLoading"
+            />
+            <button
+              class="rounded border border-ops-plum/40 px-2 py-1 text-xs uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-40"
+              :disabled="namedOnlyLoading"
+              type="submit"
+            >
+              Search
+            </button>
+          </form>
         </div>
         <button
           class="rounded border border-ops-plum/40 px-3 py-1.5 text-xs uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-40"
@@ -86,6 +123,12 @@
                 class="rounded bg-black/75 px-1 py-0.5 text-[10px] uppercase tracking-wide text-ops-gold"
               >
                 {{ decisionBadge(face) }}
+              </span>
+              <span
+                v-if="face.is_mixed_name_cluster"
+                class="rounded bg-ops-gold/90 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black"
+              >
+                Mixed
               </span>
             </div>
           </div>
@@ -338,17 +381,24 @@ const {
   namedOnlyDecisionState,
   namedOnlyStaleOnly,
   namedOnlySort,
+  namedOnlyActiveOnly,
+  namedOnlyClusterScope,
+  namedOnlySearch,
   hasMoreNamedOnly,
   loadNamedOnly,
   loadMoreNamedOnly,
   setNamedOnlyDecisionState,
   setNamedOnlyStaleOnly,
   setNamedOnlySort,
+  setNamedOnlyActiveOnly,
+  setNamedOnlyClusterScope,
+  setNamedOnlySearch,
   linkNamedOnlyFace,
   decideNamedOnlyFace,
 } = useFacesData()
 
 const selectedFaceId = ref(null)
+const searchDraft = ref(namedOnlySearch.value)
 const candidatePayload = ref(null)
 const candidateLoading = ref(false)
 const candidateError = ref('')
@@ -412,6 +462,21 @@ async function changeSort(sort) {
   if (namedOnlySort.value === sort) return
   clearCandidatePanel()
   await setNamedOnlySort(sort)
+}
+
+async function changeActiveOnly(activeOnly) {
+  clearCandidatePanel()
+  await setNamedOnlyActiveOnly(activeOnly)
+}
+
+async function changeMixedClusterOnly(mixedOnly) {
+  clearCandidatePanel()
+  await setNamedOnlyClusterScope(mixedOnly ? 'mixed' : 'all')
+}
+
+async function applySearch() {
+  clearCandidatePanel()
+  await setNamedOnlySearch(searchDraft.value)
 }
 
 async function loadCandidates(faceId = selectedFaceId.value) {

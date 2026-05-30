@@ -18,6 +18,7 @@ class GenealogyHealthAuditCommand extends Command
         {--json : Emit machine-readable JSON}
         {--markdown : Emit Markdown}
         {--compact : Omit path/sample details for dashboards and MCP}
+        {--aggregate : With --json, emit aggregate-only output without tree, issue, entity, sample, or path details}
         {--dry-run : Validate command shape without querying row data}';
 
     protected $description = 'Read-only Genea health audit for tree links, dates, media, RAG, citations, duplicates, and export readiness';
@@ -26,6 +27,12 @@ class GenealogyHealthAuditCommand extends Command
     {
         if ($this->option('json') && $this->option('markdown')) {
             $this->error('Choose either --json or --markdown, not both.');
+
+            return self::FAILURE;
+        }
+
+        if ($this->option('aggregate') && ! $this->option('json')) {
+            $this->error('The --aggregate option is only supported with --json.');
 
             return self::FAILURE;
         }
@@ -46,8 +53,12 @@ class GenealogyHealthAuditCommand extends Command
             dryRun: (bool) $this->option('dry-run'),
         );
 
-        if ($this->option('compact')) {
+        if ($this->option('compact') || $this->option('aggregate')) {
             $payload = $audit->compactPayload($payload);
+        }
+
+        if ($this->option('aggregate')) {
+            $payload = $this->aggregateOnlyPayload($payload, allTrees: false);
         }
 
         if ($this->option('json')) {
@@ -91,7 +102,9 @@ class GenealogyHealthAuditCommand extends Command
                 dryRun: (bool) $this->option('dry-run'),
             );
 
-            $trees[] = $this->option('compact') ? $audit->compactPayload($payload) : $payload;
+            $trees[] = ($this->option('compact') || $this->option('aggregate'))
+                ? $audit->compactPayload($payload)
+                : $payload;
         }
 
         $payload = [
@@ -107,6 +120,10 @@ class GenealogyHealthAuditCommand extends Command
             'summary' => $this->aggregateSummary($trees),
             'trees' => $trees,
         ];
+
+        if ($this->option('aggregate')) {
+            $payload = $this->aggregateOnlyPayload($payload, allTrees: true);
+        }
 
         if ($this->option('json')) {
             $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -191,5 +208,131 @@ class GenealogyHealthAuditCommand extends Command
         }
 
         return $summary;
+    }
+
+    private function aggregateOnlyPayload(array $payload, bool $allTrees): array
+    {
+        $trees = $allTrees
+            ? array_values(array_filter($payload['trees'] ?? [], 'is_array'))
+            : [$payload];
+        $issueDimensions = $this->aggregateIssueDimensions($trees);
+        $summary = $allTrees
+            ? ($payload['summary'] ?? $this->aggregateSummary($trees))
+            : ($payload['summary'] ?? []);
+
+        return [
+            'version' => (int) ($payload['version'] ?? 1),
+            'command' => 'genealogy:health-audit',
+            'mode' => 'observe',
+            'dry_run' => (bool) ($payload['dry_run'] ?? false),
+            'read_only' => true,
+            'mutation_allowed' => false,
+            'captured_at' => (string) ($payload['captured_at'] ?? now()->toIso8601String()),
+            'all_trees' => $allTrees,
+            'tree_count' => $allTrees ? (int) ($payload['tree_count'] ?? count($trees)) : 1,
+            'compact' => true,
+            'aggregate' => true,
+            'status' => (string) ($payload['status'] ?? 'observe_ok'),
+            'sections' => $this->aggregateSections($trees),
+            'limit' => (int) ($payload['limit'] ?? $this->option('limit')),
+            'summary' => $summary,
+            'issue_code_counts' => $issueDimensions['codes'],
+            'severity_counts' => $issueDimensions['severities'],
+            'section_counts' => $issueDimensions['sections'],
+            'confidence_counts' => $issueDimensions['confidences'],
+            'safe_auto_fix_categories' => $issueDimensions['safe_auto_fix_categories'],
+            'review_required_categories' => $issueDimensions['review_required_categories'],
+            'posture' => [
+                'aggregate_only' => true,
+                'tree_details_included' => false,
+                'issue_details_included' => false,
+                'entity_details_included' => false,
+                'review_targets_included' => false,
+                'samples_included' => false,
+                'paths_included' => false,
+                'writes_allowed' => false,
+                'scheduled_output_safe' => true,
+            ],
+        ];
+    }
+
+    private function aggregateIssueDimensions(array $trees): array
+    {
+        $codes = [];
+        $severities = [];
+        $sections = [];
+        $confidences = [];
+        $safeAutoFixCategories = 0;
+        $reviewRequiredCategories = 0;
+
+        foreach ($trees as $tree) {
+            foreach (($tree['issues'] ?? []) as $issue) {
+                if (! is_array($issue)) {
+                    continue;
+                }
+
+                $code = $this->aggregateKey($issue['code'] ?? null, 'unknown_issue');
+                $severity = $this->aggregateKey($issue['severity'] ?? null, 'unknown');
+                $section = $this->aggregateKey($issue['section'] ?? null, 'unknown');
+                $confidence = $this->aggregateKey($issue['confidence'] ?? null, 'unknown');
+                $affectedRows = (int) ($issue['count'] ?? 0);
+
+                $codes[$code] ??= ['issue_categories' => 0, 'affected_rows' => 0];
+                $codes[$code]['issue_categories']++;
+                $codes[$code]['affected_rows'] += $affectedRows;
+                $severities[$severity] = ($severities[$severity] ?? 0) + 1;
+                $sections[$section] = ($sections[$section] ?? 0) + 1;
+                $confidences[$confidence] = ($confidences[$confidence] ?? 0) + 1;
+
+                if ((bool) ($issue['safe_auto_fix'] ?? false)) {
+                    $safeAutoFixCategories++;
+                } else {
+                    $reviewRequiredCategories++;
+                }
+            }
+        }
+
+        ksort($codes);
+        ksort($severities);
+        ksort($sections);
+        ksort($confidences);
+
+        return [
+            'codes' => $codes,
+            'severities' => $severities,
+            'sections' => $sections,
+            'confidences' => $confidences,
+            'safe_auto_fix_categories' => $safeAutoFixCategories,
+            'review_required_categories' => $reviewRequiredCategories,
+        ];
+    }
+
+    private function aggregateSections(array $trees): array
+    {
+        $sections = [];
+
+        foreach ($trees as $tree) {
+            foreach (($tree['sections'] ?? []) as $section) {
+                if (is_scalar($section) && (string) $section !== '') {
+                    $sections[] = (string) $section;
+                }
+            }
+        }
+
+        $sections = array_values(array_unique($sections));
+        sort($sections);
+
+        return $sections;
+    }
+
+    private function aggregateKey(mixed $value, string $fallback): string
+    {
+        if (! is_scalar($value)) {
+            return $fallback;
+        }
+
+        $value = trim((string) $value);
+
+        return $value === '' ? $fallback : $value;
     }
 }

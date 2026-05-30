@@ -9,6 +9,10 @@ return new class extends Migration
 
     public function up(): void
     {
+        if (! DB::table('workflow_nodes')->where('id', self::ROUTINE_NODE_ID)->exists()) {
+            return;
+        }
+
         DB::table('workflow_node_configs')->updateOrInsert(
             [
                 'workflow_node_id' => self::ROUTINE_NODE_ID,

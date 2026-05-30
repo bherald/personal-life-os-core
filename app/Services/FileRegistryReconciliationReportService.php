@@ -42,6 +42,10 @@ class FileRegistryReconciliationReportService
             'duplicate_nextcloud_fileid_groups' => $identity['counts']['duplicate_nextcloud_fileid_groups'],
             'same_content_multi_path_groups' => $identity['counts']['same_content_multi_path_groups'],
             'same_filename_content_multi_path_groups' => $identity['counts']['same_filename_content_multi_path_groups'],
+            'same_filename_content_materialized_groups' => $identity['counts']['same_filename_content_materialized_groups'],
+            'same_filename_content_unmaterialized_groups' => $identity['counts']['same_filename_content_unmaterialized_groups'],
+            'pending_duplicate_review_pairs' => $identity['counts']['pending_duplicate_review_pairs'],
+            'keep_both_duplicate_pairs' => $identity['counts']['keep_both_duplicate_pairs'],
             'mysql_downstream_orphan_rows' => array_sum($downstream['counts']),
             'rag_file_documents' => $rag['counts']['file_documents'],
             'rag_source_id_checked_sample' => $rag['counts']['source_id_checked_sample'],
@@ -53,7 +57,8 @@ class FileRegistryReconciliationReportService
         $attentionCount = $counts['active_missing_identity_or_path']
             + $counts['duplicate_asset_uuid_groups']
             + $counts['duplicate_nextcloud_fileid_groups']
-            + $counts['same_content_multi_path_groups']
+            + $counts['same_filename_content_unmaterialized_groups']
+            + $counts['pending_duplicate_review_pairs']
             + $counts['mysql_downstream_orphan_rows']
             + $counts['rag_source_id_missing_registry_in_sample']
             + $counts['rag_asset_uuid_missing_registry_in_sample']
@@ -87,8 +92,8 @@ class FileRegistryReconciliationReportService
             ] : [],
             'errors' => $errors,
             'next_actions' => [
-                'Review aggregate counts before any write-capable reconciliation is designed.',
-                'Treat same-content multi-path rows as move-or-duplicate candidates, not automatic moves.',
+                'Materialize unreviewed exact duplicate groups with files:materialize-duplicate-candidates before any move/delete planning.',
+                'Treat same-content multi-path rows as duplicate review candidates, not automatic moves.',
                 'Keep canonical path remap, delete cascade, RAG cleanup, and face cleanup disabled until a later approval gate.',
             ],
         ];
@@ -107,7 +112,11 @@ class FileRegistryReconciliationReportService
             'posture' => $payload['posture'] ?? [],
             'counts' => [
                 'active_files' => (int) ($counts['active_files'] ?? 0),
-                'move_or_duplicate_candidate_groups' => (int) ($counts['same_filename_content_multi_path_groups'] ?? 0),
+                'move_or_duplicate_candidate_groups' => (int) ($counts['same_filename_content_unmaterialized_groups'] ?? $counts['same_filename_content_multi_path_groups'] ?? 0),
+                'duplicate_review_pending_pairs' => (int) ($counts['pending_duplicate_review_pairs'] ?? 0),
+                'duplicate_keep_both_pairs' => (int) ($counts['keep_both_duplicate_pairs'] ?? 0),
+                'same_filename_content_multi_path_groups' => (int) ($counts['same_filename_content_multi_path_groups'] ?? 0),
+                'same_filename_content_materialized_groups' => (int) ($counts['same_filename_content_materialized_groups'] ?? 0),
                 'identity_conflict_groups' => (int) ($counts['duplicate_asset_uuid_groups'] ?? 0)
                     + (int) ($counts['duplicate_nextcloud_fileid_groups'] ?? 0),
                 'missing_identity_or_path' => (int) ($counts['active_missing_identity_or_path'] ?? 0),
@@ -128,6 +137,9 @@ class FileRegistryReconciliationReportService
         $moveOrDuplicateGroups = $counts['same_filename_content_multi_path_groups']
             ?? $counts['move_or_duplicate_candidate_groups']
             ?? 0;
+        $unmaterializedGroups = $counts['same_filename_content_unmaterialized_groups']
+            ?? $counts['move_or_duplicate_candidate_groups']
+            ?? $moveOrDuplicateGroups;
         $identityConflictGroups = isset($counts['identity_conflict_groups'])
             ? (int) $counts['identity_conflict_groups']
             : ((int) ($counts['duplicate_asset_uuid_groups'] ?? 0)) + ((int) ($counts['duplicate_nextcloud_fileid_groups'] ?? 0));
@@ -146,7 +158,9 @@ class FileRegistryReconciliationReportService
             '## Counts',
             '',
             '- Active files: `'.($counts['active_files'] ?? 0).'`',
-            '- Move/duplicate candidate groups: `'.$moveOrDuplicateGroups.'`',
+            '- Move/duplicate candidate groups: `'.$unmaterializedGroups.'` unmaterialized of `'.$moveOrDuplicateGroups.'` exact same-name groups',
+            '- Pending duplicate review pairs: `'.($counts['pending_duplicate_review_pairs'] ?? 0).'`',
+            '- Keep-both duplicate pairs: `'.($counts['keep_both_duplicate_pairs'] ?? 0).'`',
             '- Identity conflict groups: `'.$identityConflictGroups.'`',
             '- MySQL downstream orphan rows: `'.($counts['mysql_downstream_orphan_rows'] ?? 0).'`',
             '- RAG missing registry in checked sample: `'.$ragMissingRegistry.'`',
@@ -180,7 +194,8 @@ class FileRegistryReconciliationReportService
                  FROM (
                    SELECT asset_uuid
                    FROM file_registry
-                   WHERE asset_uuid IS NOT NULL AND asset_uuid <> ''
+                   WHERE status = 'active'
+                     AND asset_uuid IS NOT NULL AND asset_uuid <> ''
                    GROUP BY asset_uuid
                    HAVING COUNT(*) > 1
                  ) duplicate_assets"
@@ -190,7 +205,8 @@ class FileRegistryReconciliationReportService
                  FROM (
                    SELECT nextcloud_fileid
                    FROM file_registry
-                   WHERE nextcloud_fileid IS NOT NULL
+                   WHERE status = 'active'
+                     AND nextcloud_fileid IS NOT NULL
                    GROUP BY nextcloud_fileid
                    HAVING COUNT(*) > 1
                  ) duplicate_fileids"
@@ -220,13 +236,71 @@ class FileRegistryReconciliationReportService
                    HAVING COUNT(*) > 1 AND COUNT(DISTINCT current_path) > 1
                  ) same_named_content"
             ),
+            'same_filename_content_materialized_groups' => $this->sameFilenameContentMaterializedGroups(),
+            'pending_duplicate_review_pairs' => $this->mysqlCount(
+                "SELECT COUNT(*) AS count
+                 FROM file_registry_duplicates d
+                 JOIN file_registry c ON c.id = d.canonical_file_id
+                 JOIN file_registry dup ON dup.id = d.duplicate_file_id
+                 WHERE d.status = 'pending_review'
+                   AND c.status = 'active'
+                   AND dup.status = 'active'"
+            ),
+            'keep_both_duplicate_pairs' => $this->mysqlCount(
+                "SELECT COUNT(*) AS count
+                 FROM file_registry_duplicates d
+                 JOIN file_registry c ON c.id = d.canonical_file_id
+                 JOIN file_registry dup ON dup.id = d.duplicate_file_id
+                 WHERE d.status = 'keep_both'
+                   AND c.status = 'active'
+                   AND dup.status = 'active'"
+            ),
         ];
+        $counts['same_filename_content_unmaterialized_groups'] = max(
+            0,
+            $counts['same_filename_content_multi_path_groups'] - $counts['same_filename_content_materialized_groups']
+        );
 
         return [
             'counts' => $counts,
             'samples' => $includeSamples ? $this->collectIdentitySamples($sampleLimit) : [],
             'errors' => [],
         ];
+    }
+
+    private function sameFilenameContentMaterializedGroups(): int
+    {
+        return $this->mysqlCount(
+            "SELECT COUNT(*) AS count
+             FROM (
+               SELECT same_named.content_hash,
+                      same_named.filename,
+                      same_named.file_size
+               FROM (
+                 SELECT content_hash, filename, file_size
+                 FROM file_registry
+                 WHERE status = 'active'
+                   AND content_hash IS NOT NULL
+                   AND content_hash <> ''
+                   AND filename IS NOT NULL
+                 GROUP BY content_hash, filename, file_size
+                 HAVING COUNT(*) > 1 AND COUNT(DISTINCT current_path) > 1
+               ) same_named
+               WHERE EXISTS (
+                 SELECT 1
+                 FROM file_registry_duplicates d
+                 JOIN file_registry c ON c.id = d.canonical_file_id
+                 JOIN file_registry dup ON dup.id = d.duplicate_file_id
+                 WHERE d.content_hash = same_named.content_hash
+                   AND c.status = 'active'
+                   AND dup.status = 'active'
+                   AND c.filename = same_named.filename
+                   AND dup.filename = same_named.filename
+                   AND c.file_size <=> same_named.file_size
+                   AND dup.file_size <=> same_named.file_size
+               )
+             ) materialized_same_named"
+        );
     }
 
     private function collectIdentitySamples(int $sampleLimit): array
@@ -318,7 +392,7 @@ class FileRegistryReconciliationReportService
             );
 
             if ($sampleLimit > 0) {
-                $sourceRows = DB::connection('pgsql')->select(
+                $sourceRows = DB::connection('pgsql_rag')->select(
                     "SELECT source_id
                      FROM rag_documents
                      WHERE source_type = 'file_registry'
@@ -336,7 +410,7 @@ class FileRegistryReconciliationReportService
                 $counts['source_id_missing_registry_in_sample'] = count($missingSourceIds);
                 $samples['missing_source_ids'] = $missingSourceIds;
 
-                $assetRows = DB::connection('pgsql')->select(
+                $assetRows = DB::connection('pgsql_rag')->select(
                     "SELECT metadata->>'asset_uuid' AS asset_uuid
                      FROM rag_documents
                      WHERE source_type IN ('file_registry', 'file_catalog')
@@ -409,7 +483,7 @@ class FileRegistryReconciliationReportService
 
     private function pgsqlCount(string $sql, array $bindings = []): int
     {
-        $row = DB::connection('pgsql')->selectOne($sql, $bindings);
+        $row = DB::connection('pgsql_rag')->selectOne($sql, $bindings);
 
         return (int) ($row->count ?? 0);
     }

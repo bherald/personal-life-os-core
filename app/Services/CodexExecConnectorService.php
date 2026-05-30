@@ -26,6 +26,7 @@ class CodexExecConnectorService
         if ($row === null) {
             return [
                 'success' => false,
+                'error_type' => 'configuration',
                 'error' => 'Codex Exec provider row not configured',
             ];
         }
@@ -34,6 +35,7 @@ class CodexExecConnectorService
         if ($readinessError !== null) {
             return [
                 'success' => false,
+                'error_type' => 'provider_unavailable',
                 'error' => $readinessError,
             ];
         }
@@ -43,6 +45,7 @@ class CodexExecConnectorService
         } catch (\Throwable $e) {
             return [
                 'success' => false,
+                'error_type' => 'configuration',
                 'error' => $e->getMessage(),
             ];
         }
@@ -75,12 +78,15 @@ class CodexExecConnectorService
                 : trim($process->getOutput());
 
             if (! $process->isSuccessful()) {
+                $error = $this->shortError($process->getErrorOutput() ?: $process->getOutput() ?: 'codex exec failed');
+
                 return [
                     'success' => false,
                     'provider' => self::PROVIDER_ID,
                     'model' => $resolved['model'],
                     'reasoning_effort' => $resolved['reasoning_effort'],
-                    'error' => $this->shortError($process->getErrorOutput() ?: $process->getOutput() ?: 'codex exec failed'),
+                    'error_type' => $this->classifyError($error),
+                    'error' => $error,
                     'exit_code' => $process->getExitCode(),
                     'duration_ms' => (int) ((microtime(true) - $started) * 1000),
                 ];
@@ -92,6 +98,7 @@ class CodexExecConnectorService
                     'provider' => self::PROVIDER_ID,
                     'model' => $resolved['model'],
                     'reasoning_effort' => $resolved['reasoning_effort'],
+                    'error_type' => 'empty_response',
                     'error' => 'codex exec returned empty response',
                     'exit_code' => $process->getExitCode(),
                     'duration_ms' => (int) ((microtime(true) - $started) * 1000),
@@ -115,6 +122,7 @@ class CodexExecConnectorService
                 'provider' => self::PROVIDER_ID,
                 'model' => $resolved['model'],
                 'reasoning_effort' => $resolved['reasoning_effort'],
+                'error_type' => 'timeout',
                 'error' => "codex exec timed out after {$resolved['timeout_seconds']}s",
                 'duration_ms' => (int) ((microtime(true) - $started) * 1000),
             ];
@@ -128,6 +136,7 @@ class CodexExecConnectorService
                 'provider' => self::PROVIDER_ID,
                 'model' => $resolved['model'],
                 'reasoning_effort' => $resolved['reasoning_effort'],
+                'error_type' => $this->classifyError($e->getMessage()),
                 'error' => $this->shortError($e->getMessage()),
                 'duration_ms' => (int) ((microtime(true) - $started) * 1000),
             ];
@@ -404,6 +413,25 @@ class CodexExecConnectorService
         $message = preg_replace('/\s+/', ' ', trim($message)) ?? '';
 
         return mb_substr($message, 0, 500);
+    }
+
+    public function classifyError(string $message): string
+    {
+        $normalized = mb_strtolower($message);
+
+        if (preg_match('/\b(?:429|rate[_ -]?limit(?:ed|s)?|too many requests|quota|insufficient_quota|rate_limit_exceeded)\b/i', $normalized) === 1) {
+            return 'rate_limited';
+        }
+
+        if (preg_match('/\b(?:401|403|unauthorized|forbidden|auth(?:entication)?|api[_ -]?key|credential|not logged in|login required)\b/i', $normalized) === 1) {
+            return 'authentication';
+        }
+
+        if (preg_match('/\b(?:timeout|timed out|deadline exceeded)\b/i', $normalized) === 1) {
+            return 'timeout';
+        }
+
+        return 'execution_failed';
     }
 
     /**
