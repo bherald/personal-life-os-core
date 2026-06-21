@@ -54,7 +54,7 @@ confirm dependency inventories still match the public provenance snapshots.
 The private source repository keeps operator-only runbooks that the public
 extraction must not ship. These include `PROJECT.md`, `TODO.md`,
 `PROD-MAINTENANCE.md`,
-`plos-runtime-inventory.md`, `rlm-research.md`,
+`plos-runtime-inventory.md`, `plos-subject-matter-map.md`, `rlm-research.md`,
 `plos-research-ledger.md`, `genealogy-research-methodology.md`,
 `ops/backend-quarantine-playbook.md`, `canonical-docs-archive-*.zip`,
 current private runtime bench notes, and any

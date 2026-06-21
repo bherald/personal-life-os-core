@@ -5,7 +5,7 @@ indexing, RAG/GraphRAG search, review queues, and operator-guided agents that
 run on hardware the operator controls.
 
 Status: alpha public-core extraction. Current public release:
-[`v0.1.1`](../../releases/tag/v0.1.1), published 2026-06-21. License: MIT.
+[`v0.1.1`](releases/tag/v0.1.1), published 2026-06-21. License: MIT.
 Primary stack: Laravel 12, Vue, MySQL/MariaDB, PostgreSQL 16 + pgvector,
 Redis, Docker, and optional Ollama-compatible local AI.
 
