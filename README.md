@@ -4,9 +4,20 @@ PLOS is a local-first personal automation platform for workflows, file
 indexing, RAG/GraphRAG search, review queues, and operator-guided agents that
 run on hardware the operator controls.
 
-Status: alpha public-core extraction candidate. License: MIT. Primary stack:
-Laravel 12, Vue, MySQL/MariaDB, PostgreSQL 16 + pgvector, Redis, Docker, and
-optional Ollama-compatible local AI.
+Status: alpha public-core extraction. Current public release:
+[`v0.1.1`](../../releases/tag/v0.1.1), published 2026-06-21. License: MIT.
+Primary stack: Laravel 12, Vue, MySQL/MariaDB, PostgreSQL 16 + pgvector,
+Redis, Docker, and optional Ollama-compatible local AI.
+
+## Current Public Release
+
+`v0.1.1` refreshes the public core with the June 2026 scheduler, agent,
+runtime-policy, face-provenance, media/chat, and dependency-audit updates from
+the private source tree. The release was generated from a history-free public
+export, not from private repository history. Verification for this release
+included the public audit, dependency provenance guard, license audit, npm
+audits, public GitHub Actions, and a full public smoke run with 366 focused
+tests.
 
 ## What You Can Do
 
