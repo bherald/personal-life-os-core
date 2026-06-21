@@ -10,6 +10,7 @@ use App\Services\TimeoutManager;
 use App\Services\DataSanitizer;
 use App\Services\RssFeedHealthService;
 use App\Services\NewsArticleService;
+use App\Services\SystemConfigService;
 
 /**
  * RSS Feed Reader Node
@@ -29,6 +30,27 @@ use App\Services\NewsArticleService;
  */
 class RSSFeedReader extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'rss.reader_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'track_health_default' => true,
+        'default_limit' => 10,
+        'default_timeout_seconds' => 10,
+        'include_content_default' => false,
+        'max_age_hours' => 24,
+        'max_total_articles' => 50,
+        'max_formatted_chars' => 50000,
+        'persist_articles_default' => true,
+        'health_check_timeout_seconds' => 10,
+        'max_redirects' => 3,
+        'retry_attempts' => 3,
+        'description_max_chars' => 500,
+        'content_preview_max_chars' => 300,
+    ];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function execute(array $input): array
     {
         // Extract previous RSS feed data FIRST (needed for error handling)
@@ -36,57 +58,82 @@ class RSSFeedReader extends BaseNode
         $previousArticles = $this->extractPreviousArticles($input);
 
         $healthService = app(RssFeedHealthService::class);
-        $healthCheckEnabled = $this->getConfigValue('track_health', true); // Track health by default
+        $healthCheckEnabled = $this->configuredBool('track_health') ?? $this->runtimePolicyBool('track_health_default');
+        $healthCheckTimeout = $this->configuredPositiveInt('health_check_timeout')
+            ?? $this->runtimePolicyInt('health_check_timeout_seconds');
+        $runtimeMeta = [];
 
         try {
             $feedUrl = $this->getConfigValue('feed_url');
+            $limit = $this->configuredPositiveInt('limit') ?? $this->runtimePolicyInt('default_limit');
+            $timeout = $this->configuredPositiveInt('timeout') ?? $this->runtimePolicyInt('default_timeout_seconds');
+            $includeContent = $this->configuredBool('include_content') ?? $this->runtimePolicyBool('include_content_default');
+            $maxAgeHours = $this->configuredInt('max_age_hours') ?? $this->runtimePolicyNonNegativeInt('max_age_hours');
+            $maxTotalArticles = $this->configuredPositiveInt('max_total_articles') ?? $this->runtimePolicyInt('max_total_articles');
+            $maxFormattedChars = $this->configuredPositiveInt('max_formatted_chars') ?? $this->runtimePolicyInt('max_formatted_chars');
+            $maxRedirects = $this->configuredNonNegativeInt('max_redirects') ?? $this->runtimePolicyNonNegativeInt('max_redirects');
+            $retryAttempts = $this->configuredPositiveInt('retry_attempts') ?? $this->runtimePolicyInt('retry_attempts');
+            $descriptionMaxChars = $this->configuredPositiveInt('description_max_chars')
+                ?? $this->runtimePolicyInt('description_max_chars');
+            $contentPreviewMaxChars = $this->configuredPositiveInt('content_preview_max_chars')
+                ?? $this->runtimePolicyInt('content_preview_max_chars');
+            $persistArticles = $this->configuredBool('persist_articles') ?? $this->runtimePolicyBool('persist_articles_default');
+            $runtimeMeta = [
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
+                'limit' => $limit,
+                'fetch_timeout_seconds' => $timeout,
+                'health_check_timeout_seconds' => $healthCheckTimeout,
+                'track_health' => $healthCheckEnabled,
+                'include_content' => $includeContent,
+                'max_age_hours' => $maxAgeHours,
+                'max_total_articles' => $maxTotalArticles,
+                'max_formatted_chars' => $maxFormattedChars,
+                'max_redirects' => $maxRedirects,
+                'retry_attempts' => $retryAttempts,
+                'description_max_chars' => $descriptionMaxChars,
+                'content_preview_max_chars' => $contentPreviewMaxChars,
+                'persist_articles' => $persistArticles,
+            ];
 
             if (empty($feedUrl)) {
                 // Return previous data even on error to preserve accumulated feeds
                 return $this->standardOutput([
                     'formatted_text' => $previousData ?: null,
                     'articles' => $previousArticles
-                ], [], 'feed_url configuration is required');
+                ], $runtimeMeta, 'feed_url configuration is required');
             }
-
-            $limit = (int) $this->getConfigValue('limit', 10);
-            $timeout = (int) $this->getConfigValue('timeout', 10);
-            $includeContent = $this->getConfigValue('include_content', false);
-            $maxAgeHours = (int) $this->getConfigValue('max_age_hours', 24); // Filter articles older than 24 hours by default
-            $maxTotalArticles = $this->resolvePositiveIntConfig('max_total_articles', 50);
-            $maxFormattedChars = $this->resolvePositiveIntConfig('max_formatted_chars', 50000);
 
             $fetchStartTime = microtime(true);
 
             // Fetch RSS feed
-            $feedContent = $this->fetchFeed($feedUrl, $timeout);
+            $feedContent = $this->fetchFeed($feedUrl, $timeout, $maxRedirects, $retryAttempts);
 
             if (empty($feedContent)) {
                 // Track health failure
                 if ($healthCheckEnabled) {
-                    $this->recordHealthFailure($healthService, $feedUrl, 'network', 'Failed to fetch feed content', $fetchStartTime);
+                    $this->recordHealthFailure($healthService, $feedUrl, 'network', 'Failed to fetch feed content', $fetchStartTime, $healthCheckTimeout);
                 }
 
                 // Return previous data even on error to preserve accumulated feeds
                 return $this->standardOutput([
                     'formatted_text' => $previousData ?: null,
                     'articles' => $previousArticles
-                ], [], "Failed to fetch RSS feed from: {$feedUrl}");
+                ], $runtimeMeta, "Failed to fetch RSS feed from: {$feedUrl}");
             }
 
             // Parse RSS/Atom feed
             try {
-                $articles = $this->parseFeed($feedContent, $feedUrl, $limit, $includeContent);
+                $articles = $this->parseFeed($feedContent, $feedUrl, $limit, $includeContent, $descriptionMaxChars);
             } catch (Exception $parseError) {
                 // Track health failure for parse errors
                 if ($healthCheckEnabled) {
-                    $this->recordHealthFailure($healthService, $feedUrl, 'parse', $parseError->getMessage(), $fetchStartTime);
+                    $this->recordHealthFailure($healthService, $feedUrl, 'parse', $parseError->getMessage(), $fetchStartTime, $healthCheckTimeout);
                 }
 
                 return $this->standardOutput([
                     'formatted_text' => $previousData ?: null,
                     'articles' => $previousArticles
-                ], [], "Failed to parse RSS feed: {$feedUrl} - {$parseError->getMessage()}");
+                ], $runtimeMeta, "Failed to parse RSS feed: {$feedUrl} - {$parseError->getMessage()}");
             }
 
             // Filter old articles based on max_age_hours
@@ -94,7 +141,7 @@ class RSSFeedReader extends BaseNode
 
             // Track health success (even if no articles after filtering)
             if ($healthCheckEnabled) {
-                $this->recordHealthSuccess($healthService, $feedUrl, count($articles), $fetchStartTime);
+                $this->recordHealthSuccess($healthService, $feedUrl, count($articles), $fetchStartTime, $healthCheckTimeout);
             }
 
             if (empty($articles)) {
@@ -102,14 +149,14 @@ class RSSFeedReader extends BaseNode
                 return $this->standardOutput([
                     'formatted_text' => $previousData ?: null,
                     'articles' => $previousArticles
-                ], [], "No articles found in RSS feed: {$feedUrl}");
+                ], $runtimeMeta, "No articles found in RSS feed: {$feedUrl}");
             }
 
             // Combine with current articles
             $allArticles = $this->mergeArticleCollections($previousArticles, $articles, $maxTotalArticles);
 
             // Format for output (backward compatibility)
-            $formatted = $this->formatArticles($articles, $feedUrl);
+            $formatted = $this->formatArticles($articles, $feedUrl, $contentPreviewMaxChars);
 
             // CRITICAL: Prepend data from previous RSS feeds (if any)
             // This allows multiple RSS feeds to accumulate data in the workflow chain
@@ -119,8 +166,6 @@ class RSSFeedReader extends BaseNode
 
             $formatted = $this->trimFormattedText($formatted, $maxFormattedChars);
 
-            // Persist articles to MySQL for historical search (default: enabled)
-            $persistArticles = $this->getConfigValue('persist_articles', true);
             $persistStats = null;
             if ($persistArticles && !empty($articles)) {
                 try {
@@ -145,19 +190,17 @@ class RSSFeedReader extends BaseNode
                 'feed_url' => $feedUrl,
                 'article_count' => count($articles),
                 'total_articles' => count($allArticles),
-                'max_total_articles' => $maxTotalArticles,
                 'formatted_text_chars' => $formatted ? mb_strlen($formatted) : 0,
-                'limit' => $limit,
                 'fetched_at' => now()->toISOString(),
                 'persisted' => $persistStats,
-            ]);
+            ] + $runtimeMeta);
 
         } catch (Exception $e) {
             // Track health failure for unexpected exceptions
             if ($healthCheckEnabled) {
                 $feedUrl = $this->getConfigValue('feed_url');
                 if ($feedUrl) {
-                    $healthService->checkFeedHealth($feedUrl, 10); // This will record the failure
+                    $healthService->checkFeedHealth($feedUrl, $healthCheckTimeout); // This will record the failure
                 }
             }
 
@@ -165,21 +208,21 @@ class RSSFeedReader extends BaseNode
             return $this->standardOutput([
                 'formatted_text' => $previousData ?: null,
                 'articles' => $previousArticles
-            ], [], 'RSS feed error: ' . $e->getMessage());
+            ], $runtimeMeta, 'RSS feed error: ' . $e->getMessage());
         }
     }
 
     /**
      * Record health success for a feed
      */
-    private function recordHealthSuccess(RssFeedHealthService $healthService, string $feedUrl, int $articleCount, float $startTime): void
+    private function recordHealthSuccess(RssFeedHealthService $healthService, string $feedUrl, int $articleCount, float $startTime, int $timeout): void
     {
         try {
             $responseTimeMs = round((microtime(true) - $startTime) * 1000);
 
             // Use the health service to record success
             // We'll create a simplified success record directly
-            $healthService->checkFeedHealth($feedUrl, 10);
+            $healthService->checkFeedHealth($feedUrl, $timeout);
         } catch (\Exception $e) {
             // Silently fail health tracking - don't break workflow
             \Log::warning("Failed to record RSS feed health success", [
@@ -192,11 +235,11 @@ class RSSFeedReader extends BaseNode
     /**
      * Record health failure for a feed
      */
-    private function recordHealthFailure(RssFeedHealthService $healthService, string $feedUrl, string $errorType, string $errorMessage, float $startTime): void
+    private function recordHealthFailure(RssFeedHealthService $healthService, string $feedUrl, string $errorType, string $errorMessage, float $startTime, int $timeout): void
     {
         try {
             // The health service will record the failure
-            $healthService->checkFeedHealth($feedUrl, 10);
+            $healthService->checkFeedHealth($feedUrl, $timeout);
         } catch (\Exception $e) {
             // Silently fail health tracking - don't break workflow
             \Log::warning("Failed to record RSS feed health failure", [
@@ -204,6 +247,115 @@ class RSSFeedReader extends BaseNode
                 'error' => $e->getMessage()
             ]);
         }
+    }
+
+    private function configuredBool(string $key): ?bool
+    {
+        $value = $this->getConfigValue($key);
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
+    }
+
+    private function configuredInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        return (int) $value;
+    }
+
+    private function configuredPositiveInt(string $key): ?int
+    {
+        $value = $this->configuredInt($key);
+
+        return $value !== null && $value > 0 ? $value : null;
+    }
+
+    private function configuredNonNegativeInt(string $key): ?int
+    {
+        $value = $this->configuredInt($key);
+
+        return $value !== null && $value >= 0 ? $value : null;
+    }
+
+    private function runtimePolicyBool(string $key): bool
+    {
+        $fallback = (bool) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? $fallback;
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyNonNegativeInt(string $key): int
+    {
+        return $this->nonNegativeInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    private function nonNegativeInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue >= 0 ? $intValue : $fallback;
     }
 
     /**
@@ -265,7 +417,7 @@ class RSSFeedReader extends BaseNode
     /**
      * Fetch RSS feed content via HTTP with fault tolerance
      */
-    private function fetchFeed(string $url, int $timeout): ?string
+    private function fetchFeed(string $url, int $timeout, int $maxRedirects, int $retryAttempts): ?string
     {
         $retryService = app(RetryService::class);
         $circuitBreaker = app(CircuitBreaker::class);
@@ -278,17 +430,17 @@ class RSSFeedReader extends BaseNode
 
         try {
             // Circuit breaker protection
-            $content = $circuitBreaker->call('rss_feed', function () use ($retryService, $url, $adaptiveTimeout) {
+            $content = $circuitBreaker->call('rss_feed', function () use ($retryService, $url, $adaptiveTimeout, $maxRedirects, $retryAttempts) {
                 // Retry logic with exponential backoff
                 return $retryService->retry(
-                    operation: function () use ($url, $adaptiveTimeout) {
+                    operation: function () use ($url, $adaptiveTimeout, $maxRedirects) {
                         $context = stream_context_create([
                             'http' => [
                                 'method' => 'GET',
                                 'timeout' => $adaptiveTimeout,
                                 'user_agent' => 'PLOS-RSS-Reader/2.0',
                                 'follow_location' => 1,
-                                'max_redirects' => 3
+                                'max_redirects' => $maxRedirects
                             ]
                         ]);
 
@@ -300,7 +452,7 @@ class RSSFeedReader extends BaseNode
 
                         return $content;
                     },
-                    maxAttempts: 3,
+                    maxAttempts: $retryAttempts,
                     backoffStrategy: 'exponential',
                     shouldRetry: function (Exception $e) {
                         // Retry on network errors, not on parse errors
@@ -329,7 +481,7 @@ class RSSFeedReader extends BaseNode
     /**
      * Parse RSS or Atom feed XML
      */
-    private function parseFeed(string $content, string $feedUrl, int $limit, bool $includeContent): array
+    private function parseFeed(string $content, string $feedUrl, int $limit, bool $includeContent, int $descriptionMaxChars): array
     {
         try {
             // Suppress XML parsing warnings
@@ -355,7 +507,7 @@ class RSSFeedReader extends BaseNode
 
                     $article = [
                         'title' => $this->sanitizeUtf8((string)$item->title),
-                        'description' => $this->cleanDescription((string)$item->description),
+                        'description' => $this->cleanDescription((string)$item->description, $descriptionMaxChars),
                         'url' => (string)$item->link,
                         'pubDate' => $this->parseDate((string)$item->pubDate),
                         'author' => $this->sanitizeUtf8((string)($item->author ?? $item->creator ?? '')),
@@ -387,7 +539,7 @@ class RSSFeedReader extends BaseNode
 
                     $article = [
                         'title' => $this->sanitizeUtf8((string)$entry->title),
-                        'description' => $this->cleanDescription((string)$entry->summary),
+                        'description' => $this->cleanDescription((string)$entry->summary, $descriptionMaxChars),
                         'url' => (string)($entry->link['href'] ?? $entry->link),
                         'pubDate' => $this->parseDate((string)($entry->published ?? $entry->updated)),
                         'author' => $this->sanitizeUtf8((string)($entry->author->name ?? '')),
@@ -419,10 +571,10 @@ class RSSFeedReader extends BaseNode
     /**
      * Clean and truncate description/summary (now uses DataSanitizer service)
      */
-    private function cleanDescription(string $description): string
+    private function cleanDescription(string $description, int $maxChars): string
     {
         // Use centralized DataSanitizer service
-        return DataSanitizer::cleanHtml($description, 500);
+        return DataSanitizer::cleanHtml($description, $maxChars);
     }
 
     /**
@@ -486,7 +638,7 @@ class RSSFeedReader extends BaseNode
     /**
      * Format articles into structured text for AI processing
      */
-    private function formatArticles(array $articles, string $feedUrl): string
+    private function formatArticles(array $articles, string $feedUrl, int $contentPreviewMaxChars): string
     {
         if (empty($articles)) {
             return "No articles found in RSS feed.";
@@ -528,8 +680,8 @@ class RSSFeedReader extends BaseNode
 
             if (!empty($article['content'])) {
                 // Truncate content for display (use mb_substr to avoid cutting UTF-8 characters)
-                $content = mb_substr($article['content'], 0, 300, 'UTF-8');
-                if (mb_strlen($article['content'], 'UTF-8') > 300) {
+                $content = mb_substr($article['content'], 0, $contentPreviewMaxChars, 'UTF-8');
+                if (mb_strlen($article['content'], 'UTF-8') > $contentPreviewMaxChars) {
                     $content .= '...';
                 }
                 $output[] = "Content Preview: {$content}";

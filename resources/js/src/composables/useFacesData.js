@@ -281,6 +281,39 @@ export function useFacesData() {
     }
   }
 
+  async function assignNamedOnlyFaces(faceIds, name, genealogyPersonId = null, treeId = null) {
+    try {
+      const ids = [...new Set((faceIds || []).map(id => Number.parseInt(String(id), 10)).filter(id => Number.isFinite(id) && id > 0))]
+      if (ids.length === 0) return { success: false, updated: 0 }
+
+      const payload = { face_ids: ids, person_name: name }
+      if (genealogyPersonId) payload.genealogy_person_id = genealogyPersonId
+      if (treeId) payload.tree_id = treeId
+
+      const result = await api.post('/media/faces/bulk-name', payload)
+      if (result.success) {
+        if (result.genealogy_person_id) {
+          namedOnlyFaces.value = namedOnlyFaces.value.filter(face => !ids.includes(face.face_id))
+          namedOnlyTotal.value = Math.max(0, namedOnlyTotal.value - ids.length)
+        } else {
+          namedOnlyFaces.value = namedOnlyFaces.value.map(face => ids.includes(face.face_id)
+            ? {
+                ...face,
+                person_name: result.person_name || name,
+                genealogy_person_id: null,
+              }
+            : face)
+        }
+        hasMoreNamedOnly.value = namedOnlyFaces.value.length < namedOnlyTotal.value
+      }
+
+      return result
+    } catch (e) {
+      console.error('Failed to assign named-only faces', e)
+      throw e
+    }
+  }
+
   async function decideNamedOnlyFace(faceId, decision) {
     try {
       const result = await api.post(`/media/faces/${faceId}/candidate-decision`, decision)
@@ -406,10 +439,28 @@ export function useFacesData() {
 
   // --- Person management ---
 
-  async function renamePerson(oldName, newName) {
+  function normalizeRenamePayload(payloadOrOldName, newName = null) {
+    if (payloadOrOldName && typeof payloadOrOldName === 'object') {
+      return { ...payloadOrOldName }
+    }
+
+    return { old_name: payloadOrOldName, new_name: newName }
+  }
+
+  async function previewRenamePerson(payloadOrOldName, newName = null) {
     try {
-      const result = await api.post('/media/faces/rename-person', { old_name: oldName, new_name: newName })
-      // Refresh recognized list to reflect changes
+      const payload = normalizeRenamePayload(payloadOrOldName, newName)
+      return await api.post('/media/faces/rename-person/preview', payload)
+    } catch (e) {
+      console.error('Failed to preview person rename', e)
+      return null
+    }
+  }
+
+  async function renamePerson(payloadOrOldName, newName = null) {
+    try {
+      const payload = normalizeRenamePayload(payloadOrOldName, newName)
+      const result = await api.post('/media/faces/rename-person', payload)
       await loadRecognized(true)
       return result
     } catch (e) {
@@ -692,13 +743,14 @@ export function useFacesData() {
     setNamedOnlyClusterScope,
     setNamedOnlySearch,
     linkNamedOnlyFace,
+    assignNamedOnlyFaces,
     decideNamedOnlyFace,
     unhideFace,
     nameFace,
     bulkName,
     bulkHide,
     toggleHide,
-    renamePerson,
+    previewRenamePerson, renamePerson,
     searchPersons,
     undoLast,
     debouncedSearch,

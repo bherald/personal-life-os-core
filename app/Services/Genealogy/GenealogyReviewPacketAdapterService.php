@@ -21,10 +21,12 @@ class GenealogyReviewPacketAdapterService
         $title = $this->buildTitle($packet, $sourceLocators, $dedupKey);
         $summary = $this->buildSummary($packet, $claims);
         $confidence = $this->normalizeConfidence($packet['confidence'] ?? $context['confidence'] ?? null);
+        $metadata = is_array($packet['metadata'] ?? null) ? $packet['metadata'] : [];
 
         return [
             'agent_id' => (string) ($context['agent_id'] ?? self::AGENT_ID),
             'review_type' => self::REVIEW_TYPE,
+            'finding_type' => $this->nullableString($context['finding_type'] ?? $packet['finding_type'] ?? $metadata['finding_type'] ?? null),
             'title' => $title,
             'summary' => $summary,
             'details' => [

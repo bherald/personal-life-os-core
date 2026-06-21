@@ -459,10 +459,15 @@ RETRY_PROMPT;
             }
             $entities = $normalizedEntities;
 
-            // Filter by confidence
-            $relationships = array_filter($relationships, function ($rel) use ($minConfidence) {
-                return ($rel['confidence'] ?? 0) >= $minConfidence;
-            });
+            // Coerce confidence before filtering/persistence. Some models echo
+            // schema placeholders like "float" instead of a number.
+            $relationships = array_values(array_filter(array_map(function (array $rel): array {
+                $rel['confidence'] = $this->normalizeRelationshipConfidence($rel['confidence'] ?? null, 0.8);
+
+                return $rel;
+            }, $relationships), function (array $rel) use ($minConfidence): bool {
+                return $rel['confidence'] >= $minConfidence;
+            }));
 
             // Persist if requested
             $savedEntities = [];
@@ -516,20 +521,25 @@ RETRY_PROMPT;
                         $rel['temporal_type'] = $rel['temporal_type'] ?? 'unknown';
                     }
 
+                    $subjectType = $this->relationshipEndpointType($rel['subject_type'] ?? 'other');
+                    $objectType = $this->relationshipEndpointType($rel['object_type'] ?? 'other');
+                    $subjectEntityId = $this->relationshipEndpointEntityId($savedEntities, $subject, $subjectType);
+                    $objectEntityId = $this->relationshipEndpointEntityId($savedEntities, $object, $objectType);
+
                     $tripleId = $this->addTriple(
                         $subject,
                         $predicate,
                         $object,
                         [
-                            'subject_type' => is_array($rel['subject_type'] ?? 'other') ? 'other' : ($rel['subject_type'] ?? 'other'),
-                            'object_type' => is_array($rel['object_type'] ?? 'other') ? 'other' : ($rel['object_type'] ?? 'other'),
-                            'confidence' => $rel['confidence'] ?? 0.8,
+                            'subject_type' => $subjectType,
+                            'object_type' => $objectType,
+                            'confidence' => $rel['confidence'],
                             'extracted_from' => is_array($rel['source_snippet'] ?? null)
                                 ? implode(' ', array_map('strval', $rel['source_snippet']))
                                 : ($rel['source_snippet'] ?? null),
                             'source_document_id' => $sourceDocId,
-                            'subject_entity_id' => $savedEntities[$subject] ?? null,
-                            'object_entity_id' => $savedEntities[$object] ?? null,
+                            'subject_entity_id' => $subjectEntityId,
+                            'object_entity_id' => $objectEntityId,
                             'valid_from' => $rel['valid_from'] ?? null,
                             'valid_until' => $rel['valid_until'] ?? null,
                             'temporal_type' => $rel['temporal_type'] ?? 'unknown',
@@ -571,6 +581,29 @@ RETRY_PROMPT;
                 'relationships' => [],
             ];
         }
+    }
+
+    private function relationshipEndpointEntityId(array &$savedEntities, string $name, string $type): int
+    {
+        $normalizedName = trim($name);
+
+        if (isset($savedEntities[$normalizedName])) {
+            return (int) $savedEntities[$normalizedName];
+        }
+
+        $entityId = $this->getOrCreateEntity($normalizedName, $type);
+        $savedEntities[$normalizedName] = $entityId;
+
+        return $entityId;
+    }
+
+    private function relationshipEndpointType(mixed $type): string
+    {
+        if (is_array($type)) {
+            $type = $type['type'] ?? 'other';
+        }
+
+        return is_string($type) && trim($type) !== '' ? trim($type) : 'other';
     }
 
     /**
@@ -620,7 +653,7 @@ RETRY_PROMPT;
             trim($object),
             $objectType,
             $metadata['object_entity_id'] ?? null,
-            $metadata['confidence'] ?? 1.0,
+            $this->normalizeRelationshipConfidence($metadata['confidence'] ?? null, 1.0),
             $metadata['extracted_from'] ?? null,
             json_encode($metadata['extra'] ?? []),
             $temporal['valid_from'],
@@ -641,7 +674,7 @@ RETRY_PROMPT;
         // Inline contradiction check
         try {
             $conflicts = $this->checkForContradictions($subject, $predicate, $object);
-            $newConfidence = (float) ($metadata['confidence'] ?? 1.0);
+            $newConfidence = $this->normalizeRelationshipConfidence($metadata['confidence'] ?? null, 1.0);
 
             foreach ($conflicts as $conflict) {
                 $delta = $newConfidence - $conflict['confidence'];
@@ -666,6 +699,28 @@ RETRY_PROMPT;
         }
 
         return $newId;
+    }
+
+    /**
+     * Normalize confidence emitted by LLM graph extraction.
+     */
+    private function normalizeRelationshipConfidence(mixed $value, float $fallback): float
+    {
+        if (is_string($value)) {
+            $value = trim($value);
+        }
+
+        if ($value === null || $value === '' || is_bool($value) || is_array($value) || ! is_numeric($value)) {
+            return max(0.0, min(1.0, $fallback));
+        }
+
+        $confidence = (float) $value;
+
+        if (! is_finite($confidence)) {
+            return max(0.0, min(1.0, $fallback));
+        }
+
+        return max(0.0, min(1.0, $confidence));
     }
 
     /**

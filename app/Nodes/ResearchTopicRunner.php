@@ -6,6 +6,7 @@ use App\Services\AIService;
 use App\Services\AgentGuardrailService;
 use App\Services\Genealogy\GenealogySourceService;
 use App\Services\Research\UniversalResearchOrchestrator;
+use App\Services\SystemConfigService;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -23,21 +24,24 @@ use Illuminate\Support\Facades\Log;
  *
  * Configuration:
  * - topic_id: (optional) Specific topic ID to research. If not set, processes all due topics.
- * - max_topics: (optional) Maximum number of topics to process in one run. Default: 10
+ * - max_topics: (optional) Maximum number of topics to process in one run. Falls back to table policy.
  * - mode: 'tools' (AI-orchestrated) or 'legacy' (direct service calls). Default: 'tools'
  *
  * Per-topic database config (research_topics table):
  * - search_depth: Number of search iterations (default: 3)
- * - max_sources: Maximum sources to consult (default: 10)
- * - max_results_per_source: Results per source (default: 5)
- * - date_filter_days: Only consider content from last N days (default: 30)
+ * - max_sources: Maximum sources to consult
+ * - max_results_per_source: Results per source
+ * - date_filter_days: Only consider content from last N days
  * - preferred_categories: JSONB array of preferred source categories
  * - excluded_domains: JSONB array of domains to exclude
  * - require_recent_only: Boolean, strict date filtering
  */
 class ResearchTopicRunner extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'research.topic_runner_runtime_policy';
+
     private ?AgentGuardrailService $guardrail = null;
+    private ?array $runtimePolicy = null;
 
     public function execute(array $input): array
     {
@@ -46,7 +50,8 @@ class ResearchTopicRunner extends BaseNode
             $this->retryPendingAiTriage();
 
             $specificTopicId = $this->getConfigValue('topic_id');
-            $maxTopics = (int) $this->getConfigValue('max_topics', 10);
+            $configuredMaxTopics = $this->getConfigValue('max_topics');
+            $maxTopics = (int) ($configuredMaxTopics ?? $this->runtimePolicyInt('topic_selection.default_max_topics'));
             $deadlineSeconds = (int) $this->getConfigValue('deadline_seconds', 0);
             $runStartedAt = microtime(true);
 
@@ -85,7 +90,8 @@ class ResearchTopicRunner extends BaseNode
                     break;
                 }
 
-                if ($remainingSeconds !== null && $remainingSeconds <= 120) {
+                $lowRemainingStopSeconds = $this->runtimePolicyInt('runtime.low_remaining_stop_seconds');
+                if ($remainingSeconds !== null && $remainingSeconds <= $lowRemainingStopSeconds) {
                     Log::info('ResearchTopicRunner: Stopping before topic due to low remaining runtime budget', [
                         'processed' => count($processedTopics),
                         'remaining_seconds' => $remainingSeconds,
@@ -164,7 +170,10 @@ class ResearchTopicRunner extends BaseNode
             return false;
         }
 
-        return (microtime(true) - $runStartedAt) >= max(60, $deadlineSeconds - 60);
+        $minimumElapsedSeconds = $this->runtimePolicyInt('runtime.completion_mark_min_elapsed_seconds');
+        $bufferSeconds = $this->runtimePolicyInt('runtime.completion_mark_buffer_seconds');
+
+        return (microtime(true) - $runStartedAt) >= max($minimumElapsedSeconds, $deadlineSeconds - $bufferSeconds);
     }
 
     private function resolveRemainingRuntimeBudget(float $runStartedAt, int $deadlineSeconds): ?int
@@ -176,8 +185,11 @@ class ResearchTopicRunner extends BaseNode
         return max(0, (int) floor($deadlineSeconds - (microtime(true) - $runStartedAt)));
     }
 
-    private function capTimeoutToRemainingBudget(int $requestedSeconds, ?int $remainingSeconds, int $safetyBufferSeconds = 60, int $minimumSeconds = 60): int
+    private function capTimeoutToRemainingBudget(int $requestedSeconds, ?int $remainingSeconds, ?int $safetyBufferSeconds = null, ?int $minimumSeconds = null): int
     {
+        $safetyBufferSeconds ??= $this->runtimePolicyInt('runtime.default_timeout_safety_buffer_seconds');
+        $minimumSeconds ??= $this->runtimePolicyInt('runtime.default_minimum_timeout_seconds');
+
         if ($remainingSeconds === null) {
             return $requestedSeconds;
         }
@@ -185,6 +197,55 @@ class ResearchTopicRunner extends BaseNode
         $budgetedSeconds = max($minimumSeconds, $remainingSeconds - $safetyBufferSeconds);
 
         return max($minimumSeconds, min($requestedSeconds, $budgetedSeconds));
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $policy = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY);
+        if (is_string($policy)) {
+            $decoded = json_decode($policy, true);
+            $policy = is_array($decoded) ? $decoded : $policy;
+        }
+
+        if (! is_array($policy)) {
+            throw new Exception('ResearchTopicRunner runtime policy missing: '.self::RUNTIME_POLICY_CONFIG_KEY);
+        }
+
+        if (! (bool) ($policy['enabled'] ?? false)) {
+            throw new Exception('ResearchTopicRunner runtime policy disabled: '.self::RUNTIME_POLICY_CONFIG_KEY);
+        }
+
+        return $this->runtimePolicy = $policy;
+    }
+
+    private function runtimePolicyValue(string $path): mixed
+    {
+        $value = $this->runtimePolicy();
+        foreach (explode('.', $path) as $part) {
+            if (! is_array($value) || ! array_key_exists($part, $value)) {
+                throw new Exception("ResearchTopicRunner runtime policy missing key: {$path}");
+            }
+            $value = $value[$part];
+        }
+
+        return $value;
+    }
+
+    private function runtimePolicyInt(string $path): int
+    {
+        $value = $this->runtimePolicyValue($path);
+        if (! is_numeric($value)) {
+            throw new Exception("ResearchTopicRunner runtime policy key must be numeric: {$path}");
+        }
+
+        return (int) $value;
     }
 
     /**
@@ -589,8 +650,10 @@ class ResearchTopicRunner extends BaseNode
     {
         $aiService = app(\App\Services\AIService::class);
 
-        // Truncate to avoid wasting tokens on very long outputs
-        $truncated = strlen($aiOutput) > 2000 ? substr($aiOutput, 0, 2000) . "\n[truncated]" : $aiOutput;
+        $triageInputLimit = $this->runtimePolicyInt('ai_triage.truncate_chars');
+        $truncated = strlen($aiOutput) > $triageInputLimit
+            ? substr($aiOutput, 0, $triageInputLimit) . "\n[truncated]"
+            : $aiOutput;
 
         $prompt = <<<PROMPT
 Evaluate this research output. Respond with ONLY a JSON object, no other text.
@@ -607,8 +670,8 @@ JSON format: {"has_findings": true/false, "score": 0.0-1.0, "recommendation": "i
 PROMPT;
 
         $result = $aiService->process($prompt, [
-            'max_tokens' => 200,
-            'ai_timeout' => 15,
+            'max_tokens' => $this->runtimePolicyInt('ai_triage.max_tokens'),
+            'ai_timeout' => $this->runtimePolicyInt('ai_triage.timeout_seconds'),
         ]);
 
         if (!$result['success']) {
@@ -670,8 +733,10 @@ PROMPT;
             FROM research_results
             WHERE ai_recommendation = 'pending_ai_triage'
             ORDER BY created_at ASC
-            LIMIT 20
-        ");
+            LIMIT ?
+        ", [
+            $this->runtimePolicyInt('ai_triage.retry_limit'),
+        ]);
 
         if (empty($pending)) {
             return;
@@ -941,8 +1006,13 @@ PROMPT;
         $shortTitle = substr($topic['description'] ?? $description, 0, 200);
 
         $missionTimeLimitMinutes = max(
-            5,
-            (int) floor($this->capTimeoutToRemainingBudget(1800, $remainingSeconds, 180, 300) / 60)
+            $this->runtimePolicyInt('orchestrator.minimum_mission_minutes'),
+            (int) floor($this->capTimeoutToRemainingBudget(
+                $this->runtimePolicyInt('orchestrator.requested_timeout_seconds'),
+                $remainingSeconds,
+                $this->runtimePolicyInt('orchestrator.timeout_safety_buffer_seconds'),
+                $this->runtimePolicyInt('orchestrator.minimum_timeout_seconds')
+            ) / 60)
         );
 
         Log::info('ResearchTopicRunner: Using UniversalResearchOrchestrator', [
@@ -960,7 +1030,7 @@ PROMPT;
             'mission_type' => 'knowledge_capture',
             'depth_level' => $topic['search_depth'] ?? 3,
             'verification_level' => 'standard',
-            'max_sources' => $topic['max_sources'] ?? 20,
+            'max_sources' => $topic['max_sources'] ?? $this->runtimePolicyInt('orchestrator.default_max_sources'),
             'time_limit_minutes' => $missionTimeLimitMinutes,
             'created_by' => 'workflow',
         ]);
@@ -973,7 +1043,7 @@ PROMPT;
         $executionResult = $orchestrator->executeMission($missionResult['mission_id'], [
             'skip_recursive' => true,
             'trace_timing' => true,
-            'max_verification_facts' => 12,
+            'max_verification_facts' => $this->runtimePolicyInt('orchestrator.max_verification_facts'),
         ]);
 
         if (!$executionResult['success']) {
@@ -1019,11 +1089,7 @@ PROMPT;
 
         // Extract depth for logging and timeout adjustment
         $depth = $this->extractDepthSignal($description);
-        $requestedTimeout = match($depth) {
-            'EXHAUSTIVE' => 600,  // 10 minutes for exhaustive
-            'DEEP' => 300,        // 5 minutes for deep
-            default => 180,       // 3 minutes for normal
-        };
+        $requestedTimeout = $this->runtimePolicyInt('claude.depth_timeout_seconds.'.$depth);
         $timeout = $this->capTimeoutToRemainingBudget($requestedTimeout, $remainingSeconds);
 
         Log::info('ResearchTopicRunner: Using Claude mode (WebSearch)', [
@@ -1047,7 +1113,7 @@ PROMPT;
                 'topic_id' => $topic['id'],
                 'error' => $result['error'],
             ]);
-            return $this->processTopicWithOrchestrator($topic);
+            return $this->processTopicWithOrchestrator($topic, $remainingSeconds);
         }
 
         // Build summary from Claude response
@@ -1210,10 +1276,20 @@ REQ;
         $aiService = app(AIService::class);
         $description = $topic['topic_content'] ?? $topic['description'];
         $missionTimeLimitMinutes = max(
-            3,
-            (int) floor($this->capTimeoutToRemainingBudget(900, $remainingSeconds, 180, 180) / 60)
+            $this->runtimePolicyInt('hybrid.minimum_mission_minutes'),
+            (int) floor($this->capTimeoutToRemainingBudget(
+                $this->runtimePolicyInt('hybrid.mission_requested_timeout_seconds'),
+                $remainingSeconds,
+                $this->runtimePolicyInt('hybrid.mission_timeout_safety_buffer_seconds'),
+                $this->runtimePolicyInt('hybrid.mission_minimum_timeout_seconds')
+            ) / 60)
         );
-        $synthesisTimeout = $this->capTimeoutToRemainingBudget(120, $remainingSeconds, 60, 60);
+        $synthesisTimeout = $this->capTimeoutToRemainingBudget(
+            $this->runtimePolicyInt('hybrid.synthesis_requested_timeout_seconds'),
+            $remainingSeconds,
+            $this->runtimePolicyInt('hybrid.synthesis_timeout_safety_buffer_seconds'),
+            $this->runtimePolicyInt('hybrid.synthesis_minimum_timeout_seconds')
+        );
 
         Log::info('ResearchTopicRunner: Using hybrid mode (tools + orchestrator)', [
             'topic_id' => $topic['id'],
@@ -1235,7 +1311,10 @@ REQ;
             'mission_type' => 'knowledge_capture',
             'depth_level' => $topic['search_depth'] ?? 3,
             'verification_level' => 'standard',
-            'max_sources' => min(15, $topic['max_sources'] ?? 15),
+            'max_sources' => min(
+                $this->runtimePolicyInt('hybrid.orchestrator_max_sources_cap'),
+                $topic['max_sources'] ?? $this->runtimePolicyInt('hybrid.orchestrator_max_sources_cap')
+            ),
             'time_limit_minutes' => $missionTimeLimitMinutes,
             'created_by' => 'workflow_hybrid',
         ]);
@@ -1245,7 +1324,7 @@ REQ;
             $executionResult = $orchestrator->executeMission($missionResult['mission_id'], [
                 'skip_recursive' => true,
                 'trace_timing' => true,
-                'max_verification_facts' => 12,
+                'max_verification_facts' => $this->runtimePolicyInt('orchestrator.max_verification_facts'),
             ]);
             if ($executionResult['success'] && !empty($executionResult['report'])) {
                 $orchestratorReport = $executionResult['report'];
@@ -1276,7 +1355,7 @@ PROMPT;
 
         try {
             $result = $aiService->process($prompt, [
-                'max_tokens' => 2000,
+                'max_tokens' => $this->runtimePolicyInt('hybrid.synthesis_max_tokens'),
                 'factual_mode' => true,
                 'ai_timeout' => $synthesisTimeout,
             ]);
@@ -1314,6 +1393,10 @@ PROMPT;
             'topic_id' => $topic['id'],
             'category' => $ragCategory,
         ]);
+
+        $webContextLimit = $this->runtimePolicyInt('graphlit.web_context_limit');
+        $kbContextLimit = $this->runtimePolicyInt('graphlit.kb_context_limit');
+        $podcastContextLimit = $this->runtimePolicyInt('graphlit.podcast_context_limit');
 
         $graphlitService = app(\App\Services\GraphlitResearchService::class);
         $claudeSearchService = app(\App\Services\ClaudeWebSearchService::class);
@@ -1372,13 +1455,13 @@ PROMPT;
 
         $contextParts = [];
         if (!empty($webResults)) {
-            $contextParts[] = "## Web Sources (Graphlit)\n" . implode("\n", array_slice($webResults, 0, 10));
+            $contextParts[] = "## Web Sources (Graphlit)\n" . implode("\n", array_slice($webResults, 0, $webContextLimit));
         }
         if (!empty($kbResults)) {
-            $contextParts[] = "## Knowledge Base\n" . implode("\n", array_slice($kbResults, 0, 5));
+            $contextParts[] = "## Knowledge Base\n" . implode("\n", array_slice($kbResults, 0, $kbContextLimit));
         }
         if (!empty($podcastResults)) {
-            $contextParts[] = "## Related Podcasts\n" . implode("\n", array_slice($podcastResults, 0, 5));
+            $contextParts[] = "## Related Podcasts\n" . implode("\n", array_slice($podcastResults, 0, $podcastContextLimit));
         }
         if (!empty($results['claude_verification']['summary'])) {
             $contextParts[] = "## Claude Verification\n" . $results['claude_verification']['summary'];
@@ -1414,7 +1497,7 @@ PROMPT;
 
         try {
             $result = $aiService->process($prompt, [
-                'max_tokens' => 2500,
+                'max_tokens' => $this->runtimePolicyInt('graphlit.synthesis_max_tokens'),
                 'factual_mode' => true,
             ]);
             $synthesis = $result['response'] ?? $result['content'] ?? $combinedContext;
@@ -1444,7 +1527,7 @@ PROMPT;
         $ragService = app(\App\Services\RAGService::class);
         $webResearchService = app(\App\Services\WebResearchService::class);
 
-        $maxSources = $topic['max_sources'] ?? config('research.web.max_sources', 10);
+        $maxSources = $topic['max_sources'] ?? $this->runtimePolicyInt('tools.default_max_sources');
         $description = $topic['topic_content'] ?? $topic['description'];
         $ragCategory = $topic['rag_category'] ?? 'general';
 
@@ -1495,8 +1578,8 @@ PROMPT;
         $aiService = app(AIService::class);
 
         // Get per-topic configuration with defaults
-        $maxSources = $topic['max_sources'] ?? config('research.web.max_sources', 10);
-        $dateFilterDays = $topic['date_filter_days'] ?? config('research.web.date_filter_days', 30);
+        $maxSources = $topic['max_sources'] ?? $this->runtimePolicyInt('tools.default_max_sources');
+        $dateFilterDays = $topic['date_filter_days'] ?? $this->runtimePolicyInt('tools.default_date_filter_days');
         $description = $topic['topic_content'] ?? $topic['description'];
         $ragCategory = $topic['rag_category'] ?? 'general';
         $topicSource = $topic['source'] ?? 'auto'; // auto, human, or workflow
@@ -1527,12 +1610,11 @@ PROMPT;
 
                 $genealogyService = app(GenealogySourceService::class);
 
-                // Use deep research for genealogy - searches multiple sources with query variations
-                // Time limit: 3 minutes (180 seconds) per topic for thorough searching
+                // Use deep research for genealogy; runtime limits come from table policy.
                 $genealogyResults = $genealogyService->deepResearch($description, [
-                    'time_limit_seconds' => 180, // 3 minutes for thorough research
-                    'max_results' => $maxSources * 3, // Allow more results from deep search
-                    'limit' => 15, // Per-query limit
+                    'time_limit_seconds' => $this->runtimePolicyInt('genealogy_deep_research.time_limit_seconds'),
+                    'max_results' => $maxSources * $this->runtimePolicyInt('genealogy_deep_research.max_results_multiplier'),
+                    'limit' => $this->runtimePolicyInt('genealogy_deep_research.per_query_limit'),
                 ]);
 
                 [$genealogyContext, $genealogyReferences] = $this->formatGenealogyContext($genealogyResults);
@@ -1584,7 +1666,7 @@ PROMPT;
 
             $ragResults = $ragService->search(
                 query: $description,
-                limit: 5,
+                limit: $this->runtimePolicyInt('rag.search_limit'),
                 documentType: null
             );
 
@@ -1828,7 +1910,8 @@ PROMPT;
 
                 if ($description) {
                     $descStr = is_string($description) ? $description : '';
-                    $context .= "  " . substr($descStr, 0, 300) . (strlen($descStr) > 300 ? '...' : '') . "\n";
+                    $previewLimit = $this->runtimePolicyInt('genealogy_deep_research.description_preview_chars');
+                    $context .= "  " . substr($descStr, 0, $previewLimit) . (strlen($descStr) > $previewLimit ? '...' : '') . "\n";
                 }
 
                 $references[] = [
@@ -1894,8 +1977,8 @@ PROMPT;
         $result = $aiService->process($prompt, [
             'factual_mode' => true,
             'model_role' => 'quality',
-            'max_tokens' => 4000,
-            'ai_timeout' => 120,
+            'max_tokens' => $this->runtimePolicyInt('synthesis.max_tokens'),
+            'ai_timeout' => $this->runtimePolicyInt('synthesis.timeout_seconds'),
         ]);
 
         if (!$result['success']) {
@@ -2041,7 +2124,7 @@ PROMPT;
         try {
             $ragResults = $ragService->search(
                 query: $topic['topic_content'] ?? $topic['description'],
-                limit: 5,
+                limit: $this->runtimePolicyInt('legacy.rag_search_limit'),
                 documentType: null
             );
             [$ragContext, $ragReferences] = $this->formatRAGContext($ragResults);
@@ -2057,7 +2140,7 @@ PROMPT;
         try {
             $webResults = $webResearchService->research(
                 $topic['topic_content'] ?? $topic['description'],
-                ['max_sources' => $topic['max_sources'] ?? 5]
+                ['max_sources' => $topic['max_sources'] ?? $this->runtimePolicyInt('legacy.default_max_sources')]
             );
             [$webContext, $webReferences] = $this->formatWebContext($webResults);
         } catch (\Throwable $e) {
@@ -2089,6 +2172,7 @@ PROMPT;
 
         $context = "KNOWLEDGE BASE SOURCES:\n\n";
         $references = [];
+        $contentLimit = $this->runtimePolicyInt('rag.context_content_limit_chars');
 
         foreach ($results as $index => $result) {
             $num = $index + 1;
@@ -2110,8 +2194,8 @@ PROMPT;
             $context .= "Type: {$doc->document_type}\n";
 
             $content = $doc->content;
-            if (strlen($content) > 1500) {
-                $content = substr($content, 0, 1500) . "\n... [truncated]";
+            if (strlen($content) > $contentLimit) {
+                $content = substr($content, 0, $contentLimit) . "\n... [truncated]";
             }
             $context .= "Content:\n{$content}\n\n";
         }
@@ -2234,7 +2318,7 @@ PROMPT;
         try {
             $result = $aiService->process($userPrompt, [
                 'system_prompt' => $systemPrompt,
-                'max_tokens' => 2000,
+                'max_tokens' => $this->runtimePolicyInt('legacy.max_tokens'),
                 'factual_mode' => true, // Enables temp=0.1 + anti-hallucination prompt
             ]);
 

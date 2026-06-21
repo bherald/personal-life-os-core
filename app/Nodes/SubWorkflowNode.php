@@ -2,6 +2,7 @@
 
 namespace App\Nodes;
 
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Exception;
@@ -26,13 +27,29 @@ use Exception;
  */
 class SubWorkflowNode extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'workflow.subworkflow_runtime_policy';
+
+    private const LEGACY_MAX_DEPTH_CONFIG_KEY = 'workflow.workflow_max_depth';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'max_depth' => 5,
+        'timeout_seconds' => 3600,
+        'wait_for_completion_default' => true,
+        'circular_reference_check_limit' => 20,
+    ];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function execute(array $input): array
     {
         $workflowId = $this->getConfigValue('workflow_id');
         $inputMapping = $this->getConfigValue('input_mapping', []);
         $outputMapping = $this->getConfigValue('output_mapping', []);
-        $waitForCompletion = (bool) $this->getConfigValue('wait_for_completion', true);
-        $timeout = (int) $this->getConfigValue('timeout', 3600);
+        $waitForCompletion = $this->configuredBool('wait_for_completion')
+            ?? $this->runtimePolicyBool('wait_for_completion_default');
+        $timeout = $this->configuredPositiveInt('timeout')
+            ?? $this->runtimePolicyInt('timeout_seconds');
 
         // Validation
         $errors = $this->validate();
@@ -90,6 +107,8 @@ class SubWorkflowNode extends BaseNode
                 'child_workflow_name' => $workflow->name,
                 'depth' => $currentDepth + 1,
                 'wait' => $waitForCompletion,
+                'timeout_seconds' => $timeout,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ]);
 
             // Create child workflow run
@@ -138,6 +157,8 @@ class SubWorkflowNode extends BaseNode
             ], [
                 'workflow_name' => $workflow->name,
                 'depth' => $currentDepth + 1,
+                'timeout_seconds' => $timeout,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ]);
 
         } catch (Exception $e) {
@@ -195,8 +216,8 @@ class SubWorkflowNode extends BaseNode
             'workflow_id' => null,
             'input_mapping' => [],
             'output_mapping' => [],
-            'wait_for_completion' => true,
-            'timeout' => 3600,
+            'wait_for_completion' => self::DEFAULT_RUNTIME_POLICY['wait_for_completion_default'],
+            'timeout' => self::DEFAULT_RUNTIME_POLICY['timeout_seconds'],
         ];
     }
 
@@ -205,12 +226,7 @@ class SubWorkflowNode extends BaseNode
      */
     private function getMaxDepth(): int
     {
-        $config = DB::selectOne(
-            'SELECT config_value FROM system_configs WHERE config_key = ?',
-            ['workflow_max_depth']
-        );
-
-        return $config ? (int) $config->config_value : 5;
+        return $this->runtimePolicyInt('max_depth');
     }
 
     /**
@@ -222,6 +238,7 @@ class SubWorkflowNode extends BaseNode
     {
         $visited = [];
         $currentRunId = $runId;
+        $checkLimit = $this->runtimePolicyInt('circular_reference_check_limit');
 
         while ($currentRunId) {
             $run = DB::selectOne(
@@ -243,7 +260,7 @@ class SubWorkflowNode extends BaseNode
             $currentRunId = $run->parent_run_id;
 
             // Safety limit
-            if (count($visited) > 20) {
+            if (count($visited) > $checkLimit) {
                 break;
             }
         }
@@ -461,5 +478,91 @@ class SubWorkflowNode extends BaseNode
         }
 
         throw new Exception("Node class not found for type: {$nodeType}");
+    }
+
+    private function configuredBool(string $key): ?bool
+    {
+        $value = $this->getConfigValue($key);
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
+    }
+
+    private function configuredPositiveInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : null;
+    }
+
+    private function runtimePolicyBool(string $key): bool
+    {
+        $fallback = (bool) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? $fallback;
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $systemConfig = app(SystemConfigService::class);
+        $configured = $systemConfig->get(self::RUNTIME_POLICY_CONFIG_KEY, null);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        if (! array_key_exists('max_depth', $configured)) {
+            $configured['max_depth'] = $systemConfig->get(
+                self::LEGACY_MAX_DEPTH_CONFIG_KEY,
+                self::DEFAULT_RUNTIME_POLICY['max_depth']
+            );
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

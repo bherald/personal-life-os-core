@@ -189,37 +189,79 @@ class GenealogyMediaEnrichmentService
         }
 
         $media = (array) $media;
-        $extraction = $this->extractStructuredFacts($media);
-        if ($extraction === []) {
-            return ['success' => false, 'reason' => 'extraction_failed'];
+        $previewState = $this->snapshotPreviewMutableState($media);
+
+        try {
+            $extraction = $this->extractStructuredFacts($media);
+            if ($extraction === []) {
+                return ['success' => false, 'reason' => 'extraction_failed'];
+            }
+
+            $treeId = (int) ($media['tree_id'] ?? $media['person_tree_id'] ?? 0);
+
+            $packet = $this->packetIntake()->orchestratePacket([
+                [
+                    'page_number' => 1,
+                    'summary' => $this->buildPreviewSummary($media, $extraction),
+                    'persons' => (array) ($extraction['persons'] ?? []),
+                ],
+            ], [
+                'title' => $media['title'] ?? 'Genealogy document',
+                'tree_id' => $treeId ?: null,
+                'family_tree_id' => $treeId ?: null,
+                'media_id' => $mediaId,
+                'media_type' => $media['media_type'] ?? 'document',
+                'ft_candidates' => $treeId > 0 ? $this->buildPreviewTreeCandidates($treeId, $extraction) : [],
+            ]);
+
+            return [
+                'success' => true,
+                'media_id' => $mediaId,
+                'tree_id' => $treeId ?: null,
+                'title' => $media['title'] ?? 'Genealogy document',
+                'media_type' => $media['media_type'] ?? 'document',
+                'extraction_confidence' => $extraction['confidence'] ?? 0.0,
+                'packet' => $packet,
+            ];
+        } finally {
+            $this->restorePreviewMutableState($mediaId, $previewState);
         }
+    }
 
-        $treeId = (int) ($media['tree_id'] ?? $media['person_tree_id'] ?? 0);
-
-        $packet = $this->packetIntake()->orchestratePacket([
-            [
-                'page_number' => 1,
-                'summary' => $this->buildPreviewSummary($media, $extraction),
-                'persons' => (array) ($extraction['persons'] ?? []),
-            ],
-        ], [
-            'title' => $media['title'] ?? 'Genealogy document',
-            'tree_id' => $treeId ?: null,
-            'family_tree_id' => $treeId ?: null,
-            'media_id' => $mediaId,
-            'media_type' => $media['media_type'] ?? 'document',
-            'ft_candidates' => $treeId > 0 ? $this->buildPreviewTreeCandidates($treeId, $extraction) : [],
-        ]);
-
+    /**
+     * @param  array<string, mixed>  $media
+     * @return array<string, mixed>
+     */
+    private function snapshotPreviewMutableState(array $media): array
+    {
         return [
-            'success' => true,
-            'media_id' => $mediaId,
-            'tree_id' => $treeId ?: null,
-            'title' => $media['title'] ?? 'Genealogy document',
-            'media_type' => $media['media_type'] ?? 'document',
-            'extraction_confidence' => $extraction['confidence'] ?? 0.0,
-            'packet' => $packet,
+            'enrichment_status' => $media['enrichment_status'] ?? null,
+            'enrichment_error' => $media['enrichment_error'] ?? null,
+            'enriched_at' => $media['enriched_at'] ?? null,
+            'updated_at' => $media['updated_at'] ?? null,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $state
+     */
+    private function restorePreviewMutableState(int $mediaId, array $state): void
+    {
+        DB::update(
+            'UPDATE genealogy_media
+                SET enrichment_status = ?,
+                    enrichment_error = ?,
+                    enriched_at = ?,
+                    updated_at = ?
+              WHERE id = ?',
+            [
+                $state['enrichment_status'] ?? null,
+                $state['enrichment_error'] ?? null,
+                $state['enriched_at'] ?? null,
+                $state['updated_at'] ?? null,
+                $mediaId,
+            ]
+        );
     }
 
     public function processMedia(int $mediaId): array

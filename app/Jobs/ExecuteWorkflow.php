@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Engine\WorkflowEngine;
+use App\Services\SystemConfigService;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -13,6 +14,17 @@ use Throwable;
 class ExecuteWorkflow implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
+
+    private const RUNTIME_POLICY_CONFIG_KEY = 'workflow.execute_workflow_job_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'timeout_seconds' => 900,
+        'tries' => 2,
+        'unique_for_seconds' => 1800,
+        'backoff_seconds' => [60, 120],
+        'overlap_release_after_seconds' => 300,
+        'overlap_expire_after_seconds' => 1800,
+    ];
 
     /**
      * Job timeout in seconds.
@@ -40,6 +52,9 @@ class ExecuteWorkflow implements ShouldBeUnique, ShouldQueue
      */
     public $deleteWhenMissingModels = true;
 
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     protected string $workflowName;
 
     protected ?int $workflowId;
@@ -54,6 +69,7 @@ class ExecuteWorkflow implements ShouldBeUnique, ShouldQueue
         $this->workflowName = $workflowName;
         $this->workflowId = $workflowId;
         $this->input = $input;
+        $this->applyRuntimePolicy();
 
         // Use the dedicated workflow queue to isolate orchestration work.
         $this->onQueue('workflow');
@@ -68,8 +84,8 @@ class ExecuteWorkflow implements ShouldBeUnique, ShouldQueue
         return [
             // Prevent same workflow from running concurrently
             (new WithoutOverlapping($this->workflowName))
-                ->releaseAfter(300) // Release lock after 5 minutes if stuck
-                ->expireAfter(1800), // Lock expires after 30 minutes
+                ->releaseAfter($this->runtimePolicyInt('overlap_release_after_seconds'))
+                ->expireAfter($this->runtimePolicyInt('overlap_expire_after_seconds')),
         ];
     }
 
@@ -144,5 +160,73 @@ class ExecuteWorkflow implements ShouldBeUnique, ShouldQueue
     public function tags(): array
     {
         return ['workflow', 'workflow:'.$this->workflowName];
+    }
+
+    private function applyRuntimePolicy(): void
+    {
+        $this->timeout = $this->runtimePolicyInt('timeout_seconds');
+        $this->tries = $this->runtimePolicyInt('tries');
+        $this->uniqueFor = $this->runtimePolicyInt('unique_for_seconds');
+        $this->backoff = $this->runtimePolicyIntList('backoff_seconds');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function runtimePolicyIntList(string $key): array
+    {
+        $fallback = self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (! is_array($value)) {
+            return $fallback;
+        }
+
+        $ints = array_values(array_filter(
+            array_map(fn ($item) => is_numeric($item) ? (int) $item : 0, $value),
+            fn (int $item) => $item > 0
+        ));
+
+        return $ints !== [] ? $ints : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

@@ -3,6 +3,7 @@
 namespace App\Nodes\YouTube;
 
 use App\Nodes\BaseNode;
+use App\Services\SystemConfigService;
 use App\Services\YouTubeTranscriptLanguagePolicy;
 use App\Services\YouTubeTranscriptService;
 use Exception;
@@ -16,6 +17,19 @@ use Illuminate\Support\Facades\Log;
  */
 class YouTubeTranscript extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'youtube.transcript_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'default_language' => 'en',
+        'include_timestamps_default' => true,
+        'default_batch_size' => 5,
+        'max_retries' => 3,
+        'base_delay_seconds' => 10,
+        'max_delay_seconds' => 300,
+        'min_request_gap_seconds' => 15,
+        'batch_delay_seconds' => 60,
+    ];
+
     public function execute(array $input): array
     {
         try {
@@ -25,14 +39,14 @@ class YouTubeTranscript extends BaseNode
             }
 
             // Get configuration
-            $language = $this->getConfigValue('language', 'en');
+            $language = $this->configuredString('language') ?? $this->runtimePolicyString('default_language');
             $languageValidation = app(YouTubeTranscriptLanguagePolicy::class)->validateRequestedLanguage((string) $language);
             if (! ($languageValidation['success'] ?? false)) {
                 return $this->standardOutput([], [], $languageValidation['error']);
             }
             $language = $languageValidation['language'];
-            $includeTimestamps = $this->getConfigValue('include_timestamps', true);
-            $batchSize = $this->getConfigValue('batch_size', 5);
+            $includeTimestamps = $this->configuredBool('include_timestamps') ?? $this->runtimePolicyBool('include_timestamps_default');
+            $batchSize = $this->configuredPositiveInt('batch_size') ?? $this->runtimePolicyInt('default_batch_size');
 
             // Extract videos from input
             $videos = $input['data']['videos'] ?? $input['videos'] ?? [];
@@ -44,6 +58,11 @@ class YouTubeTranscript extends BaseNode
                     'count' => 0,
                     'transcripts_fetched' => 0,
                     'transcripts_failed' => 0,
+                ], [
+                    'language' => $language,
+                    'include_timestamps' => $includeTimestamps,
+                    'batch_size' => $batchSize,
+                    'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
                 ]);
             }
 
@@ -90,10 +109,10 @@ class YouTubeTranscript extends BaseNode
 
                     // Fetch transcript with enhanced retry logic and multiple methods
                     // Uses exponential backoff to avoid rate limiting
-                    $maxRetries = config('youtube.transcript.max_retries', 3);
-                    $baseDelay = config('youtube.transcript.base_delay', 10);
-                    $maxDelay = config('youtube.transcript.max_delay', 300);
-                    $minRequestGap = config('youtube.transcript.min_request_gap', 15);
+                    $maxRetries = $this->runtimePolicyInt('max_retries');
+                    $baseDelay = $this->runtimePolicyInt('base_delay_seconds');
+                    $maxDelay = $this->runtimePolicyInt('max_delay_seconds');
+                    $minRequestGap = $this->runtimePolicyInt('min_request_gap_seconds');
                     $transcriptResult = null;
                     $attempt = 0;
 
@@ -225,7 +244,7 @@ class YouTubeTranscript extends BaseNode
 
                 // Brief pause between batches to avoid rate limiting
                 if ($batchIndex < count($batches) - 1) {
-                    $batchDelay = config('youtube.transcript.batch_delay', 1);
+                    $batchDelay = $this->runtimePolicyInt('batch_delay_seconds');
                     Log::debug('Batch delay', ['seconds' => $batchDelay]);
                     sleep($batchDelay);
                 }
@@ -249,6 +268,7 @@ class YouTubeTranscript extends BaseNode
                 'language' => $language,
                 'include_timestamps' => $includeTimestamps,
                 'batch_size' => $batchSize,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ]);
 
         } catch (Exception $e) {
@@ -259,5 +279,97 @@ class YouTubeTranscript extends BaseNode
 
             return $this->standardOutput([], [], $e->getMessage());
         }
+    }
+
+    private function configuredString(string $key): ?string
+    {
+        $value = $this->getConfigValue($key);
+
+        return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
+    private function configuredBool(string $key): ?bool
+    {
+        $value = $this->getConfigValue($key);
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
+    }
+
+    private function configuredPositiveInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : null;
+    }
+
+    private function runtimePolicyString(string $key): string
+    {
+        $value = $this->runtimePolicy()[$key] ?? self::DEFAULT_RUNTIME_POLICY[$key];
+
+        return is_string($value) && trim($value) !== '' ? trim($value) : (string) self::DEFAULT_RUNTIME_POLICY[$key];
+    }
+
+    private function runtimePolicyBool(string $key): bool
+    {
+        $value = $this->runtimePolicy()[$key] ?? self::DEFAULT_RUNTIME_POLICY[$key];
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE)
+            ?? (bool) self::DEFAULT_RUNTIME_POLICY[$key];
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

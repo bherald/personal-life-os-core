@@ -16,6 +16,19 @@ use Illuminate\Support\Facades\Log;
  */
 class RssFeedHealthService
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'rss.health_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'default_timeout_seconds' => 15,
+        'connect_timeout_cap_seconds' => 5,
+        'redirect_probe_timeout_cap_seconds' => 10,
+        'healthy_failure_threshold' => 0,
+        'degraded_failure_threshold' => 2,
+        'failed_failure_threshold' => 3,
+        'alert_failure_threshold' => 3,
+        'high_failure_dead_threshold' => 30,
+    ];
+
     // Health status constants
     const STATUS_HEALTHY = 'healthy';
     const STATUS_DEGRADED = 'degraded';
@@ -28,18 +41,12 @@ class RssFeedHealthService
     const ERROR_TYPE_PARSE = 'parse';
     const ERROR_TYPE_HTTP_ERROR = 'http_error';
 
-    // Thresholds
-    const HEALTHY_THRESHOLD = 0;
-    const DEGRADED_THRESHOLD = 2;
-    const FAILED_THRESHOLD = 3;
-    const DEFAULT_TIMEOUT = 15;
-    const WARNING_RESPONSE_TIME = 5000;
-
     /**
      * Check health of a single RSS feed
      */
-    public function checkFeedHealth(string $feedUrl, int $timeout = self::DEFAULT_TIMEOUT): array
+    public function checkFeedHealth(string $feedUrl, ?int $timeout = null): array
     {
+        $timeout = $this->resolvePositivePolicyValue($timeout, $this->defaultTimeoutSeconds());
         $startTime = microtime(true);
         $result = [
             'url' => $feedUrl,
@@ -175,8 +182,8 @@ class RssFeedHealthService
             CURLOPT_NOBODY => true,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS => 5,
-            CURLOPT_CONNECTTIMEOUT => min($timeout, 5),
-            CURLOPT_TIMEOUT => min($timeout, 10),
+            CURLOPT_CONNECTTIMEOUT => min($timeout, $this->connectTimeoutCapSeconds()),
+            CURLOPT_TIMEOUT => min($timeout, $this->redirectProbeTimeoutCapSeconds()),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_USERAGENT => 'PLOS-RSS-Health-Monitor/2.0',
         ]);
@@ -385,13 +392,13 @@ class RssFeedHealthService
      */
     private function determineHealthStatus(int $consecutiveFailures, int $totalSuccesses): string
     {
-        if ($consecutiveFailures >= self::FAILED_THRESHOLD) {
+        if ($consecutiveFailures >= $this->failedFailureThreshold()) {
             return self::STATUS_FAILED;
         }
-        if ($consecutiveFailures >= self::DEGRADED_THRESHOLD) {
+        if ($consecutiveFailures >= $this->degradedFailureThreshold()) {
             return self::STATUS_DEGRADED;
         }
-        if ($consecutiveFailures === self::HEALTHY_THRESHOLD && $totalSuccesses > 0) {
+        if ($consecutiveFailures === $this->healthyFailureThreshold() && $totalSuccesses > 0) {
             return self::STATUS_HEALTHY;
         }
         return self::STATUS_UNKNOWN;
@@ -400,8 +407,9 @@ class RssFeedHealthService
     /**
      * Check health of multiple feeds
      */
-    public function checkMultipleFeeds(array $feedUrls, int $timeout = self::DEFAULT_TIMEOUT): array
+    public function checkMultipleFeeds(array $feedUrls, ?int $timeout = null): array
     {
+        $timeout = $this->resolvePositivePolicyValue($timeout, $this->defaultTimeoutSeconds());
         $results = [];
         foreach ($feedUrls as $feedUrl) {
             $results[] = $this->checkFeedHealth($feedUrl, $timeout);
@@ -433,8 +441,10 @@ class RssFeedHealthService
     /**
      * Get feeds that should trigger alerts
      */
-    public function getFeedsThatNeedAlerts(int $failureThreshold = 3): array
+    public function getFeedsThatNeedAlerts(?int $failureThreshold = null): array
     {
+        $failureThreshold = $this->resolvePositivePolicyValue($failureThreshold, $this->alertFailureThreshold());
+
         return array_map(
             fn($r) => (array) $r,
             DB::select(
@@ -525,8 +535,9 @@ class RssFeedHealthService
     /**
      * Check health of all feeds configured in workflows
      */
-    public function checkAllWorkflowFeeds(int $timeout = self::DEFAULT_TIMEOUT): array
+    public function checkAllWorkflowFeeds(?int $timeout = null): array
     {
+        $timeout = $this->resolvePositivePolicyValue($timeout, $this->defaultTimeoutSeconds());
         $feedUrls = $this->extractFeedUrlsFromWorkflows();
         return $this->checkMultipleFeeds($feedUrls, $timeout);
     }
@@ -846,8 +857,9 @@ class RssFeedHealthService
     /**
      * Mark feeds with 30+ consecutive failures as permanently dead
      */
-    public function markHighFailureFeedsAsDead(int $threshold = 30): array
+    public function markHighFailureFeedsAsDead(?int $threshold = null): array
     {
+        $threshold = $this->resolvePositivePolicyValue($threshold, $this->highFailureDeadThreshold());
         $result = ['count' => 0, 'feeds' => []];
 
         $highFailures = DB::select(
@@ -872,6 +884,102 @@ class RssFeedHealthService
         }
 
         return $result;
+    }
+
+    public function defaultTimeoutSeconds(): int
+    {
+        return $this->runtimePolicyInt('default_timeout_seconds');
+    }
+
+    public function alertFailureThreshold(): int
+    {
+        return $this->runtimePolicyInt('alert_failure_threshold');
+    }
+
+    public function highFailureDeadThreshold(): int
+    {
+        return $this->runtimePolicyInt('high_failure_dead_threshold');
+    }
+
+    private function connectTimeoutCapSeconds(): int
+    {
+        return $this->runtimePolicyInt('connect_timeout_cap_seconds');
+    }
+
+    private function redirectProbeTimeoutCapSeconds(): int
+    {
+        return $this->runtimePolicyInt('redirect_probe_timeout_cap_seconds');
+    }
+
+    private function healthyFailureThreshold(): int
+    {
+        return $this->runtimePolicyNonNegativeInt('healthy_failure_threshold');
+    }
+
+    private function degradedFailureThreshold(): int
+    {
+        return $this->runtimePolicyInt('degraded_failure_threshold');
+    }
+
+    private function failedFailureThreshold(): int
+    {
+        return $this->runtimePolicyInt('failed_failure_threshold');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->resolvePositivePolicyValue(
+            $this->runtimePolicy()[$key] ?? null,
+            self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyNonNegativeInt(string $key): int
+    {
+        return $this->resolveNonNegativePolicyValue(
+            $this->runtimePolicy()[$key] ?? null,
+            self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function resolvePositivePolicyValue(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    private function resolveNonNegativePolicyValue(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue >= 0 ? $intValue : $fallback;
     }
 
     /**

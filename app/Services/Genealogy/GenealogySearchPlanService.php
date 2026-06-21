@@ -276,7 +276,9 @@ class GenealogySearchPlanService
                 'Use only allowed_tools.',
                 'Use source-scoped web search only for vetted_public_sources domains.',
                 'Do not plan scraping or login/browser automation against manual_only_domains.',
+                'For FT4, plan around one specific missing fact, relationship, source gap, or media gap plus the expected source class.',
                 'Prefer query anchors: full name plus date, place, spouse, parent, child, occupation, or religion.',
+                'Only plan source_search_all when full name plus date/place/relative anchors are available.',
                 'Broad same-name hits are leads only; source_add later requires title/snippet/record text identity bridge.',
             ],
         ];

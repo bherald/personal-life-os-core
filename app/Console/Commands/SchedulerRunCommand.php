@@ -205,12 +205,6 @@ class SchedulerRunCommand extends Command
             // Run in background - fork the process
             $result = $this->runInBackground($job);
         } else {
-            // Install wall-clock timeout for sync execution via pcntl_alarm
-            $this->installWallClockTimeout($job);
-
-            // Build adaptive timeout extender closure for agent tasks
-            $timeoutExtender = $this->buildTimeoutExtender($job, $startTime);
-
             // Run synchronously — if we have a worker-id, find the existing run record
             // created by the parent to avoid duplicate run records (zombie fix)
             $existingRunId = null;
@@ -223,6 +217,13 @@ class SchedulerRunCommand extends Command
                 ", [$job->id, $workerId]);
                 $existingRunId = $existing->id ?? null;
             }
+
+            // Install wall-clock timeout for sync execution via pcntl_alarm
+            $this->installWallClockTimeout($job, $existingRunId, is_string($workerId) ? $workerId : null);
+
+            // Build adaptive timeout extender closure for agent tasks
+            $timeoutExtender = $this->buildTimeoutExtender($job, $startTime);
+
             $result = $this->scheduledJobService->runJobNow($job->id, 'scheduler', $existingRunId, $timeoutExtender);
 
             // Cancel alarm and clean up deadline key on normal completion
@@ -251,7 +252,7 @@ class SchedulerRunCommand extends Command
      * Install a hard wall-clock timeout for synchronous job execution.
      * Uses pcntl_alarm + SIGALRM to kill the process if it exceeds timeout_minutes.
      */
-    private function installWallClockTimeout(object $job): void
+    private function installWallClockTimeout(object $job, ?int $runId = null, ?string $workerId = null): void
     {
         if (! function_exists('pcntl_alarm') || ! function_exists('pcntl_signal')) {
             return;
@@ -260,9 +261,11 @@ class SchedulerRunCommand extends Command
         $timeoutMinutes = $job->timeout_minutes ?? 120;
         $timeoutSeconds = $timeoutMinutes * 60;
 
-        pcntl_signal(SIGALRM, function () use ($job, $timeoutMinutes) {
+        pcntl_signal(SIGALRM, function () use ($job, $timeoutMinutes, $runId, $workerId) {
             $msg = "[SIGALRM] Job #{$job->id} ({$job->name}) exceeded {$timeoutMinutes}min wall-clock timeout, terminating";
             Log::error("Scheduler: {$msg}");
+            $pid = getmypid() ?: null;
+            $maxParallel = (int) ($job->max_parallel ?? 1);
 
             // Mark job as failed in DB before exiting
             // Use a short statement timeout to avoid deadlocking on hung connections
@@ -270,32 +273,79 @@ class SchedulerRunCommand extends Command
                 DB::connection('mysql')->reconnect();
                 DB::connection('mysql')->statement('SET SESSION wait_timeout = 3');
 
-                DB::connection('mysql')->update("
-                    UPDATE scheduled_jobs
-                    SET last_run_status = 'failed', last_pid = NULL, running_pids = NULL, running_count = 0,
-                        last_run_output = CONCAT(COALESCE(last_run_output, ''), '\n{$msg}')
-                    WHERE id = ?
-                ", [$job->id]);
+                if ($maxParallel > 1 && $pid) {
+                    app(\App\Services\ScheduledJobService::class)->unregisterWorkerPid((int) $job->id, (int) $pid);
+                    DB::connection('mysql')->update("
+                        UPDATE scheduled_jobs
+                        SET last_run_output = CONCAT(COALESCE(last_run_output, ''), '\n{$msg}')
+                        WHERE id = ?
+                    ", [$job->id]);
+                } else {
+                    DB::connection('mysql')->update("
+                        UPDATE scheduled_jobs
+                        SET last_run_status = 'failed', last_pid = NULL, running_pids = NULL, running_count = 0,
+                            last_run_output = CONCAT(COALESCE(last_run_output, ''), '\n{$msg}')
+                        WHERE id = ?
+                    ", [$job->id]);
+                }
 
-                DB::connection('mysql')->update("
-                    UPDATE scheduled_job_runs
-                    SET status = 'failed', completed_at = NOW(),
-                        output = CONCAT(COALESCE(output, ''), '\n{$msg}')
-                    WHERE scheduled_job_id = ? AND status = 'running'
-                ", [$job->id]);
+                if ($runId !== null && $runId > 0) {
+                    DB::connection('mysql')->update("
+                        UPDATE scheduled_job_runs
+                        SET status = 'failed', completed_at = NOW(),
+                            output = CONCAT(COALESCE(output, ''), '\n{$msg}')
+                        WHERE id = ? AND status = 'running'
+                    ", [$runId]);
+                } elseif ($workerId !== null && $workerId !== '') {
+                    DB::connection('mysql')->update("
+                        UPDATE scheduled_job_runs
+                        SET status = 'failed', completed_at = NOW(),
+                            output = CONCAT(COALESCE(output, ''), '\n{$msg}')
+                        WHERE scheduled_job_id = ? AND worker_id = ? AND status = 'running'
+                    ", [$job->id, $workerId]);
+                } elseif ($pid) {
+                    DB::connection('mysql')->update("
+                        UPDATE scheduled_job_runs
+                        SET status = 'failed', completed_at = NOW(),
+                            output = CONCAT(COALESCE(output, ''), '\n{$msg}')
+                        WHERE scheduled_job_id = ? AND pid = ? AND status = 'running'
+                    ", [$job->id, $pid]);
+                } else {
+                    DB::connection('mysql')->update("
+                        UPDATE scheduled_job_runs
+                        SET status = 'failed', completed_at = NOW(),
+                            output = CONCAT(COALESCE(output, ''), '\n{$msg}')
+                        WHERE scheduled_job_id = ? AND status = 'running'
+                    ", [$job->id]);
+                }
 
                 // Clean up adaptive timeout deadline key
-                Cache::forget("scheduler:job:{$job->id}:deadline");
+                if ($maxParallel <= 1) {
+                    Cache::forget("scheduler:job:{$job->id}:deadline");
+                }
 
                 // Release any in-progress genealogy research queue items
-                DB::connection('mysql')->update("
+                $sessionLikes = ScheduledJobService::genealogyQueueSessionLikePatterns($runId, $pid ?: null);
+                if ($sessionLikes !== []) {
+                    $sessionLikeWhere = implode(' OR ', array_fill(0, count($sessionLikes), 'session_id LIKE ?'));
+                    DB::connection('mysql')->update("
+                        UPDATE genealogy_research_queue
+                        SET status = 'failed', completed_at = NOW(),
+                            notes = CONCAT(COALESCE(notes, ''), ' [SIGALRM timeout]'),
+                            updated_at = NOW()
+                        WHERE status = 'in_progress'
+                          AND ({$sessionLikeWhere})
+                    ", $sessionLikes);
+                } elseif ($maxParallel <= 1) {
+                    DB::connection('mysql')->update("
                     UPDATE genealogy_research_queue
                     SET status = 'failed', completed_at = NOW(),
                         notes = CONCAT(COALESCE(notes, ''), ' [SIGALRM timeout]'),
                         updated_at = NOW()
                     WHERE status = 'in_progress'
                       AND started_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)
-                ", [$timeoutMinutes]);
+                    ", [$timeoutMinutes]);
+                }
             } catch (\Throwable $e) {
                 // Best effort — we're about to exit anyway
             }

@@ -193,7 +193,7 @@ class GenealogyAgentTriageCommand extends Command
 
         return [
             'job_name' => $target['job_name'] ?? '',
-            'agent_id' => $target['agent_id'] ?? null,
+            'agent_configured' => is_string($target['agent_id'] ?? null) && trim((string) $target['agent_id']) !== '',
             'enabled' => ! empty($target['enabled']),
             'status' => $status,
             'triage_state' => $triageState,
@@ -495,9 +495,9 @@ class GenealogyAgentTriageCommand extends Command
             }
 
             $this->line(sprintf(
-                'target=%s agent=%s enabled=%s state=%s sessions=%d/%d reviews=%d/%d awo=%d/%d awo_floor=%s awo_yield=%s source_packet=%s scenarios=%d min_awo=%d operator_approval=%s scheduler_enable=%s writeback=%s canonical_writeback=%s action_code=%s',
+                'target=%s agent_configured=%s enabled=%s state=%s sessions=%d/%d reviews=%d/%d awo=%d/%d awo_floor=%s awo_yield=%s source_packet=%s scenarios=%d min_awo=%d operator_approval=%s scheduler_enable=%s writeback=%s canonical_writeback=%s action_code=%s',
                 (string) ($target['job_name'] ?? ''),
-                (string) ($target['agent_id'] ?? '-'),
+                ! empty($target['agent_configured']) ? 'yes' : 'no',
                 ! empty($target['enabled']) ? 'yes' : 'no',
                 (string) ($target['triage_state'] ?? $target['status'] ?? 'unknown'),
                 (int) ($target['sessions_completed'] ?? 0),

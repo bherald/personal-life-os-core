@@ -14,33 +14,39 @@ class CodexExecSmokeCommand extends Command
         {--model= : Explicit Codex model override}
         {--effort= : Explicit Codex reasoning effort override}
         {--cwd= : Working directory override, must be under configured cwd_roots}
-        {--timeout=120 : Timeout in seconds}
+        {--timeout= : Timeout override in seconds; default comes from llm_instances.config.default_timeout_seconds}
         {--prompt=Return exactly: PLOS Codex connector smoke ok : Smoke prompt}';
 
     protected $description = 'Dry-run or execute the table-backed Codex Exec connector smoke test';
 
     public function handle(CodexExecConnectorService $connector): int
     {
-        $timeout = filter_var($this->option('timeout'), FILTER_VALIDATE_INT, [
-            'options' => ['min_range' => 1, 'max_range' => 3600],
-        ]);
+        $timeout = null;
+        $timeoutOption = $this->option('timeout');
+        if ($timeoutOption !== null && $timeoutOption !== '') {
+            $timeout = filter_var($timeoutOption, FILTER_VALIDATE_INT);
+        }
 
         if ($timeout === false) {
-            $this->error('Invalid --timeout. Use an integer from 1 to 3600.');
+            $this->error('Invalid --timeout. Use an integer.');
 
             return self::FAILURE;
         }
 
         $prompt = (string) $this->option('prompt');
-        $result = $connector->execute($prompt, [
+        $config = [
             'dry_run' => ! (bool) $this->option('execute'),
             'model_role' => (string) $this->option('role'),
             'model_override' => $this->option('model') ?: null,
             'codex_reasoning_effort' => $this->option('effort') ?: null,
             'cwd' => $this->option('cwd') ?: null,
-            'timeout' => $timeout,
             'prompt_preview' => $prompt,
-        ]);
+        ];
+        if ($timeout !== null) {
+            $config['timeout'] = $timeout;
+        }
+
+        $result = $connector->execute($prompt, $config);
 
         $payload = $this->payload($result, $prompt);
 

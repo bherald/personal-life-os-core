@@ -2,6 +2,7 @@
 
 namespace App\Services\Research;
 
+use App\Services\SystemConfigService;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -20,21 +21,81 @@ use Illuminate\Support\Facades\Log;
  */
 class SourceOptimizationService
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'research.source_maintenance_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'enabled' => true,
+        'run_healing_default' => true,
+        'run_refresh_default' => true,
+        'run_discover_default' => true,
+        'run_optimize_default' => true,
+        'send_notification_default' => false,
+        'healthy_threshold' => 0,
+        'degraded_threshold' => 2,
+        'failed_threshold' => 5,
+        'healing_source_limit' => 50,
+        'healing_connect_timeout_seconds' => 5,
+        'healing_request_timeout_seconds' => 10,
+        'healing_redirect_max' => 5,
+        'rule_low_success_rate' => 0.30,
+        'rule_high_success_rate' => 0.80,
+        'rule_tld_min_total' => 5,
+        'rule_category_min_total' => 3,
+        'rule_unused_disable_days' => 30,
+        'tld_analysis_min_sources' => 3,
+        'category_domain_analysis_min_observations' => 3,
+        'category_domain_analysis_limit' => 50,
+        'category_stale_days' => 30,
+        'category_critical_min_active' => 3,
+        'category_critical_min_search_url' => 2,
+        'category_warning_min_active' => 5,
+        'category_warning_min_search_url' => 3,
+        'category_stale_ratio' => 0.5,
+        'category_list' => [
+            'academic',
+            'finance',
+            'genealogy',
+            'general',
+            'government',
+            'health',
+            'legal',
+            'medical',
+            'news',
+            'science',
+            'technology',
+        ],
+        'category_refresh_limit' => 20,
+        'category_refresh_connect_timeout_seconds' => 5,
+        'category_refresh_request_timeout_seconds' => 15,
+        'category_refresh_sleep_microseconds' => 300000,
+        'deactivation_high_trust_min' => 8.0,
+        'deactivation_medium_trust_min' => 6.0,
+        'deactivation_high_trust_failure_threshold' => 10,
+        'deactivation_medium_trust_failure_threshold' => 7,
+        'deactivation_default_failure_threshold' => 5,
+        'deactivation_failure_success_multiplier' => 2.0,
+        'report_failing_limit' => 20,
+        'report_top_performing_limit' => 20,
+        'report_top_performing_min_observations' => 5,
+        'report_min_success_rate_pct' => 70.0,
+        'report_degraded_recommendation_threshold' => 10,
+        'report_unused_rule_recommendation_threshold' => 5,
+        'report_min_avg_trust' => 0.5,
+        'suggest_success_min_count' => 5,
+        'suggest_success_min_rate' => 0.7,
+        'suggest_successful_domain_limit' => 20,
+        'suggest_common_tld_limit' => 5,
+        'suggest_common_keyword_limit' => 10,
+        'suggest_keyword_term_limit' => 3,
+        'suggest_keyword_terms_per_base' => 2,
+    ];
+
     private string $connection = 'pgsql_rag';
 
     private DynamicSourceDiscoveryService $discoveryService;
 
-    // Thresholds for source health (similar to RSS feed health)
-    private const HEALTHY_THRESHOLD = 0;      // No consecutive failures
-
-    private const DEGRADED_THRESHOLD = 2;     // 2+ consecutive failures = degraded
-
-    private const FAILED_THRESHOLD = 5;       // 5+ consecutive failures = failed
-
-    // Rule optimization thresholds
-    private const LOW_SUCCESS_RATE = 0.30;    // Below 30% = rule needs adjustment
-
-    private const HIGH_SUCCESS_RATE = 0.80;   // Above 80% = rule is performing well
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function __construct(DynamicSourceDiscoveryService $discoveryService)
     {
@@ -61,7 +122,7 @@ class SourceOptimizationService
         ];
 
         try {
-            // Get sources that need healing (consecutive failures >= 3)
+            // Get sources that need healing (consecutive failures >= degraded threshold)
             $failingSources = DB::connection($this->connection)->select('
                 SELECT id, domain, full_url, consecutive_failures, last_error_message,
                        trust_score, safety_score, is_whitelisted
@@ -69,8 +130,11 @@ class SourceOptimizationService
                 WHERE is_active = true
                 AND consecutive_failures >= ?
                 ORDER BY consecutive_failures DESC, trust_score DESC
-                LIMIT 50
-            ', [self::DEGRADED_THRESHOLD]);
+                LIMIT ?
+            ', [
+                $this->runtimePolicyInt('degraded_threshold'),
+                $this->runtimePolicyInt('healing_source_limit'),
+            ]);
 
             foreach ($failingSources as $source) {
                 $results['sources_checked']++;
@@ -114,7 +178,7 @@ class SourceOptimizationService
         $url = $source['full_url'] ?? "https://{$domain}";
 
         // If too many failures, just deactivate
-        if (($source['consecutive_failures'] ?? 0) >= self::FAILED_THRESHOLD) {
+        if (($source['consecutive_failures'] ?? 0) >= $this->runtimePolicyInt('failed_threshold')) {
             if (! ($source['is_whitelisted'] ?? false)) {
                 // Don't deactivate whitelisted sources automatically
                 DB::connection($this->connection)->update('
@@ -180,12 +244,16 @@ class SourceOptimizationService
      */
     private function tryHealingMethod(string $sourceId, string $domain, string $url, string $method): array
     {
+        $connectTimeout = $this->runtimePolicyInt('healing_connect_timeout_seconds');
+        $requestTimeout = $this->runtimePolicyInt('healing_request_timeout_seconds');
+        $redirectMax = $this->runtimePolicyInt('healing_redirect_max');
+
         try {
             switch ($method) {
                 case 'check_url_redirect':
                     // Follow redirects and see if final URL works
-                    $response = Http::connectTimeout(5)->timeout(10)
-                        ->withOptions(['allow_redirects' => ['max' => 5, 'track_redirects' => true]])
+                    $response = Http::connectTimeout($connectTimeout)->timeout($requestTimeout)
+                        ->withOptions(['allow_redirects' => ['max' => $redirectMax, 'track_redirects' => true]])
                         ->head($url);
 
                     if ($response->successful()) {
@@ -201,7 +269,7 @@ class SourceOptimizationService
                 case 'try_https':
                     if (str_starts_with($url, 'http://')) {
                         $httpsUrl = str_replace('http://', 'https://', $url);
-                        $response = Http::connectTimeout(5)->timeout(10)->head($httpsUrl);
+                        $response = Http::connectTimeout($connectTimeout)->timeout($requestTimeout)->head($httpsUrl);
                         if ($response->successful()) {
                             return ['success' => true, 'new_url' => $httpsUrl];
                         }
@@ -213,7 +281,7 @@ class SourceOptimizationService
                     $host = $parsed['host'] ?? $domain;
                     if (! str_starts_with($host, 'www.')) {
                         $wwwUrl = str_replace("://{$host}", "://www.{$host}", $url);
-                        $response = Http::connectTimeout(5)->timeout(10)->head($wwwUrl);
+                        $response = Http::connectTimeout($connectTimeout)->timeout($requestTimeout)->head($wwwUrl);
                         if ($response->successful()) {
                             return ['success' => true, 'new_url' => $wwwUrl];
                         }
@@ -227,7 +295,7 @@ class SourceOptimizationService
 
                     // Check if robots.txt allows access
                     $robotsUrl = "https://{$domain}/robots.txt";
-                    $response = Http::connectTimeout(5)->timeout(10)->get($robotsUrl);
+                    $response = Http::connectTimeout($connectTimeout)->timeout($requestTimeout)->get($robotsUrl);
                     if ($response->successful()) {
                         $robotsTxt = $response->body();
                         // Very simple check - if robots.txt exists and doesn't explicitly disallow
@@ -265,9 +333,14 @@ class SourceOptimizationService
 
         try {
             // 1. Analyze TLD performance
+            $lowSuccessRate = $this->runtimePolicyFloat('rule_low_success_rate');
+            $tldMinTotal = $this->runtimePolicyInt('rule_tld_min_total');
+            $categoryMinTotal = $this->runtimePolicyInt('rule_category_min_total');
+            $unusedRuleDisableDays = $this->runtimePolicyInt('rule_unused_disable_days');
+
             $tldPerformance = $this->analyzeTLDPerformance();
             foreach ($tldPerformance as $tld => $perf) {
-                if ($perf['success_rate'] < self::LOW_SUCCESS_RATE && $perf['total'] >= 5) {
+                if ($perf['success_rate'] < $lowSuccessRate && $perf['total'] >= $tldMinTotal) {
                     // Reduce trust for poor-performing TLDs
                     $adjustment = $this->adjustTLDRule($tld, -0.1);
                     if ($adjustment) {
@@ -280,7 +353,7 @@ class SourceOptimizationService
             // 2. Analyze category domain performance
             $categoryPerformance = $this->analyzeCategoryDomainPerformance();
             foreach ($categoryPerformance as $record) {
-                if ($record['success_rate'] < self::LOW_SUCCESS_RATE && $record['total'] >= 3) {
+                if ($record['success_rate'] < $lowSuccessRate && $record['total'] >= $categoryMinTotal) {
                     // Mark low-performing category domains as needing review
                     $results['category_adjustments'][] = [
                         'domain' => $record['domain'],
@@ -299,8 +372,8 @@ class SourceOptimizationService
                     updated_at = CURRENT_TIMESTAMP
                 WHERE is_active = true
                 AND times_applied = 0
-                AND created_at < CURRENT_TIMESTAMP - INTERVAL '30 days'
-            ");
+                AND created_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 day')
+            ", [$unusedRuleDisableDays]);
             $results['rules_disabled'] += $disabledRules;
 
             // 4. Update success rates for patterns
@@ -343,9 +416,9 @@ class SourceOptimizationService
             FROM discovered_sources
             WHERE is_active = true
             GROUP BY 1
-            HAVING COUNT(*) >= 3
+            HAVING COUNT(*) >= ?
             ORDER BY total DESC
-        ");
+        ", [$this->runtimePolicyInt('tld_analysis_min_sources')]);
 
         $performance = [];
         foreach ($results as $row) {
@@ -413,10 +486,13 @@ class SourceOptimizationService
             FROM discovered_sources
             WHERE domain_category IS NOT NULL
             AND domain_category != 'unknown'
-            AND (success_count + failure_count) >= 3
+            AND (success_count + failure_count) >= ?
             ORDER BY (failure_count::float / GREATEST(success_count + failure_count, 1)) DESC
-            LIMIT 50
-        ");
+            LIMIT ?
+        ", [
+            $this->runtimePolicyInt('category_domain_analysis_min_observations'),
+            $this->runtimePolicyInt('category_domain_analysis_limit'),
+        ]);
 
         return array_map(function ($row) {
             $total = $row->success_count + $row->failure_count;
@@ -473,11 +549,17 @@ class SourceOptimizationService
             WHERE is_active = true
             AND is_blacklisted = false
             AND (domain_category = ? OR specializations @> ?::jsonb)
-            AND success_count >= 5
-            AND (success_count::float / GREATEST(success_count + failure_count, 1)) >= 0.7
+            AND success_count >= ?
+            AND (success_count::float / GREATEST(success_count + failure_count, 1)) >= ?
             ORDER BY trust_score DESC, success_count DESC
-            LIMIT 20
-        ', [$category, json_encode([$category])]);
+            LIMIT ?
+        ', [
+            $category,
+            json_encode([$category]),
+            $this->runtimePolicyInt('suggest_success_min_count'),
+            $this->runtimePolicyFloat('suggest_success_min_rate'),
+            $this->runtimePolicyInt('suggest_successful_domain_limit'),
+        ]);
 
         if (empty($successfulDomains)) {
             return [];
@@ -508,10 +590,10 @@ class SourceOptimizationService
 
         return [
             'based_on_count' => count($successfulDomains),
-            'common_tlds' => array_slice($tldCounts, 0, 5, true),
-            'common_keywords' => array_slice($wordCounts, 0, 10, true),
+            'common_tlds' => array_slice($tldCounts, 0, $this->runtimePolicyInt('suggest_common_tld_limit'), true),
+            'common_keywords' => array_slice($wordCounts, 0, $this->runtimePolicyInt('suggest_common_keyword_limit'), true),
             'suggested_search_terms' => $this->generateSearchTerms($category, $wordCounts),
-            'example_domains' => array_slice($domainList, 0, 5),
+            'example_domains' => array_slice($domainList, 0, $this->runtimePolicyInt('suggest_common_tld_limit')),
         ];
     }
 
@@ -529,13 +611,14 @@ class SourceOptimizationService
         ];
 
         $baseTerms = $categoryTerms[$category] ?? [$category];
-        $keywordTerms = array_keys(array_slice($wordCounts, 0, 3, true));
+        $keywordTerms = array_keys(array_slice($wordCounts, 0, $this->runtimePolicyInt('suggest_keyword_term_limit'), true));
+        $keywordTermsPerBase = $this->runtimePolicyInt('suggest_keyword_terms_per_base');
 
         $suggestions = [];
         foreach ($baseTerms as $base) {
             $suggestions[] = "{$base} database .gov";
             $suggestions[] = "{$base} records .edu";
-            foreach (array_slice($keywordTerms, 0, 2) as $keyword) {
+            foreach (array_slice($keywordTerms, 0, $keywordTermsPerBase) as $keyword) {
                 $suggestions[] = "{$base} {$keyword}";
             }
         }
@@ -570,15 +653,18 @@ class SourceOptimizationService
                 COUNT(*) FILTER (WHERE is_active) as active_sources,
                 COUNT(*) FILTER (WHERE is_whitelisted) as whitelisted,
                 COUNT(*) FILTER (WHERE is_blacklisted) as blacklisted,
-                COUNT(*) FILTER (WHERE consecutive_failures >= 3 AND is_active) as degraded,
-                COUNT(*) FILTER (WHERE consecutive_failures >= 5) as failed,
+                COUNT(*) FILTER (WHERE consecutive_failures >= ? AND is_active) as degraded,
+                COUNT(*) FILTER (WHERE consecutive_failures >= ?) as failed,
                 COUNT(*) FILTER (WHERE success_count > 0 AND failure_count = 0) as perfect,
                 ROUND(AVG(trust_score)::numeric, 3) as avg_trust,
                 ROUND(AVG(safety_score)::numeric, 3) as avg_safety,
                 SUM(success_count) as total_successes,
                 SUM(failure_count) as total_failures
             FROM discovered_sources
-        ');
+        ', [
+            $this->runtimePolicyInt('degraded_threshold'),
+            $this->runtimePolicyInt('failed_threshold'),
+        ]);
         $report['summary'] = (array) ($summary[0] ?? []);
 
         // Calculate overall health percentage
@@ -592,10 +678,13 @@ class SourceOptimizationService
             SELECT domain, consecutive_failures, last_error_message, last_failure_at,
                    trust_score, is_whitelisted
             FROM discovered_sources
-            WHERE is_active = true AND consecutive_failures >= 3
+            WHERE is_active = true AND consecutive_failures >= ?
             ORDER BY consecutive_failures DESC
-            LIMIT 20
-        ');
+            LIMIT ?
+        ', [
+            $this->runtimePolicyInt('degraded_threshold'),
+            $this->runtimePolicyInt('report_failing_limit'),
+        ]);
         $report['failing_sources'] = array_map(fn ($r) => (array) $r, $failing);
 
         // Top performing
@@ -603,10 +692,13 @@ class SourceOptimizationService
             SELECT domain, success_count, failure_count, trust_score,
                    ROUND((success_count::numeric / GREATEST(success_count + failure_count, 1) * 100), 1) as success_rate
             FROM discovered_sources
-            WHERE is_active = true AND (success_count + failure_count) >= 5
+            WHERE is_active = true AND (success_count + failure_count) >= ?
             ORDER BY (success_count::float / GREATEST(success_count + failure_count, 1)) DESC
-            LIMIT 20
-        ');
+            LIMIT ?
+        ', [
+            $this->runtimePolicyInt('report_top_performing_min_observations'),
+            $this->runtimePolicyInt('report_top_performing_limit'),
+        ]);
         $report['top_performing'] = array_map(fn ($r) => (array) $r, $topPerforming);
 
         // Rule effectiveness
@@ -639,7 +731,7 @@ class SourceOptimizationService
 
         // Check for high failure rate
         $successRate = $report['summary']['overall_success_rate'] ?? 100;
-        if ($successRate < 70) {
+        if ($successRate < $this->runtimePolicyFloat('report_min_success_rate_pct')) {
             $recommendations[] = [
                 'priority' => 'high',
                 'type' => 'performance',
@@ -649,7 +741,7 @@ class SourceOptimizationService
 
         // Check for many failing sources
         $degradedCount = $report['summary']['degraded'] ?? 0;
-        if ($degradedCount > 10) {
+        if ($degradedCount > $this->runtimePolicyInt('report_degraded_recommendation_threshold')) {
             $recommendations[] = [
                 'priority' => 'medium',
                 'type' => 'maintenance',
@@ -659,7 +751,7 @@ class SourceOptimizationService
 
         // Check for unused rules
         foreach ($report['rule_effectiveness'] as $ruleType) {
-            if (($ruleType['unused_rules'] ?? 0) > 5) {
+            if (($ruleType['unused_rules'] ?? 0) > $this->runtimePolicyInt('report_unused_rule_recommendation_threshold')) {
                 $recommendations[] = [
                     'priority' => 'low',
                     'type' => 'cleanup',
@@ -670,7 +762,7 @@ class SourceOptimizationService
 
         // Check trust score distribution
         $avgTrust = $report['summary']['avg_trust'] ?? 0.5;
-        if ($avgTrust < 0.5) {
+        if ($avgTrust < $this->runtimePolicyFloat('report_min_avg_trust')) {
             $recommendations[] = [
                 'priority' => 'medium',
                 'type' => 'quality',
@@ -702,12 +794,12 @@ class SourceOptimizationService
                 SUM(COALESCE(success_count, 0)) as total_successes,
                 SUM(COALESCE(failure_count, 0)) as total_failures,
                 MAX(last_success_at) as last_success,
-                COUNT(*) FILTER (WHERE last_success_at < CURRENT_TIMESTAMP - INTERVAL '30 days' OR last_success_at IS NULL) as stale
+                COUNT(*) FILTER (WHERE last_success_at < CURRENT_TIMESTAMP - (? * INTERVAL '1 day') OR last_success_at IS NULL) as stale
             FROM research_sources
             WHERE research_category IS NOT NULL
             GROUP BY research_category
             ORDER BY research_category
-        ");
+        ", [$this->runtimePolicyInt('category_stale_days')]);
 
         $categories = [];
         foreach ($curatedStats as $row) {
@@ -736,15 +828,21 @@ class SourceOptimizationService
         $withSearchUrl = (int) $row->with_search_url;
         $stale = (int) $row->stale;
 
-        if ($active < 3 || $withSearchUrl < 2) {
+        if (
+            $active < $this->runtimePolicyInt('category_critical_min_active')
+            || $withSearchUrl < $this->runtimePolicyInt('category_critical_min_search_url')
+        ) {
             return 'critical';
         }
 
-        if ($stale > $active / 2) {
+        if ($stale > $active * $this->runtimePolicyFloat('category_stale_ratio')) {
             return 'degraded';
         }
 
-        if ($active < 5 || $withSearchUrl < 3) {
+        if (
+            $active < $this->runtimePolicyInt('category_warning_min_active')
+            || $withSearchUrl < $this->runtimePolicyInt('category_warning_min_search_url')
+        ) {
             return 'warning';
         }
 
@@ -761,10 +859,7 @@ class SourceOptimizationService
         $health = $this->getCategoryHealth();
         $needsAttention = [];
 
-        $allCategories = [
-            'academic', 'finance', 'genealogy', 'general', 'government',
-            'health', 'legal', 'medical', 'news', 'science', 'technology',
-        ];
+        $allCategories = $this->runtimePolicyStringList('category_list');
 
         foreach ($allCategories as $category) {
             if (! isset($health[$category])) {
@@ -826,15 +921,16 @@ class SourceOptimizationService
             ORDER BY
                 CASE WHEN last_success_at IS NULL THEN 0 ELSE 1 END,
                 last_success_at ASC
-            LIMIT 20
-        ', [$category]);
+            LIMIT ?
+        ', [$category, $this->runtimePolicyInt('category_refresh_limit')]);
 
         foreach ($sources as $source) {
             $results['sources_checked']++;
 
             try {
                 $url = $source->base_url;
-                $response = \Illuminate\Support\Facades\Http::connectTimeout(5)->timeout(15)
+                $response = Http::connectTimeout($this->runtimePolicyInt('category_refresh_connect_timeout_seconds'))
+                    ->timeout($this->runtimePolicyInt('category_refresh_request_timeout_seconds'))
                     ->withHeaders(['User-Agent' => 'ResearchBot/1.0 (Automated Research System)'])
                     ->head($url);
 
@@ -864,7 +960,7 @@ class SourceOptimizationService
             }
 
             // Rate limit
-            usleep(300000); // 0.3 seconds between checks
+            usleep($this->runtimePolicyInt('category_refresh_sleep_microseconds'));
         }
 
         return $results;
@@ -910,9 +1006,16 @@ class SourceOptimizationService
         $trust = (float) $source->trust_score;
 
         // High trust sources get more chances
-        $threshold = $trust >= 8 ? 10 : ($trust >= 6 ? 7 : 5);
+        $threshold = $trust >= $this->runtimePolicyFloat('deactivation_high_trust_min')
+            ? $this->runtimePolicyInt('deactivation_high_trust_failure_threshold')
+            : (
+                $trust >= $this->runtimePolicyFloat('deactivation_medium_trust_min')
+                    ? $this->runtimePolicyInt('deactivation_medium_trust_failure_threshold')
+                    : $this->runtimePolicyInt('deactivation_default_failure_threshold')
+            );
 
-        return $failures >= $threshold && $failures > $successes * 2;
+        return $failures >= $threshold
+            && $failures > $successes * $this->runtimePolicyFloat('deactivation_failure_success_multiplier');
     }
 
     /**
@@ -986,5 +1089,88 @@ class SourceOptimizationService
         ]);
 
         return $results;
+    }
+
+    private function runtimePolicyBool(string $key): bool
+    {
+        $fallback = (bool) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? $fallback;
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyFloat(string $key): float
+    {
+        $fallback = (float) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? null;
+
+        return is_numeric($value) ? (float) $value : $fallback;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function runtimePolicyStringList(string $key): array
+    {
+        $fallback = self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+
+        if (! is_array($value)) {
+            return $fallback;
+        }
+
+        $strings = array_values(array_filter(
+            array_map(
+                fn ($item) => is_scalar($item) ? trim((string) $item) : '',
+                $value
+            ),
+            fn (string $item) => $item !== ''
+        ));
+
+        return $strings !== [] ? $strings : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

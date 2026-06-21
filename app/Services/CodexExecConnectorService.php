@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
@@ -64,11 +65,28 @@ class CodexExecConnectorService
             ];
         }
 
-        $outputPath = $this->newOutputPath();
-        $command = $this->buildCommand($resolved, $outputPath);
+        $slotId = null;
+        $outputPath = null;
         $started = microtime(true);
 
         try {
+            $slot = $this->acquireExecutionSlot($row, $resolved);
+            if (! ($slot['success'] ?? false)) {
+                return [
+                    'success' => false,
+                    'provider' => self::PROVIDER_ID,
+                    'model' => $resolved['model'],
+                    'reasoning_effort' => $resolved['reasoning_effort'],
+                    'error_type' => $slot['error_type'] ?? 'capacity',
+                    'error' => $slot['error'] ?? 'Codex Exec capacity is unavailable.',
+                    'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                ];
+            }
+
+            $slotId = (string) $slot['slot_id'];
+            $outputPath = $this->newOutputPath();
+            $command = $this->buildCommand($resolved, $outputPath);
+
             $process = new Process($command, $resolved['cwd'], null, $prompt, $resolved['timeout_seconds']);
             $process->setTimeout($resolved['timeout_seconds']);
             $process->run();
@@ -141,6 +159,10 @@ class CodexExecConnectorService
                 'duration_ms' => (int) ((microtime(true) - $started) * 1000),
             ];
         } finally {
+            if ($slotId !== null) {
+                $this->releaseExecutionSlot($slotId, $resolved);
+            }
+
             if (isset($outputPath) && is_file($outputPath)) {
                 @unlink($outputPath);
             }
@@ -199,18 +221,32 @@ class CodexExecConnectorService
             throw new InvalidArgumentException('Codex pipeline approval_policy must be never.');
         }
 
-        $timeout = (int) ($config['timeout'] ?? $providerConfig['default_timeout_seconds'] ?? 900);
-        if ($timeout < 1 || $timeout > 3600) {
-            throw new InvalidArgumentException('Codex timeout must be between 1 and 3600 seconds.');
+        $runtimePolicy = $this->decodeAssoc($providerConfig['runtime_policy'] ?? null);
+        $timeoutMin = $this->requiredPositiveInt($runtimePolicy['timeout_min_seconds'] ?? null, 'runtime_policy.timeout_min_seconds');
+        $timeoutMax = $this->requiredPositiveInt($runtimePolicy['timeout_max_seconds'] ?? null, 'runtime_policy.timeout_max_seconds');
+        if ($timeoutMin > $timeoutMax) {
+            throw new InvalidArgumentException('Codex runtime_policy timeout bounds are invalid.');
         }
 
-        $maxPromptBytes = (int) ($providerConfig['max_prompt_bytes'] ?? 200000);
+        $defaultTimeout = $this->requiredPositiveInt($providerConfig['default_timeout_seconds'] ?? null, 'default_timeout_seconds');
+        $timeoutRaw = $config['timeout'] ?? $defaultTimeout;
+        $timeout = filter_var($timeoutRaw, FILTER_VALIDATE_INT);
+        if ($timeout === false) {
+            throw new InvalidArgumentException('Codex timeout must be an integer.');
+        }
+
+        if ($timeout < $timeoutMin || $timeout > $timeoutMax) {
+            throw new InvalidArgumentException("Codex timeout must be between {$timeoutMin} and {$timeoutMax} seconds.");
+        }
+
+        $maxPromptBytes = $this->requiredPositiveInt($providerConfig['max_prompt_bytes'] ?? null, 'max_prompt_bytes');
         if (strlen($this->stringValue($config['prompt_preview'] ?? null, '') ?? '') > $maxPromptBytes) {
             throw new InvalidArgumentException('Codex prompt exceeds configured max_prompt_bytes.');
         }
 
         $cwd = $this->resolveCwd($providerConfig, $config);
         $schema = $this->resolveOutputSchema($providerConfig, $config);
+        $slotPolicy = $this->resolveSlotPolicy($providerConfig, $timeout);
 
         return [
             'executable' => $this->stringValue($providerConfig['executable'] ?? null, 'codex'),
@@ -226,7 +262,104 @@ class CodexExecConnectorService
             'json_events' => (bool) ($providerConfig['json_events'] ?? true),
             'skip_git_repo_check' => (bool) ($providerConfig['skip_git_repo_check'] ?? false),
             'output_schema' => $schema,
+            'slot_policy' => $slotPolicy,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $resolved
+     * @return array<string, mixed>
+     */
+    private function acquireExecutionSlot(object $row, array $resolved): array
+    {
+        $maxConcurrent = filter_var($row->max_concurrent ?? null, FILTER_VALIDATE_INT);
+        if ($maxConcurrent === false || $maxConcurrent < 1) {
+            return [
+                'success' => false,
+                'error_type' => 'configuration',
+                'error' => 'Codex Exec max_concurrent must be configured on llm_instances.',
+            ];
+        }
+
+        $policy = $resolved['slot_policy'];
+        $cacheKey = (string) $policy['cache_key'];
+        $lockKey = $cacheKey.':lock';
+        $lockTtl = (int) $policy['lock_ttl_seconds'];
+        $slotTtl = (int) $policy['slot_ttl_seconds'];
+        $now = time();
+
+        $result = Cache::lock($lockKey, $lockTtl)->get(function () use ($cacheKey, $maxConcurrent, $slotTtl, $now, $resolved) {
+            $slots = Cache::get($cacheKey, []);
+            $slots = is_array($slots) ? $slots : [];
+            $slots = array_filter($slots, fn ($slot): bool => is_array($slot) && (int) ($slot['expires_at'] ?? 0) > $now);
+
+            if (count($slots) >= $maxConcurrent) {
+                Cache::put($cacheKey, $slots, $slotTtl);
+
+                return [
+                    'success' => false,
+                    'error_type' => 'capacity',
+                    'error' => "Codex Exec capacity full ({$maxConcurrent}/{$maxConcurrent} slots active from llm_instances.max_concurrent).",
+                    'active' => count($slots),
+                    'max' => $maxConcurrent,
+                ];
+            }
+
+            $slotId = uniqid(self::PROVIDER_ID.'_slot_', true);
+            $slots[$slotId] = [
+                'slot_id' => $slotId,
+                'started_at' => $now,
+                'expires_at' => $now + $slotTtl,
+                'pid' => getmypid(),
+                'model' => $resolved['model'] ?? null,
+                'reasoning_effort' => $resolved['reasoning_effort'] ?? null,
+            ];
+
+            Cache::put($cacheKey, $slots, $slotTtl);
+
+            return [
+                'success' => true,
+                'slot_id' => $slotId,
+                'active' => count($slots),
+                'max' => $maxConcurrent,
+            ];
+        });
+
+        if (! is_array($result)) {
+            return [
+                'success' => false,
+                'error_type' => 'capacity',
+                'error' => 'Codex Exec slot lock is unavailable.',
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param  array<string, mixed>  $resolved
+     */
+    private function releaseExecutionSlot(string $slotId, array $resolved): void
+    {
+        $policy = $resolved['slot_policy'] ?? null;
+        if (! is_array($policy) || empty($policy['cache_key'])) {
+            return;
+        }
+
+        $cacheKey = (string) $policy['cache_key'];
+        $lockKey = $cacheKey.':lock';
+        $lockTtl = filter_var($policy['lock_ttl_seconds'] ?? null, FILTER_VALIDATE_INT);
+        $slotTtl = filter_var($policy['slot_ttl_seconds'] ?? null, FILTER_VALIDATE_INT);
+        if ($lockTtl === false || $slotTtl === false || $lockTtl < 1 || $slotTtl < 1) {
+            return;
+        }
+
+        Cache::lock($lockKey, $lockTtl)->get(function () use ($cacheKey, $slotId, $slotTtl): void {
+            $slots = Cache::get($cacheKey, []);
+            $slots = is_array($slots) ? $slots : [];
+            unset($slots[$slotId]);
+            Cache::put($cacheKey, $slots, $slotTtl);
+        });
     }
 
     /**
@@ -368,6 +501,30 @@ class CodexExecConnectorService
     }
 
     /**
+     * @return array{cache_key:string,slot_ttl_seconds:int,lock_ttl_seconds:int,source:string}
+     */
+    private function resolveSlotPolicy(array $providerConfig, int $timeoutSeconds): array
+    {
+        $policy = $this->decodeAssoc($providerConfig['slot_policy'] ?? null);
+        $cacheKey = $this->stringValue($policy['cache_key'] ?? null);
+        if ($cacheKey === null) {
+            throw new InvalidArgumentException('Codex slot_policy.cache_key must be configured.');
+        }
+
+        $slotTtl = $this->requiredPositiveInt($policy['slot_ttl_seconds'] ?? null, 'slot_policy.slot_ttl_seconds');
+        if ($slotTtl < $timeoutSeconds) {
+            throw new InvalidArgumentException('Codex slot_policy.slot_ttl_seconds must cover the execution timeout.');
+        }
+
+        return [
+            'cache_key' => $cacheKey,
+            'slot_ttl_seconds' => $slotTtl,
+            'lock_ttl_seconds' => $this->requiredPositiveInt($policy['lock_ttl_seconds'] ?? null, 'slot_policy.lock_ttl_seconds'),
+            'source' => $this->stringValue($policy['source'] ?? null, 'llm_instances.max_concurrent'),
+        ];
+    }
+
+    /**
      * @return list<string>
      */
     private function supportedEffortsForModel(array $providerConfig, string $model): array
@@ -493,6 +650,16 @@ class CodexExecConnectorService
         }
 
         return array_values(array_unique($out));
+    }
+
+    private function requiredPositiveInt(mixed $value, string $label): int
+    {
+        $int = filter_var($value, FILTER_VALIDATE_INT);
+        if ($int === false || $int < 1) {
+            throw new InvalidArgumentException("Codex {$label} must be configured as a positive integer.");
+        }
+
+        return $int;
     }
 
     private function stringValue(mixed $value, ?string $default = null): ?string

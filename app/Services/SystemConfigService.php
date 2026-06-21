@@ -22,6 +22,7 @@ use Illuminate\Support\Facades\Log;
 class SystemConfigService
 {
     private const CACHE_PREFIX = 'syscfg:';
+
     private const CACHE_TTL = 300; // 5 minutes
 
     /**
@@ -34,8 +35,8 @@ class SystemConfigService
      *
      * Lookup order: local memory → Redis → MySQL → default.
      *
-     * @param string $key Dot-notation key: "section.config_key"
-     * @param mixed $default Fallback value if not found anywhere
+     * @param  string  $key  Dot-notation key: "section.config_key"
+     * @param  mixed  $default  Fallback value if not found anywhere
      * @return mixed Typed value (int/float/bool/string/array based on data_type column)
      */
     public function get(string $key, mixed $default = null): mixed
@@ -47,11 +48,16 @@ class SystemConfigService
 
         // 2. Redis cache
         try {
-            $cached = Cache::get(self::CACHE_PREFIX . $key);
+            $cached = Cache::get(self::CACHE_PREFIX.$key);
             if ($cached !== null) {
                 $value = $this->deserialize($cached);
-                $this->localCache[$key] = $value;
-                return $value;
+                if ($value === null) {
+                    Cache::forget(self::CACHE_PREFIX.$key);
+                } else {
+                    $this->localCache[$key] = $value;
+
+                    return $value;
+                }
             }
         } catch (\Throwable $e) {
             // Redis down — fall through to DB
@@ -61,14 +67,15 @@ class SystemConfigService
         try {
             [$section, $configKey] = $this->parseKey($key);
             $row = DB::selectOne(
-                "SELECT config_value, data_type FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1",
+                'SELECT config_value, data_type FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1',
                 [$section, $configKey]
             );
 
             if ($row !== null) {
                 $value = $this->cast($row->config_value, $row->data_type);
                 $this->localCache[$key] = $value;
-                $this->cacheValue($key, $row->config_value);
+                $this->cacheValue($key, $row->config_value, $row->data_type);
+
                 return $value;
             }
         } catch (\Throwable $e) {
@@ -98,9 +105,9 @@ class SystemConfigService
     /**
      * Set a configuration value (writes to DB + Redis, evicts local cache).
      *
-     * @param string $key Dot-notation key
-     * @param mixed $value New value
-     * @param string|null $dataType Override data_type (auto-detected if null)
+     * @param  string  $key  Dot-notation key
+     * @param  mixed  $value  New value
+     * @param  string|null  $dataType  Override data_type (auto-detected if null)
      */
     public function set(string $key, mixed $value, ?string $dataType = null): void
     {
@@ -109,23 +116,23 @@ class SystemConfigService
         $serialized = is_array($value) ? json_encode($value) : (string) $value;
 
         $exists = DB::selectOne(
-            "SELECT id FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1",
+            'SELECT id FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1',
             [$section, $configKey]
         );
 
         if ($exists) {
             DB::update(
-                "UPDATE system_configs SET config_value = ?, data_type = ?, updated_at = NOW() WHERE section = ? AND config_key = ?",
+                'UPDATE system_configs SET config_value = ?, data_type = ?, updated_at = NOW() WHERE section = ? AND config_key = ?',
                 [$serialized, $dataType, $section, $configKey]
             );
         } else {
             DB::insert(
-                "INSERT INTO system_configs (section, config_key, config_value, data_type, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())",
+                'INSERT INTO system_configs (section, config_key, config_value, data_type, created_at, updated_at) VALUES (?, ?, ?, ?, NOW(), NOW())',
                 [$section, $configKey, $serialized, $dataType]
             );
         }
 
-        $this->cacheValue($key, $serialized);
+        $this->cacheValue($key, $serialized, $dataType);
         $this->localCache[$key] = $value;
     }
 
@@ -136,7 +143,7 @@ class SystemConfigService
     {
         unset($this->localCache[$key]);
         try {
-            Cache::forget(self::CACHE_PREFIX . $key);
+            Cache::forget(self::CACHE_PREFIX.$key);
         } catch (\Throwable $e) {
             // Redis down — local cache cleared, DB is source of truth
         }
@@ -150,9 +157,9 @@ class SystemConfigService
         $this->localCache = [];
         try {
             // Flush all syscfg: keys
-            $keys = DB::select("SELECT section, config_key FROM system_configs");
+            $keys = DB::select('SELECT section, config_key FROM system_configs');
             foreach ($keys as $row) {
-                Cache::forget(self::CACHE_PREFIX . $row->section . '.' . $row->config_key);
+                Cache::forget(self::CACHE_PREFIX.$row->section.'.'.$row->config_key);
             }
         } catch (\Throwable $e) {
             Log::warning('SystemConfigService: Cache flush failed', ['error' => $e->getMessage()]);
@@ -169,6 +176,7 @@ class SystemConfigService
         if (count($parts) === 1) {
             return ['general', $parts[0]];
         }
+
         return [$parts[0], $parts[1]];
     }
 
@@ -207,22 +215,33 @@ class SystemConfigService
     /**
      * Serialize for Redis cache storage.
      */
-    private function cacheValue(string $key, string $rawValue): void
+    private function cacheValue(string $key, string $rawValue, string $dataType): void
     {
         try {
-            Cache::put(self::CACHE_PREFIX . $key, $rawValue, self::CACHE_TTL);
+            Cache::put(self::CACHE_PREFIX.$key, [
+                '__syscfg_cache_v' => 1,
+                'value' => $rawValue,
+                'data_type' => $dataType,
+            ], self::CACHE_TTL);
         } catch (\Throwable $e) {
             // Redis down — DB is source of truth
         }
     }
 
     /**
-     * Deserialize from Redis (returns raw string — caller casts via get()).
+     * Deserialize from Redis. Null means legacy/untyped cache and forces DB refresh.
      */
     private function deserialize(mixed $cached): mixed
     {
-        // Redis stores the raw DB value; re-fetch data_type from DB for proper casting
-        // For performance, just return the raw value — callers use getInt/getFloat for typed access
-        return $cached;
+        if (! is_array($cached) || ($cached['__syscfg_cache_v'] ?? null) !== 1) {
+            return null;
+        }
+
+        $dataType = $cached['data_type'] ?? null;
+        if (! is_string($dataType)) {
+            return null;
+        }
+
+        return $this->cast(isset($cached['value']) ? (string) $cached['value'] : null, $dataType);
     }
 }

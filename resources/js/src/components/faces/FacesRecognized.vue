@@ -9,14 +9,14 @@
     <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
       <div
         v-for="person in recognized"
-        :key="person.person_name"
+        :key="person.identity_key || person.person_name"
         class="group relative bg-ops-plum/20 rounded-lg overflow-hidden border border-transparent hover:border-ops-peach/40 transition-colors cursor-pointer"
         @click="handleClick(person)"
       >
         <!-- Face image -->
         <div class="aspect-square relative overflow-hidden">
           <img
-            :src="`/api/media/faces/registry-crop/${person.representative_face_id}`"
+            :src="personImageSrc(person)"
             :alt="person.person_name"
             class="w-full h-full object-cover"
             loading="lazy"
@@ -31,14 +31,49 @@
 
         <!-- Name + count -->
         <div class="p-2">
-          <button
-            @click.stop="$emit('edit', person)"
-            class="text-sm text-ops-text hover:text-ops-peach truncate block w-full text-left"
-            :title="person.person_name"
+          <div class="flex items-center gap-1 min-w-0">
+            <span
+              class="text-sm text-ops-text truncate block min-w-0 flex-1"
+              :title="person.person_name"
+            >
+              {{ person.person_name }}
+            </span>
+            <button
+              @click.stop="$emit('edit', person)"
+              class="shrink-0 w-6 h-6 rounded border border-ops-peach/25 text-ops-text-muted hover:text-ops-peach hover:border-ops-peach/60 transition-colors"
+              title="Rename face label"
+              aria-label="Rename face label"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </button>
+          </div>
+          <div class="mt-1 flex flex-wrap gap-1">
+            <span
+              v-if="person.has_face_rows"
+              class="rounded border border-ops-peach/25 px-1.5 py-0.5 text-[10px] uppercase text-ops-text-muted"
+            >
+              Faces
+            </span>
+            <span
+              v-if="person.has_ft_media"
+              class="rounded border border-ops-gold/40 bg-ops-gold/10 px-1.5 py-0.5 text-[10px] uppercase text-ops-gold"
+            >
+              FT photos
+            </span>
+          </div>
+          <div
+            v-if="person.face_name_variant_count > 1"
+            class="mt-0.5 text-[10px] text-ops-gold truncate"
+            :title="person.face_name_variants"
           >
-            {{ person.person_name }}
-          </button>
-          <span class="text-xs text-ops-text-muted">{{ person.face_count }} photos</span>
+            {{ person.face_name_variant_count }} labels
+          </div>
+          <div class="text-xs text-ops-text-muted">
+            <span>{{ person.face_count || 0 }} face{{ person.face_count === 1 ? '' : 's' }}</span>
+            <span v-if="person.linked_media_count > 0" class="ml-1">{{ person.linked_media_count }} FT photo{{ person.linked_media_count === 1 ? '' : 's' }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -91,7 +126,19 @@ function handleClick(person) {
   emit('click', person)
 }
 
+function personImageSrc(person) {
+  if (person?.representative_face_id) {
+    return `/api/media/faces/registry-crop/${person.representative_face_id}`
+  }
+
+  return person?.representative_thumbnail_url || placeholderImage()
+}
+
 function onImgError(e) {
-  e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23333" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="14">?</text></svg>'
+  e.target.src = placeholderImage()
+}
+
+function placeholderImage() {
+  return 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23333" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="14">?</text></svg>'
 }
 </script>

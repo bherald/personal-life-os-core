@@ -2,9 +2,9 @@
 
 namespace App\Nodes;
 
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Fan-In Node - Aggregate Parallel Branch Results
@@ -26,19 +26,33 @@ use Exception;
  */
 class FanInNode extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'workflow.fanin_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'fan_out_id_key' => 'fan_out_id',
+        'timeout_seconds' => 3600,
+        'poll_interval_seconds' => 5,
+        'aggregation_mode' => 'array',
+        'include_failed' => false,
+        'require_all_success' => true,
+    ];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function execute(array $input): array
     {
-        $fanOutIdKey = $this->getConfigValue('fan_out_id_key', 'fan_out_id');
-        $timeoutSeconds = (int) $this->getConfigValue('timeout_seconds', 3600);
-        $pollInterval = (int) $this->getConfigValue('poll_interval_seconds', 5);
-        $aggregationMode = $this->getConfigValue('aggregation_mode', 'array');
-        $includeFailed = (bool) $this->getConfigValue('include_failed', false);
-        $requireAllSuccess = (bool) $this->getConfigValue('require_all_success', true);
+        $fanOutIdKey = $this->stringConfigOrPolicy('fan_out_id_key');
+        $timeoutSeconds = $this->intConfigOrPolicy('timeout_seconds');
+        $pollInterval = $this->intConfigOrPolicy('poll_interval_seconds');
+        $aggregationMode = $this->stringConfigOrPolicy('aggregation_mode');
+        $includeFailed = $this->boolConfigOrPolicy('include_failed');
+        $requireAllSuccess = $this->boolConfigOrPolicy('require_all_success');
 
         // Extract fan_out_id from input
         $fanOutId = $this->extractFanOutId($input, $fanOutIdKey);
 
-        if (!$fanOutId) {
+        if (! $fanOutId) {
             return $this->standardOutput(null, [], 'No fan_out_id found in input');
         }
 
@@ -69,6 +83,7 @@ class FanInNode extends BaseNode
                     'timeout' => true,
                     'pending' => $canExecute['pending'],
                     'running' => $canExecute['running'],
+                    'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
                 ], 'Timeout waiting for branches to complete');
             }
 
@@ -161,6 +176,7 @@ class FanInNode extends BaseNode
                 'fan_out_id' => $fanOutId,
                 'branch_stats' => $stats,
                 'failed_branches' => $stats['failed'],
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ], "Fan-in failed: {$stats['failed']} branch(es) failed");
         }
 
@@ -208,6 +224,7 @@ class FanInNode extends BaseNode
             'branch_stats' => $stats,
             'total_duration_ms' => $totalDuration,
             'aggregation_mode' => $mode,
+            'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
         ]);
     }
 
@@ -239,6 +256,107 @@ class FanInNode extends BaseNode
         return null;
     }
 
+    private function intConfigOrPolicy(string $key): int
+    {
+        if (array_key_exists($key, $this->config)) {
+            return (int) $this->config[$key];
+        }
+
+        return $this->runtimePolicyInt($key);
+    }
+
+    private function stringConfigOrPolicy(string $key): string
+    {
+        if (array_key_exists($key, $this->config)) {
+            return (string) $this->config[$key];
+        }
+
+        return $this->runtimePolicyString($key);
+    }
+
+    private function boolConfigOrPolicy(string $key): bool
+    {
+        if (array_key_exists($key, $this->config)) {
+            return $this->resolveBooleanConfig($key);
+        }
+
+        return $this->runtimePolicyBool($key);
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyString(string $key): string
+    {
+        $value = $this->runtimePolicy()[$key] ?? self::DEFAULT_RUNTIME_POLICY[$key];
+
+        return is_scalar($value) ? (string) $value : (string) self::DEFAULT_RUNTIME_POLICY[$key];
+    }
+
+    private function runtimePolicyBool(string $key): bool
+    {
+        $fallback = (bool) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if ($value === null || $value === '') {
+            return $fallback;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value !== 0;
+        }
+
+        if (is_string($value)) {
+            $normalized = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        return (bool) $value;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
     /**
      * Merge all branch outputs into a single object
      */
@@ -250,6 +368,7 @@ class FanInNode extends BaseNode
                 $merged = array_merge($merged, $result['output']);
             }
         }
+
         return $merged;
     }
 
@@ -270,6 +389,7 @@ class FanInNode extends BaseNode
                 $concatenated = array_merge($concatenated, $result['output']);
             }
         }
+
         return $concatenated;
     }
 }

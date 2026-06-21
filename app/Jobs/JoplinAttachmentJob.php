@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Services\JoplinAttachmentService;
+use App\Services\SystemConfigService;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -25,6 +26,17 @@ class JoplinAttachmentJob implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
 
+    private const RUNTIME_POLICY_CONFIG_KEY = 'jobs.joplin_attachment_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'timeout_seconds' => 1800,
+        'tries' => 1,
+        'unique_for_seconds' => 3600,
+        'backoff_seconds' => [60, 180],
+        'overlap_release_after_seconds' => 60,
+        'overlap_expire_after_seconds' => 300,
+    ];
+
     /**
      * Job timeout in seconds.
      * Match the Horizon long-running supervisor ceiling.
@@ -45,6 +57,9 @@ class JoplinAttachmentJob implements ShouldBeUnique, ShouldQueue
      * Retry backoff in seconds
      */
     public array $backoff = [60, 180];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     /**
      * Attachment details
@@ -70,6 +85,7 @@ class JoplinAttachmentJob implements ShouldBeUnique, ShouldQueue
         $this->filename = $filename;
         $this->noteId = $noteId;
         $this->force = $force;
+        $this->applyRuntimePolicy();
 
         // Isolate attachment OCR/extraction from normal background work.
         $this->onQueue('long-running');
@@ -83,8 +99,8 @@ class JoplinAttachmentJob implements ShouldBeUnique, ShouldQueue
         // Prevent duplicate processing of the same attachment admission.
         return [
             (new WithoutOverlapping($this->uniqueId()))
-                ->releaseAfter(60)
-                ->expireAfter(300),
+                ->releaseAfter($this->runtimePolicyInt('overlap_release_after_seconds'))
+                ->expireAfter($this->runtimePolicyInt('overlap_expire_after_seconds')),
         ];
     }
 
@@ -246,5 +262,73 @@ class JoplinAttachmentJob implements ShouldBeUnique, ShouldQueue
             'note:'.$this->noteId,
             'resource:'.$this->resourceId,
         ];
+    }
+
+    private function applyRuntimePolicy(): void
+    {
+        $this->timeout = $this->runtimePolicyInt('timeout_seconds');
+        $this->tries = $this->runtimePolicyInt('tries');
+        $this->uniqueFor = $this->runtimePolicyInt('unique_for_seconds');
+        $this->backoff = $this->runtimePolicyIntList('backoff_seconds');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function runtimePolicyIntList(string $key): array
+    {
+        $fallback = self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (! is_array($value)) {
+            return $fallback;
+        }
+
+        $ints = array_values(array_filter(
+            array_map(fn ($item) => is_numeric($item) ? (int) $item : 0, $value),
+            fn (int $item) => $item > 0
+        ));
+
+        return $ints !== [] ? $ints : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

@@ -5,6 +5,7 @@ namespace Tests\Unit\Nodes;
 use App\Controllers\NotificationController;
 use App\Exceptions\NodeTimeoutException;
 use App\Nodes\PushoverNotify;
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Mockery;
@@ -16,6 +17,13 @@ use Tests\TestCase;
 #[PreserveGlobalState(false)]
 class PushoverNotifyTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->bindRuntimePolicy([]);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();
@@ -52,6 +60,112 @@ class PushoverNotifyTest extends TestCase
         $this->assertSame([2, 1], $result['data']['part_numbers_sent']);
         $this->assertSame([], $result['data']['part_numbers_failed']);
         $this->assertSame(0, $result['data']['inter_chunk_delay_seconds']);
+    }
+
+    public function test_runtime_policy_controls_retry_defaults_when_node_config_is_absent(): void
+    {
+        $this->bindRuntimePolicy([
+            'max_retries_per_chunk' => 3,
+            'retry_delay_seconds' => 0,
+            'inter_chunk_delay_seconds' => 0,
+        ]);
+
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')
+            ->times(3)
+            ->andReturn(
+                ['success' => false, 'error' => 'HTTP 500'],
+                ['success' => false, 'error' => 'HTTP 500'],
+                ['success' => true],
+            );
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => 'Short message',
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertSame(1, $result['data']['parts_sent']);
+        $this->assertSame(3, $result['data']['max_retries_per_chunk']);
+        $this->assertSame(0, $result['data']['inter_chunk_delay_seconds']);
+    }
+
+    public function test_runtime_policy_controls_emergency_defaults_when_node_config_is_absent(): void
+    {
+        $this->bindRuntimePolicy([
+            'retry_delay_seconds' => 0,
+            'inter_chunk_delay_seconds' => 0,
+            'emergency_retry_seconds' => 15,
+            'emergency_expire_seconds' => 90,
+        ]);
+
+        $payloads = [];
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')
+            ->once()
+            ->with('pushover', Mockery::on(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return true;
+            }))
+            ->andReturn(['success' => true]);
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => 'Urgent message',
+            'priority' => 2,
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertSame(15, $payloads[0]['retry']);
+        $this->assertSame(90, $payloads[0]['expire']);
+    }
+
+    public function test_workflow_node_config_overrides_runtime_policy_defaults(): void
+    {
+        $this->bindRuntimePolicy([
+            'max_retries_per_chunk' => 3,
+            'retry_delay_seconds' => 0,
+            'inter_chunk_delay_seconds' => 4,
+            'emergency_retry_seconds' => 15,
+            'emergency_expire_seconds' => 90,
+        ]);
+
+        $payloads = [];
+        $controller = Mockery::mock('overload:'.NotificationController::class);
+        $controller->shouldReceive('send')
+            ->once()
+            ->with('pushover', Mockery::on(function (array $payload) use (&$payloads) {
+                $payloads[] = $payload;
+
+                return true;
+            }))
+            ->andReturn(['success' => true]);
+
+        $node = new PushoverNotify([
+            'title' => 'Daily News',
+            'message' => 'Urgent message',
+            'priority' => 2,
+            'max_retries_per_chunk' => 1,
+            'inter_chunk_delay_seconds' => 0,
+            'retry' => 7,
+            'expire' => 80,
+        ]);
+
+        $result = $node->execute([]);
+
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['data']['notification_sent']);
+        $this->assertSame(1, $result['data']['max_retries_per_chunk']);
+        $this->assertSame(0, $result['data']['inter_chunk_delay_seconds']);
+        $this->assertSame(7, $payloads[0]['retry']);
+        $this->assertSame(80, $payloads[0]['expire']);
     }
 
     public function test_multipart_payloads_are_distinct_and_sent_in_reverse_order(): void
@@ -796,5 +910,36 @@ class PushoverNotifyTest extends TestCase
 
         $this->assertNull($result['error']);
         $this->assertTrue($result['data']['notification_sent']);
+    }
+
+    /**
+     * @param  array<string,mixed>  $policy
+     */
+    private function bindRuntimePolicy(array $policy): void
+    {
+        $default = [
+            'max_retries_per_chunk' => 2,
+            'retry_delay_seconds' => 1,
+            'inter_chunk_delay_seconds' => 2,
+            'timeout_seconds' => 300,
+            'multipart_send_budget_seconds' => 2,
+            'multipart_delivery_safety_margin_seconds' => 5,
+            'emergency_retry_seconds' => 60,
+            'emergency_expire_seconds' => 3600,
+        ];
+
+        $this->app->instance(SystemConfigService::class, new class(array_replace($default, $policy)) extends SystemConfigService
+        {
+            public function __construct(private array $policy) {}
+
+            public function get(string $key, mixed $default = null): mixed
+            {
+                if ($key === 'notifications.pushover_notify_runtime_policy') {
+                    return $this->policy;
+                }
+
+                return $default;
+            }
+        });
     }
 }

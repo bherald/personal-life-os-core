@@ -22,6 +22,9 @@ class FaceClusterCommand extends Command
                             {--named-only : Only cluster named faces}
                             {--unnamed-only : Only cluster unnamed faces}
                             {--dry-run : Show stats without clustering}
+                            {--reset-clusters : Clear cluster assignments and delete cluster/history rows; dry-run unless --confirm-reset is passed}
+                            {--confirm-reset : Actually write --reset-clusters changes}
+                            {--rebuild-after-reset : Rebuild named and unnamed clusters after a confirmed reset}
                             {--min-cluster-size=2 : HDBSCAN min_cluster_size}
                             {--backfill : Find unclustered faces and assign them}
                             {--optimize : Run cluster optimization pass (merge similar, anchor matching, cleanup)}
@@ -39,6 +42,10 @@ class FaceClusterCommand extends Command
 
         if ($this->option('stats')) {
             return $this->showStats($faceService);
+        }
+
+        if ($this->option('reset-clusters')) {
+            return $this->resetClusters($faceService);
         }
 
         if ($this->option('dedup')) {
@@ -594,6 +601,282 @@ class FaceClusterCommand extends Command
         $this->info("Optimization done in {$elapsed}s");
 
         return Command::SUCCESS;
+    }
+
+    private function resetClusters(FaceEmbeddingService $faceService): int
+    {
+        $dryRun = $this->option('dry-run') || ! $this->option('confirm-reset');
+        $rebuild = (bool) $this->option('rebuild-after-reset');
+        $prefix = $dryRun ? '[DRY RUN] ' : '';
+
+        $this->info("{$prefix}Face cluster reset");
+        $this->warn('Preserves face detections, crops, embeddings, names, hidden flags, and genealogy person IDs.');
+        $this->warn('Clears only cluster assignments, match confidence links, cluster candidates, merge history, and cluster rows.');
+
+        $before = $this->clusterResetSnapshot();
+        $this->displayClusterResetSnapshot($before, 'Current cluster state');
+
+        if ($dryRun) {
+            $this->info('');
+            $this->info('Would clear MySQL file_registry_faces.cluster_id for clustered face rows.');
+            $this->info('Would clear pgvector face_embeddings.person_cluster_id, matched_face_id, match_confidence, and representative flags.');
+            $this->info('Would delete face_match_candidates tied to clusters, cluster_merge_history rows, and all person_clusters rows.');
+            if (! $this->option('confirm-reset')) {
+                $this->warn('Rerun with --confirm-reset to write the reset.');
+            }
+            if ($rebuild) {
+                $this->warn('--rebuild-after-reset is skipped during dry-run.');
+            }
+
+            return Command::SUCCESS;
+        }
+
+        $startTime = microtime(true);
+        $mysqlFacesCleared = 0;
+        $pgFacesCleared = 0;
+        $candidatesDeleted = 0;
+        $mergeHistoryDeleted = 0;
+        $clustersDeleted = 0;
+
+        try {
+            $mysqlFacesCleared = DB::update("
+                UPDATE file_registry_faces
+                SET cluster_id = NULL, updated_at = NOW()
+                WHERE cluster_id IS NOT NULL
+            ");
+
+            DB::connection('pgsql_rag')->transaction(function () use (
+                &$pgFacesCleared,
+                &$candidatesDeleted,
+                &$mergeHistoryDeleted,
+                &$clustersDeleted
+            ): void {
+                $mergeHistoryDeleted = DB::connection('pgsql_rag')->delete('DELETE FROM cluster_merge_history');
+
+                $candidatesDeleted = DB::connection('pgsql_rag')->delete('
+                    DELETE FROM face_match_candidates
+                    WHERE candidate_cluster_id IS NOT NULL
+                ');
+
+                $pgFacesCleared = DB::connection('pgsql_rag')->update('
+                    UPDATE face_embeddings
+                    SET person_cluster_id = NULL,
+                        matched_face_id = NULL,
+                        match_confidence = NULL,
+                        is_representative = FALSE,
+                        updated_at = NOW()
+                    WHERE person_cluster_id IS NOT NULL
+                       OR matched_face_id IS NOT NULL
+                       OR match_confidence IS NOT NULL
+                       OR is_representative IS TRUE
+                ');
+
+                DB::connection('pgsql_rag')->update('
+                    UPDATE person_clusters
+                    SET merged_into_id = NULL
+                    WHERE merged_into_id IS NOT NULL
+                ');
+
+                $clustersDeleted = DB::connection('pgsql_rag')->delete('DELETE FROM person_clusters');
+            });
+        } catch (\Throwable $e) {
+            Log::error('FaceCluster: reset failed', [
+                'error' => $e->getMessage(),
+                'mysql_faces_cleared' => $mysqlFacesCleared,
+                'pg_faces_cleared' => $pgFacesCleared,
+            ]);
+            $this->error("Face cluster reset failed: {$e->getMessage()}");
+
+            return Command::FAILURE;
+        }
+
+        $this->info('');
+        $this->info('Reset applied:');
+        $this->info("  MySQL face cluster IDs cleared: {$mysqlFacesCleared}");
+        $this->info("  pgvector face assignments cleared: {$pgFacesCleared}");
+        $this->info("  face match candidates deleted: {$candidatesDeleted}");
+        $this->info("  merge history rows deleted: {$mergeHistoryDeleted}");
+        $this->info("  person clusters deleted: {$clustersDeleted}");
+
+        $after = $this->clusterResetSnapshot();
+        $this->displayClusterResetSnapshot($after, 'Cluster state after reset');
+
+        Log::warning('FaceCluster: clusters reset', [
+            'before' => $before,
+            'after' => $after,
+            'mysql_faces_cleared' => $mysqlFacesCleared,
+            'pg_faces_cleared' => $pgFacesCleared,
+            'candidates_deleted' => $candidatesDeleted,
+            'merge_history_deleted' => $mergeHistoryDeleted,
+            'clusters_deleted' => $clustersDeleted,
+            'rebuild_after_reset' => $rebuild,
+        ]);
+
+        if ($rebuild) {
+            $this->info('');
+            $rebuildResult = $this->rebuildClustersAfterReset($faceService);
+            if ($rebuildResult !== Command::SUCCESS) {
+                return $rebuildResult;
+            }
+        }
+
+        $elapsed = round(microtime(true) - $startTime, 1);
+        $this->info("Face cluster reset done in {$elapsed}s");
+
+        return Command::SUCCESS;
+    }
+
+    private function rebuildClustersAfterReset(FaceEmbeddingService $faceService): int
+    {
+        $this->info('Rebuilding clusters after reset...');
+
+        if (! $this->option('unnamed-only')) {
+            $this->info('Phase 1: Clustering named faces...');
+            $result = $faceService->clusterNamedFaces();
+            $this->info("  People found: {$result['people_found']}");
+            $this->info("  Clusters created: {$result['clusters_created']}");
+            $this->info("  Faces linked: {$result['faces_linked']}");
+            if ($result['errors'] > 0) {
+                $this->warn("  Errors: {$result['errors']}");
+            }
+        }
+
+        if (! $this->option('named-only')) {
+            $this->info('');
+            $this->info('Phase 2: Clustering unnamed faces with HDBSCAN...');
+
+            $unclusteredCount = DB::connection('pgsql_rag')->selectOne('
+                SELECT COUNT(*) as cnt FROM face_embeddings WHERE person_cluster_id IS NULL
+            ')->cnt;
+
+            $this->info("  Unclustered embeddings: {$unclusteredCount}");
+            if ($unclusteredCount > 0) {
+                $result = $this->runHdbscan($faceService, (int) $this->option('min-cluster-size'));
+                if (! $result['success']) {
+                    $this->error('  HDBSCAN failed');
+
+                    return Command::FAILURE;
+                }
+
+                $this->info("  Clusters created: {$result['clusters_created']}");
+                $this->info("  Faces assigned: {$result['faces_assigned']}");
+                if (($result['errors'] ?? 0) > 0) {
+                    $this->warn("  Errors: {$result['errors']}");
+                }
+            }
+        }
+
+        return Command::SUCCESS;
+    }
+
+    private function clusterResetSnapshot(): array
+    {
+        $pgFaces = DB::connection('pgsql_rag')->selectOne('
+            SELECT
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE person_cluster_id IS NOT NULL) as clustered,
+                COUNT(DISTINCT person_cluster_id) as distinct_clusters,
+                COUNT(*) FILTER (WHERE matched_face_id IS NOT NULL) as matched,
+                COUNT(*) FILTER (WHERE match_confidence IS NOT NULL) as with_confidence,
+                COUNT(*) FILTER (WHERE is_representative IS TRUE) as representatives
+            FROM face_embeddings
+        ');
+
+        $pgClusters = DB::connection('pgsql_rag')->selectOne("
+            SELECT
+                COUNT(*) as total,
+                COALESCE(SUM(face_count), 0) as recorded_faces,
+                COUNT(*) FILTER (WHERE status = 'unreviewed') as unreviewed,
+                COUNT(*) FILTER (WHERE status = 'confirmed') as confirmed,
+                COUNT(*) FILTER (WHERE status = 'merged') as merged,
+                COUNT(*) FILTER (WHERE status = 'ignored') as ignored,
+                COUNT(*) FILTER (WHERE genealogy_person_id IS NOT NULL) as linked
+            FROM person_clusters
+        ");
+
+        $mergeHistory = DB::connection('pgsql_rag')->selectOne('
+            SELECT COUNT(*) as total FROM cluster_merge_history
+        ');
+
+        $candidates = DB::connection('pgsql_rag')->selectOne('
+            SELECT COUNT(*) as total
+            FROM face_match_candidates
+            WHERE candidate_cluster_id IS NOT NULL
+        ');
+
+        $mysqlFaces = DB::selectOne("
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN cluster_id IS NOT NULL THEN 1 ELSE 0 END) as clustered,
+                SUM(CASE WHEN person_name != '' THEN 1 ELSE 0 END) as named,
+                SUM(CASE WHEN genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) as linked,
+                SUM(CASE WHEN hidden = 1 THEN 1 ELSE 0 END) as hidden
+            FROM file_registry_faces
+        ");
+
+        $scheduledJobs = DB::selectOne("
+            SELECT COUNT(*) as enabled
+            FROM scheduled_jobs
+            WHERE enabled = 1
+              AND (command LIKE 'faces:cluster%' OR name LIKE 'face%cluster%')
+        ");
+
+        return [
+            'pg_faces_total' => (int) ($pgFaces->total ?? 0),
+            'pg_faces_clustered' => (int) ($pgFaces->clustered ?? 0),
+            'pg_faces_distinct_clusters' => (int) ($pgFaces->distinct_clusters ?? 0),
+            'pg_faces_matched' => (int) ($pgFaces->matched ?? 0),
+            'pg_faces_with_confidence' => (int) ($pgFaces->with_confidence ?? 0),
+            'pg_faces_representatives' => (int) ($pgFaces->representatives ?? 0),
+            'clusters_total' => (int) ($pgClusters->total ?? 0),
+            'clusters_recorded_faces' => (int) ($pgClusters->recorded_faces ?? 0),
+            'clusters_unreviewed' => (int) ($pgClusters->unreviewed ?? 0),
+            'clusters_confirmed' => (int) ($pgClusters->confirmed ?? 0),
+            'clusters_merged' => (int) ($pgClusters->merged ?? 0),
+            'clusters_ignored' => (int) ($pgClusters->ignored ?? 0),
+            'clusters_linked' => (int) ($pgClusters->linked ?? 0),
+            'merge_history_total' => (int) ($mergeHistory->total ?? 0),
+            'match_candidates_total' => (int) ($candidates->total ?? 0),
+            'mysql_faces_total' => (int) ($mysqlFaces->total ?? 0),
+            'mysql_faces_clustered' => (int) ($mysqlFaces->clustered ?? 0),
+            'mysql_faces_named' => (int) ($mysqlFaces->named ?? 0),
+            'mysql_faces_linked' => (int) ($mysqlFaces->linked ?? 0),
+            'mysql_faces_hidden' => (int) ($mysqlFaces->hidden ?? 0),
+            'scheduled_face_jobs_enabled' => (int) ($scheduledJobs->enabled ?? 0),
+        ];
+    }
+
+    private function displayClusterResetSnapshot(array $snapshot, string $title): void
+    {
+        $this->info('');
+        $this->info($title);
+        $this->info('─────────────────────');
+        $this->table(
+            ['Area', 'Count', 'Reset impact'],
+            [
+                ['pgvector face embeddings', $snapshot['pg_faces_total'], 'preserved'],
+                ['pgvector clustered embeddings', $snapshot['pg_faces_clustered'], 'person_cluster_id cleared'],
+                ['pgvector distinct cluster refs', $snapshot['pg_faces_distinct_clusters'], 'cleared from embeddings'],
+                ['pgvector matched faces', $snapshot['pg_faces_matched'], 'matched_face_id cleared'],
+                ['pgvector confidence values', $snapshot['pg_faces_with_confidence'], 'match_confidence cleared'],
+                ['pgvector representatives', $snapshot['pg_faces_representatives'], 'is_representative cleared'],
+                ['person_clusters rows', $snapshot['clusters_total'], 'deleted'],
+                ['person_clusters recorded face_count', $snapshot['clusters_recorded_faces'], 'deleted with rows'],
+                ['confirmed clusters', $snapshot['clusters_confirmed'], 'recreated from named faces on rebuild'],
+                ['unreviewed clusters', $snapshot['clusters_unreviewed'], 'recreated by HDBSCAN on rebuild'],
+                ['merged clusters', $snapshot['clusters_merged'], 'deleted'],
+                ['ignored clusters', $snapshot['clusters_ignored'], 'deleted'],
+                ['clusters linked to genealogy', $snapshot['clusters_linked'], 'cluster link deleted; face/person IDs preserved'],
+                ['cluster merge history', $snapshot['merge_history_total'], 'deleted'],
+                ['face match candidates', $snapshot['match_candidates_total'], 'deleted when tied to clusters'],
+                ['MySQL face rows', $snapshot['mysql_faces_total'], 'preserved'],
+                ['MySQL clustered faces', $snapshot['mysql_faces_clustered'], 'cluster_id cleared'],
+                ['MySQL named faces', $snapshot['mysql_faces_named'], 'preserved'],
+                ['MySQL genealogy-linked faces', $snapshot['mysql_faces_linked'], 'preserved'],
+                ['MySQL hidden faces', $snapshot['mysql_faces_hidden'], 'preserved'],
+                ['enabled face recluster jobs', $snapshot['scheduled_face_jobs_enabled'], 'disable during reset/rebuild if greater than 0'],
+            ]
+        );
     }
 
     private function showStats(FaceEmbeddingService $faceService): int

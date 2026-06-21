@@ -1,6 +1,6 @@
 <template>
   <div v-if="visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" @click.self="$emit('close')">
-    <div class="bg-black border-2 border-ops-peach rounded-lg w-full max-w-2xl mx-4 p-6 max-h-[80vh] flex flex-col">
+    <div class="bg-black border-2 border-ops-peach rounded-lg w-full max-w-4xl mx-4 p-6 max-h-[84vh] flex flex-col">
       <h3 class="text-ops-peach text-lg font-bold mb-1">
         Split {{ cluster?.name || 'selected cluster' }}
       </h3>
@@ -39,7 +39,7 @@
           <div
             v-for="face in faces"
             :key="face.id"
-            class="aspect-square relative overflow-hidden rounded-lg border-2 cursor-pointer transition-all"
+            class="group aspect-square relative overflow-hidden rounded-lg border-2 cursor-pointer transition-all"
             :class="faceClass(face.id)"
             @click="toggleFace(face.id)"
           >
@@ -59,7 +59,71 @@
             <div v-if="face.match_confidence" class="absolute bottom-0.5 right-0.5 px-1 py-0.5 bg-black/70 rounded text-[9px] text-ops-text-muted">
               {{ Math.round(face.match_confidence * 100) }}%
             </div>
+            <button
+              type="button"
+              class="absolute top-1 right-1 rounded bg-black/75 p-1 text-ops-peach opacity-0 transition-opacity hover:bg-ops-peach hover:text-black group-hover:opacity-100 focus:opacity-100"
+              title="Assign this face"
+              @click.stop="openAssign([face.id])"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M8 9a3 3 0 100-6 3 3 0 000 6z" />
+                <path fill-rule="evenodd" d="M8 11a6 6 0 00-5.917 5H8a5 5 0 013.72-4.832A5.98 5.98 0 008 11zm7-1a1 1 0 011 1v2h2a1 1 0 110 2h-2v2a1 1 0 11-2 0v-2h-2a1 1 0 110-2h2v-2a1 1 0 011-1z" clip-rule="evenodd" />
+              </svg>
+            </button>
           </div>
+        </div>
+      </div>
+
+      <div v-if="assignmentVisible" class="mt-4 rounded border border-ops-peach/40 bg-black/40 p-3">
+        <div class="mb-2 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xs font-semibold uppercase tracking-wide text-ops-peach">
+              Assign {{ assignmentFaceIds.length }} face{{ assignmentFaceIds.length === 1 ? '' : 's' }}
+            </div>
+            <div class="text-[11px] text-ops-text-muted">
+              FT selections run the genealogy bridge; standalone labels stay name-only and queue face metadata writeback.
+            </div>
+          </div>
+          <button class="text-xs text-ops-text-muted hover:text-ops-peach" @click="closeAssign">Close</button>
+        </div>
+
+        <div class="relative">
+          <input
+            ref="assignmentInput"
+            v-model="assignmentName"
+            type="text"
+            placeholder="Known face label or FT person..."
+            class="w-full rounded border border-ops-peach/40 bg-black/50 px-3 py-2 text-sm text-ops-text outline-none focus:border-ops-peach"
+            @input="onAssignmentInput"
+            @keydown.enter="submitAssign"
+            @keydown.escape="closeAssign"
+          />
+          <div v-if="assignmentSuggestions.length > 0" class="absolute left-0 right-0 top-full z-30 max-h-44 overflow-y-auto rounded-b border border-ops-peach/40 bg-black">
+            <button
+              v-for="suggestion in assignmentSuggestions"
+              :key="suggestion.identity_key || `${suggestion.identity_type}:${suggestion.name}`"
+              class="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm text-ops-text hover:bg-ops-plum/40"
+              @click="selectAssignmentSuggestion(suggestion)"
+            >
+              <span class="min-w-0 truncate">{{ suggestion.person_name || suggestion.face_label || suggestion.name }}</span>
+              <span class="shrink-0 text-[10px] uppercase tracking-wide text-ops-text-muted">
+                {{ suggestion.genealogy_person_id ? 'FT' : 'Face label' }} · {{ suggestion.face_count || suggestion.media_count || 0 }}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-2 flex items-center justify-between gap-3">
+          <span class="text-[11px]" :class="assignmentGenealogyPersonId ? 'text-ops-gold' : 'text-ops-text-muted'">
+            {{ assignmentGenealogyPersonId ? `FT person ${assignmentGenealogyPersonId}` : 'Standalone name-only identity' }}
+          </span>
+          <button
+            class="rounded bg-ops-peach px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-black hover:bg-ops-orange disabled:opacity-40"
+            :disabled="!assignmentName.trim() || assignmentFaceIds.length === 0"
+            @click="submitAssign"
+          >
+            Assign
+          </button>
         </div>
       </div>
 
@@ -72,6 +136,13 @@
         <div class="flex gap-3">
           <button @click="$emit('close')" class="px-4 py-2 text-sm text-ops-text-muted hover:text-ops-text border border-ops-plum/40 rounded">
             Cancel
+          </button>
+          <button
+            @click="openAssign([...selectedFaces])"
+            :disabled="selectedFaces.size === 0"
+            class="px-4 py-2 text-sm border border-ops-peach/50 text-ops-peach rounded font-semibold hover:bg-ops-peach/10 disabled:opacity-40"
+          >
+            Assign Selected
           </button>
           <button
             @click="submit"
@@ -87,24 +158,34 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
+import api from '../../utils/api'
 
 const props = defineProps({
   visible: Boolean,
   cluster: Object,
   faces: { type: Array, default: () => [] },
   loadingFaces: Boolean,
+  treeId: { type: [Number, String], default: null },
 })
 
 const emit = defineEmits(['close', 'confirm'])
 
 const selectedFaces = ref(new Set())
 const mode = ref('select')
+const assignmentVisible = ref(false)
+const assignmentFaceIds = ref([])
+const assignmentName = ref('')
+const assignmentGenealogyPersonId = ref(null)
+const assignmentSuggestions = ref([])
+const assignmentInput = ref(null)
+let assignmentSearchTimer = null
 
 watch(() => props.visible, (v) => {
   if (v) {
     selectedFaces.value = new Set()
     mode.value = 'select'
+    closeAssign()
   }
 })
 
@@ -138,6 +219,74 @@ function submit() {
     faceIds: [...selectedFaces.value],
     mode: mode.value,
   })
+}
+
+function openAssign(faceIds) {
+  assignmentFaceIds.value = [...new Set(faceIds.map(id => Number.parseInt(String(id), 10)).filter(id => Number.isFinite(id) && id > 0))]
+  if (assignmentFaceIds.value.length === 0) return
+  assignmentVisible.value = true
+  assignmentName.value = ''
+  assignmentGenealogyPersonId.value = null
+  assignmentSuggestions.value = []
+  nextTick(() => assignmentInput.value?.focus())
+}
+
+function closeAssign() {
+  assignmentVisible.value = false
+  assignmentFaceIds.value = []
+  assignmentName.value = ''
+  assignmentGenealogyPersonId.value = null
+  assignmentSuggestions.value = []
+  clearTimeout(assignmentSearchTimer)
+}
+
+function onAssignmentInput() {
+  assignmentGenealogyPersonId.value = null
+  clearTimeout(assignmentSearchTimer)
+  const query = assignmentName.value.trim()
+  if (query.length < 2) {
+    assignmentSuggestions.value = []
+    return
+  }
+
+  assignmentSearchTimer = setTimeout(async () => {
+    try {
+      const params = { search: query, limit: 20 }
+      const treeId = parsePositiveInt(props.treeId)
+      if (treeId) params.tree_id = treeId
+
+      const result = await api.get('/media/genealogy-persons', { params })
+      assignmentSuggestions.value = result.data || []
+    } catch (e) {
+      assignmentSuggestions.value = []
+    }
+  }, 200)
+}
+
+function selectAssignmentSuggestion(suggestion) {
+  assignmentName.value = suggestion.person_name || suggestion.face_label || suggestion.name || suggestion.genealogy_name || ''
+  assignmentGenealogyPersonId.value = parsePositiveInt(suggestion.genealogy_person_id) || parsePositiveInt(suggestion.id)
+  assignmentSuggestions.value = []
+}
+
+function submitAssign() {
+  const name = assignmentName.value.trim()
+  if (!name || assignmentFaceIds.value.length === 0) return
+
+  emit('confirm', {
+    faceIds: [...assignmentFaceIds.value],
+    mode: 'assign',
+    assignment: {
+      name,
+      genealogyPersonId: assignmentGenealogyPersonId.value,
+      treeId: parsePositiveInt(props.treeId),
+    },
+  })
+}
+
+function parsePositiveInt(value) {
+  const parsed = Number.parseInt(String(value || ''), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
 function onImgError(e) {

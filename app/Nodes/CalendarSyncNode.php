@@ -3,9 +3,9 @@
 namespace App\Nodes;
 
 use App\Services\NextcloudService;
+use App\Services\SystemConfigService;
 use Carbon\Carbon;
 use Exception;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -30,14 +30,25 @@ use Illuminate\Support\Facades\Log;
  */
 class CalendarSyncNode extends BaseNode
 {
-    /** Cache TTL for sync state (24 hours) */
-    private const SYNC_STATE_CACHE_TTL = 86400;
+    private const RUNTIME_POLICY_CONFIG_KEY = 'calendar.sync_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'connect_timeout_seconds' => 5,
+        'request_timeout_seconds' => 30,
+        'default_sync_window_days' => 30,
+        'google_max_results' => 500,
+        'google_token_expiry_fallback_seconds' => 3600,
+        'conflict_window_minutes' => 5,
+    ];
 
     /** Supported source types */
     private const SOURCE_TYPES = ['google', 'icloud', 'nextcloud'];
 
     /** Supported sync directions */
     private const SYNC_DIRECTIONS = ['pull', 'push', 'bidirectional'];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function execute(array $input): array
     {
@@ -49,7 +60,7 @@ class CalendarSyncNode extends BaseNode
             $credentialsKey = $this->getConfigValue('credentials_key', 'default');
             $syncDirection = $this->getConfigValue('sync_direction', 'pull');
             $calendarIds = $this->getConfigValue('calendar_ids', []);
-            $syncWindowDays = (int) $this->getConfigValue('sync_window_days', 30);
+            $syncWindowDays = $this->syncWindowDays();
             $conflictResolution = $this->getConfigValue('conflict_resolution', 'source_wins');
             $dryRun = (bool) $this->getConfigValue('dry_run', false);
 
@@ -69,7 +80,7 @@ class CalendarSyncNode extends BaseNode
 
             // Get credentials for the source
             $credentials = $this->getCredentials($sourceType, $credentialsKey);
-            if (!$credentials) {
+            if (! $credentials) {
                 return $this->standardOutput(null, [], "No credentials found for source: {$sourceType} (key: {$credentialsKey})");
             }
 
@@ -137,7 +148,7 @@ class CalendarSyncNode extends BaseNode
             $durationMs = round((microtime(true) - $startTime) * 1000);
 
             $summary = sprintf(
-                "Calendar sync %s: pulled=%d, pushed=%d, conflicts=%d, errors=%d, skipped=%d (%dms)%s",
+                'Calendar sync %s: pulled=%d, pushed=%d, conflicts=%d, errors=%d, skipped=%d (%dms)%s',
                 $sourceType,
                 $stats['pulled'],
                 $stats['pushed'],
@@ -181,7 +192,8 @@ class CalendarSyncNode extends BaseNode
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
             ]);
-            return $this->standardOutput(null, [], 'Calendar sync failed: ' . $e->getMessage());
+
+            return $this->standardOutput(null, [], 'Calendar sync failed: '.$e->getMessage());
         }
     }
 
@@ -190,12 +202,12 @@ class CalendarSyncNode extends BaseNode
      */
     private function validateConfig(string $sourceType, string $syncDirection): ?string
     {
-        if (!in_array($sourceType, self::SOURCE_TYPES)) {
-            return "Invalid source_type: {$sourceType}. Must be one of: " . implode(', ', self::SOURCE_TYPES);
+        if (! in_array($sourceType, self::SOURCE_TYPES)) {
+            return "Invalid source_type: {$sourceType}. Must be one of: ".implode(', ', self::SOURCE_TYPES);
         }
 
-        if (!in_array($syncDirection, self::SYNC_DIRECTIONS)) {
-            return "Invalid sync_direction: {$syncDirection}. Must be one of: " . implode(', ', self::SYNC_DIRECTIONS);
+        if (! in_array($syncDirection, self::SYNC_DIRECTIONS)) {
+            return "Invalid sync_direction: {$syncDirection}. Must be one of: ".implode(', ', self::SYNC_DIRECTIONS);
         }
 
         return null;
@@ -212,8 +224,9 @@ class CalendarSyncNode extends BaseNode
             [$sourceType]
         );
 
-        if (!empty($tokens)) {
+        if (! empty($tokens)) {
             $token = $tokens[0];
+
             return [
                 'access_token' => $token->access_token,
                 'refresh_token' => $token->refresh_token ?? null,
@@ -279,6 +292,7 @@ class CalendarSyncNode extends BaseNode
                             'title' => $event['title'] ?? $event['summary'] ?? 'Untitled',
                         ];
                         $results['count']++;
+
                         continue;
                     }
 
@@ -346,6 +360,7 @@ class CalendarSyncNode extends BaseNode
                             'title' => $event['title'] ?? 'Untitled',
                         ];
                         $results['count']++;
+
                         continue;
                     }
 
@@ -427,7 +442,7 @@ class CalendarSyncNode extends BaseNode
                 try {
                     $localEvent = $localByUid[$uid] ?? null;
 
-                    if (!$localEvent) {
+                    if (! $localEvent) {
                         // New event from remote - pull it
                         if ($dryRun) {
                             $results['events'][] = ['action' => 'would_pull_new', 'uid' => $uid];
@@ -457,7 +472,7 @@ class CalendarSyncNode extends BaseNode
 
             // Process local events (push new to remote)
             foreach ($localByUid as $uid => $localEvent) {
-                if (!isset($remoteByUid[$uid])) {
+                if (! isset($remoteByUid[$uid])) {
                     // New local event - push it
                     try {
                         if ($dryRun) {
@@ -520,7 +535,7 @@ class CalendarSyncNode extends BaseNode
         Carbon $syncStart,
         Carbon $syncEnd
     ): array {
-        $nextcloud = new NextcloudService();
+        $nextcloud = new NextcloudService;
 
         // Get all calendars if none specified
         if (empty($calendarIds)) {
@@ -562,7 +577,7 @@ class CalendarSyncNode extends BaseNode
         Carbon $syncEnd
     ): array {
         $accessToken = $credentials['access_token'] ?? null;
-        if (!$accessToken) {
+        if (! $accessToken) {
             throw new Exception('Google Calendar requires access_token in credentials');
         }
 
@@ -579,21 +594,22 @@ class CalendarSyncNode extends BaseNode
         foreach ($calendarIds as $calendarId) {
             try {
                 $response = Http::withToken($accessToken)
-                    ->connectTimeout(5)
-                    ->timeout(30)
+                    ->connectTimeout($this->connectTimeoutSeconds())
+                    ->timeout($this->requestTimeoutSeconds())
                     ->get("https://www.googleapis.com/calendar/v3/calendars/{$calendarId}/events", [
                         'timeMin' => $syncStart->toRfc3339String(),
                         'timeMax' => $syncEnd->toRfc3339String(),
                         'singleEvents' => true,
                         'orderBy' => 'startTime',
-                        'maxResults' => 500,
+                        'maxResults' => $this->googleMaxResults(),
                     ]);
 
-                if (!$response->successful()) {
+                if (! $response->successful()) {
                     Log::warning("Google Calendar API error for calendar: {$calendarId}", [
                         'status' => $response->status(),
                         'body' => $response->body(),
                     ]);
+
                     continue;
                 }
 
@@ -632,36 +648,39 @@ class CalendarSyncNode extends BaseNode
         $refreshToken = $credentials['refresh_token'] ?? null;
 
         // If no expiry or not expired, return current token
-        if (!$expiresAt || Carbon::parse($expiresAt)->isFuture()) {
+        if (! $expiresAt || Carbon::parse($expiresAt)->isFuture()) {
             return $credentials['access_token'];
         }
 
         // Need to refresh
-        if (!$refreshToken) {
+        if (! $refreshToken) {
             throw new Exception('Google token expired and no refresh_token available');
         }
 
         $clientId = config('services.google.client_id');
         $clientSecret = config('services.google.client_secret');
 
-        if (!$clientId || !$clientSecret) {
+        if (! $clientId || ! $clientSecret) {
             throw new Exception('Google client_id and client_secret required for token refresh');
         }
 
-        $response = Http::asForm()->connectTimeout(5)->timeout(30)->post('https://oauth2.googleapis.com/token', [
-            'client_id' => $clientId,
-            'client_secret' => $clientSecret,
-            'refresh_token' => $refreshToken,
-            'grant_type' => 'refresh_token',
-        ]);
+        $response = Http::asForm()
+            ->connectTimeout($this->connectTimeoutSeconds())
+            ->timeout($this->requestTimeoutSeconds())
+            ->post('https://oauth2.googleapis.com/token', [
+                'client_id' => $clientId,
+                'client_secret' => $clientSecret,
+                'refresh_token' => $refreshToken,
+                'grant_type' => 'refresh_token',
+            ]);
 
-        if (!$response->successful()) {
-            throw new Exception('Failed to refresh Google token: ' . $response->body());
+        if (! $response->successful()) {
+            throw new Exception('Failed to refresh Google token: '.$response->body());
         }
 
         $data = $response->json();
         $newAccessToken = $data['access_token'];
-        $expiresIn = $data['expires_in'] ?? 3600;
+        $expiresIn = $data['expires_in'] ?? $this->googleTokenExpiryFallbackSeconds();
         $newExpiresAt = Carbon::now()->addSeconds($expiresIn)->toDateTimeString();
 
         // Update token in database (raw SQL per project rules)
@@ -687,7 +706,7 @@ class CalendarSyncNode extends BaseNode
         $username = $credentials['username'] ?? $credentials['apple_id'] ?? null;
         $password = $credentials['password'] ?? $credentials['app_password'] ?? null;
 
-        if (!$username || !$password) {
+        if (! $username || ! $password) {
             throw new Exception('iCloud requires username/apple_id and password/app_password in credentials');
         }
 
@@ -702,8 +721,8 @@ class CalendarSyncNode extends BaseNode
         }
 
         // Format dates for CalDAV
-        $startCaldav = $syncStart->format('Ymd\THis') . 'Z';
-        $endCaldav = $syncEnd->format('Ymd\THis') . 'Z';
+        $startCaldav = $syncStart->format('Ymd\THis').'Z';
+        $endCaldav = $syncEnd->format('Ymd\THis').'Z';
 
         foreach ($calendarIds as $calendarId) {
             try {
@@ -729,18 +748,19 @@ class CalendarSyncNode extends BaseNode
 XML;
 
                 $response = Http::withBasicAuth($username, $password)
-                    ->connectTimeout(5)
-                    ->timeout(30)
+                    ->connectTimeout($this->connectTimeoutSeconds())
+                    ->timeout($this->requestTimeoutSeconds())
                     ->withHeaders([
                         'Content-Type' => 'application/xml; charset=utf-8',
                         'Depth' => '1',
                     ])
                     ->send('REPORT', $calendarUrl, ['body' => $xml]);
 
-                if (!$response->successful()) {
+                if (! $response->successful()) {
                     Log::warning("iCloud CalDAV error for calendar: {$calendarId}", [
                         'status' => $response->status(),
                     ]);
+
                     continue;
                 }
 
@@ -762,7 +782,7 @@ XML;
     {
         $url = "{$baseUrl}/{$username}/calendars/";
 
-        $xml = <<<XML
+        $xml = <<<'XML'
 <?xml version="1.0" encoding="utf-8" ?>
 <d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
   <d:prop>
@@ -773,23 +793,24 @@ XML;
 XML;
 
         $response = Http::withBasicAuth($username, $password)
-            ->connectTimeout(5)
-            ->timeout(30)
+            ->connectTimeout($this->connectTimeoutSeconds())
+            ->timeout($this->requestTimeoutSeconds())
             ->withHeaders([
                 'Content-Type' => 'application/xml; charset=utf-8',
                 'Depth' => '1',
             ])
             ->send('PROPFIND', $url, ['body' => $xml]);
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             Log::warning('Failed to discover iCloud calendars', ['status' => $response->status()]);
+
             return [];
         }
 
         // Parse XML to extract calendar IDs
         $calendarIds = [];
         try {
-            $dom = new \DOMDocument();
+            $dom = new \DOMDocument;
             $dom->loadXML($response->body());
             $xpath = new \DOMXPath($dom);
             $xpath->registerNamespace('d', 'DAV:');
@@ -803,7 +824,7 @@ XML;
                 if ($hrefNode && $calendarNode) {
                     $href = $hrefNode->nodeValue;
                     $calendarId = basename(rtrim($href, '/'));
-                    if (!empty($calendarId)) {
+                    if (! empty($calendarId)) {
                         $calendarIds[] = $calendarId;
                     }
                 }
@@ -823,7 +844,7 @@ XML;
         $events = [];
 
         try {
-            $dom = new \DOMDocument();
+            $dom = new \DOMDocument;
             libxml_use_internal_errors(true);
             $dom->loadXML($xml);
 
@@ -842,7 +863,7 @@ XML;
 
                 $calendarData = $calendarDataArray->item(0)->nodeValue;
 
-                if (!empty($calendarData)) {
+                if (! empty($calendarData)) {
                     $parsedEvents = $this->parseICalEvents($calendarData, $calendarId, $sourceType);
                     $events = array_merge($events, $parsedEvents);
                 }
@@ -909,7 +930,7 @@ XML;
             }
         }
 
-        return !empty($event) ? $event : null;
+        return ! empty($event) ? $event : null;
     }
 
     /**
@@ -922,7 +943,8 @@ XML;
 
         if (preg_match('/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})/', $date, $m)) {
             $result = "{$m[1]}-{$m[2]}-{$m[3]}T{$m[4]}:{$m[5]}:{$m[6]}";
-            return $isUtc ? $result . 'Z' : $result;
+
+            return $isUtc ? $result.'Z' : $result;
         }
 
         if (preg_match('/^(\d{4})(\d{2})(\d{2})$/', $date, $m)) {
@@ -938,7 +960,7 @@ XML;
     private function storeEventLocally(string $sourceType, array $event): bool
     {
         $uid = $event['uid'] ?? null;
-        if (!$uid) {
+        if (! $uid) {
             return false;
         }
 
@@ -978,6 +1000,7 @@ XML;
                     $eventData['all_day'] ? 1 : 0,
                 ]
             );
+
             return true;
         } else {
             // Update existing event
@@ -995,6 +1018,7 @@ XML;
                     $uid,
                 ]
             );
+
             return true;
         }
     }
@@ -1004,7 +1028,7 @@ XML;
      */
     private function normalizeDateTime(?string $dateTime): ?string
     {
-        if (!$dateTime) {
+        if (! $dateTime) {
             return null;
         }
 
@@ -1042,7 +1066,7 @@ XML;
         $calendarFilter = '';
         $params = [$syncStart->format('Y-m-d H:i:s'), $syncEnd->format('Y-m-d H:i:s')];
 
-        if (!empty($calendarIds)) {
+        if (! empty($calendarIds)) {
             $placeholders = implode(',', array_fill(0, count($calendarIds), '?'));
             $calendarFilter = "AND calendar_name IN ({$placeholders})";
             $params = array_merge($params, $calendarIds);
@@ -1104,15 +1128,15 @@ XML;
         $password = $credentials['password'] ?? config('services.nextcloud.password');
 
         $calendarId = $event['calendar_id'] ?? 'personal';
-        $uid = $event['uid'] ?? 'event-' . uniqid();
+        $uid = $event['uid'] ?? 'event-'.uniqid();
 
         $icalEvent = $this->eventToICal($event, $uid);
 
         $url = "{$baseUrl}/remote.php/dav/calendars/{$username}/{$calendarId}/{$uid}.ics";
 
         $response = Http::withBasicAuth($username, $password)
-            ->connectTimeout(5)
-            ->timeout(30)
+            ->connectTimeout($this->connectTimeoutSeconds())
+            ->timeout($this->requestTimeoutSeconds())
             ->withHeaders(['Content-Type' => 'text/calendar; charset=utf-8'])
             ->put($url, $icalEvent);
 
@@ -1138,12 +1162,18 @@ XML;
         $url = "https://www.googleapis.com/calendar/v3/calendars/{$calendarId}/events";
 
         // Check if updating existing event
-        if (!empty($event['uid']) && strpos($event['uid'], '@google.com') !== false) {
+        if (! empty($event['uid']) && strpos($event['uid'], '@google.com') !== false) {
             $eventId = str_replace('@google.com', '', $event['uid']);
             $url .= "/{$eventId}";
-            $response = Http::withToken($accessToken)->connectTimeout(5)->timeout(30)->put($url, $googleEvent);
+            $response = Http::withToken($accessToken)
+                ->connectTimeout($this->connectTimeoutSeconds())
+                ->timeout($this->requestTimeoutSeconds())
+                ->put($url, $googleEvent);
         } else {
-            $response = Http::withToken($accessToken)->connectTimeout(5)->timeout(30)->post($url, $googleEvent);
+            $response = Http::withToken($accessToken)
+                ->connectTimeout($this->connectTimeoutSeconds())
+                ->timeout($this->requestTimeoutSeconds())
+                ->post($url, $googleEvent);
         }
 
         return $response->successful();
@@ -1154,7 +1184,7 @@ XML;
      */
     private function formatGoogleDateTime(?string $dateTime, bool $isAllDay): array
     {
-        if (!$dateTime) {
+        if (! $dateTime) {
             $dateTime = Carbon::now()->toIso8601String();
         }
 
@@ -1175,20 +1205,20 @@ XML;
         $username = $credentials['username'] ?? $credentials['apple_id'] ?? null;
         $password = $credentials['password'] ?? $credentials['app_password'] ?? null;
 
-        if (!$username || !$password) {
+        if (! $username || ! $password) {
             throw new Exception('iCloud requires username and password');
         }
 
         $calendarId = $event['calendar_id'] ?? 'calendar';
-        $uid = $event['uid'] ?? 'event-' . uniqid();
+        $uid = $event['uid'] ?? 'event-'.uniqid();
 
         $icalEvent = $this->eventToICal($event, $uid);
 
         $url = "https://caldav.icloud.com/{$username}/calendars/{$calendarId}/{$uid}.ics";
 
         $response = Http::withBasicAuth($username, $password)
-            ->connectTimeout(5)
-            ->timeout(30)
+            ->connectTimeout($this->connectTimeoutSeconds())
+            ->timeout($this->requestTimeoutSeconds())
             ->withHeaders(['Content-Type' => 'text/calendar; charset=utf-8'])
             ->put($url, $icalEvent);
 
@@ -1208,18 +1238,18 @@ XML;
         $dtstart = $this->formatICalDateTime($event['start'] ?? null, $event['is_all_day'] ?? false);
         $dtend = $this->formatICalDateTime($event['end'] ?? null, $event['is_all_day'] ?? false);
 
-        return "BEGIN:VCALENDAR\r\n" .
-            "VERSION:2.0\r\n" .
-            "PRODID:-//PLOS//CalendarSyncNode//EN\r\n" .
-            "BEGIN:VEVENT\r\n" .
-            "UID:{$uid}\r\n" .
-            "DTSTAMP:{$now}\r\n" .
-            "DTSTART:{$dtstart}\r\n" .
-            "DTEND:{$dtend}\r\n" .
-            "SUMMARY:{$title}\r\n" .
-            ($description ? "DESCRIPTION:{$description}\r\n" : '') .
-            ($location ? "LOCATION:{$location}\r\n" : '') .
-            "END:VEVENT\r\n" .
+        return "BEGIN:VCALENDAR\r\n".
+            "VERSION:2.0\r\n".
+            "PRODID:-//PLOS//CalendarSyncNode//EN\r\n".
+            "BEGIN:VEVENT\r\n".
+            "UID:{$uid}\r\n".
+            "DTSTAMP:{$now}\r\n".
+            "DTSTART:{$dtstart}\r\n".
+            "DTEND:{$dtend}\r\n".
+            "SUMMARY:{$title}\r\n".
+            ($description ? "DESCRIPTION:{$description}\r\n" : '').
+            ($location ? "LOCATION:{$location}\r\n" : '').
+            "END:VEVENT\r\n".
             "END:VCALENDAR\r\n";
     }
 
@@ -1240,7 +1270,7 @@ XML;
      */
     private function formatICalDateTime(?string $dateTime, bool $isAllDay): string
     {
-        if (!$dateTime) {
+        if (! $dateTime) {
             return gmdate('Ymd\THis\Z');
         }
 
@@ -1262,7 +1292,7 @@ XML;
         $remoteUpdated = $remoteEvent['updated'] ?? null;
 
         // If either has no timestamp, assume no conflict
-        if (!$localUpdated || !$remoteUpdated) {
+        if (! $localUpdated || ! $remoteUpdated) {
             return false;
         }
 
@@ -1270,8 +1300,89 @@ XML;
         $localTime = Carbon::parse($localUpdated);
         $remoteTime = Carbon::parse($remoteUpdated);
 
-        // Consider conflict if updates are within 5 minutes of each other
-        return abs($localTime->diffInMinutes($remoteTime)) < 5;
+        return abs($localTime->diffInMinutes($remoteTime)) < $this->conflictWindowMinutes();
+    }
+
+    private function syncWindowDays(): int
+    {
+        return $this->intConfigOrPolicy('sync_window_days', 'default_sync_window_days');
+    }
+
+    private function connectTimeoutSeconds(): int
+    {
+        return $this->intConfigOrPolicy('connect_timeout_seconds');
+    }
+
+    private function requestTimeoutSeconds(): int
+    {
+        return $this->intConfigOrPolicy('request_timeout_seconds');
+    }
+
+    private function googleMaxResults(): int
+    {
+        return $this->runtimePolicyInt('google_max_results');
+    }
+
+    private function googleTokenExpiryFallbackSeconds(): int
+    {
+        return $this->runtimePolicyInt('google_token_expiry_fallback_seconds');
+    }
+
+    private function conflictWindowMinutes(): int
+    {
+        return $this->runtimePolicyInt('conflict_window_minutes');
+    }
+
+    private function intConfigOrPolicy(string $configKey, ?string $policyKey = null): int
+    {
+        $policyKey ??= $configKey;
+
+        if (array_key_exists($configKey, $this->config)) {
+            return $this->positiveInt($this->config[$configKey], $this->runtimePolicyInt($policyKey));
+        }
+
+        return $this->runtimePolicyInt($policyKey);
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 
     /**
@@ -1289,6 +1400,7 @@ XML;
             case 'newest_wins':
                 $localUpdated = Carbon::parse($localEvent['updated'] ?? '1970-01-01');
                 $remoteUpdated = Carbon::parse($remoteEvent['updated'] ?? '1970-01-01');
+
                 return $localUpdated->gt($remoteUpdated) ? $localEvent : $remoteEvent;
 
             default:

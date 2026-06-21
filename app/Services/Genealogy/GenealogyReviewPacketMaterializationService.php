@@ -3,7 +3,9 @@
 namespace App\Services\Genealogy;
 
 use App\Support\JsonColumn;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -27,7 +29,8 @@ class GenealogyReviewPacketMaterializationService
 
         $payload = $this->adapter->toReviewPayload($packet, $context);
         $dedupKey = (string) ($payload['details']['dedup_key'] ?? '');
-        $existing = $this->findExistingPending($payload['agent_id'], $payload['review_type'], $dedupKey, $payload['title']);
+        $packetKey = (string) ($payload['details']['packet_key'] ?? '');
+        $existing = $this->findExistingPending($payload['agent_id'], $payload['review_type'], $dedupKey, $packetKey, $payload['title']);
         if ($existing !== null) {
             return [
                 'success' => true,
@@ -42,7 +45,7 @@ class GenealogyReviewPacketMaterializationService
         $token = (string) ($context['token'] ?? Str::random(40));
 
         try {
-            $id = DB::table('agent_review_queue')->insertGetId([
+            $insert = [
                 'agent_id' => $payload['agent_id'],
                 'review_type' => $payload['review_type'],
                 'title' => $payload['title'],
@@ -55,9 +58,14 @@ class GenealogyReviewPacketMaterializationService
                 'expires_at' => $payload['expires_at'],
                 'created_at' => now(),
                 'updated_at' => now(),
-            ]);
+            ];
+            if (Schema::hasColumn('agent_review_queue', 'finding_type')) {
+                $insert['finding_type'] = $payload['finding_type'] ?? null;
+            }
+
+            $id = DB::table('agent_review_queue')->insertGetId($insert);
         } catch (Throwable $e) {
-            $existing = $this->findExistingPending($payload['agent_id'], $payload['review_type'], $dedupKey, $payload['title']);
+            $existing = $this->findExistingPending($payload['agent_id'], $payload['review_type'], $dedupKey, $packetKey, $payload['title']);
             if ($existing !== null) {
                 return [
                     'success' => true,
@@ -87,20 +95,42 @@ class GenealogyReviewPacketMaterializationService
         ];
     }
 
-    private function findExistingPending(string $agentId, string $reviewType, string $dedupKey, string $title): ?object
+    private function findExistingPending(string $agentId, string $reviewType, string $dedupKey, string $packetKey, string $title): ?object
     {
-        $query = DB::table('agent_review_queue')
+        if ($dedupKey !== '') {
+            $query = $this->pendingReviewPacketQuery($agentId, $reviewType);
+            JsonColumn::whereScalarEquals($query, 'details', '$.dedup_key', $dedupKey);
+            $existing = $query->orderBy('id')->first();
+            if ($existing !== null) {
+                return $existing;
+            }
+        }
+
+        if ($packetKey !== '') {
+            $query = $this->pendingReviewPacketQuery($agentId, $reviewType);
+            JsonColumn::whereScalarEquals($query, 'details', '$.packet_key', $packetKey);
+            $existing = $query->orderBy('id')->first();
+            if ($existing !== null) {
+                return $existing;
+            }
+        }
+
+        if ($dedupKey === '' && $packetKey === '') {
+            return $this->pendingReviewPacketQuery($agentId, $reviewType)
+                ->where('title', $title)
+                ->orderBy('id')
+                ->first();
+        }
+
+        return null;
+    }
+
+    private function pendingReviewPacketQuery(string $agentId, string $reviewType): Builder
+    {
+        return DB::table('agent_review_queue')
             ->select(['id', 'token'])
             ->where('agent_id', $agentId)
             ->where('review_type', $reviewType)
             ->where('status', 'pending');
-
-        if ($dedupKey !== '') {
-            JsonColumn::whereScalarEquals($query, 'details', '$.dedup_key', $dedupKey);
-        } else {
-            $query->where('title', $title);
-        }
-
-        return $query->orderBy('id')->first();
     }
 }

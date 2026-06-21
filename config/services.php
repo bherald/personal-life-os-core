@@ -66,8 +66,13 @@ return [
     ],
 
     'weather' => [
+        'provider' => env('WEATHER_PROVIDER', 'nws'),
         'api_key' => env('WEATHER_API_KEY'),
         'api_url' => env('WEATHER_API_URL', 'https://api.openweathermap.org/data/2.5'),
+        'fallback_provider' => env('WEATHER_FALLBACK_PROVIDER', 'openweather'),
+        'forecast_days' => env('WEATHER_FORECAST_DAYS', 5),
+        'nws_api_url' => env('WEATHER_NWS_API_URL', 'https://api.weather.gov'),
+        'nws_user_agent' => env('WEATHER_NWS_USER_AGENT', 'PLOS Morning Weather Workflow'),
     ],
 
     'ollama' => [
@@ -83,6 +88,16 @@ return [
         'chat_timeout' => env('OLLAMA_CHAT_TIMEOUT', 90),
         // Secondary Ollama instances for failover (comma-separated URLs)
         'secondary_urls' => array_filter(explode(',', env('OLLAMA_SECONDARY_URLS', ''))),
+    ],
+
+    'image_sidecar' => [
+        'url' => env('PLOS_IMAGE_SIDECAR_URL'),
+        'token' => env('PLOS_IMAGE_SIDECAR_TOKEN'),
+        'timeout' => env('PLOS_IMAGE_SIDECAR_TIMEOUT', 240),
+    ],
+
+    'faces' => [
+        'photoprism_export_path' => env('PLOS_FACE_PHOTOPRISM_EXPORT_PATH'),
     ],
 
     'anthropic' => [

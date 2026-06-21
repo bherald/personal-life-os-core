@@ -440,9 +440,11 @@ class GenealogyMediaService
     }
 
     /**
-     * Store face regions from image metadata into person_media links
-     * High-confidence matches (exact, maiden_name, married_name, flexible) are auto-linked
-     * Fuzzy matches (nickname, typo, soundex) are queued for human approval
+     * Store face regions from image metadata into reviewable links.
+     *
+     * Embedded XMP names are evidence, not proof. The default posture queues all
+     * matches for review unless faces.xmp_identity_trust_mode explicitly permits
+     * legacy auto-link behavior.
      */
     private function storeFaceRegions(int $mediaId, array $faceRegions): void
     {
@@ -819,8 +821,27 @@ class GenealogyMediaService
      */
     private function matchRequiresApproval(string $matchType): bool
     {
+        if (! $this->allowXmpIdentityAutoLink()) {
+            return true;
+        }
+
         // These match types are fuzzy and need human review
         return in_array($matchType, ['nickname', 'typo', 'soundex', 'levenshtein']);
+    }
+
+    private function allowXmpIdentityAutoLink(): bool
+    {
+        try {
+            $row = DB::selectOne(
+                'SELECT config_value FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1',
+                ['faces', 'xmp_identity_trust_mode']
+            );
+        } catch (Exception $e) {
+            return false;
+        }
+
+        return is_scalar($row->config_value ?? null)
+            && trim((string) $row->config_value) === 'trusted_auto_link';
     }
 
     /**
@@ -886,7 +907,7 @@ class GenealogyMediaService
                 'confidence' => $confidence,
             ]);
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('Failed to queue face match for approval', [
                 'media_id' => $mediaId,
                 'face_name' => $faceName,
@@ -1272,17 +1293,18 @@ class GenealogyMediaService
             'errors' => [],
         ];
 
-        // Process in chunks to avoid memory issues
-        $offset = 0;
+        // Use keyset pagination because live cleanup mutates the file_exists
+        // predicate. OFFSET would skip rows after earlier rows are marked missing.
+        $lastId = 0;
 
         while (true) {
             $records = DB::select(
                 'SELECT id, nextcloud_path, local_filename
                  FROM genealogy_media
-                 WHERE tree_id = ? AND file_exists = 1 AND nextcloud_path IS NOT NULL
+                 WHERE tree_id = ? AND file_exists = 1 AND nextcloud_path IS NOT NULL AND id > ?
                  ORDER BY id
-                 LIMIT ? OFFSET ?',
-                [$treeId, $batchSize, $offset]
+                 LIMIT ?',
+                [$treeId, $lastId, $batchSize]
             );
 
             if (empty($records)) {
@@ -1290,19 +1312,24 @@ class GenealogyMediaService
             }
 
             foreach ($records as $record) {
+                $lastId = max($lastId, (int) $record->id);
                 $stats['checked']++;
 
-                if (! file_exists($record->nextcloud_path)) {
+                if (! $this->genealogyMediaFileExists((string) $record->nextcloud_path)) {
                     $stats['missing']++;
 
                     if ($dryRun) {
+                        $impact = $this->missingMediaImpactCounts($treeId, (int) $record->id);
+                        $stats['links_removed'] += $impact['links_removed'];
+                        $stats['primary_photos_cleared'] += $impact['primary_photos_cleared'];
+
                         continue;
                     }
 
                     try {
                         // Mark file as missing
                         DB::update(
-                            'UPDATE genealogy_media SET file_exists = 0, updated_at = NOW() WHERE id = ?',
+                            'UPDATE genealogy_media SET file_exists = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                             [$record->id]
                         );
 
@@ -1326,23 +1353,16 @@ class GenealogyMediaService
                             'path' => $record->nextcloud_path,
                             'links_removed' => $removed,
                         ]);
-                    } catch (\Exception $e) {
+                    } catch (Exception $e) {
                         $stats['errors'][] = "Media {$record->id}: {$e->getMessage()}";
                     }
                 }
             }
-
-            $offset += $batchSize;
         }
 
         // Also clean up orphaned person_media links pointing to file_exists=0 media
         if (! $dryRun) {
-            $orphaned = DB::delete(
-                'DELETE pm FROM genealogy_person_media pm
-                 JOIN genealogy_media m ON pm.media_id = m.id
-                 WHERE m.tree_id = ? AND m.file_exists = 0',
-                [$treeId]
-            );
+            $orphaned = $this->deleteOrphanedPersonMediaLinksForMissingMedia($treeId);
             $stats['links_removed'] += $orphaned;
             if ($orphaned > 0) {
                 $stats['already_missing'] = $orphaned;
@@ -1350,6 +1370,80 @@ class GenealogyMediaService
         }
 
         return $stats;
+    }
+
+    private function genealogyMediaFileExists(string $nextcloudPath): bool
+    {
+        if ($nextcloudPath === '') {
+            return false;
+        }
+
+        if (file_exists($nextcloudPath)) {
+            return true;
+        }
+
+        try {
+            return $this->nextcloudApi->localPath($nextcloudPath) !== null;
+        } catch (Exception $e) {
+            Log::debug('Genealogy media validate: Nextcloud local path resolution failed', [
+                'path' => $nextcloudPath,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Count the DB links live validation would remove for a missing media row.
+     *
+     * Dry-run output must match live cleanup impact so operator review is
+     * actionable before running the mutating command.
+     *
+     * @return array{links_removed:int, primary_photos_cleared:int}
+     */
+    private function missingMediaImpactCounts(int $treeId, int $mediaId): array
+    {
+        $links = DB::selectOne(
+            'SELECT COUNT(*) AS count FROM genealogy_person_media WHERE media_id = ?',
+            [$mediaId]
+        );
+        $primaryPhotos = DB::selectOne(
+            'SELECT COUNT(*) AS count FROM genealogy_persons WHERE tree_id = ? AND primary_photo_id = ?',
+            [$treeId, $mediaId]
+        );
+
+        return [
+            'links_removed' => (int) ($links->count ?? 0),
+            'primary_photos_cleared' => (int) ($primaryPhotos->count ?? 0),
+        ];
+    }
+
+    private function deleteOrphanedPersonMediaLinksForMissingMedia(int $treeId): int
+    {
+        $rows = DB::select(
+            'SELECT pm.id AS id
+             FROM genealogy_person_media pm
+             JOIN genealogy_media m ON pm.media_id = m.id
+             WHERE m.tree_id = ? AND m.file_exists = 0',
+            [$treeId]
+        );
+        $ids = array_map(static fn ($row): int => (int) $row->id, $rows);
+
+        if (empty($ids)) {
+            return 0;
+        }
+
+        $deleted = 0;
+        foreach (array_chunk($ids, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $deleted += DB::delete(
+                "DELETE FROM genealogy_person_media WHERE id IN ({$placeholders})",
+                $chunk
+            );
+        }
+
+        return $deleted;
     }
 
     /**
@@ -2655,7 +2749,7 @@ XML;
                             'is_dir' => $isDir,
                         ]);
                     }
-                } catch (\Exception $e) {
+                } catch (Exception $e) {
                     Log::error('Exception in directory check', [
                         'error' => $e->getMessage(),
                         'href' => $href,

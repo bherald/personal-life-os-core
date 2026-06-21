@@ -30,10 +30,11 @@ class GenealogyEvidenceSprintReadinessService
 
     private ?GenealogyReviewPacketValidatorService $packetValidator = null;
 
-    public function collect(int $days = 30, int $limit = 500): array
+    public function collect(int $days = 30, int $limit = 500, ?string $boundaryLabel = null): array
     {
         $days = max(1, min(365, $days));
         $limit = max(25, min(2000, $limit));
+        $boundaryFilter = $this->normalizeBoundaryLabel($boundaryLabel);
 
         $generatedAt = now();
         $errors = [];
@@ -65,6 +66,12 @@ class GenealogyEvidenceSprintReadinessService
         if ($truncated) {
             $rows = $rows->take($limit)->values();
             $errors[] = "Window result set exceeded {$limit} rows; newest rows only.";
+        }
+
+        if ($boundaryFilter !== null) {
+            $rows = $rows
+                ->filter(fn (object $row): bool => $this->rowMatchesBoundaryFilter($row, $boundaryFilter))
+                ->values();
         }
 
         $summary = $this->summarizeRows($rows);
@@ -121,6 +128,7 @@ class GenealogyEvidenceSprintReadinessService
             'mode' => 'observe',
             'generated_at' => $generatedAt->toIso8601String(),
             'window_days' => $days,
+            'boundary_filter' => $boundaryFilter,
             'target_packets' => self::TARGET_PACKETS,
             'status' => $status,
             'next_review_target' => $this->nextReviewTarget($rows),
@@ -215,6 +223,7 @@ class GenealogyEvidenceSprintReadinessService
             'status' => $payload['status'] ?? 'unknown',
             'generated_at' => $payload['generated_at'] ?? null,
             'window_days' => (int) ($payload['window_days'] ?? 0),
+            'boundary_filter' => $payload['boundary_filter'] ?? null,
             'target_packets' => (int) ($payload['target_packets'] ?? self::TARGET_PACKETS),
             'truncated' => (bool) ($payload['truncated'] ?? false),
             'next_review_target' => $this->compactNextReviewTarget($payload['next_review_target'] ?? null),
@@ -1114,9 +1123,33 @@ class GenealogyEvidenceSprintReadinessService
             return null;
         }
 
-        $boundary = trim($boundary);
+        return $this->normalizeBoundaryLabel($boundary);
+    }
 
-        return $boundary === '' ? null : $boundary;
+    private function rowMatchesBoundaryFilter(object $row, string $boundaryFilter): bool
+    {
+        [$details, $malformed] = $this->decodeDetails($row->details ?? null);
+        if ($malformed || $details === []) {
+            return false;
+        }
+
+        $boundary = $this->operatorBoundaryLabel($details);
+
+        return $boundary !== null && strcasecmp($boundary, $boundaryFilter) === 0;
+    }
+
+    private function normalizeBoundaryLabel(?string $boundary): ?string
+    {
+        if ($boundary === null) {
+            return null;
+        }
+
+        $normalized = preg_replace('/\s+/', ' ', trim($boundary));
+        if (! is_string($normalized) || $normalized === '') {
+            return null;
+        }
+
+        return $normalized;
     }
 
     private function reasonCodes(mixed $decisionLog): array

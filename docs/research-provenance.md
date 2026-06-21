@@ -65,7 +65,7 @@ local-model fallback, trace logging, and public-release safety. They are not
 PLOS dependencies. Do not copy their source, prompts, rules, fixtures, UI text,
 or documentation wording.
 
-Snapshot verified on 2026-04-29 from public project pages and repositories.
+Snapshot verified on 2026-06-03 from public project pages and repositories.
 Re-check before citing in release notes or outward-facing articles.
 
 | Project | Public source | License signal | PLOS-safe reference posture |
@@ -77,8 +77,9 @@ Re-check before citing in release notes or outward-facing articles.
 | Continue | https://github.com/continuedev/continue and https://continue.dev/ | Apache-2.0 project/repository signal. | Reference for source-controlled AI checks and model-provider configurability. |
 | OpenHands | https://github.com/OpenHands/OpenHands and https://docs.openhands.dev/ | MIT for core work, with a separate `enterprise/` license boundary. | Containerized multi-tool agent reference; license-boundary case study. |
 | SWE-agent | https://github.com/swe-agent/swe-agent and https://swe-agent.com/ | MIT project signal. | Academic issue-to-patch and agent-computer-interface reference; avoid offensive-security framing in public PLOS docs. |
+| Hermes Agent | https://github.com/NousResearch/hermes-agent and https://pypi.org/project/hermes-agent/ | MIT project and PyPI license signal; latest scan found GitHub/PyPI `0.15.2` from 2026-05-29. | Active white-room reference for memory, skill creation, subagents, gateway routing, and provider/local-proxy patterns; no source, prompts, rules, docs, or skill text copying. |
 | goose | https://github.com/aaif-goose/goose and https://goose-docs.ai/ | Apache-2.0 project signal; AAIF/Linux Foundation transition noted by upstream. | MCP-extension-first local agent reference. |
-| Claw Code | https://claw-code.codes/ | Claims open-source clean-room rewrite; repository/license must be verified before any source-level study. | High-caution citation only. Use as a public example of why clean-room boundaries and source-provenance review matter. |
+| Claw Code | https://github.com/ultraworkers/claw-code and https://claw-code.codes/ | MIT license signal from the current canonical GitHub repo, but provenance remains high-caution because the project frames itself around clean-room/leaked-architecture reconstruction. | High-caution clean-room/provenance watch only. Use as a public example of why clean-room boundaries and source-provenance review matter; do not copy source, prompts, tests, docs, or leaked-architecture-derived wording. |
 
 ## Laravel Toolchain Used
 

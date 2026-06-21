@@ -13,6 +13,7 @@ class OpsRepairFaceBridgeMediaCommand extends Command
         {--apply : Apply repairs; default is dry-run}
         {--limit=200 : Maximum candidate faces to inspect}
         {--tree= : Restrict to one genealogy tree id}
+        {--gap=missing-media : Gap type to repair: missing-media, missing-person-media, or all}
         {--include-deleted : Include non-active file_registry rows}
         {--json : Emit JSON output}';
 
@@ -24,9 +25,22 @@ class OpsRepairFaceBridgeMediaCommand extends Command
         $limit = max(1, min(1000, (int) $this->option('limit')));
         $treeId = $this->positiveIntOption('tree');
         $includeDeleted = (bool) $this->option('include-deleted');
+        $gap = $this->gapOption();
+        if ($gap === null) {
+            $payload = [
+                'command' => 'ops:repair-face-bridge-media',
+                'success' => false,
+                'error' => 'invalid_gap',
+                'allowed_gaps' => ['missing-media', 'missing-person-media', 'all'],
+                'provided_gap' => (string) $this->option('gap'),
+            ];
+            $this->renderPayload($payload);
 
-        $candidates = $this->missingMediaCandidates($limit, $treeId, $includeDeleted);
-        $payload = $this->basePayload($candidates, $apply, $limit, $treeId, $includeDeleted);
+            return self::FAILURE;
+        }
+
+        $candidates = $this->bridgeGapCandidates($limit, $treeId, $includeDeleted, $gap);
+        $payload = $this->basePayload($candidates, $apply, $limit, $treeId, $includeDeleted, $gap);
 
         if (! $apply) {
             $payload['next_action'] = 'Run with --apply after reviewing candidates.';
@@ -47,7 +61,13 @@ class OpsRepairFaceBridgeMediaCommand extends Command
 
             try {
                 $result = DB::transaction(
-                    fn (): array => $bridge->syncFaceLink((int) $candidate->face_id, (int) $candidate->person_id)
+                    fn (): array => $bridge->syncFaceLink(
+                        (int) $candidate->face_id,
+                        (int) $candidate->person_id,
+                        isset($candidate->media_id) && (int) $candidate->media_id > 0
+                            ? (int) $candidate->media_id
+                            : null
+                    )
                 );
 
                 if (! ($result['success'] ?? false)) {
@@ -95,12 +115,11 @@ class OpsRepairFaceBridgeMediaCommand extends Command
     /**
      * @return array<int, object>
      */
-    private function missingMediaCandidates(int $limit, ?int $treeId, bool $includeDeleted): array
+    private function bridgeGapCandidates(int $limit, ?int $treeId, bool $includeDeleted, string $gap): array
     {
         $filters = [
             'frf.hidden = 0',
             'frf.genealogy_person_id IS NOT NULL',
-            'gm.id IS NULL',
         ];
         $params = [];
 
@@ -113,6 +132,15 @@ class OpsRepairFaceBridgeMediaCommand extends Command
             $params[] = $treeId;
         }
 
+        if ($gap === 'missing-media') {
+            $filters[] = 'gm.id IS NULL';
+        } elseif ($gap === 'missing-person-media') {
+            $filters[] = 'gm.id IS NOT NULL';
+            $filters[] = 'gpm.id IS NULL';
+        } else {
+            $filters[] = '(gm.id IS NULL OR gpm.id IS NULL)';
+        }
+
         $params[] = $limit;
 
         return DB::select(
@@ -121,6 +149,12 @@ class OpsRepairFaceBridgeMediaCommand extends Command
                 frf.file_registry_id,
                 frf.genealogy_person_id AS person_id,
                 gp.tree_id,
+                gm.id AS media_id,
+                CASE
+                    WHEN gm.id IS NULL THEN "missing_genealogy_media"
+                    WHEN gpm.id IS NULL THEN "missing_person_media"
+                    ELSE "aligned"
+                END AS gap_type,
                 TRIM(CONCAT(COALESCE(gp.given_name, ""), " ", COALESCE(gp.surname, ""))) AS person_name,
                 fr.filename,
                 fr.status AS file_status,
@@ -136,6 +170,9 @@ class OpsRepairFaceBridgeMediaCommand extends Command
                 gm.nextcloud_path = COALESCE(NULLIF(fr.current_path, ""), fr.original_path)
                 OR gm.original_path = fr.original_path
               )
+             LEFT JOIN genealogy_person_media gpm
+               ON gpm.person_id = frf.genealogy_person_id
+              AND gpm.media_id = gm.id
              WHERE '.implode(' AND ', $filters).'
              ORDER BY frf.updated_at DESC, frf.id DESC
              LIMIT ?',
@@ -147,17 +184,20 @@ class OpsRepairFaceBridgeMediaCommand extends Command
      * @param  array<int, object>  $candidates
      * @return array<string, mixed>
      */
-    private function basePayload(array $candidates, bool $apply, int $limit, ?int $treeId, bool $includeDeleted): array
+    private function basePayload(array $candidates, bool $apply, int $limit, ?int $treeId, bool $includeDeleted, string $gap): array
     {
         $files = [];
         $persons = [];
         $statusCounts = [];
+        $gapCounts = [];
 
         foreach ($candidates as $candidate) {
             $files[(int) $candidate->file_registry_id] = true;
             $persons[(int) $candidate->person_id] = true;
             $status = (string) ($candidate->file_status ?? 'unknown');
             $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+            $gapType = (string) ($candidate->gap_type ?? 'unknown');
+            $gapCounts[$gapType] = ($gapCounts[$gapType] ?? 0) + 1;
         }
 
         return [
@@ -166,17 +206,21 @@ class OpsRepairFaceBridgeMediaCommand extends Command
             'applied' => false,
             'limit' => $limit,
             'tree_id' => $treeId,
+            'gap' => $gap,
             'include_deleted' => $includeDeleted,
             'candidate_faces' => count($candidates),
             'candidate_files' => count($files),
             'candidate_persons' => count($persons),
             'file_status_counts' => $statusCounts,
+            'gap_counts' => $gapCounts,
             'samples' => array_map(
                 fn (object $candidate): array => [
                     'face_id' => (int) $candidate->face_id,
                     'file_registry_id' => (int) $candidate->file_registry_id,
                     'person_id' => (int) $candidate->person_id,
                     'tree_id' => (int) $candidate->tree_id,
+                    'genealogy_media_id' => isset($candidate->media_id) ? (int) $candidate->media_id : null,
+                    'gap_type' => (string) ($candidate->gap_type ?? 'unknown'),
                     'person_name' => (string) ($candidate->person_name ?? ''),
                     'filename' => (string) ($candidate->filename ?? ''),
                     'file_status' => (string) ($candidate->file_status ?? ''),
@@ -200,6 +244,15 @@ class OpsRepairFaceBridgeMediaCommand extends Command
         $intValue = (int) $value;
 
         return $intValue > 0 ? $intValue : null;
+    }
+
+    private function gapOption(): ?string
+    {
+        $gap = (string) ($this->option('gap') ?? 'missing-media');
+
+        return in_array($gap, ['missing-media', 'missing-person-media', 'all'], true)
+            ? $gap
+            : null;
     }
 
     /**

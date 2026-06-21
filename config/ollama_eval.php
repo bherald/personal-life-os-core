@@ -245,9 +245,51 @@ return [
         ],
         [
             'model' => 'qwen3-coder:30b',
-            'status' => 'watch',
+            'status' => 'testing',
             'intended_use' => 'offline coding upgrade candidate',
-            'notes' => '2026-05-20 web-vetted as current stronger coding candidate, but the official Ollama tag is about 19GB with 256K context, so it is likely CPU/offload-heavy on ada_12gb. Pull only as an explicit bench run, not as a default offline model.',
+            'notes' => '2026-06-08 RTS: pulled to .87. JSON coding smoke passed; prompt-injection fixture selected the right decision but echoed the hostile phrase, so keep disabled/candidate and do not route trust-boundary work.',
+        ],
+        [
+            'model' => 'devstral:24b',
+            'status' => 'testing',
+            'intended_use' => 'single-GPU local coding agent candidate',
+            'notes' => '2026-06-08 RTS: pulled to .87. JSON coding smoke passed, but the privacy fixture echoed hostile-payload text and cold-load latency was high after model swaps. Keep candidate/override only.',
+        ],
+        [
+            'model' => 'qwen3-vl:8b',
+            'status' => 'testing',
+            'intended_use' => 'detailed local vision and OCR candidate',
+            'notes' => '2026-06-08 RTS: pulled to .87 and passed synthetic image/OCR smoke. Text trust-boundary fixture returned thinking only with empty content, so keep as vision-only candidate until prompt/options are fixed.',
+        ],
+        [
+            'model' => 'qwen3-vl:30b',
+            'status' => 'bench',
+            'intended_use' => 'heavy local vision candidate',
+            'notes' => '2026-06-08 RTS: pulled to .87 and passed basic image/color recognition with minor OCR error. Heavy latency and empty-content privacy fixture keep it manual bench only.',
+        ],
+        [
+            'model' => 'dolphincoder:15b',
+            'status' => 'testing',
+            'intended_use' => 'uncensored coding candidate',
+            'notes' => '2026-06-08 RTS: pulled to .87. JSON coding smoke passed, but structured privacy fixture appended markdown/prose. BigCode OpenRAIL-M ancestry keeps it override-only.',
+        ],
+        [
+            'model' => 'huihui_ai/qwen3-vl-abliterated:8b-instruct',
+            'status' => 'testing',
+            'intended_use' => 'uncensored vision candidate',
+            'notes' => '2026-06-08 RTS: pulled to .87 and passed synthetic image/OCR plus compact privacy decision. Community abliterated model remains override-only with no default safety guarantees.',
+        ],
+        [
+            'model' => 'maxwellb/gemma4-12b-it-oym',
+            'status' => 'watch',
+            'intended_use' => 'uncensored multimodal candidate',
+            'notes' => '2026-06-08 RTS: tag pulled to .87 as :latest, but API load failed with an Ollama blob load error. Keep unavailable until the local model store is repaired and license/runtime behavior is verified.',
+        ],
+        [
+            'model' => 'x/z-image-turbo',
+            'status' => 'watch',
+            'intended_use' => 'local image generation candidate',
+            'notes' => '2026-06-08 RTS: not pulled to .87 because Ollama image generation is currently platform-gated for macOS. Keep unavailable until Windows/Linux support is proven on this host.',
         ],
         [
             'model' => 'codestral:22b',

@@ -19,7 +19,7 @@ class MorningWeatherWorkflowSeeder extends Seeder
             DB::table('workflows')
                 ->where('id', $existingWorkflow->id)
                 ->update([
-                    'description' => 'Daily morning weather summary with deterministic preformatted output',
+                    'description' => 'Daily Bloomsburg morning weather summary with deterministic preformatted output',
                     'schedule' => '0 7 * * *',
                     'active' => true,
                     'error_handling' => 'continue',
@@ -42,7 +42,7 @@ class MorningWeatherWorkflowSeeder extends Seeder
             // Create workflow
             $workflowId = DB::table('workflows')->insertGetId([
                 'name' => 'morning_weather',
-                'description' => 'Daily morning weather summary with deterministic preformatted output',
+                'description' => 'Daily Bloomsburg morning weather summary with deterministic preformatted output',
                 'schedule' => '0 7 * * *', // 7am daily
                 'active' => true,
                 'error_handling' => 'continue',
@@ -89,11 +89,14 @@ class MorningWeatherWorkflowSeeder extends Seeder
         ]);
 
         DB::table('workflow_node_configs')->insert([
-            ['workflow_node_id' => $node1Id, 'config_key' => 'location', 'config_value' => '40.6259,-75.3703'],
+            ['workflow_node_id' => $node1Id, 'config_key' => 'location', 'config_value' => '41.0037,-76.4549'],
             ['workflow_node_id' => $node1Id, 'config_key' => 'units', 'config_value' => 'imperial'],
+            ['workflow_node_id' => $node1Id, 'config_key' => 'provider', 'config_value' => 'nws'],
+            ['workflow_node_id' => $node1Id, 'config_key' => 'fallback_provider', 'config_value' => 'openweather'],
+            ['workflow_node_id' => $node1Id, 'config_key' => 'forecast_days', 'config_value' => '5'],
         ]);
 
-        // Node 2: AIFormatter - Monospace table format for Pushover
+        // Node 2: AIFormatter passthrough for preformatted Pushover text
         $node2Id = DB::table('workflow_nodes')->insertGetId([
             'workflow_id' => $workflowId,
             'node_type' => 'AIFormatter',
@@ -101,31 +104,9 @@ class MorningWeatherWorkflowSeeder extends Seeder
             'created_at' => now(),
         ]);
 
-        $aiPrompt = 'Format weather data as MONOSPACE table for Pushover notification.
+        $aiPrompt = 'Pass through WeatherAPI preformatted_weather for Pushover.
 
-FORMAT TEMPLATE:
-☀️  WEATHER - [location]
----------------------------------------------------------------------------------------
-| [temp]F ([feels_like]F)   [humidity]%   [wind_speed]mph   [description]
----------------------------------------------------------------------------------------
-| [icon]  [day_name] [mm/dd] [high] [low] [condition]
-| [icon]  [day_name] [mm/dd] [high] [low] [condition]
-| [icon]  [day_name] [mm/dd] [high] [low] [condition]
-| [icon]  [day_name] [mm/dd] [high] [low] [condition]
-| [icon]  [day_name] [mm/dd] [high] [low] [condition]
-| [icon]  [day_name] [mm/dd] [high] [low] [condition]
----------------------------------------------------------------------------------------
-
-RULES:
-- Use weather emoji with TWO SPACES after: ☀️  🌤️  ⛅  ☁️  🌧️  ⛈️  ❄️
-- Icons: ☀️ clear/sunny, 🌤️ partly cloudy, ⛅ mostly cloudy, ☁️ overcast/cloudy, 🌧️ rain, ⛈️ thunderstorm, ❄️ snow
-- Each day on ONE line: | [icon]  [day] [date] [hi] [lo] [condition]
-- Dash lines must be exactly 87 characters
-- Single space between data elements in day rows
-- Start each data line with |
-- NO blank lines between dash separator and first day row
-- NO header row for columns
-- NEVER make up data - only use feed data';
+This workflow is deterministic: if preformatted_weather is present, return it exactly as formatted. Do not rewrite, summarize, reorder, or add commentary.';
 
         DB::table('workflow_node_configs')->insert([
             ['workflow_node_id' => $node2Id, 'config_key' => 'prompt', 'config_value' => $aiPrompt],
@@ -147,7 +128,7 @@ RULES:
             ['workflow_node_id' => $node3Id, 'config_key' => 'title', 'config_value' => '☀️ Morning Weather'],
             ['workflow_node_id' => $node3Id, 'config_key' => 'priority', 'config_value' => '0'],
             ['workflow_node_id' => $node3Id, 'config_key' => 'format_type', 'config_value' => 'monospace'],
-            ['workflow_node_id' => $node3Id, 'config_key' => 'url', 'config_value' => 'https://weather.com/weather/today/l/41.00,-76.46'],
+            ['workflow_node_id' => $node3Id, 'config_key' => 'url', 'config_value' => 'https://weather.com/weather/tenday/l/41.0037,-76.4549'],
             ['workflow_node_id' => $node3Id, 'config_key' => 'url_title', 'config_value' => 'Full Weather Forecast'],
         ]);
 

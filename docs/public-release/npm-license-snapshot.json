@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-05-30T18:17:31Z",
+  "generated_at": "2026-06-21T16:44:32Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
       "label": "root",
       "path": ".",
       "lockfile": "package-lock.json",
-      "package_count": 1001,
+      "package_count": 1000,
       "buckets": {
-        "permissive": 992,
+        "permissive": 991,
         "watch": 4,
         "other": 5
       },
@@ -566,7 +566,7 @@
         },
         {
           "name": "@babel/code-frame",
-          "version": "7.29.0",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -577,7 +577,7 @@
         },
         {
           "name": "@babel/compat-data",
-          "version": "7.29.0",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -588,7 +588,7 @@
         },
         {
           "name": "@babel/core",
-          "version": "7.29.0",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -599,7 +599,7 @@
         },
         {
           "name": "@babel/generator",
-          "version": "7.29.1",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -610,7 +610,7 @@
         },
         {
           "name": "@babel/helper-compilation-targets",
-          "version": "7.28.6",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -621,7 +621,7 @@
         },
         {
           "name": "@babel/helper-globals",
-          "version": "7.28.0",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -632,7 +632,7 @@
         },
         {
           "name": "@babel/helper-module-imports",
-          "version": "7.28.6",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -643,7 +643,7 @@
         },
         {
           "name": "@babel/helper-module-transforms",
-          "version": "7.28.6",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -665,7 +665,7 @@
         },
         {
           "name": "@babel/helper-string-parser",
-          "version": "7.27.1",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -676,7 +676,7 @@
         },
         {
           "name": "@babel/helper-validator-identifier",
-          "version": "7.28.5",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -687,7 +687,7 @@
         },
         {
           "name": "@babel/helper-validator-option",
-          "version": "7.27.1",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -698,7 +698,7 @@
         },
         {
           "name": "@babel/helpers",
-          "version": "7.28.6",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -709,7 +709,7 @@
         },
         {
           "name": "@babel/parser",
-          "version": "7.29.0",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -742,7 +742,7 @@
         },
         {
           "name": "@babel/template",
-          "version": "7.28.6",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -753,7 +753,7 @@
         },
         {
           "name": "@babel/traverse",
-          "version": "7.29.0",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -764,7 +764,7 @@
         },
         {
           "name": "@babel/types",
-          "version": "7.29.0",
+          "version": "7.29.7",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -2480,7 +2480,7 @@
         },
         {
           "name": "@protobufjs/eventemitter",
-          "version": "1.1.0",
+          "version": "1.1.1",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -2507,17 +2507,6 @@
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/@protobufjs/float",
-          "repository": "https://github.com/dcodeIO/protobuf.js.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "@protobufjs/inquire",
-          "version": "1.1.2",
-          "license": "BSD-3-Clause",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/@protobufjs/inquire",
           "repository": "https://github.com/dcodeIO/protobuf.js.git",
           "homepage": "",
           "source": "package.json"
@@ -5648,7 +5637,7 @@
         },
         {
           "name": "dompurify",
-          "version": "3.4.1",
+          "version": "3.4.11",
           "license": "(MPL-2.0 OR Apache-2.0)",
           "bucket": "watch",
           "lockfile": "package-lock.json",
@@ -6396,7 +6385,7 @@
         },
         {
           "name": "form-data",
-          "version": "4.0.5",
+          "version": "4.0.6",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -6869,7 +6858,7 @@
         },
         {
           "name": "hasown",
-          "version": "2.0.2",
+          "version": "2.0.4",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -6913,7 +6902,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.18",
+          "version": "4.12.26",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -7496,7 +7485,7 @@
         },
         {
           "name": "js-yaml",
-          "version": "4.1.1",
+          "version": "4.2.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -7705,7 +7694,7 @@
         },
         {
           "name": "linkify-it",
-          "version": "5.0.0",
+          "version": "5.0.1",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -7947,7 +7936,7 @@
         },
         {
           "name": "markdown-it",
-          "version": "14.1.1",
+          "version": "14.2.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -9003,7 +8992,7 @@
         },
         {
           "name": "protobufjs",
-          "version": "7.6.0",
+          "version": "7.6.4",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -9630,7 +9619,7 @@
         },
         {
           "name": "shell-quote",
-          "version": "1.8.3",
+          "version": "1.8.4",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -10631,7 +10620,7 @@
         },
         {
           "name": "vite",
-          "version": "7.3.2",
+          "version": "7.3.5",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -10829,7 +10818,7 @@
         },
         {
           "name": "ws",
-          "version": "8.20.1",
+          "version": "8.21.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -11544,7 +11533,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.18",
+          "version": "4.12.26",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -12171,7 +12160,7 @@
         },
         {
           "name": "ws",
-          "version": "8.20.1",
+          "version": "8.21.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -12721,7 +12710,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.18",
+          "version": "4.12.26",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",

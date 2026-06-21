@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Services\AgentLoopService;
 use App\Services\DistributedAgentService;
+use App\Services\SystemConfigService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -28,14 +29,29 @@ class ProcessAgentTask implements ShouldQueue
 {
     use Queueable;
 
-    public int $timeout = 600; // 10 minutes max
+    private const RUNTIME_POLICY_CONFIG_KEY = 'agents.process_agent_task_job_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'timeout_seconds' => 600,
+        'tries' => 2,
+        'backoff_seconds' => [30, 60],
+    ];
+
+    public int $timeout = 600;
+
     public int $tries = 2;
+
     public array $backoff = [30, 60];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function __construct(
         private string $taskId,
         private string $agentId
     ) {
+        $this->applyRuntimePolicy();
+
         $this->onQueue('long-running');
     }
 
@@ -57,16 +73,18 @@ class ProcessAgentTask implements ShouldQueue
         // Load task from DB
         $task = $distributedService->getTask($this->taskId);
 
-        if (!$task) {
+        if (! $task) {
             Log::warning('ProcessAgentTask: Task not found', ['task_id' => $this->taskId]);
+
             return;
         }
 
-        if (!in_array($task['status'], ['pending', 'assigned'])) {
+        if (! in_array($task['status'], ['pending', 'assigned'])) {
             Log::debug('ProcessAgentTask: Task already processed', [
                 'task_id' => $this->taskId,
                 'status' => $task['status'],
             ]);
+
             return;
         }
 
@@ -138,7 +156,7 @@ class ProcessAgentTask implements ShouldQueue
         try {
             app(DistributedAgentService::class)->failTask(
                 $this->taskId,
-                'Job failed: ' . ($exception?->getMessage() ?? 'Unknown error'),
+                'Job failed: '.($exception?->getMessage() ?? 'Unknown error'),
                 false
             );
         } catch (Throwable $e) {
@@ -150,8 +168,75 @@ class ProcessAgentTask implements ShouldQueue
     {
         return [
             'agent-task',
-            'task:' . substr($this->taskId, 0, 8),
-            'agent:' . $this->agentId,
+            'task:'.substr($this->taskId, 0, 8),
+            'agent:'.$this->agentId,
         ];
+    }
+
+    private function applyRuntimePolicy(): void
+    {
+        $this->timeout = $this->runtimePolicyInt('timeout_seconds');
+        $this->tries = $this->runtimePolicyInt('tries');
+        $this->backoff = $this->runtimePolicyIntList('backoff_seconds');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function runtimePolicyIntList(string $key): array
+    {
+        $fallback = self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (! is_array($value)) {
+            return $fallback;
+        }
+
+        $ints = array_values(array_filter(
+            array_map(fn ($item) => is_numeric($item) ? (int) $item : 0, $value),
+            fn (int $item) => $item > 0
+        ));
+
+        return $ints !== [] ? $ints : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

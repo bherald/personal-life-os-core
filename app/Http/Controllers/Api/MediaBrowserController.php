@@ -1062,6 +1062,14 @@ class MediaBrowserController extends Controller
         $search = trim((string) $request->get('search', ''));
         $treeId = (int) $request->get('tree_id', 0);
         $includeUnlinkedOnly = $request->boolean('include_unlinked_only', false);
+        $normalizeName = static function (?string $name): string {
+            $name = strtolower(trim((string) $name));
+            $name = preg_replace('/\([^)]*\)/', ' ', $name) ?? $name;
+            $name = str_replace(',', ' ', $name);
+            $name = preg_replace('/\s+/', ' ', $name) ?? $name;
+
+            return trim($name);
+        };
 
         $where = [];
         $params = [];
@@ -1125,22 +1133,149 @@ class MediaBrowserController extends Controller
             LIMIT ?
         ", $params);
 
-        return response()->json([
-            'success' => true,
-            'data' => array_map(fn ($person) => [
+        $faceIdentityRows = [];
+        if (! $includeUnlinkedOnly) {
+            $faceWhere = [
+                'frf.hidden = 0',
+                "NULLIF(TRIM(frf.person_name), '') IS NOT NULL",
+                "LOWER(TRIM(frf.person_name)) <> 'unknown'",
+            ];
+            $faceParams = [];
+
+            if ($treeId > 0) {
+                $faceWhere[] = '(frf.genealogy_person_id IS NULL OR gp.tree_id = ?)';
+                $faceParams[] = $treeId;
+            }
+
+            if ($search !== '') {
+                $like = '%'.$search.'%';
+                $faceWhere[] = "(frf.person_name LIKE ? OR gp.given_name LIKE ? OR gp.surname LIKE ? OR CONCAT_WS(' ', gp.given_name, gp.surname) LIKE ?)";
+                array_push($faceParams, $like, $like, $like, $like);
+            }
+
+            $faceOrderSql = 'face_count DESC, frf.person_name ASC';
+            if ($search !== '') {
+                $normalizedSearch = $normalizeName($search);
+                $faceOrderSql = "
+                    CASE
+                        WHEN LOWER(frf.person_name) = ? THEN 0
+                        WHEN LOWER(frf.person_name) LIKE ? THEN 1
+                        ELSE 2
+                    END,
+                    face_count DESC,
+                    frf.person_name ASC
+                ";
+                array_push($faceParams, $normalizedSearch, $normalizedSearch.'%');
+            }
+
+            $faceParams[] = $limit;
+            $faceIdentityRows = DB::select("
+                SELECT
+                    frf.person_name,
+                    frf.genealogy_person_id,
+                    gp.tree_id,
+                    gp.gedcom_id,
+                    gp.given_name,
+                    gp.surname,
+                    gp.birth_date,
+                    gp.death_date,
+                    COUNT(*) AS face_count,
+                    COUNT(DISTINCT frf.file_registry_id) AS media_count
+                FROM file_registry_faces frf
+                LEFT JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
+                WHERE ".implode(' AND ', $faceWhere)."
+                GROUP BY
+                    frf.person_name,
+                    frf.genealogy_person_id,
+                    gp.tree_id,
+                    gp.gedcom_id,
+                    gp.given_name,
+                    gp.surname,
+                    gp.birth_date,
+                    gp.death_date
+                ORDER BY {$faceOrderSql}
+                LIMIT ?
+            ", $faceParams);
+        }
+
+        $results = [];
+        foreach ($faceIdentityRows as $row) {
+            $personId = $row->genealogy_person_id !== null ? (int) $row->genealogy_person_id : null;
+            $faceLabel = trim((string) $row->person_name);
+            $key = $personId !== null ? 'genealogy:'.$personId : 'face_label:'.$normalizeName($faceLabel);
+            if ($key === 'face_label:') {
+                continue;
+            }
+
+            $genealogyName = trim((string) (($row->given_name ?? '').' '.($row->surname ?? '')));
+            $results[$key] = [
+                'id' => $personId,
+                'identity_key' => $key,
+                'identity_type' => $personId !== null ? 'genealogy_person' : 'face_label',
+                'genealogy_person_id' => $personId,
+                'tree_id' => $row->tree_id !== null ? (int) $row->tree_id : null,
+                'gedcom_id' => $row->gedcom_id,
+                'name' => $personId !== null && $genealogyName !== '' ? $genealogyName : $faceLabel,
+                'person_name' => $faceLabel,
+                'face_label' => $faceLabel,
+                'given_name' => $row->given_name,
+                'surname' => $row->surname,
+                'genealogy_name' => $genealogyName !== '' ? $genealogyName : null,
+                'birth_date' => $row->birth_date,
+                'death_date' => $row->death_date,
+                'media_count' => (int) $row->media_count,
+                'face_count' => (int) $row->face_count,
+                'bridge_priority' => $personId !== null ? 1 : 0,
+                'sort_score' => $search !== '' && $normalizeName($faceLabel) === $normalizeName($search) ? 2 : 1,
+            ];
+        }
+
+        foreach ($persons as $person) {
+            $key = 'genealogy:'.(int) $person->id;
+            if (isset($results[$key])) {
+                $results[$key]['face_count'] = max((int) $results[$key]['face_count'], (int) $person->face_count);
+                $results[$key]['media_count'] = max((int) $results[$key]['media_count'], (int) $person->face_count);
+                continue;
+            }
+
+            $name = trim((string) $person->name);
+            $results[$key] = [
                 'id' => (int) $person->id,
+                'identity_key' => $key,
+                'identity_type' => 'genealogy_person',
                 'genealogy_person_id' => (int) $person->id,
                 'tree_id' => (int) $person->tree_id,
                 'gedcom_id' => $person->gedcom_id,
-                'name' => trim((string) $person->name),
+                'name' => $name,
+                'person_name' => $name,
+                'face_label' => null,
                 'given_name' => $person->given_name,
                 'surname' => $person->surname,
-                'genealogy_name' => trim((string) $person->name),
+                'genealogy_name' => $name,
                 'birth_date' => $person->birth_date,
                 'death_date' => $person->death_date,
                 'media_count' => (int) $person->face_count,
                 'face_count' => (int) $person->face_count,
-            ], $persons),
+                'bridge_priority' => 1,
+                'sort_score' => $search !== '' && $normalizeName($name) === $normalizeName($search) ? 2 : 1,
+            ];
+        }
+
+        $data = array_values($results);
+        usort($data, static function (array $a, array $b): int {
+            return ($b['sort_score'] <=> $a['sort_score'])
+                ?: ($b['bridge_priority'] <=> $a['bridge_priority'])
+                ?: ($b['face_count'] <=> $a['face_count'])
+                ?: strcmp((string) $a['name'], (string) $b['name']);
+        });
+
+        return response()->json([
+            'success' => true,
+            'data' => array_map(static function (array $row): array {
+                unset($row['sort_score'], $row['bridge_priority']);
+
+                return $row;
+            }, array_slice($data, 0, $limit)),
         ]);
     }
 
@@ -1193,7 +1328,17 @@ class MediaBrowserController extends Controller
             return response()->json(['error' => 'Face not found'], 404);
         }
 
-        DB::update('UPDATE file_registry_faces SET person_name = ? WHERE id = ?', [$personName, $faceId]);
+        if ($genealogyPersonId > 0) {
+            DB::update(
+                'UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = ? WHERE id = ?',
+                [$personName, $genealogyPersonId, $faceId]
+            );
+        } else {
+            DB::update(
+                'UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = NULL, verified = 0 WHERE id = ?',
+                [$personName, $faceId]
+            );
+        }
 
         // Reset writeback flags so scheduled job re-writes EXIF
         DB::update('UPDATE file_registry SET exif_faces_written = 0 WHERE id = ?', [$face->file_registry_id]);
@@ -3520,7 +3665,7 @@ class MediaBrowserController extends Controller
     // ─── Faces Page ────────────────────────────────────────────────────
 
     /**
-     * Named people grid — grouped by person_name with counts
+     * Named people grid — grouped by genealogy person when linked, otherwise by face label.
      *
      * GET /api/media/faces/recognized
      */
@@ -3528,53 +3673,226 @@ class MediaBrowserController extends Controller
     {
         $limit = min((int) $request->get('limit', 60), 200);
         $offset = (int) $request->get('offset', 0);
+        $windowLimit = min($offset + $limit + 1, 1000);
         $search = $request->get('search', '');
         $showHidden = (bool) $request->get('hidden', false);
 
-        $where = $showHidden ? 'WHERE hidden = 1' : 'WHERE hidden = 0';
-        $where .= " AND person_name != '' AND LOWER(person_name) != 'unknown'";
-        $params = [];
+        $where = $showHidden ? 'frf.hidden = 1' : 'frf.hidden = 0';
+        $where .= " AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown'";
 
+        $baseSql = "
+            SELECT
+                CASE
+                    WHEN frf.genealogy_person_id IS NOT NULL THEN CONCAT('ft:', frf.genealogy_person_id)
+                    ELSE CONCAT('name:', frf.person_name)
+                END as identity_key,
+                CASE
+                    WHEN frf.genealogy_person_id IS NOT NULL THEN 'genealogy_person'
+                    ELSE 'name'
+                END as scope_type,
+                frf.genealogy_person_id,
+                CASE WHEN frf.genealogy_person_id IS NULL THEN frf.person_name ELSE NULL END as scope_name,
+                COALESCE(
+                    NULLIF(TRIM(CONCAT_WS(' ', gp.given_name, gp.surname)), ''),
+                    MIN(frf.person_name)
+                ) as person_name,
+                NULLIF(TRIM(CONCAT_WS(' ', gp.given_name, gp.surname)), '') as genealogy_name,
+                MIN(frf.person_name) as face_label_name,
+                GROUP_CONCAT(DISTINCT frf.person_name ORDER BY frf.person_name SEPARATOR ', ') as face_name_variants,
+                COUNT(DISTINCT frf.person_name) as face_name_variant_count,
+                COUNT(*) as face_count,
+                0 as linked_media_count,
+                COUNT(DISTINCT frf.file_registry_id) as media_count,
+                MIN(frf.id) as representative_face_id,
+                NULL as representative_asset_uuid,
+                NULL as representative_filename,
+                MAX(frf.favorite) as favorite
+            FROM file_registry_faces frf
+            LEFT JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
+            WHERE {$where}
+            GROUP BY
+                CASE
+                    WHEN frf.genealogy_person_id IS NOT NULL THEN CONCAT('ft:', frf.genealogy_person_id)
+                    ELSE CONCAT('name:', frf.person_name)
+                END,
+                CASE
+                    WHEN frf.genealogy_person_id IS NOT NULL THEN 'genealogy_person'
+                    ELSE 'name'
+                END,
+                frf.genealogy_person_id,
+                CASE WHEN frf.genealogy_person_id IS NULL THEN frf.person_name ELSE NULL END,
+                gp.given_name,
+                gp.surname
+        ";
+
+        $having = '';
+        $searchParams = [];
         if ($search) {
-            $where .= ' AND person_name LIKE ?';
-            $params[] = '%'.$search.'%';
+            $having = 'WHERE person_name LIKE ? OR genealogy_name LIKE ? OR face_name_variants LIKE ?';
+            $searchParams = ['%'.$search.'%', '%'.$search.'%', '%'.$search.'%'];
         }
 
-        $params[] = $limit;
-        $params[] = $offset;
-
-        $people = DB::select("
-            SELECT person_name,
-                   COUNT(*) as face_count,
-                   MIN(id) as representative_face_id,
-                   MAX(genealogy_person_id) as genealogy_person_id,
-                   MAX(favorite) as favorite
-            FROM file_registry_faces
-            {$where}
-            GROUP BY person_name
+        $facePeople = DB::select("
+            SELECT *
+            FROM ({$baseSql}) grouped_people
+            {$having}
             ORDER BY face_count DESC
-            LIMIT ? OFFSET ?
-        ", $params);
+            LIMIT ?
+        ", [...$searchParams, $windowLimit]);
 
-        // Total unique people count for pagination
-        $searchWhere = $showHidden ? 'WHERE hidden = 1' : 'WHERE hidden = 0';
-        $searchWhere .= " AND person_name != '' AND LOWER(person_name) != 'unknown'";
-        $countParams = [];
-        if ($search) {
-            $searchWhere .= ' AND person_name LIKE ?';
-            $countParams[] = '%'.$search.'%';
+        $mediaPeople = [];
+        if (! $showHidden) {
+            $mediaWhere = [];
+            $mediaParams = [];
+            if ($search) {
+                $mediaWhere[] = "(gp.given_name LIKE ? OR gp.surname LIKE ? OR CONCAT_WS(' ', gp.given_name, gp.surname) LIKE ?)";
+                $mediaParams = ['%'.$search.'%', '%'.$search.'%', '%'.$search.'%'];
+            }
+            $mediaWhereSql = $mediaWhere === [] ? '' : 'WHERE '.implode(' AND ', $mediaWhere);
+
+            $mediaPeople = DB::select("
+                SELECT
+                    CONCAT('ft:', gp.id) as identity_key,
+                    'genealogy_person' as scope_type,
+                    gp.id as genealogy_person_id,
+                    NULL as scope_name,
+                    NULLIF(TRIM(CONCAT_WS(' ', gp.given_name, gp.surname)), '') as person_name,
+                    NULLIF(TRIM(CONCAT_WS(' ', gp.given_name, gp.surname)), '') as genealogy_name,
+                    NULL as face_label_name,
+                    NULL as face_name_variants,
+                    0 as face_name_variant_count,
+                    0 as face_count,
+                    COUNT(DISTINCT gpm.media_id) as linked_media_count,
+                    COUNT(DISTINCT gpm.media_id) as media_count,
+                    NULL as representative_face_id,
+                    NULL as representative_asset_uuid,
+                    MIN(COALESCE(gm.local_filename, gm.title)) as representative_filename,
+                    SUBSTRING_INDEX(
+                        GROUP_CONCAT(
+                            COALESCE(NULLIF(gm.nextcloud_path, ''), NULLIF(gm.original_path, ''))
+                            ORDER BY gpm.is_primary DESC, gpm.id DESC
+                            SEPARATOR '\n'
+                        ),
+                        '\n',
+                        1
+                    ) as representative_path,
+                    0 as favorite
+                FROM genealogy_person_media gpm
+                JOIN genealogy_persons gp ON gp.id = gpm.person_id
+                JOIN genealogy_media gm ON gm.id = gpm.media_id
+                {$mediaWhereSql}
+                GROUP BY gp.id, gp.given_name, gp.surname
+                ORDER BY linked_media_count DESC, person_name ASC
+                LIMIT ?
+            ", [...$mediaParams, $windowLimit]);
         }
 
-        $total = DB::selectOne("
-            SELECT COUNT(DISTINCT person_name) as cnt
-            FROM file_registry_faces
-            {$searchWhere}
-        ", $countParams);
+        $peopleByIdentity = [];
+        foreach (array_merge($facePeople, $mediaPeople) as $person) {
+            $key = (string) $person->identity_key;
+            if ($key === '') {
+                continue;
+            }
+
+            if (! isset($peopleByIdentity[$key])) {
+                $peopleByIdentity[$key] = (array) $person;
+
+                continue;
+            }
+
+            $existing = &$peopleByIdentity[$key];
+            $existing['face_count'] = max((int) ($existing['face_count'] ?? 0), (int) ($person->face_count ?? 0));
+            $existing['linked_media_count'] = max((int) ($existing['linked_media_count'] ?? 0), (int) ($person->linked_media_count ?? 0));
+            $existing['media_count'] = max((int) ($existing['media_count'] ?? 0), (int) ($person->media_count ?? 0));
+            $existing['favorite'] = max((int) ($existing['favorite'] ?? 0), (int) ($person->favorite ?? 0));
+
+            if (empty($existing['representative_face_id']) && ! empty($person->representative_face_id)) {
+                $existing['representative_face_id'] = $person->representative_face_id;
+            }
+            if (empty($existing['representative_asset_uuid']) && ! empty($person->representative_asset_uuid)) {
+                $existing['representative_asset_uuid'] = $person->representative_asset_uuid;
+                $existing['representative_filename'] = $person->representative_filename;
+            }
+            if (empty($existing['representative_path']) && ! empty($person->representative_path)) {
+                $existing['representative_path'] = $person->representative_path;
+            }
+            if (empty($existing['face_name_variants']) && ! empty($person->face_name_variants)) {
+                $existing['face_name_variants'] = $person->face_name_variants;
+                $existing['face_name_variant_count'] = $person->face_name_variant_count;
+            }
+            unset($existing);
+        }
+
+        $people = array_map(static function (array $person): array {
+            $faceCount = (int) ($person['face_count'] ?? 0);
+            $linkedMediaCount = (int) ($person['linked_media_count'] ?? 0);
+            $person['face_count'] = $faceCount;
+            $person['linked_media_count'] = $linkedMediaCount;
+            $person['media_count'] = max((int) ($person['media_count'] ?? 0), $faceCount, $linkedMediaCount);
+            $person['has_face_rows'] = $faceCount > 0;
+            $person['has_ft_media'] = $linkedMediaCount > 0;
+            $person['known_source'] = $faceCount > 0
+                ? ($linkedMediaCount > 0 ? 'face_rows_and_ft_media' : 'face_rows')
+                : 'ft_media';
+            $person['representative_thumbnail_url'] = ! empty($person['representative_asset_uuid'])
+                ? "/api/media/{$person['representative_asset_uuid']}/thumbnail/medium"
+                : null;
+
+            return $person;
+        }, array_values($peopleByIdentity));
+
+        usort($people, static function (array $a, array $b): int {
+            return ((int) $b['face_count'] <=> (int) $a['face_count'])
+                ?: ((int) $b['linked_media_count'] <=> (int) $a['linked_media_count'])
+                ?: strcmp((string) $a['person_name'], (string) $b['person_name']);
+        });
+
+        $pagePeople = array_slice($people, $offset, $limit);
+        $mediaPaths = array_values(array_unique(array_filter(array_map(
+            static fn (array $person): ?string => empty($person['representative_face_id']) ? ($person['representative_path'] ?? null) : null,
+            $pagePeople
+        ))));
+        if ($mediaPaths !== []) {
+            $pathPlaceholders = implode(',', array_fill(0, count($mediaPaths), '?'));
+            $registryRows = DB::select("
+                SELECT asset_uuid, filename, current_path, original_path
+                FROM file_registry
+                WHERE current_path IN ({$pathPlaceholders})
+                   OR original_path IN ({$pathPlaceholders})
+            ", [...$mediaPaths, ...$mediaPaths]);
+
+            $registryByPath = [];
+            foreach ($registryRows as $registry) {
+                foreach ([$registry->current_path ?? null, $registry->original_path ?? null] as $path) {
+                    $path = trim((string) $path);
+                    if ($path !== '') {
+                        $registryByPath[$path] = $registry;
+                    }
+                }
+            }
+
+            foreach ($pagePeople as &$person) {
+                $path = trim((string) ($person['representative_path'] ?? ''));
+                if ($path === '' || ! isset($registryByPath[$path])) {
+                    continue;
+                }
+
+                $registry = $registryByPath[$path];
+                $person['representative_asset_uuid'] = $registry->asset_uuid;
+                $person['representative_filename'] = $registry->filename;
+                $person['representative_thumbnail_url'] = $registry->asset_uuid
+                    ? "/api/media/{$registry->asset_uuid}/thumbnail/medium"
+                    : null;
+            }
+            unset($person);
+        }
+
+        $hasMore = count($people) > ($offset + $limit);
 
         return response()->json([
             'success' => true,
-            'data' => $people,
-            'total' => $total->cnt ?? 0,
+            'data' => $pagePeople,
+            'total' => $hasMore ? $offset + $limit + 1 : $offset + count($pagePeople),
             'limit' => $limit,
             'offset' => $offset,
         ]);
@@ -4162,7 +4480,10 @@ class MediaBrowserController extends Controller
      */
     public function bulkNameFaces(Request $request): JsonResponse
     {
-        $faceIds = $request->input('face_ids', []);
+        $faceIds = array_values(array_unique(array_filter(
+            array_map('intval', (array) $request->input('face_ids', [])),
+            fn (int $faceId): bool => $faceId > 0
+        )));
         $personName = trim($request->input('person_name', ''));
         $genealogyPersonId = (int) $request->input('genealogy_person_id', 0);
 
@@ -4170,23 +4491,50 @@ class MediaBrowserController extends Controller
             return response()->json(['error' => 'face_ids required'], 400);
         }
 
-        if ($genealogyPersonId > 0 && ! $this->findGenealogyPerson($genealogyPersonId, (int) $request->input('tree_id', 0))) {
-            return $this->invalidGenealogyPersonResponse($genealogyPersonId);
+        $genealogyPerson = null;
+        if ($genealogyPersonId > 0) {
+            $genealogyPerson = $this->findGenealogyPerson($genealogyPersonId, (int) $request->input('tree_id', 0));
+            if (! $genealogyPerson) {
+                return $this->invalidGenealogyPersonResponse($genealogyPersonId);
+            }
+
+            $canonicalName = trim(($genealogyPerson->given_name ?? '').' '.($genealogyPerson->surname ?? ''));
+            if ($canonicalName !== '') {
+                $personName = $canonicalName;
+            }
         }
 
-        $faceIds = array_map('intval', $faceIds);
         $placeholders = implode(',', array_fill(0, count($faceIds), '?'));
 
-        // Update face names
-        $updated = DB::update("
-            UPDATE file_registry_faces SET person_name = ? WHERE id IN ({$placeholders})
-        ", array_merge([$personName], $faceIds));
+        // Update face names and the explicit FT bridge field. The shared bridge
+        // still handles genealogy_media alignment when a person id is present.
+        if ($genealogyPersonId > 0) {
+            $updated = DB::update("
+                UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = ?
+                WHERE id IN ({$placeholders})
+            ", array_merge([$personName, $genealogyPersonId], $faceIds));
+        } else {
+            $updated = DB::update("
+                UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = NULL, verified = 0
+                WHERE id IN ({$placeholders})
+            ", array_merge([$personName], $faceIds));
+        }
 
         // Reset writeback flags on affected files
         DB::update("
             UPDATE file_registry SET exif_faces_written = 0
             WHERE id IN (
                 SELECT DISTINCT file_registry_id FROM file_registry_faces WHERE id IN ({$placeholders})
+            )
+        ", $faceIds);
+
+        $scanLogsReset = DB::delete("
+            DELETE FROM genealogy_media_scan_log
+            WHERE nextcloud_path IN (
+                SELECT current_path FROM file_registry
+                WHERE id IN (
+                    SELECT DISTINCT file_registry_id FROM file_registry_faces WHERE id IN ({$placeholders})
+                )
             )
         ", $faceIds);
 
@@ -4200,8 +4548,10 @@ class MediaBrowserController extends Controller
         return response()->json([
             'success' => true,
             'updated' => $updated,
+            'person_name' => $personName,
             'genealogy_person_id' => $genealogyPersonId ?: null,
             'genealogy_bridge' => $bridgeResults,
+            'scan_logs_reset' => $scanLogsReset,
         ]);
     }
 
@@ -4233,47 +4583,349 @@ class MediaBrowserController extends Controller
     }
 
     /**
-     * Rename all faces of a person (or merge if target already exists)
+     * Preview a person-card face label rename before applying the cascade.
+     *
+     * POST /api/media/faces/rename-person/preview
+     */
+    public function previewRenamePerson(Request $request): JsonResponse
+    {
+        $scope = $this->faceRenameScopeFromRequest($request);
+        $newName = trim((string) $request->input('new_name', ''));
+
+        if ($scope['error'] !== null) {
+            return response()->json(['error' => $scope['error']], 400);
+        }
+
+        if ($newName === '') {
+            return response()->json(['error' => 'new_name required'], 400);
+        }
+
+        if (
+            $scope['scope_type'] === 'name'
+            && count($scope['normalized_source_names']) === 1
+            && $scope['normalized_source_names'][0] === $this->normalizeFaceRenameName($newName)
+        ) {
+            return response()->json(['error' => 'Names are identical'], 400);
+        }
+
+        return response()->json($this->buildFaceRenamePreview($scope, $newName));
+    }
+
+    /**
+     * Rename all face labels in a People-card scope without changing FT person records.
      *
      * POST /api/media/faces/rename-person
      */
     public function renamePerson(Request $request): JsonResponse
     {
-        $oldName = trim($request->input('old_name', ''));
-        $newName = trim($request->input('new_name', ''));
+        $scope = $this->faceRenameScopeFromRequest($request);
+        $newName = trim((string) $request->input('new_name', ''));
 
-        if (! $oldName || ! $newName) {
-            return response()->json(['error' => 'old_name and new_name required'], 400);
+        if ($scope['error'] !== null) {
+            return response()->json(['error' => $scope['error']], 400);
         }
 
-        if ($oldName === $newName) {
+        if ($newName === '') {
+            return response()->json(['error' => 'new_name required'], 400);
+        }
+
+        if (
+            $scope['scope_type'] === 'name'
+            && count($scope['normalized_source_names']) === 1
+            && $scope['normalized_source_names'][0] === $this->normalizeFaceRenameName($newName)
+        ) {
             return response()->json(['error' => 'Names are identical'], 400);
         }
 
-        // Check if target name already exists (merge case)
-        $targetExists = DB::selectOne('
-            SELECT COUNT(*) as cnt FROM file_registry_faces WHERE person_name = ? AND hidden = 0
-        ', [$newName]);
-        $merged = ($targetExists->cnt ?? 0) > 0;
+        $preview = $this->buildFaceRenamePreview($scope, $newName);
+        if (($preview['face_count'] ?? 0) < 1) {
+            return response()->json(['error' => 'No matching face labels found', 'preview' => $preview], 404);
+        }
 
-        // Rename all faces
-        $renamed = DB::update('
-            UPDATE file_registry_faces SET person_name = ? WHERE person_name = ?
-        ', [$newName, $oldName]);
+        [$faceWhere, $faceParams] = $this->faceRenameWhere($scope, 'frf');
+        $fileRows = DB::select("
+            SELECT DISTINCT frf.file_registry_id
+            FROM file_registry_faces frf
+            WHERE {$faceWhere}
+        ", $faceParams);
+        $fileIds = array_values(array_filter(array_map(fn ($row) => (int) $row->file_registry_id, $fileRows)));
 
-        // Reset writeback flags
-        DB::update('
-            UPDATE file_registry SET exif_faces_written = 0
-            WHERE id IN (
-                SELECT DISTINCT file_registry_id FROM file_registry_faces WHERE person_name = ?
-            )
-        ', [$newName]);
+        [$updateWhere, $updateParams] = $this->faceRenameWhere($scope, '');
+        $renamed = DB::transaction(function () use ($newName, $updateWhere, $updateParams, $fileIds): int {
+            $count = DB::update("
+                UPDATE file_registry_faces
+                SET person_name = ?
+                WHERE {$updateWhere}
+            ", [$newName, ...$updateParams]);
+
+            if ($fileIds !== []) {
+                $placeholders = implode(',', array_fill(0, count($fileIds), '?'));
+                DB::update("
+                    UPDATE file_registry
+                    SET exif_faces_written = 0, rag_indexed_at = NULL
+                    WHERE id IN ({$placeholders})
+                ", $fileIds);
+            }
+
+            return $count;
+        });
+
+        $clustersRenamed = 0;
+        try {
+            [$clusterWhere, $clusterParams] = $this->faceRenameClusterWhere($scope);
+            $clustersRenamed = DB::connection('pgsql_rag')->update("
+                UPDATE person_clusters
+                SET name = ?
+                WHERE {$clusterWhere}
+            ", [$newName, ...$clusterParams]);
+        } catch (\Throwable $e) {
+            Log::warning('Face rename cluster cascade failed', [
+                'scope_type' => $scope['scope_type'],
+                'genealogy_person_id' => $scope['genealogy_person_id'],
+                'old_name' => $scope['old_name'],
+                'new_name' => $newName,
+                'error' => $e->getMessage(),
+            ]);
+        }
 
         return response()->json([
             'success' => true,
             'renamed' => $renamed,
-            'merged' => $merged,
+            'merged' => (bool) ($preview['merged'] ?? false),
+            'files_queued_for_writeback' => count($fileIds),
+            'files_queued_for_rag' => count($fileIds),
+            'clusters_renamed' => $clustersRenamed,
+            'ft_record_changes' => 0,
+            'preview' => $preview,
         ]);
+    }
+
+    private function faceRenameScopeFromRequest(Request $request): array
+    {
+        $oldName = trim((string) $request->input('old_name', ''));
+        $sourceNamesInput = $request->input('source_names', []);
+        $genealogyPersonId = (int) $request->input('genealogy_person_id', 0);
+        $scopeType = trim((string) $request->input('scope_type', ''));
+
+        if ($scopeType === '') {
+            $scopeType = $genealogyPersonId > 0 ? 'genealogy_person' : 'name';
+        }
+
+        if (! in_array($scopeType, ['name', 'genealogy_person'], true)) {
+            return ['error' => 'scope_type must be name or genealogy_person'];
+        }
+
+        if ($scopeType === 'genealogy_person' && $genealogyPersonId <= 0) {
+            return ['error' => 'genealogy_person_id required for genealogy_person scope'];
+        }
+
+        $sourceNames = [];
+        if (is_array($sourceNamesInput)) {
+            foreach ($sourceNamesInput as $name) {
+                $name = trim((string) $name);
+                if ($name !== '') {
+                    $sourceNames[] = $name;
+                }
+            }
+        }
+        if ($oldName !== '') {
+            array_unshift($sourceNames, $oldName);
+        }
+        $sourceNamesByNormalized = [];
+        foreach ($sourceNames as $name) {
+            $normalized = $this->normalizeFaceRenameName($name);
+            if ($normalized !== '' && ! array_key_exists($normalized, $sourceNamesByNormalized)) {
+                $sourceNamesByNormalized[$normalized] = $name;
+            }
+        }
+        $sourceNames = array_values($sourceNamesByNormalized);
+        $normalizedSourceNames = array_keys($sourceNamesByNormalized);
+
+        if ($scopeType === 'name' && $sourceNames === []) {
+            return ['error' => 'old_name required for name scope'];
+        }
+
+        return [
+            'error' => null,
+            'scope_type' => $scopeType,
+            'old_name' => $oldName,
+            'source_names' => $sourceNames,
+            'normalized_source_names' => $normalizedSourceNames,
+            'genealogy_person_id' => $genealogyPersonId > 0 ? $genealogyPersonId : null,
+        ];
+    }
+
+    private function faceRenameWhere(array $scope, string $alias = 'frf'): array
+    {
+        $prefix = $alias !== '' ? $alias.'.' : '';
+
+        if ($scope['scope_type'] === 'genealogy_person') {
+            return [$prefix.'genealogy_person_id = ?', [(int) $scope['genealogy_person_id']]];
+        }
+
+        $names = array_values(array_filter($scope['normalized_source_names'] ?? [], fn (string $name): bool => $name !== ''));
+        if ($names === []) {
+            return ['0 = 1', []];
+        }
+        $placeholders = implode(',', array_fill(0, count($names), '?'));
+
+        return ["LOWER(TRIM({$prefix}person_name)) IN ({$placeholders})", $names];
+    }
+
+    private function faceRenameClusterWhere(array $scope): array
+    {
+        if ($scope['scope_type'] === 'genealogy_person') {
+            return ['genealogy_person_id = ?', [(int) $scope['genealogy_person_id']]];
+        }
+
+        $names = array_values(array_filter($scope['normalized_source_names'] ?? [], fn (string $name): bool => $name !== ''));
+        if ($names === []) {
+            return ['0 = 1', []];
+        }
+        $placeholders = implode(',', array_fill(0, count($names), '?'));
+
+        return ["LOWER(TRIM(name)) IN ({$placeholders})", $names];
+    }
+
+    private function normalizeFaceRenameName(string $name): string
+    {
+        $name = strtolower(trim($name));
+        $name = preg_replace('/\s+/', ' ', $name) ?? $name;
+
+        return trim($name);
+    }
+
+    private function buildFaceRenamePreview(array $scope, string $newName): array
+    {
+        [$where, $params] = $this->faceRenameWhere($scope, 'frf');
+
+        $summary = DB::selectOne("
+            SELECT
+                COUNT(*) as face_count,
+                COUNT(DISTINCT frf.file_registry_id) as photo_count,
+                SUM(CASE WHEN frf.hidden = 1 THEN 1 ELSE 0 END) as hidden_face_count,
+                COUNT(DISTINCT NULLIF(TRIM(frf.person_name), '')) as current_name_count,
+                GROUP_CONCAT(DISTINCT frf.person_name ORDER BY frf.person_name SEPARATOR '|||') as current_names
+            FROM file_registry_faces frf
+            WHERE {$where}
+        ", $params);
+
+        $target = DB::selectOne("
+            SELECT COUNT(*) as face_count, COUNT(DISTINCT file_registry_id) as photo_count
+            FROM file_registry_faces
+            WHERE LOWER(TRIM(person_name)) = ?
+        ", [$this->normalizeFaceRenameName($newName)]);
+
+        $ftRows = DB::select("
+            SELECT frf.genealogy_person_id, COUNT(*) as face_count, gp.gedcom_id,
+                   gp.given_name, gp.surname,
+                   NULLIF(TRIM(CONCAT_WS(' ', gp.given_name, gp.surname)), '') as canonical_name
+            FROM file_registry_faces frf
+            LEFT JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
+            WHERE {$where} AND frf.genealogy_person_id IS NOT NULL
+            GROUP BY frf.genealogy_person_id, gp.gedcom_id, gp.given_name, gp.surname
+            ORDER BY face_count DESC
+        ", $params);
+
+        $sampleFiles = DB::select("
+            SELECT fr.id, fr.filename, fr.current_path, COUNT(*) as face_count
+            FROM file_registry_faces frf
+            JOIN file_registry fr ON fr.id = frf.file_registry_id
+            WHERE {$where}
+            GROUP BY fr.id, fr.filename, fr.current_path
+            ORDER BY face_count DESC, fr.id DESC
+            LIMIT 5
+        ", $params);
+
+        $clusterSummary = ['available' => false, 'cluster_count' => 0];
+        try {
+            [$clusterWhere, $clusterParams] = $this->faceRenameClusterWhere($scope);
+            $cluster = DB::connection('pgsql_rag')->selectOne("
+                SELECT COUNT(*) as cluster_count
+                FROM person_clusters
+                WHERE {$clusterWhere}
+            ", $clusterParams);
+            $clusterSummary = [
+                'available' => true,
+                'cluster_count' => (int) ($cluster->cluster_count ?? 0),
+            ];
+        } catch (\Throwable $e) {
+            $clusterSummary['error'] = 'Cluster preview unavailable';
+        }
+
+        $currentNames = [];
+        if (! empty($summary->current_names)) {
+            $currentNames = array_values(array_filter(explode('|||', (string) $summary->current_names)));
+        }
+
+        $ftPeople = array_map(function ($row): array {
+            return [
+                'id' => (int) $row->genealogy_person_id,
+                'gedcom_id' => $row->gedcom_id,
+                'name' => $row->canonical_name ?: trim(($row->given_name ?? '').' '.($row->surname ?? '')),
+                'face_count' => (int) $row->face_count,
+            ];
+        }, $ftRows);
+
+        $warnings = [];
+        if ((int) ($summary->face_count ?? 0) < 1) {
+            $warnings[] = 'No faces match this rename scope.';
+        }
+        if ($ftPeople !== []) {
+            $warnings[] = 'FT person records will not be renamed; only face labels, photo writeback flags, and search/RAG freshness will change.';
+        }
+        if (count($ftPeople) > 1) {
+            $warnings[] = 'This face label is linked to more than one FT person. Review the listed FT names before applying.';
+        }
+        if ((int) ($target->face_count ?? 0) > 0) {
+            $warnings[] = 'The target label already exists. Applying this will merge these face labels under the target display label.';
+        }
+        if ($scope['scope_type'] === 'name' && count($scope['source_names']) > 1) {
+            $warnings[] = 'Multiple source labels will be normalized to one display label. Confirm these are the same person before applying.';
+        }
+        if ($scope['scope_type'] === 'name' && $scope['source_names'] !== [] && collect($scope['source_names'])->contains(fn (string $name): bool => ! str_contains($name, ' '))) {
+            $warnings[] = 'This is a short nickname-style label. Confirm the sample photos so unrelated people are not merged.';
+        }
+        if (count($currentNames) > 1) {
+            $warnings[] = 'Multiple current face labels in this scope will be normalized to the requested label.';
+        }
+
+        $faceCount = (int) ($summary->face_count ?? 0);
+        $photoCount = (int) ($summary->photo_count ?? 0);
+        $clusterCount = (int) ($clusterSummary['cluster_count'] ?? 0);
+
+        return [
+            'success' => true,
+            'scope_type' => $scope['scope_type'],
+            'source_name' => $scope['old_name'] ?: ($ftPeople[0]['name'] ?? ('FT person '.$scope['genealogy_person_id'])),
+            'source_names' => $scope['source_names'],
+            'new_name' => $newName,
+            'genealogy_person_id' => $scope['genealogy_person_id'],
+            'current_names' => $currentNames,
+            'face_count' => $faceCount,
+            'photo_count' => $photoCount,
+            'hidden_face_count' => (int) ($summary->hidden_face_count ?? 0),
+            'target_face_count' => (int) ($target->face_count ?? 0),
+            'target_photo_count' => (int) ($target->photo_count ?? 0),
+            'merged' => (int) ($target->face_count ?? 0) > 0,
+            'ft_people' => $ftPeople,
+            'ft_record_changes' => 0,
+            'cluster_summary' => $clusterSummary,
+            'sample_files' => array_map(fn ($row): array => [
+                'id' => (int) $row->id,
+                'filename' => $row->filename,
+                'current_path' => $row->current_path,
+                'face_count' => (int) $row->face_count,
+            ], $sampleFiles),
+            'warnings' => $warnings,
+            'cascade' => [
+                ['label' => 'Face labels updated', 'count' => $faceCount],
+                ['label' => 'Photos queued for EXIF face writeback', 'count' => $photoCount],
+                ['label' => 'Photos queued for file/RAG search reindex', 'count' => $photoCount],
+                ['label' => 'Matching face cluster labels updated', 'count' => $clusterCount],
+                ['label' => 'FT person records changed', 'count' => 0],
+            ],
+        ];
     }
 
     /**
@@ -4314,37 +4966,284 @@ class MediaBrowserController extends Controller
     public function personFaces(Request $request): JsonResponse
     {
         $personName = trim($request->get('name', ''));
+        $genealogyPersonId = (int) $request->get('genealogy_person_id', 0);
         $limit = min((int) $request->get('limit', 60), 200);
         $offset = (int) $request->get('offset', 0);
+        $trustMode = $this->facePersonPageTrustMode();
+        $normalizeName = static function (?string $name): string {
+            $name = strtolower(trim((string) $name));
+            $name = preg_replace('/\s+/', ' ', $name) ?? $name;
 
-        if (! $personName) {
-            return response()->json(['error' => 'name parameter required'], 400);
+            return trim($name);
+        };
+
+        if (! $personName && $genealogyPersonId <= 0) {
+            return response()->json(['error' => 'name or genealogy_person_id parameter required'], 400);
         }
 
-        $faces = DB::select('
+        $normalizedNames = array_values(array_filter([$normalizeName($personName)], fn (string $name): bool => $name !== ''));
+        $trustedStatuses = [
+            'export_exact',
+            'copy_export_exact',
+            'export_variant_supported',
+            'copy_export_variant_supported',
+        ];
+        $trustedStatusSql = "'".implode("','", $trustedStatuses)."'";
+        $provenanceSelect = ',
+                   fip.status AS provenance_status,
+                   fip.evidence_source AS provenance_evidence_source,
+                   fip.matched_export_name,
+                   fip.matched_variant_name';
+        $provenanceJoin = 'LEFT JOIN face_identity_provenance fip ON fip.file_registry_face_id = frf.id';
+        $baseVisibilityWhere = "COALESCE(frf.hidden, 0) = 0 AND fr.status = 'active'";
+        $provenanceWhere = '';
+        if ($trustMode === 'provenance_trusted') {
+            $provenanceWhere = " AND fip.status IN ({$trustedStatusSql})";
+        }
+
+        $where = 'LOWER(TRIM(frf.person_name)) = ?';
+        $params = [$normalizedNames[0] ?? $normalizeName($personName)];
+
+        if ($genealogyPersonId > 0) {
+            $person = DB::selectOne('SELECT given_name, surname FROM genealogy_persons WHERE id = ?', [$genealogyPersonId]);
+            $canonicalName = $person ? trim(($person->given_name ?? '').' '.($person->surname ?? '')) : '';
+            if ($canonicalName !== '') {
+                $personName = $canonicalName;
+                $normalizedNames[] = $normalizeName($canonicalName);
+            }
+
+            $normalizedNames = array_values(array_unique(array_filter($normalizedNames, fn (string $name): bool => $name !== '')));
+            $where = 'frf.genealogy_person_id = ?';
+            $params = [$genealogyPersonId];
+            if ($trustMode !== 'provenance_trusted' && $normalizedNames !== []) {
+                $namePlaceholders = implode(',', array_fill(0, count($normalizedNames), '?'));
+                $where = "({$where} OR LOWER(TRIM(frf.person_name)) IN ({$namePlaceholders}))";
+                $params = [$genealogyPersonId, ...$normalizedNames];
+            }
+        }
+
+        $faces = DB::select("
             SELECT frf.id as face_id, frf.file_registry_id, frf.person_name,
-                   frf.region_x, frf.region_y, frf.region_w, frf.region_h,
+                   frf.genealogy_person_id, frf.region_x, frf.region_y, frf.region_w, frf.region_h,
                    frf.confidence, frf.source, frf.hidden, frf.favorite,
                    fr.asset_uuid, fr.filename, fr.current_path
+                   {$provenanceSelect}
             FROM file_registry_faces frf
             JOIN file_registry fr ON fr.id = frf.file_registry_id
-            WHERE frf.person_name = ?
+            {$provenanceJoin}
+            WHERE {$baseVisibilityWhere}
+              AND {$where}
+              {$provenanceWhere}
             ORDER BY frf.confidence DESC, frf.id DESC
             LIMIT ? OFFSET ?
-        ', [$personName, $limit, $offset]);
+        ", [...$params, $limit, $offset]);
 
-        $total = DB::selectOne('
-            SELECT COUNT(*) as cnt FROM file_registry_faces WHERE person_name = ?
-        ', [$personName]);
+        $faceData = array_map(static function (object $face) use ($genealogyPersonId): array {
+            $row = (array) $face;
+            $facePersonId = $face->genealogy_person_id !== null ? (int) $face->genealogy_person_id : null;
+
+            if ($genealogyPersonId > 0 && $facePersonId === $genealogyPersonId) {
+                $row['assignment_source'] = 'ft_face';
+                $row['assignment_label'] = 'FT';
+            } elseif ($facePersonId !== null) {
+                $row['assignment_source'] = 'other_ft_same_name';
+                $row['assignment_label'] = 'Other FT';
+            } else {
+                $row['assignment_source'] = 'name_only';
+                $row['assignment_label'] = 'Name only';
+            }
+            if (! empty($face->provenance_status)) {
+                $row['assignment_source'] = 'provenance_'.$row['assignment_source'];
+                $row['assignment_label'] = match ((string) $face->provenance_status) {
+                    'export_exact' => 'Export',
+                    'copy_export_exact' => 'Copy',
+                    'export_variant_supported' => 'Variant',
+                    'copy_export_variant_supported' => 'Copy variant',
+                    default => $row['assignment_label'],
+                };
+            }
+
+            return $row;
+        }, $faces);
+
+        $total = DB::selectOne("
+            SELECT COUNT(*) as cnt
+            FROM file_registry_faces frf
+            JOIN file_registry fr ON fr.id = frf.file_registry_id
+            {$provenanceJoin}
+            WHERE {$baseVisibilityWhere}
+              AND {$where}
+              {$provenanceWhere}
+        ", $params);
+
+        $linkedMedia = [];
+        $linkedMediaTotal = 0;
+        $includeLinkedMedia = $request->boolean('include_linked_media', false)
+            && ($trustMode !== 'provenance_trusted' || $request->boolean('include_untrusted_linked_media', false));
+
+        if ($genealogyPersonId > 0 && $offset === 0 && $includeLinkedMedia) {
+            $linkedMediaRows = DB::select('
+                SELECT
+                    gpm.id AS person_media_id,
+                    gm.id AS media_id,
+                    gm.title,
+                    gm.local_filename,
+                    gm.nextcloud_path,
+                    gm.original_path,
+                    gm.media_type,
+                    gm.mime_type,
+                    gm.date_taken,
+                    gm.media_date,
+                    gm.face_count AS genealogy_face_count,
+                    gpm.is_primary,
+                    gpm.face_confirmed
+                FROM genealogy_person_media gpm
+                JOIN genealogy_media gm ON gm.id = gpm.media_id
+                WHERE gpm.person_id = ?
+                ORDER BY gpm.is_primary DESC, gpm.id DESC
+                LIMIT 1000
+            ', [$genealogyPersonId]);
+
+            $paths = [];
+            foreach ($linkedMediaRows as $media) {
+                foreach ([$media->nextcloud_path ?? null, $media->original_path ?? null] as $path) {
+                    $path = trim((string) $path);
+                    if ($path !== '') {
+                        $paths[] = $path;
+                    }
+                }
+            }
+            $paths = array_values(array_unique($paths));
+
+            $registryByPath = [];
+            $registryIds = [];
+            if ($paths !== []) {
+                $pathPlaceholders = implode(',', array_fill(0, count($paths), '?'));
+                $registryRows = DB::select("
+                    SELECT id, asset_uuid, filename, current_path, original_path, face_count
+                    FROM file_registry
+                    WHERE current_path IN ({$pathPlaceholders})
+                       OR original_path IN ({$pathPlaceholders})
+                ", [...$paths, ...$paths]);
+
+                foreach ($registryRows as $registry) {
+                    $registryIds[] = (int) $registry->id;
+                    foreach ([$registry->current_path ?? null, $registry->original_path ?? null] as $path) {
+                        $path = trim((string) $path);
+                        if ($path !== '') {
+                            $registryByPath[$path] = $registry;
+                        }
+                    }
+                }
+                $registryIds = array_values(array_unique($registryIds));
+            }
+
+            $matchedRegistryIds = [];
+            if ($registryIds !== []) {
+                $idPlaceholders = implode(',', array_fill(0, count($registryIds), '?'));
+                $faceIdentityWhere = 'frf.genealogy_person_id = ?';
+                $faceIdentityParams = [$genealogyPersonId];
+                if ($trustMode !== 'provenance_trusted' && $normalizedNames !== []) {
+                    $namePlaceholders = implode(',', array_fill(0, count($normalizedNames), '?'));
+                    $faceIdentityWhere = "({$faceIdentityWhere} OR (frf.genealogy_person_id IS NULL AND LOWER(TRIM(frf.person_name)) IN ({$namePlaceholders})))";
+                    $faceIdentityParams = [$genealogyPersonId, ...$normalizedNames];
+                }
+                $linkedMediaProvenanceWhere = '';
+                if ($trustMode === 'provenance_trusted') {
+                    $linkedMediaProvenanceWhere = "AND fip.status IN ({$trustedStatusSql})";
+                }
+
+                $matchedRows = DB::select("
+                    SELECT DISTINCT frf.file_registry_id
+                    FROM file_registry_faces frf
+                    LEFT JOIN face_identity_provenance fip ON fip.file_registry_face_id = frf.id
+                    WHERE frf.file_registry_id IN ({$idPlaceholders})
+                      AND {$faceIdentityWhere}
+                      AND COALESCE(frf.hidden, 0) = 0
+                      {$linkedMediaProvenanceWhere}
+                ", [...$registryIds, ...$faceIdentityParams]);
+                foreach ($matchedRows as $row) {
+                    $matchedRegistryIds[(int) $row->file_registry_id] = true;
+                }
+            }
+
+            foreach ($linkedMediaRows as $media) {
+                $registry = null;
+                foreach ([$media->nextcloud_path ?? null, $media->original_path ?? null] as $path) {
+                    $path = trim((string) $path);
+                    if ($path !== '' && isset($registryByPath[$path])) {
+                        $registry = $registryByPath[$path];
+                        break;
+                    }
+                }
+
+                if ($registry !== null && isset($matchedRegistryIds[(int) $registry->id])) {
+                    continue;
+                }
+
+                $media->file_registry_id = $registry !== null ? (int) $registry->id : null;
+                $media->asset_uuid = $registry->asset_uuid ?? null;
+                $media->filename = $registry->filename ?? null;
+                $media->current_path = $registry->current_path ?? null;
+                $media->registry_face_count = $registry->face_count ?? null;
+                $linkedMedia[] = $media;
+
+                if (count($linkedMedia) >= 60) {
+                    break;
+                }
+            }
+            $linkedMediaTotal = count($linkedMedia);
+        }
 
         return response()->json([
             'success' => true,
-            'data' => $faces,
+            'data' => $faceData,
+            'linked_media' => array_map(fn ($media) => [
+                'person_media_id' => (int) $media->person_media_id,
+                'media_id' => (int) $media->media_id,
+                'title' => $media->title,
+                'filename' => $media->filename ?: $media->local_filename ?: basename((string) ($media->nextcloud_path ?: $media->original_path)),
+                'asset_uuid' => $media->asset_uuid,
+                'thumbnail_url' => $media->asset_uuid ? "/api/media/{$media->asset_uuid}/thumbnail/medium" : null,
+                'file_registry_id' => $media->file_registry_id !== null ? (int) $media->file_registry_id : null,
+                'current_path' => $media->current_path,
+                'nextcloud_path' => $media->nextcloud_path,
+                'original_path' => $media->original_path,
+                'media_type' => $media->media_type,
+                'mime_type' => $media->mime_type,
+                'date_taken' => $media->date_taken,
+                'media_date' => $media->media_date,
+                'is_primary' => (bool) $media->is_primary,
+                'face_confirmed' => (bool) $media->face_confirmed,
+                'registry_face_count' => $media->registry_face_count !== null ? (int) $media->registry_face_count : null,
+                'genealogy_face_count' => $media->genealogy_face_count !== null ? (int) $media->genealogy_face_count : null,
+            ], $linkedMedia),
+            'linked_media_total' => $linkedMediaTotal,
             'total' => (int) ($total->cnt ?? 0),
             'person_name' => $personName,
+            'genealogy_person_id' => $genealogyPersonId ?: null,
+            'trust_mode' => $trustMode,
             'limit' => $limit,
             'offset' => $offset,
         ]);
+    }
+
+    private function facePersonPageTrustMode(): string
+    {
+        try {
+            $row = DB::selectOne(
+                'SELECT config_value FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1',
+                ['faces', 'person_page_trust_mode']
+            );
+            $mode = trim((string) ($row->config_value ?? ''));
+            if (in_array($mode, ['provenance_trusted', 'review_all', 'legacy_all'], true)) {
+                return $mode;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('MediaBrowserController: face person trust mode lookup failed', ['error' => $e->getMessage()]);
+        }
+
+        return 'provenance_trusted';
     }
 
     /**

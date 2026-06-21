@@ -48,12 +48,16 @@ class NewsPushoverProofCommand extends Command
             'status' => 'inconclusive',
             'run' => $this->summarizeRun($run),
             'pushover' => $this->summarizePushover($this->fetchPushoverExecutions((int) $run->id)),
+            'current_formatter_config' => $this->summarizeCurrentFormatterConfig((int) $run->workflow_id),
             'current_pushover_config' => $this->summarizeCurrentPushoverConfig((int) $run->workflow_id),
             'status_reasons' => [
                 'fail' => [],
                 'inconclusive' => [],
             ],
         ];
+        $report['formatter_prompt_proof'] = $this->summarizeFormatterPromptProof(
+            $report['current_formatter_config']
+        );
         $report['pacing_config'] = $this->summarizePacingConfig(
             $report['pushover'],
             $report['current_pushover_config']
@@ -101,6 +105,8 @@ class NewsPushoverProofCommand extends Command
                 'reason' => 'Pushover node was not found.',
             ],
             'current_pushover_config' => null,
+            'current_formatter_config' => null,
+            'formatter_prompt_proof' => null,
             'pacing_config' => null,
             'part_header_proof' => null,
             'client_display_proof' => null,
@@ -331,6 +337,139 @@ class NewsPushoverProofCommand extends Command
         }
 
         return true;
+    }
+
+    private function summarizeCurrentFormatterConfig(int $workflowId): ?array
+    {
+        $rows = DB::select(
+            'SELECT
+                wn.id,
+                wn.node_order,
+                wn.node_type,
+                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS prompt,
+                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS response_format,
+                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS pushover_format,
+                MAX(CASE WHEN wnc.config_key = ? THEN wnc.config_value END) AS prefer_preformatted
+             FROM workflow_nodes wn
+             LEFT JOIN workflow_node_configs wnc
+                ON wnc.workflow_node_id = wn.id
+               AND wnc.config_key IN (?, ?, ?, ?)
+             WHERE wn.workflow_id = ?
+               AND (wn.node_type = ? OR wn.node_type LIKE ?)
+             GROUP BY wn.id, wn.node_order, wn.node_type
+             ORDER BY wn.node_order ASC, wn.id ASC',
+            [
+                'prompt',
+                'response_format',
+                'pushover_format',
+                'prefer_preformatted',
+                'prompt',
+                'response_format',
+                'pushover_format',
+                'prefer_preformatted',
+                $workflowId,
+                'AIFormatter',
+                '%\\AIFormatter',
+            ]
+        );
+
+        if ($rows === []) {
+            return null;
+        }
+
+        $last = $rows[array_key_last($rows)];
+        $prompt = $this->stringOrNull($last->prompt);
+        $preferPreformatted = $this->boolOrNull($last->prefer_preformatted);
+
+        return [
+            'node_id' => (int) $last->id,
+            'node_order' => (int) $last->node_order,
+            'node_type' => (string) $last->node_type,
+            'configured_response_format' => $this->stringOrNull($last->response_format),
+            'configured_pushover_format' => $this->stringOrNull($last->pushover_format),
+            'configured_prefer_preformatted' => $preferPreformatted,
+            'effective_prefer_preformatted' => $preferPreformatted ?? true,
+            'prompt_length' => $prompt === null ? 0 : strlen($prompt),
+            'prompt_sha256' => $prompt === null ? null : hash('sha256', $prompt),
+            'prompt_markers' => $this->summarizePromptMarkers($prompt),
+        ];
+    }
+
+    private function summarizePromptMarkers(?string $prompt): array
+    {
+        return [
+            'full_cybersecurity_digest_title' => $this->containsPromptMarker($prompt, 'CYBERSECURITY NEWS BRIEF - TODAY'),
+            'not_link_list_instruction' => $this->containsPromptMarker($prompt, 'not one or two lines of hyperlinks'),
+            'critical_alerts_section' => $this->containsPromptMarker($prompt, 'CRITICAL ALERTS'),
+            'important_news_section' => $this->containsPromptMarker($prompt, 'IMPORTANT NEWS'),
+            'general_security_news_section' => $this->containsPromptMarker($prompt, 'GENERAL SECURITY NEWS'),
+            'direct_read_link_instruction' => $this->containsPromptMarker($prompt, '<a href="[direct URL]">Read</a>'),
+            'linked_digest_marker' => $this->containsPromptMarker($prompt, 'LINKED DIGEST'),
+        ];
+    }
+
+    private function summarizeFormatterPromptProof(?array $currentConfig): array
+    {
+        if ($currentConfig === null) {
+            return [
+                'state' => 'formatter_absent',
+                'reason' => 'Current workflow AIFormatter node config was not found.',
+                'complete' => false,
+                'full_digest_prompt_configured' => false,
+                'linked_digest_prompt_configured' => false,
+                'html_output_configured' => false,
+                'preformatted_passthrough_disabled' => false,
+            ];
+        }
+
+        $markers = $this->arrayValue($currentConfig['prompt_markers'] ?? null);
+        $fullDigestPromptConfigured = $this->allTrue($markers, [
+            'full_cybersecurity_digest_title',
+            'not_link_list_instruction',
+            'critical_alerts_section',
+            'important_news_section',
+            'general_security_news_section',
+            'direct_read_link_instruction',
+        ]);
+        $linkedDigestPromptConfigured = ($markers['linked_digest_marker'] ?? false) === true;
+        $htmlOutputConfigured = ($currentConfig['configured_response_format'] ?? null) === 'text'
+            && ($currentConfig['configured_pushover_format'] ?? null) === 'html';
+        $preformattedPassthroughDisabled = ($currentConfig['effective_prefer_preformatted'] ?? true) === false;
+        $complete = $fullDigestPromptConfigured && $htmlOutputConfigured && $preformattedPassthroughDisabled;
+
+        if ($complete) {
+            return [
+                'state' => 'full_digest_prompt_configured',
+                'reason' => 'Current formatter config uses the full mobile HTML cybersecurity digest prompt with preformatted passthrough disabled.',
+                'complete' => true,
+                'full_digest_prompt_configured' => true,
+                'linked_digest_prompt_configured' => false,
+                'html_output_configured' => true,
+                'preformatted_passthrough_disabled' => true,
+            ];
+        }
+
+        if ($linkedDigestPromptConfigured) {
+            return [
+                'state' => 'linked_digest_prompt_configured',
+                'reason' => 'Current formatter prompt still matches the bounded linked-digest shape.',
+                'complete' => false,
+                'full_digest_prompt_configured' => false,
+                'linked_digest_prompt_configured' => true,
+                'html_output_configured' => $htmlOutputConfigured,
+                'preformatted_passthrough_disabled' => $preformattedPassthroughDisabled,
+            ];
+        }
+
+        return [
+            'state' => 'prompt_shape_unknown',
+            'reason' => 'Current formatter prompt does not match the expected full digest proof markers.',
+            'complete' => false,
+            'full_digest_prompt_configured' => $fullDigestPromptConfigured,
+            'linked_digest_prompt_configured' => false,
+            'html_output_configured' => $htmlOutputConfigured,
+            'preformatted_passthrough_disabled' => $preformattedPassthroughDisabled,
+        ];
     }
 
     private function summarizeCurrentPushoverConfig(int $workflowId): ?array
@@ -1081,6 +1220,16 @@ class NewsPushoverProofCommand extends Command
                 'timeout_seconds' => $report['pushover']['timeout_seconds'] ?? null,
             ],
             'pacing_config' => $report['pacing_config'] ?? null,
+            'current_formatter_config' => empty($report['current_formatter_config']) ? null : [
+                'configured_response_format' => $report['current_formatter_config']['configured_response_format'] ?? null,
+                'configured_pushover_format' => $report['current_formatter_config']['configured_pushover_format'] ?? null,
+                'configured_prefer_preformatted' => $report['current_formatter_config']['configured_prefer_preformatted'] ?? null,
+                'effective_prefer_preformatted' => $report['current_formatter_config']['effective_prefer_preformatted'] ?? null,
+                'prompt_length' => $report['current_formatter_config']['prompt_length'] ?? null,
+                'prompt_sha256' => $report['current_formatter_config']['prompt_sha256'] ?? null,
+                'prompt_markers' => $report['current_formatter_config']['prompt_markers'] ?? [],
+            ],
+            'formatter_prompt_proof' => $report['formatter_prompt_proof'] ?? null,
             'current_pushover_config' => empty($report['current_pushover_config']) ? null : [
                 'configured_inter_chunk_delay_seconds' => $report['current_pushover_config']['configured_inter_chunk_delay_seconds'] ?? null,
                 'effective_inter_chunk_delay_seconds' => $report['current_pushover_config']['effective_inter_chunk_delay_seconds'] ?? null,
@@ -1109,6 +1258,17 @@ class NewsPushoverProofCommand extends Command
             $run = $report['run'];
             $this->line("Run: #{$run['id']} {$run['workflow_name']} status={$run['status']} natural=".var_export($run['natural'], true)
                 ." started={$run['started_at']} completed={$run['completed_at']}");
+        }
+
+        if (! empty($report['formatter_prompt_proof'])) {
+            $proof = $report['formatter_prompt_proof'];
+            $config = $report['current_formatter_config'] ?? [];
+            $this->line('Formatter proof: state='.$proof['state']
+                .' complete='.var_export($proof['complete'] ?? null, true)
+                .' html='.var_export($proof['html_output_configured'] ?? null, true)
+                .' preformatted_disabled='.var_export($proof['preformatted_passthrough_disabled'] ?? null, true)
+                .' prompt_len='.($config['prompt_length'] ?? 'n/a')
+                .' reason='.$proof['reason']);
         }
 
         $pushover = $report['pushover'];
@@ -1198,6 +1358,17 @@ class NewsPushoverProofCommand extends Command
             $this->line("Run: #{$run['id']} {$run['workflow_name']} status={$run['status']} started={$run['started_at']} completed={$run['completed_at']}");
         }
 
+        if (! empty($report['formatter_prompt_proof'])) {
+            $proof = $report['formatter_prompt_proof'];
+            $config = $report['current_formatter_config'] ?? [];
+            $this->line('Formatter: state='.$proof['state']
+                .' complete='.var_export($proof['complete'] ?? null, true)
+                .' html='.var_export($proof['html_output_configured'] ?? null, true)
+                .' preformatted_disabled='.var_export($proof['preformatted_passthrough_disabled'] ?? null, true)
+                .' prompt_len='.($config['prompt_length'] ?? 'n/a')
+                .' reason='.$proof['reason']);
+        }
+
         $pushover = $report['pushover'];
         $this->line('Pushover: present='.(($pushover['present'] ?? false) ? 'yes' : 'no')
             .' state='.($pushover['proof_state'] ?? 'unknown')
@@ -1274,6 +1445,26 @@ class NewsPushoverProofCommand extends Command
         foreach (($report['status_reasons']['inconclusive'] ?? []) as $reason) {
             $this->line('INCONCLUSIVE: '.$reason);
         }
+    }
+
+    private function containsPromptMarker(?string $prompt, string $marker): bool
+    {
+        if ($prompt === null || $marker === '') {
+            return false;
+        }
+
+        return str_contains(strtolower($prompt), strtolower($marker));
+    }
+
+    private function allTrue(array $values, array $keys): bool
+    {
+        foreach ($keys as $key) {
+            if (($values[$key] ?? false) !== true) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private function decodeOutputValue(mixed $value): mixed

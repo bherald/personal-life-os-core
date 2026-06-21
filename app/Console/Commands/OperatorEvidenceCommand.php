@@ -278,7 +278,7 @@ class OperatorEvidenceCommand extends Command
         if (is_array($headlines['agent_tool_policy_telemetry'] ?? null)) {
             $toolPolicy = $headlines['agent_tool_policy_telemetry'];
             $this->line(sprintf(
-                'agent-tool-policy: %s tools=%s enabled=%s unavailable=%s degraded=%s unknown=%s stale=%s unchecked=%s privacy_unspecified=%s policy_gap=%s last_error=%s',
+                'agent-tool-policy: %s tools=%s enabled=%s unavailable=%s degraded=%s unknown=%s stale=%s unchecked=%s privacy_unspecified=%s policy_gap=%s policy_gap_rows=%s last_error=%s',
                 $toolPolicy['status'] ?? 'unavailable',
                 $toolPolicy['tools_total'] ?? '-',
                 $toolPolicy['enabled_total'] ?? '-',
@@ -289,6 +289,7 @@ class OperatorEvidenceCommand extends Command
                 $toolPolicy['freshness_unchecked_enabled_total'] ?? '-',
                 $toolPolicy['privacy_unspecified_enabled_total'] ?? '-',
                 $toolPolicy['policy_gap_enabled_total'] ?? '-',
+                $toolPolicy['policy_gap_enabled_distinct_total'] ?? '-',
                 $toolPolicy['last_error_enabled_total'] ?? '-'
             ));
         }

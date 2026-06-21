@@ -1155,14 +1155,19 @@ class GenealogyHealthAuditService
         }
 
         if (Schema::hasTable('genealogy_media') && Schema::hasColumn('genealogy_media', 'rag_indexed_at')) {
-            $readableMediaWhere = "
+            $mediaContentWhere = "
                 (
                     NULLIF(TRIM(COALESCE(title, '')), '') IS NOT NULL
-                    OR NULLIF(TRIM(COALESCE(local_filename, '')), '') IS NOT NULL
                     OR NULLIF(TRIM(COALESCE(description, '')), '') IS NOT NULL
                     OR NULLIF(TRIM(COALESCE(ai_description, '')), '') IS NOT NULL
                     OR NULLIF(TRIM(COALESCE(transcription_text, '')), '') IS NOT NULL
                     OR NULLIF(TRIM(COALESCE(transcription, '')), '') IS NOT NULL
+                )
+            ";
+            $readableMediaWhere = "
+                (
+                    {$mediaContentWhere}
+                    OR NULLIF(TRIM(COALESCE(local_filename, '')), '') IS NOT NULL
                 )
             ";
 
@@ -1197,7 +1202,7 @@ class GenealogyHealthAuditService
                       AND rag_indexed_at IS NOT NULL
                       AND updated_at IS NOT NULL
                       AND updated_at > rag_indexed_at
-                      AND {$readableMediaWhere}
+                      AND {$mediaContentWhere}
                 ",
                 [$treeId],
                 $limit,

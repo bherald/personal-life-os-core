@@ -19,6 +19,8 @@ class RepoDevMCPService
         'feature',
         'stabilization',
         'phpunit-target',
+        'phpunit-pao-target',
+        'phpstan-pao',
         'pint-test',
         'composer-analyse',
         'diff-check',
@@ -256,15 +258,20 @@ class RepoDevMCPService
             'composer-analyse' => ['composer', 'analyse'],
             'diff-check' => ['git', 'diff', '--check'],
             'phpunit-target' => $this->targetedTestCommand($target, $filter),
+            'phpunit-pao-target' => $this->targetedPaoPhpunitCommand($target, $filter),
+            'phpstan-pao' => $this->phpstanPaoCommand($target),
         };
 
-        $result = $this->runProcess($command, $timeoutSeconds);
+        $env = str_contains($runner, 'pao') ? $this->paoEnvironment() : [];
+        $result = $this->runProcess($command, $timeoutSeconds, $env);
 
         return [
             'runner' => $runner,
             'target' => $target,
             'filter' => $filter,
             'command' => $command,
+            'env' => $env === [] ? [] : ['AI_AGENT' => 'codex', 'CODEX_CI' => '1'],
+            'pao_summary' => str_contains($runner, 'pao') ? $this->extractPaoSummary($result) : null,
             'result' => $result,
         ];
     }
@@ -521,13 +528,139 @@ class RepoDevMCPService
     }
 
     /**
+     * @return list<string>
+     */
+    private function targetedPaoPhpunitCommand(?string $target, ?string $filter): array
+    {
+        $target = trim((string) $target);
+        if ($target === '') {
+            throw new RuntimeException('phpunit-pao-target requires a test file or directory target.');
+        }
+
+        $resolved = is_dir(base_path($target))
+            ? $this->resolveDirectoryPath($target, 'read')
+            : $this->resolveFilePath($target, 'read', mustExist: true);
+
+        if ($resolved['relative'] !== 'tests' && ! str_starts_with($resolved['relative'], 'tests/')) {
+            throw new RuntimeException('phpunit-pao-target may only run paths under tests/.');
+        }
+
+        $this->requireExecutable('./vendor/bin/phpunit', 'phpunit-pao-target requires vendor/bin/phpunit.');
+        $command = ['./vendor/bin/phpunit', $resolved['relative']];
+        $filter = trim((string) $filter);
+        if ($filter !== '') {
+            if (strlen($filter) > 200) {
+                throw new RuntimeException('phpunit-pao-target filter is too long.');
+            }
+            $command[] = '--filter='.$filter;
+        }
+
+        return $command;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function phpstanPaoCommand(?string $target): array
+    {
+        $this->requireExecutable('./vendor/bin/phpstan', 'phpstan-pao requires vendor/bin/phpstan.');
+        $command = ['./vendor/bin/phpstan', 'analyse', '--no-progress'];
+        $target = trim((string) $target);
+        if ($target !== '') {
+            $resolved = is_dir(base_path($target))
+                ? $this->resolveDirectoryPath($target, 'read')
+                : $this->resolveFilePath($target, 'read', mustExist: true);
+
+            if (! $this->isPhpstanTarget($resolved['relative'])) {
+                throw new RuntimeException('phpstan-pao target must be a repo source, config, route, database, resource, or test path.');
+            }
+
+            $command[] = $resolved['relative'];
+        }
+
+        return $command;
+    }
+
+    private function requireExecutable(string $relativePath, string $message): void
+    {
+        $absolute = base_path(ltrim($relativePath, './'));
+        if (! is_file($absolute) || ! is_executable($absolute)) {
+            throw new RuntimeException($message);
+        }
+    }
+
+    private function isPhpstanTarget(string $relative): bool
+    {
+        return $relative === 'phpstan.neon'
+            || $relative === 'app'
+            || $relative === 'tests'
+            || str_starts_with($relative, 'app/')
+            || str_starts_with($relative, 'tests/')
+            || str_starts_with($relative, 'config/')
+            || str_starts_with($relative, 'routes/')
+            || str_starts_with($relative, 'database/')
+            || str_starts_with($relative, 'resources/');
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function paoEnvironment(): array
+    {
+        return [
+            'AI_AGENT' => 'codex',
+            'CODEX_CI' => '1',
+        ];
+    }
+
+    /**
+     * @param  array{output:string,error:string}  $result
+     * @return array<string, mixed>|null
+     */
+    private function extractPaoSummary(array $result): ?array
+    {
+        $combined = trim(($result['output'] ?? '')."\n".($result['error'] ?? ''));
+        if ($combined === '') {
+            return null;
+        }
+
+        $lines = array_reverse(preg_split('/\r?\n/', $combined) ?: []);
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '' || ! str_starts_with($line, '{')) {
+                continue;
+            }
+
+            $decoded = json_decode($line, true);
+            if (! is_array($decoded)) {
+                continue;
+            }
+
+            return array_intersect_key($decoded, array_flip([
+                'result',
+                'tests',
+                'passed',
+                'failed',
+                'errors',
+                'skipped',
+                'duration_ms',
+                'totals',
+                'files',
+            ]));
+        }
+
+        return null;
+    }
+
+    /**
      * @param  list<string>  $command
      * @return array{success:bool,exit_code:int|null,duration_ms:int,output:string,error:string}
      */
-    private function runProcess(array $command, int $timeoutSeconds): array
+    private function runProcess(array $command, int $timeoutSeconds, array $env = []): array
     {
         $started = microtime(true);
         $process = Process::path(base_path())
+            ->env($env)
             ->timeout($timeoutSeconds)
             ->run($command);
 

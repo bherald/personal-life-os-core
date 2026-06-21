@@ -146,8 +146,8 @@ function onNameInput() {
 }
 
 function selectSuggestion(s) {
-  name.value = s.name || s.person_name
-  genealogyPersonId.value = s.genealogy_person_id || s.id || null
+  name.value = s.person_name || s.face_label || s.name || s.genealogy_name || ''
+  genealogyPersonId.value = suggestionGenealogyPersonId(s)
   selectedGenealogy.value = genealogyPersonId.value ? s : null
   suggestions.value = []
 }
@@ -171,8 +171,8 @@ function onGenealogyInput() {
 }
 
 function selectGenealogyPerson(p) {
-  genealogyPersonId.value = p.genealogy_person_id || p.id
-  selectedGenealogy.value = p
+  genealogyPersonId.value = suggestionGenealogyPersonId(p)
+  selectedGenealogy.value = genealogyPersonId.value ? p : null
   genealogyResults.value = []
   genealogySearch.value = ''
   if (!name.value.trim()) {
@@ -181,7 +181,7 @@ function selectGenealogyPerson(p) {
 }
 
 function personLabel(p) {
-  return p?.name || p?.genealogy_name || `${p?.given_name || ''} ${p?.surname || ''}`.trim()
+  return p?.person_name || p?.face_label || p?.name || p?.genealogy_name || `${p?.given_name || ''} ${p?.surname || ''}`.trim()
 }
 
 function submit() {
@@ -198,6 +198,10 @@ function submit() {
 function parsePositiveInt(value) {
   const parsed = Number.parseInt(String(value || ''), 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function suggestionGenealogyPersonId(s) {
+  return parsePositiveInt(s?.genealogy_person_id) || parsePositiveInt(s?.id)
 }
 
 function onImgError(e) {

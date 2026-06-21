@@ -44,7 +44,7 @@ return new class extends Migration
             [
                 'description' => 'Disabled genealogy media enrichment batch lane for operator activation after post-capture preflight is clean',
                 'job_type' => 'command',
-                'command' => 'genealogy:enrich-media --limit=5',
+                'command' => 'genealogy:enrich-media --execute --limit=5',
                 'cron_expression' => '50 6 * * *',
                 'enabled' => 0,
                 'run_in_background' => 1,
@@ -60,7 +60,7 @@ return new class extends Migration
                 'stall_policy' => 'strict',
                 'backlog_metric' => 'genealogy_media_enrichment',
                 'notification_mode' => 'digest',
-                'notes' => 'TODO-9M disabled by default. Enabling this row can generate genealogy media enrichment proposals from eligible captured/source media; activate only after operator review of observe-only status and dry-run output.',
+                'notes' => 'TODO-9M disabled by default. Enabling this row explicitly runs --execute and can generate genealogy media enrichment proposals from eligible captured/source media; activate only after operator review of observe-only status and dry-run output.',
                 'created_at' => now(),
                 'updated_at' => now(),
             ]

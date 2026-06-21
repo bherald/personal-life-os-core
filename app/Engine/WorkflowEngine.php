@@ -2,8 +2,10 @@
 
 namespace App\Engine;
 
+use App\Controllers\NotificationController;
 use App\Exceptions\NodeTimeoutException;
 use App\Services\ExecutionState;
+use App\Services\SystemConfigService;
 use App\Services\WorkflowEventService;
 use App\Services\WorkflowReplayer;
 use Exception;
@@ -13,6 +15,22 @@ use Illuminate\Support\Str;
 
 class WorkflowEngine
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'workflow.engine_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'default_node_timeout_seconds' => 300,
+        'fallback_retry_max_attempts' => 1,
+        'fallback_retry_backoff_seconds' => [5],
+        'event_payload_max_bytes' => 64000,
+        'event_string_truncate_chars' => 1000,
+        'failure_alert_cooldown_seconds' => 300,
+        'failure_alert_suppressed_errors_limit' => 10,
+        'failure_alert_suppressed_errors_ttl_extra_seconds' => 60,
+        'failure_alert_summary_schedule_extra_seconds' => 30,
+        'failure_alert_summary_delay_extra_seconds' => 10,
+        'failure_alert_summary_error_limit' => 5,
+    ];
+
     private NodeLoader $nodeLoader;
 
     private DatabaseLayer $databaseLayer;
@@ -24,6 +42,9 @@ class WorkflowEngine
     private ?array $workflowDefaults = null;
 
     private ?string $currentExecutionId = null;
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function __construct(
         ?WorkflowEventService $eventService = null,
@@ -346,7 +367,7 @@ class WorkflowEngine
         $timeoutSeconds = $node->timeout_seconds
             ?? $finalConfig['timeout_seconds']
             ?? $this->workflowDefaults['timeout_seconds']
-            ?? 300; // 5 minute default
+            ?? $this->runtimePolicyInt('default_node_timeout_seconds');
         $finalConfig['timeout_seconds'] = $timeoutSeconds;
         $finalConfig['effective_timeout_seconds'] = $this->peekEffectiveTimeoutSeconds((int) $timeoutSeconds);
 
@@ -712,7 +733,7 @@ class WorkflowEngine
      */
     private function truncateForEvent(array $data): array
     {
-        $maxSize = 64000; // Stay under 64KB for JSON column
+        $maxSize = $this->runtimePolicyInt('event_payload_max_bytes');
         $encoded = json_encode($data);
 
         if (strlen($encoded) <= $maxSize) {
@@ -720,9 +741,11 @@ class WorkflowEngine
         }
 
         // Truncate large string values
-        return array_map(function ($value) {
-            if (is_string($value) && strlen($value) > 1000) {
-                return substr($value, 0, 1000).'... [truncated]';
+        $stringMaxChars = $this->runtimePolicyInt('event_string_truncate_chars');
+
+        return array_map(function ($value) use ($stringMaxChars) {
+            if (is_string($value) && strlen($value) > $stringMaxChars) {
+                return substr($value, 0, $stringMaxChars).'... [truncated]';
             }
             if (is_array($value)) {
                 return $this->truncateForEvent($value);
@@ -734,7 +757,7 @@ class WorkflowEngine
 
     private function executeWithRetry(callable $execution, ?object $retryConfig): mixed
     {
-        $maxAttempts = $retryConfig->max_attempts ?? 1;
+        $maxAttempts = $retryConfig->max_attempts ?? $this->runtimePolicyInt('fallback_retry_max_attempts');
         $retryConfigId = $retryConfig->id ?? null;
         $notifyProvider = $retryConfig->notify_on_failure ?? 'pushover';
 
@@ -744,7 +767,7 @@ class WorkflowEngine
 
         $backoffSeconds = $retryConfigId
             ? $this->databaseLayer->getRetryBackoffIntervals($retryConfigId)
-            : [5];
+            : $this->runtimePolicyIntList('fallback_retry_backoff_seconds');
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
@@ -777,7 +800,12 @@ class WorkflowEngine
         $alertKey = 'workflow_failure_alert_sent';
         $suppressedKey = 'workflow_failure_alerts_suppressed';
         $suppressedErrorsKey = 'workflow_failure_suppressed_errors';
-        $cooldownSeconds = 300; // 5 minutes
+        $cooldownSeconds = $this->runtimePolicyInt('failure_alert_cooldown_seconds');
+        $suppressedErrorsLimit = $this->runtimePolicyInt('failure_alert_suppressed_errors_limit');
+        $suppressedErrorsTtlExtraSeconds = $this->runtimePolicyInt('failure_alert_suppressed_errors_ttl_extra_seconds');
+        $summaryScheduleExtraSeconds = $this->runtimePolicyInt('failure_alert_summary_schedule_extra_seconds');
+        $summaryDelayExtraSeconds = $this->runtimePolicyInt('failure_alert_summary_delay_extra_seconds');
+        $summaryErrorLimit = $this->runtimePolicyInt('failure_alert_summary_error_limit');
 
         if (Cache::has($alertKey)) {
             $suppressed = Cache::increment($suppressedKey, 1);
@@ -785,7 +813,11 @@ class WorkflowEngine
             // Track unique suppressed error messages for the summary
             $errors = Cache::get($suppressedErrorsKey, []);
             $errors[] = $exception->getMessage();
-            Cache::put($suppressedErrorsKey, array_slice($errors, -10), $cooldownSeconds + 60);
+            Cache::put(
+                $suppressedErrorsKey,
+                array_slice($errors, -$suppressedErrorsLimit),
+                $cooldownSeconds + $suppressedErrorsTtlExtraSeconds
+            );
 
             Log::warning('WorkflowEngine: Alert suppressed (rate limited)', [
                 'suppressed_count' => $suppressed,
@@ -795,10 +827,10 @@ class WorkflowEngine
             // Schedule a summary alert when cooldown expires
             // Use a separate key to track if summary is already scheduled
             if (! Cache::has('workflow_failure_summary_scheduled')) {
-                Cache::put('workflow_failure_summary_scheduled', true, $cooldownSeconds + 30);
+                Cache::put('workflow_failure_summary_scheduled', true, $cooldownSeconds + $summaryScheduleExtraSeconds);
 
                 // Dispatch a delayed closure to send the summary
-                dispatch(function () use ($provider, $suppressedKey, $suppressedErrorsKey) {
+                dispatch(function () use ($provider, $suppressedKey, $suppressedErrorsKey, $summaryErrorLimit) {
                     $count = Cache::get($suppressedKey, 0);
                     $errors = Cache::get($suppressedErrorsKey, []);
                     Cache::forget($suppressedKey);
@@ -807,15 +839,15 @@ class WorkflowEngine
 
                     if ($count > 0) {
                         $uniqueErrors = array_unique($errors);
-                        $errorSummary = implode("\n• ", array_slice($uniqueErrors, 0, 5));
+                        $errorSummary = implode("\n• ", array_slice($uniqueErrors, 0, $summaryErrorLimit));
 
                         try {
-                            $controller = new \App\Controllers\NotificationController;
+                            $controller = new NotificationController;
                             $controller->send($provider, [
                                 'source_group' => 'workflow_node_notifications',
                                 'title' => "⚠️ {$count} Workflow Failures (Summary)",
                                 'message' => "{$count} workflow failure(s) were suppressed during rate limiting.\n\nErrors:\n• {$errorSummary}"
-                                    .(count($uniqueErrors) > 5 ? "\n...and ".(count($uniqueErrors) - 5).' more' : ''),
+                                    .(count($uniqueErrors) > $summaryErrorLimit ? "\n...and ".(count($uniqueErrors) - $summaryErrorLimit).' more' : ''),
                                 'priority' => 1,
                             ]);
                         } catch (\Throwable $e) {
@@ -824,7 +856,7 @@ class WorkflowEngine
                             ]);
                         }
                     }
-                })->delay(now()->addSeconds($cooldownSeconds + 10));
+                })->delay(now()->addSeconds($cooldownSeconds + $summaryDelayExtraSeconds));
             }
 
             return;
@@ -843,7 +875,7 @@ class WorkflowEngine
         }
 
         try {
-            $controller = new \App\Controllers\NotificationController;
+            $controller = new NotificationController;
             $controller->send($provider, [
                 'source_group' => 'workflow_node_notifications',
                 'title' => 'Workflow Execution Failed',
@@ -856,6 +888,66 @@ class WorkflowEngine
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function runtimePolicyIntList(string $key): array
+    {
+        $fallback = self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (! is_array($fallback) || ! is_array($value)) {
+            return is_array($fallback) ? $fallback : [];
+        }
+
+        $ints = array_values(array_filter(
+            array_map(fn ($item) => is_numeric($item) ? (int) $item : 0, $value),
+            fn (int $item) => $item > 0
+        ));
+
+        return $ints !== [] ? $ints : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 
     /**

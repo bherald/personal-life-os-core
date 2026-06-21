@@ -12,14 +12,14 @@ use Illuminate\Support\Facades\Log;
  * FaceMatcherService - Enhanced face-to-genealogy matching
  *
  * Matches face names from EXIF metadata to genealogy_persons with:
- * - Exact name matching (auto-link)
+ * - Exact name matching (review queue by default)
  * - SOUNDEX phonetic matching (queue for approval)
  * - Nickname/variant detection (queue for approval)
- * - AI disambiguation when multiple candidates (auto-select best)
+ * - AI disambiguation when multiple candidates (suggest best)
  *
  * Flow:
- * 1. Exact match with 1 result → auto-link
- * 2. Exact match with multiple → AI picks best
+ * 1. Exact match with 1 result → queue for review
+ * 2. Exact match with multiple → AI picks best suggestion for review
  * 3. Fuzzy match → queue for human approval
  * 4. No match → queue with no_match status
  */
@@ -54,14 +54,18 @@ class FaceMatcherService
         $exactMatches = $this->findExactMatches($faceName, $treeId);
 
         if (count($exactMatches) === 1) {
-            // Single exact match - auto-link
-            return [
-                'match_type' => $exactMatches[0]->match_type ?? 'exact',
-                'person_id' => $exactMatches[0]->id,
-                'person_name' => $exactMatches[0]->given_name.' '.$exactMatches[0]->surname,
-                'confidence' => $exactMatches[0]->confidence ?? 100,
-                'action' => 'auto_link',
-            ];
+            // Embedded names are evidence, not proof. Default to operator review.
+            if ($this->allowMetadataAutoLink()) {
+                return [
+                    'match_type' => $exactMatches[0]->match_type ?? 'exact',
+                    'person_id' => $exactMatches[0]->id,
+                    'person_name' => $exactMatches[0]->given_name.' '.$exactMatches[0]->surname,
+                    'confidence' => $exactMatches[0]->confidence ?? 100,
+                    'action' => 'auto_link',
+                ];
+            }
+
+            return $this->queueSuggestion($exactMatches[0], $exactMatches[0]->match_type ?? 'exact', $exactMatches[0]->confidence ?? 100);
         }
 
         if (count($exactMatches) > 1) {
@@ -73,14 +77,17 @@ class FaceMatcherService
         $fuzzyMatches = $this->findFuzzyMatches($faceName, $treeId);
 
         if (count($fuzzyMatches) === 1 && $fuzzyMatches[0]->confidence >= 90) {
-            // High-confidence single fuzzy match - auto-link
-            return [
-                'match_type' => $fuzzyMatches[0]->match_type,
-                'person_id' => $fuzzyMatches[0]->id,
-                'person_name' => $fuzzyMatches[0]->given_name.' '.$fuzzyMatches[0]->surname,
-                'confidence' => $fuzzyMatches[0]->confidence,
-                'action' => 'auto_link',
-            ];
+            if ($this->allowMetadataAutoLink()) {
+                return [
+                    'match_type' => $fuzzyMatches[0]->match_type,
+                    'person_id' => $fuzzyMatches[0]->id,
+                    'person_name' => $fuzzyMatches[0]->given_name.' '.$fuzzyMatches[0]->surname,
+                    'confidence' => $fuzzyMatches[0]->confidence,
+                    'action' => 'auto_link',
+                ];
+            }
+
+            return $this->queueSuggestion($fuzzyMatches[0], $fuzzyMatches[0]->match_type, $fuzzyMatches[0]->confidence);
         }
 
         if (count($fuzzyMatches) > 1) {
@@ -99,12 +106,20 @@ class FaceMatcherService
             ];
         }
 
-        // Step 3: No match found - face is STANDALONE (not a genealogy relative)
-        // Embedded EXIF/XMP name is authoritative, no approval needed
+        // Step 3: No match found. Queue the named face; embedded EXIF/XMP names
+        // are no longer treated as authoritative during metadata-audit posture.
+        if ($this->allowStandaloneAutoVerify()) {
+            return [
+                'match_type' => 'no_match',
+                'action' => 'done',
+                'confidence' => 100,
+            ];
+        }
+
         return [
             'match_type' => 'no_match',
-            'action' => 'done',  // Don't queue - face is valid standalone entity
-            'confidence' => 100, // EXIF name is trusted
+            'action' => 'queue',
+            'confidence' => 0,
         ];
     }
 
@@ -288,6 +303,18 @@ class FaceMatcherService
             if ($selectedIndex >= 1 && $selectedIndex <= count($candidates)) {
                 $selected = $candidates[$selectedIndex - 1];
 
+                if (! $this->allowMetadataAutoLink()) {
+                    return [
+                        'match_type' => $matchType,
+                        'suggested_person_id' => $selected->id,
+                        'suggested_name' => $selected->given_name.' '.$selected->surname,
+                        'confidence' => $selected->confidence ?? 80,
+                        'action' => 'queue',
+                        'ai_selected' => true,
+                        'candidates_count' => count($candidates),
+                    ];
+                }
+
                 return [
                     'match_type' => $matchType,
                     'person_id' => $selected->id,
@@ -319,6 +346,45 @@ class FaceMatcherService
         ];
     }
 
+    private function queueSuggestion(object $person, string $matchType, int|float $confidence): array
+    {
+        return [
+            'match_type' => $matchType,
+            'suggested_person_id' => $person->id,
+            'suggested_name' => $person->given_name.' '.$person->surname,
+            'confidence' => $confidence,
+            'action' => 'queue',
+        ];
+    }
+
+    private function allowMetadataAutoLink(): bool
+    {
+        return $this->xmpIdentityTrustMode() === 'trusted_auto_link';
+    }
+
+    private function allowStandaloneAutoVerify(): bool
+    {
+        return in_array($this->xmpIdentityTrustMode(), ['trusted_auto_link', 'trusted_standalone'], true);
+    }
+
+    private function xmpIdentityTrustMode(): string
+    {
+        try {
+            $row = DB::selectOne(
+                'SELECT config_value FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1',
+                ['faces', 'xmp_identity_trust_mode']
+            );
+        } catch (Exception $e) {
+            return 'review_only';
+        }
+
+        $mode = is_scalar($row->config_value ?? null) ? trim((string) $row->config_value) : 'review_only';
+
+        return in_array($mode, ['review_only', 'trusted_auto_link', 'trusted_standalone'], true)
+            ? $mode
+            : 'review_only';
+    }
+
     /**
      * Process a batch of unmatched faces
      *
@@ -331,7 +397,7 @@ class FaceMatcherService
         $results = [
             'processed' => 0,
             'auto_linked' => 0,
-            'standalone' => 0,  // EXIF name trusted, not a genealogy relative
+            'standalone' => 0,
             'queued' => 0,
             'skipped' => 0,
         ];
@@ -380,8 +446,7 @@ class FaceMatcherService
                 ]);
 
             } elseif ($match['action'] === 'done') {
-                // EXIF name is authoritative - mark as verified standalone face
-                // No genealogy link needed - this person is not in the family tree
+                // Explicit trust mode allows standalone verification without a genealogy link.
                 DB::update('
                     UPDATE file_registry_faces
                     SET verified = 1, updated_at = NOW()

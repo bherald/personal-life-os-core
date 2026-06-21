@@ -822,6 +822,7 @@ class OperatorEvidenceService
             'freshness_unchecked_enabled_total' => (int) ($counts['freshness_unchecked_enabled_total'] ?? 0),
             'privacy_unspecified_enabled_total' => (int) ($counts['privacy_unspecified_enabled_total'] ?? 0),
             'policy_gap_enabled_total' => (int) ($counts['policy_gap_enabled_total'] ?? 0),
+            'policy_gap_enabled_distinct_total' => (int) ($counts['policy_gap_enabled_distinct_total'] ?? 0),
             'last_error_enabled_total' => (int) ($counts['last_error_enabled_total'] ?? 0),
             'oldest_checked_age_hours' => isset($counts['oldest_checked_age_hours'])
                 ? (float) $counts['oldest_checked_age_hours']
@@ -1138,6 +1139,7 @@ class OperatorEvidenceService
                 'max_result_bytes_missing_enabled_total' => (int) ($summary['max_result_bytes_missing_enabled_total'] ?? 0),
                 'schema_generation_missing_total' => (int) ($summary['schema_generation_missing_total'] ?? 0),
                 'policy_gap_enabled_total' => (int) ($summary['policy_gap_enabled_total'] ?? 0),
+                'policy_gap_enabled_distinct_total' => (int) ($summary['policy_gap_enabled_distinct_total'] ?? 0),
                 'registry_columns_present' => (int) ($summary['registry_columns_present'] ?? 0),
                 'availability_counts' => $this->integerCountMap($summary['availability_counts'] ?? []),
                 'privacy_class_counts' => $this->integerCountMap($summary['privacy_class_counts'] ?? []),
@@ -3182,10 +3184,10 @@ class OperatorEvidenceService
             $counts = $this->genealogyAutomationTargetCounts();
 
             $status = match (true) {
-                $counts['missing'] > 0 => 'blocked',
                 $counts['stale_running'] > 0 || $counts['recent_failed_24h'] > 0 => 'degraded',
                 $counts['disabled_without_reason'] > 0 => 'degraded',
-                $counts['disabled'] > 0 => 'watch',
+                $counts['enabled'] > 0 => 'degraded',
+                $counts['configured'] > 0 => 'watch',
                 default => 'healthy',
             };
 
@@ -3194,7 +3196,7 @@ class OperatorEvidenceService
                 $sampledAt,
                 ['scheduled_jobs'],
                 $counts,
-                $status === 'healthy' ? null : 'Review disabled or degraded genealogy automation targets before re-enabling autonomy.'
+                $status === 'healthy' ? null : 'Archive and remove retired legacy genealogy scheduler rows; use genealogy_agent_research_queue for active FT4 work.'
             );
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['scheduled_jobs'], $e, 'Disabled genealogy agent query failed.');
@@ -3512,7 +3514,7 @@ class OperatorEvidenceService
             }
         }
 
-        $missing = array_values(array_diff(self::GENEALOGY_AUTOMATION_TARGETS, $seen));
+        $retiredRemoved = array_values(array_diff(self::GENEALOGY_AUTOMATION_TARGETS, $seen));
 
         return $this->genealogyAutomationTargetCounts = [
             'configured' => count($seen),
@@ -3521,13 +3523,16 @@ class OperatorEvidenceService
             'disabled_without_reason' => count($disabledWithoutReason),
             'stale_running' => count($staleRunning),
             'recent_failed_24h' => count($recentFailed),
-            'missing' => count($missing),
+            'missing' => 0,
             'disabled_names' => $disabled,
             'disabled_without_reason_names' => $disabledWithoutReason,
             'last_disabled_reasons' => $lastDisabledReasons,
             'stale_running_names' => $staleRunning,
             'recent_failed_names' => $recentFailed,
-            'missing_names' => $missing,
+            'missing_names' => [],
+            'retired_removed' => count($retiredRemoved),
+            'retired_removed_names' => $retiredRemoved,
+            'active_genealogy_lane' => 'genealogy_agent_research_queue',
         ];
     }
 

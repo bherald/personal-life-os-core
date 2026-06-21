@@ -4,6 +4,7 @@ namespace App\Nodes;
 
 use App\Controllers\NotificationController;
 use App\Services\EmailService;
+use App\Services\SystemConfigService;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -36,21 +37,30 @@ use Illuminate\Support\Facades\Log;
  */
 class NotificationHubNode extends BaseNode
 {
-    // Channel rate limits (per minute)
-    private const DEFAULT_RATE_LIMITS = [
-        'pushover' => 7,    // Pushover has strict limits
-        'email' => 5,       // Be conservative with email
-        'slack' => 30,
-        'discord' => 30,
-        'ntfy' => 60,
-        'webhook' => 60,
-    ];
+    private const RUNTIME_POLICY_CONFIG_KEY = 'notifications.hub_runtime_policy';
 
-    // Cache TTL for rate limiting (60 seconds)
-    private const RATE_LIMIT_TTL = 60;
+    private const DEFAULT_RUNTIME_POLICY = [
+        'channel_rate_limits_per_minute' => [
+            'pushover' => 7,
+            'email' => 5,
+            'slack' => 30,
+            'discord' => 30,
+            'ntfy' => 60,
+            'webhook' => 60,
+        ],
+        'default_rate_limit_per_minute' => 10,
+        'rate_limit_ttl_seconds' => 60,
+        'pushover_retry_seconds' => 60,
+        'pushover_expire_seconds' => 3600,
+        'http_connect_timeout_seconds' => 5,
+        'http_request_timeout_seconds' => 30,
+    ];
 
     // Supported channels
     private const SUPPORTED_CHANNELS = ['pushover', 'email', 'slack', 'discord', 'ntfy', 'webhook'];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function execute(array $input): array
     {
@@ -251,8 +261,8 @@ class NotificationHubNode extends BaseNode
 
         // Add emergency priority parameters
         if (($priorityMap[$priority] ?? 0) == 2) {
-            $payload['retry'] = $this->getConfigValue('pushover_retry', 60);
-            $payload['expire'] = $this->getConfigValue('pushover_expire', 3600);
+            $payload['retry'] = $this->getConfigValue('pushover_retry', $this->runtimePolicyInt('pushover_retry_seconds'));
+            $payload['expire'] = $this->getConfigValue('pushover_expire', $this->runtimePolicyInt('pushover_expire_seconds'));
         }
 
         // Optional sound
@@ -373,7 +383,9 @@ class NotificationHubNode extends BaseNode
         }
 
         try {
-            $response = Http::connectTimeout(5)->timeout(30)->post($webhookUrl, $payload);
+            $response = Http::connectTimeout($this->runtimePolicyInt('http_connect_timeout_seconds'))
+                ->timeout($this->runtimePolicyInt('http_request_timeout_seconds'))
+                ->post($webhookUrl, $payload);
 
             return [
                 'success' => $response->successful(),
@@ -434,7 +446,9 @@ class NotificationHubNode extends BaseNode
         }
 
         try {
-            $response = Http::connectTimeout(5)->timeout(30)->post($webhookUrl, $payload);
+            $response = Http::connectTimeout($this->runtimePolicyInt('http_connect_timeout_seconds'))
+                ->timeout($this->runtimePolicyInt('http_request_timeout_seconds'))
+                ->post($webhookUrl, $payload);
 
             // Discord returns 204 No Content on success
             $success = in_array($response->status(), [200, 204]);
@@ -499,7 +513,8 @@ class NotificationHubNode extends BaseNode
         }
 
         try {
-            $response = Http::connectTimeout(5)->timeout(30)
+            $response = Http::connectTimeout($this->runtimePolicyInt('http_connect_timeout_seconds'))
+                ->timeout($this->runtimePolicyInt('http_request_timeout_seconds'))
                 ->withHeaders($headers)
                 ->withBody($message, 'text/plain')
                 ->post($url);
@@ -568,7 +583,8 @@ class NotificationHubNode extends BaseNode
         $method = strtoupper($credentials['method'] ?? $this->getConfigValue('webhook_method', 'POST'));
 
         try {
-            $request = Http::connectTimeout(5)->timeout(30);
+            $request = Http::connectTimeout($this->runtimePolicyInt('http_connect_timeout_seconds'))
+                ->timeout($this->runtimePolicyInt('http_request_timeout_seconds'));
 
             if (! empty($headers)) {
                 $request = $request->withHeaders($headers);
@@ -638,7 +654,7 @@ class NotificationHubNode extends BaseNode
     private function checkRateLimit(string $channel): bool
     {
         $rateLimitKey = $this->getConfigValue('rate_limit_key', $channel);
-        $maxPerMinute = $this->getConfigValue('rate_limit_per_minute', self::DEFAULT_RATE_LIMITS[$channel] ?? 10);
+        $maxPerMinute = $this->getConfigValue('rate_limit_per_minute', $this->channelRateLimit($channel));
 
         $cacheKey = "notification_hub_rate_limit:{$rateLimitKey}";
         $currentCount = Cache::get($cacheKey, 0);
@@ -655,7 +671,67 @@ class NotificationHubNode extends BaseNode
         $cacheKey = "notification_hub_rate_limit:{$rateLimitKey}";
 
         $currentCount = Cache::get($cacheKey, 0);
-        Cache::put($cacheKey, $currentCount + 1, self::RATE_LIMIT_TTL);
+        Cache::put($cacheKey, $currentCount + 1, $this->runtimePolicyInt('rate_limit_ttl_seconds'));
+    }
+
+    private function channelRateLimit(string $channel): int
+    {
+        $limits = $this->runtimePolicy()['channel_rate_limits_per_minute'] ?? [];
+        if (! is_array($limits)) {
+            $limits = [];
+        }
+
+        return $this->positiveInt(
+            $limits[$channel] ?? null,
+            $this->runtimePolicyInt('default_rate_limit_per_minute')
+        );
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        $policy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+        $configuredLimits = $configured['channel_rate_limits_per_minute'] ?? null;
+        $policy['channel_rate_limits_per_minute'] = is_array($configuredLimits)
+            ? array_replace(self::DEFAULT_RUNTIME_POLICY['channel_rate_limits_per_minute'], $configuredLimits)
+            : self::DEFAULT_RUNTIME_POLICY['channel_rate_limits_per_minute'];
+
+        return $this->runtimePolicy = $policy;
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 
     /**

@@ -93,15 +93,18 @@ class GenealogyMediaRagIndexCommand extends Command
     {
         $treeClause = $treeId ? 'WHERE tree_id = ?' : '';
         $params = $treeId ? [$treeId] : [];
+        $staleSql = $this->staleContentSql();
+        $needsIndexSql = "(rag_indexed_at IS NULL OR {$staleSql})";
+        $indexableSql = $this->indexableContentSql();
 
         $stats = DB::selectOne("
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN rag_indexed_at IS NOT NULL THEN 1 ELSE 0 END) AS indexed,
                 SUM(CASE WHEN rag_indexed_at IS NULL THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN rag_indexed_at IS NOT NULL AND updated_at > rag_indexed_at THEN 1 ELSE 0 END) AS stale,
-                SUM(CASE WHEN (rag_indexed_at IS NULL OR updated_at > rag_indexed_at) THEN 1 ELSE 0 END) AS needs_index,
-                SUM(CASE WHEN (rag_indexed_at IS NULL OR updated_at > rag_indexed_at) AND file_exists = 1 THEN 1 ELSE 0 END) AS needs_index_existing_files
+                SUM(CASE WHEN {$staleSql} THEN 1 ELSE 0 END) AS stale,
+                SUM(CASE WHEN {$needsIndexSql} THEN 1 ELSE 0 END) AS needs_index,
+                SUM(CASE WHEN {$needsIndexSql} AND file_exists = 1 AND ({$indexableSql}) THEN 1 ELSE 0 END) AS needs_index_existing_files
             FROM genealogy_media
             {$treeClause}
         ", $params);
@@ -132,28 +135,45 @@ class GenealogyMediaRagIndexCommand extends Command
         }
 
         $params[] = $limit;
+        $staleSql = $this->staleContentSql();
+        $indexableSql = $this->indexableContentSql();
 
         return DB::select("
             SELECT id, tree_id, media_type, title, local_filename
             FROM genealogy_media
             WHERE (
                 rag_indexed_at IS NULL
-                OR updated_at > rag_indexed_at
+                OR {$staleSql}
               )
               {$treeClause}
-              AND (
-                NULLIF(TRIM(COALESCE(title, '')), '') IS NOT NULL
-                OR NULLIF(TRIM(COALESCE(local_filename, '')), '') IS NOT NULL
-                OR NULLIF(TRIM(COALESCE(description, '')), '') IS NOT NULL
-                OR NULLIF(TRIM(COALESCE(ai_description, '')), '') IS NOT NULL
-                OR NULLIF(TRIM(COALESCE(transcription_text, '')), '') IS NOT NULL
-                OR NULLIF(TRIM(COALESCE(transcription, '')), '') IS NOT NULL
-              )
+              AND ({$indexableSql})
             ORDER BY
               CASE WHEN file_exists = 1 THEN 0 ELSE 1 END,
               updated_at DESC,
               id DESC
             LIMIT ?
         ", $params);
+    }
+
+    private function staleContentSql(): string
+    {
+        return "(rag_indexed_at IS NOT NULL AND updated_at > rag_indexed_at AND ({$this->contentBearingFieldSql()}))";
+    }
+
+    private function indexableContentSql(): string
+    {
+        return '(
+                '.$this->contentBearingFieldSql()."
+                OR NULLIF(TRIM(COALESCE(local_filename, '')), '') IS NOT NULL
+              )";
+    }
+
+    private function contentBearingFieldSql(): string
+    {
+        return "NULLIF(TRIM(COALESCE(title, '')), '') IS NOT NULL
+                OR NULLIF(TRIM(COALESCE(description, '')), '') IS NOT NULL
+                OR NULLIF(TRIM(COALESCE(ai_description, '')), '') IS NOT NULL
+                OR NULLIF(TRIM(COALESCE(transcription_text, '')), '') IS NOT NULL
+                OR NULLIF(TRIM(COALESCE(transcription, '')), '') IS NOT NULL";
     }
 }

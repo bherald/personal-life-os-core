@@ -7,6 +7,8 @@ use Illuminate\Console\Command;
 
 class RssFeedHealthCheck extends Command
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'rss.health_runtime_policy';
+
     /**
      * The name and signature of the console command.
      *
@@ -17,7 +19,7 @@ class RssFeedHealthCheck extends Command
                             {--all : Check all workflow feeds}
                             {--report : Show health report}
                             {--stats : Show statistics only}
-                            {--timeout=15 : Timeout in seconds}
+                            {--timeout= : Timeout in seconds; defaults to system_configs.rss.health_runtime_policy.default_timeout_seconds}
                             {--reset : Reset all health records}';
 
     /**
@@ -71,7 +73,7 @@ class RssFeedHealthCheck extends Command
      */
     private function checkSingleFeed(string $url): int
     {
-        $timeout = (int) $this->option('timeout');
+        $timeout = $this->timeoutOption();
 
         $this->info("Checking RSS feed health...");
         $this->info("URL: {$url}");
@@ -110,7 +112,7 @@ class RssFeedHealthCheck extends Command
      */
     private function checkAllFeeds(): int
     {
-        $timeout = (int) $this->option('timeout');
+        $timeout = $this->timeoutOption();
 
         $this->info("Extracting RSS feed URLs from workflows...");
         $feedUrls = $this->healthService->extractFeedUrlsFromWorkflows();
@@ -259,6 +261,16 @@ class RssFeedHealthCheck extends Command
         $this->line("  php artisan rss:health --reset           # Reset all health records");
         $this->newLine();
         $this->line("Options:");
-        $this->line("  --timeout=<seconds>                      # Request timeout (default: 15)");
+        $this->line("  --timeout=<seconds>                      # Request timeout (default: system_configs.".self::RUNTIME_POLICY_CONFIG_KEY.')');
+    }
+
+    private function timeoutOption(): int
+    {
+        $timeout = $this->option('timeout');
+        if (is_numeric($timeout) && (int) $timeout > 0) {
+            return (int) $timeout;
+        }
+
+        return $this->healthService->defaultTimeoutSeconds();
     }
 }

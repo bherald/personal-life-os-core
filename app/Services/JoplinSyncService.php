@@ -7,6 +7,7 @@ use App\Support\JoplinPaths;
 use App\Support\PgVector;
 use Carbon\Carbon;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -436,6 +437,43 @@ class JoplinSyncService
     }
 
     /**
+     * Return current content hashes for selected live note IDs without mutating RAG.
+     *
+     * @param  array<int, string>  $noteIds
+     * @return array<string, string>
+     */
+    public function currentNoteContentHashes(array $noteIds): array
+    {
+        $wanted = [];
+        foreach ($noteIds as $noteId) {
+            $noteId = trim((string) $noteId);
+            if ($noteId !== '') {
+                $wanted[$noteId] = true;
+            }
+        }
+
+        if ($wanted === []) {
+            return [];
+        }
+
+        $hashes = [];
+        foreach ($this->fetchAllNotes() as $noteData) {
+            $noteId = trim((string) ($noteData['id'] ?? ''));
+            if ($noteId === '' || ! isset($wanted[$noteId])) {
+                continue;
+            }
+
+            $hashes[$noteId] = md5((string) ($noteData['content'] ?? ''));
+
+            if (count($hashes) === count($wanted)) {
+                break;
+            }
+        }
+
+        return $hashes;
+    }
+
+    /**
      * Perform full sync: add new, update changed, delete removed
      */
     public function sync(): array
@@ -717,7 +755,7 @@ class JoplinSyncService
      * @param  callable  $httpCall  Function that returns HTTP response
      * @param  string  $operation  Description for logging
      * @param  int  $maxRetries  Maximum retry attempts
-     * @return \Illuminate\Http\Client\Response
+     * @return Response
      *
      * @throws \Exception if all retries fail
      */

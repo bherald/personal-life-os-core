@@ -603,6 +603,28 @@ class AgentToolRegistryService
 
         $toolDef = $tools[$toolName];
         $agentId = $context['agent_id'] ?? null;
+        $runtimeBlock = $this->currentToolRuntimeBlock($toolName);
+        if ($runtimeBlock !== null) {
+            $reason = $this->sanitizeToolError($runtimeBlock['reason']);
+            Log::warning('AgentToolRegistry: tool blocked by current registry policy', [
+                'tool' => $toolName,
+                'agent_id' => $agentId,
+                'availability_status' => $runtimeBlock['availability_status'] ?? null,
+                'reason' => $reason,
+            ]);
+            $this->recordToolCall($toolName, $toolDef['mcp_server'] ?? null, $toolDef['mcp_tool'] ?? null, $context, 'agent', false, $startTime, $reason, null, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
+
+            return [
+                'success' => false,
+                'result' => null,
+                'error' => $reason,
+                'result_text' => $this->toolErrorLine("Error: Tool '{$toolName}' blocked by current registry policy", $reason),
+                'guardrail_blocked' => true,
+                'tool_policy_blocked' => true,
+                'availability_status' => $runtimeBlock['availability_status'] ?? null,
+            ];
+        }
+
         $dsDecision = app(AgentDSGovernanceService::class)->evaluateToolExecution($toolName, $toolDef, $params, $context);
         if (! ($dsDecision['allowed'] ?? false)) {
             $reason = $this->sanitizeToolError($dsDecision['reason'] ?? 'Blocked by bounded governance');
@@ -801,6 +823,52 @@ class AgentToolRegistryService
                 'result_text' => $this->toolErrorLine("Error executing {$toolName}", $safeError),
             ];
         }
+    }
+
+    private function currentToolRuntimeBlock(string $toolName): ?array
+    {
+        if (! Schema::hasTable('agent_tool_registry') || ! Schema::hasColumn('agent_tool_registry', 'name')) {
+            return null;
+        }
+
+        $columns = array_flip(Schema::getColumnListing('agent_tool_registry'));
+        $select = array_values(array_intersect([
+            'name',
+            'enabled',
+            'availability_status',
+            'last_error',
+        ], array_keys($columns)));
+        if (! in_array('enabled', $select, true)) {
+            return null;
+        }
+
+        $row = DB::table('agent_tool_registry')
+            ->select($select)
+            ->where('name', $toolName)
+            ->first();
+        if ($row === null) {
+            return null;
+        }
+
+        $enabled = (bool) ($row->enabled ?? false);
+        $availability = strtolower(trim((string) ($row->availability_status ?? 'unknown')));
+        $lastError = trim((string) ($row->last_error ?? ''));
+
+        if (! $enabled) {
+            return [
+                'availability_status' => 'disabled',
+                'reason' => "Tool '{$toolName}' is disabled in agent_tool_registry.".($lastError !== '' ? " {$lastError}" : ''),
+            ];
+        }
+
+        if (in_array($availability, ['disabled', 'unavailable'], true)) {
+            return [
+                'availability_status' => $availability,
+                'reason' => "Tool '{$toolName}' is {$availability} in agent_tool_registry.".($lastError !== '' ? " {$lastError}" : ''),
+            ];
+        }
+
+        return null;
     }
 
     private function isLogicalFailureResult(mixed $result): bool

@@ -130,6 +130,7 @@ Route::post('/chat/conversations/{id}/messages', [ChatController::class, 'sendMe
 Route::post('/chat/conversations/{id}/messages/stream', [ChatController::class, 'sendMessageStream']);
 Route::post('/chat/conversations/{conversationId}/messages/{messageId}/save-to-rag', [ChatController::class, 'saveMessageToRAG']);
 Route::get('/chat/model-modes', [ChatController::class, 'getModelModes']);
+Route::get('/chat/attachments/{id}', [ChatController::class, 'downloadAttachment']);
 
 // System Prompts - public for personal/family use
 Route::get('/system-prompts/conversations/{id}', [SystemPromptController::class, 'getConversationPrompt']);
@@ -328,6 +329,7 @@ Route::middleware('auth:web')->group(function () {
     Route::post('/media/faces/{faceId}/candidate-decision', [\App\Http\Controllers\Api\MediaBrowserController::class, 'decideFaceCandidate'])->where('faceId', '[0-9]+');
     Route::post('/media/faces/bulk-name', [\App\Http\Controllers\Api\MediaBrowserController::class, 'bulkNameFaces']);
     Route::post('/media/faces/bulk-hide', [\App\Http\Controllers\Api\MediaBrowserController::class, 'bulkHideFaces']);
+    Route::post('/media/faces/rename-person/preview', [\App\Http\Controllers\Api\MediaBrowserController::class, 'previewRenamePerson']);
     Route::post('/media/faces/rename-person', [\App\Http\Controllers\Api\MediaBrowserController::class, 'renamePerson']);
     Route::patch('/media/face-match/{id}/status', [\App\Http\Controllers\Api\MediaBrowserController::class, 'updateFaceMatchStatus']);
     Route::post('/media/faces/{faceId}/exclude', [\App\Http\Controllers\Api\MediaBrowserController::class, 'excludeFace']);

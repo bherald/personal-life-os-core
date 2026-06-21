@@ -3,6 +3,7 @@
 namespace App\Nodes;
 
 use App\Services\RAGService;
+use App\Services\SystemConfigService;
 use Exception;
 
 /**
@@ -12,6 +13,15 @@ use Exception;
  */
 class RAGSearch extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'rag.search_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'default_limit' => 5,
+    ];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function execute(array $input): array
     {
         try {
@@ -22,7 +32,7 @@ class RAGSearch extends BaseNode
                 throw new Exception('Query is required for RAG search');
             }
 
-            $limit = (int) $this->getConfigValue('limit', 5);
+            $limit = $this->configuredPositiveInt('limit') ?? $this->runtimePolicyInt('default_limit');
             $documentType = $this->getConfigValue('document_type');
 
             // Perform RAG search using DI container for proper AIService injection
@@ -59,10 +69,64 @@ class RAGSearch extends BaseNode
             ], [
                 'search_type' => 'semantic',
                 'limit' => $limit,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ]);
 
         } catch (Exception $e) {
             return $this->standardOutput(null, [], $e->getMessage());
         }
+    }
+
+    private function configuredPositiveInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : null;
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

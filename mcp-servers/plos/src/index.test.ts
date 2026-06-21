@@ -11,6 +11,16 @@ test('genealogy_context is registered in the MCP tool registry', () => {
   assert.match(indexSource, /handler: genealogyContext/);
 });
 
+test('genealogy_context includes suffixes in compact person display names', () => {
+  const contextSource = readFileSync(join(process.cwd(), 'src/tools/genealogy-context.ts'), 'utf8');
+
+  assert.match(contextSource, /SELECT id, gedcom_id, given_name, surname, suffix, nickname/);
+  assert.match(contextSource, /COALESCE\(h\.suffix,''\)/);
+  assert.match(contextSource, /COALESCE\(w\.suffix,''\)/);
+  assert.match(contextSource, /COALESCE\(p\.suffix,''\).*AS child/s);
+  assert.match(contextSource, /COALESCE\(p\.suffix,''\).*AS entity_name/s);
+});
+
 test('genealogy_batch_apply is documented and guarded in the active source contract', () => {
   const read = (relativePath: string) => readFileSync(join(process.cwd(), relativePath), 'utf8');
   const readme = read('README.md');

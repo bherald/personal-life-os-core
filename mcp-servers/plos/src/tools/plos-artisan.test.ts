@@ -5,9 +5,11 @@ import {
   ALLOWED_COMMANDS,
   ALLOWLIST_REVISION,
   COMPACT_SCORECARD_COMMANDS,
+  allowlistContentFingerprint,
   allowlistFreshness,
   extractAllowlistRevision,
   plosArtisan,
+  selectAllowlistPolicy,
 } from './plos-artisan.js';
 
 test('allowlist freshness detects loaded source and dist revision drift', () => {
@@ -36,6 +38,109 @@ test('allowlist freshness detects loaded source and dist revision drift', () => 
   assert.equal(allowlistFreshness({ sourceText: null, distText: null }).status, 'unknown');
 });
 
+test('allowlist content fingerprint changes when commands change without revision bump', () => {
+  const first = `export const ALLOWLIST_REVISION = '${ALLOWLIST_REVISION}';
+export const ALLOWED_COMMANDS = { 'ops:first --json': { description: 'First', timeout: 1_000 } };`;
+  const second = `export const ALLOWLIST_REVISION = '${ALLOWLIST_REVISION}';
+export const ALLOWED_COMMANDS = { 'ops:second --json': { description: 'Second', timeout: 1_000 } };`;
+
+  assert.notEqual(allowlistContentFingerprint(first), allowlistContentFingerprint(second));
+});
+
+
+test('allowlist policy uses newer compiled dist snapshot when loaded policy is stale', () => {
+  const loadedCommands = {
+    'ops:loaded-only --json': { description: 'Loaded command', timeout: 1_000 },
+  };
+  const distCommands = {
+    ...loadedCommands,
+    'ops:new-dist-only --json --compact': { description: 'Fresh dist command', timeout: 2_000 },
+  };
+
+  const policy = selectAllowlistPolicy({
+    loadedRevision: '2026-05-27-trace-tail-compact',
+    loadedCommands,
+    loadedCompactCommands: ['ops:loaded-only --json'],
+    freshness: {
+      status: 'stale',
+      loaded_revision: '2026-05-27-trace-tail-compact',
+      source_revision: '2026-06-05-compact-rts-observe',
+      dist_revision: '2026-06-05-compact-rts-observe',
+      mismatched_revision_count: 2,
+    },
+    candidate: {
+      ALLOWLIST_REVISION: '2026-06-05-compact-rts-observe',
+      ALLOWED_COMMANDS: distCommands,
+      COMPACT_SCORECARD_COMMANDS: ['ops:new-dist-only --json --compact'],
+    },
+  });
+
+  assert.equal(policy.source, 'dist');
+  assert.equal(policy.revision, '2026-06-05-compact-rts-observe');
+  assert.equal(policy.commands['ops:new-dist-only --json --compact']?.timeout, 2_000);
+  assert.deepEqual(policy.compactCommands, ['ops:new-dist-only --json --compact']);
+});
+
+test('allowlist policy fails closed when stale dist snapshot is invalid', () => {
+  const loadedCommands = {
+    'ops:loaded-only --json': { description: 'Loaded command', timeout: 1_000 },
+  };
+
+  const policy = selectAllowlistPolicy({
+    loadedRevision: '2026-05-27-trace-tail-compact',
+    loadedCommands,
+    loadedCompactCommands: ['ops:loaded-only --json'],
+    freshness: {
+      status: 'stale',
+      loaded_revision: '2026-05-27-trace-tail-compact',
+      source_revision: '2026-06-05-compact-rts-observe',
+      dist_revision: '2026-06-05-compact-rts-observe',
+      mismatched_revision_count: 2,
+    },
+    candidate: {
+      ALLOWLIST_REVISION: '2026-06-05-compact-rts-observe',
+      ALLOWED_COMMANDS: {
+        'ops:new-dist-only --json --compact': { description: 'Fresh dist command', timeout: 'bad' },
+      },
+      COMPACT_SCORECARD_COMMANDS: ['ops:new-dist-only --json --compact'],
+    },
+  });
+
+  assert.equal(policy.source, 'loaded');
+  assert.equal(policy.revision, '2026-05-27-trace-tail-compact');
+  assert.deepEqual(Object.keys(policy.commands), ['ops:loaded-only --json']);
+  assert.deepEqual(policy.compactCommands, ['ops:loaded-only --json']);
+});
+
+test('allowlist policy does not authorize from source-only freshness', () => {
+  const loadedCommands = {
+    'ops:loaded-only --json': { description: 'Loaded command', timeout: 1_000 },
+  };
+
+  const policy = selectAllowlistPolicy({
+    loadedRevision: '2026-05-27-trace-tail-compact',
+    loadedCommands,
+    loadedCompactCommands: ['ops:loaded-only --json'],
+    freshness: {
+      status: 'stale',
+      loaded_revision: '2026-05-27-trace-tail-compact',
+      source_revision: '2026-06-05-compact-rts-observe',
+      dist_revision: null,
+      mismatched_revision_count: 1,
+    },
+    candidate: {
+      ALLOWLIST_REVISION: '2026-06-05-compact-rts-observe',
+      ALLOWED_COMMANDS: {
+        'ops:source-only --json --compact': { description: 'Source-only command', timeout: 2_000 },
+      },
+    },
+  });
+
+  assert.equal(policy.source, 'loaded');
+  assert.equal(policy.revision, '2026-05-27-trace-tail-compact');
+  assert.equal(policy.commands['ops:source-only --json --compact'], undefined);
+});
+
 test('read-only planning evidence commands stay allowlisted', async () => {
   for (const command of [
     'ops:operator-evidence --compact',
@@ -53,6 +158,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:review-backlog-report --next-target --focus=materializable-remediation --json',
     'ops:review-backlog-report --next-target --focus=source-backed-packet --json',
     'ops:review-backlog-report --next-target --focus=aged-review --json',
+    'ops:review-backlog-report --json --compact --next-target --focus=face-photo-repair-packet',
     'ops:offline-status --json',
     'ops:agent-doctor --compact',
     'ops:agent-doctor --json --compact',
@@ -70,6 +176,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'codex:exec-smoke --json',
     'ops:local-runtime-scorecard --json --compact',
     'ops:scheduled-output-audit --json --compact --fail-on-violations',
+    'ops:scheduled-output-audit --json --compact',
     'ollama:drift-check --json --compact --no-fail',
     'ollama:eval-scorecard --json --compact',
     'ops:capacity-report --json',
@@ -77,14 +184,39 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:capacity-checkpoint --json --compact',
     'ops:capacity-checkpoint --markdown',
     'ops:capacity-checkpoint --dry-run --json',
+    'ops:capacity-utilization-manager --json --compact',
+    'ops:capacity-utilization-manager --dry-run --json --compact',
     'ops:runtime-diagnostics --window=60m --focus=all --json',
+    'ops:runtime-diagnostics --json --compact',
+    'ops:runtime-diagnostics --window=60m --focus=all --json --compact',
+    'ops:runtime-diagnostics --window=24h --json --compact',
+    'ops:runtime-diagnostics --window=24h --focus=all --json --compact',
+    'ops:queue-fit-audit --json --compact',
+    'ops:runtime-policy-leak-audit --json --compact',
     'ops:face-telemetry-report --json',
     'ops:face-telemetry-report --markdown --hours=168',
     'ops:face-telemetry-report --compact',
     'ops:face-telemetry-report --json --compact',
     'ops:face-telemetry-report --markdown --compact',
     'ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json',
+    'ops:face-mixed-cluster-report --limit=10 --sample-faces=0 --compact --json',
+    'ops:face-integrity-audit --json --limit=20',
+    'ops:face-integrity-audit --json --compact --limit=20',
     'ops:face-named-only-slice --limit=10 --json',
+    'ops:face-named-only-slice --limit=10 --cluster-scope=mixed --sort=oldest --compact --json',
+    'ops:face-bridge-alignment-report --tree=4 --json --compact --limit=20',
+    'ops:face-same-person-candidates --tree=4 --person-id=2203 --limit=10 --seed-limit=20 --scan-per-seed=50 --json --compact',
+    'ops:face-person-source-provenance-report --tree=4 --json --compact --limit=10',
+    'ops:face-person-source-repair-plan --tree=4 --status=face_export_person_conflict --limit=25 --json',
+    'ops:face-person-source-repair-plan --tree=4 --status=face_linked_display_mismatch --limit=25 --json',
+    'ops:face-person-source-repair-plan --tree=4 --status=face_trusted_export_no_source --limit=25 --json',
+    'ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --limit=25 --json',
+    'ops:face-person-source-repair-plan --tree=4 --status=face_no_export_provenance --limit=25 --json',
+    'ops:face-person-source-repair-plan --tree=4 --status=person_media_unbacked_confirmed --limit=25 --json',
+    'ops:face-person-source-repair-plan --tree=4 --status=person_media_unbacked_unconfirmed --limit=25 --json',
+    'ops:face-person-source-repair-plan --tree=4 --status=person_media_source_backed_unconfirmed --limit=25 --json',
+    'ops:face-person-source-repair-packet-refill --tree=4 --json --compact --dry-run',
+    'ops:audit-privacy-routing --json --compact',
     'ops:dba-telemetry-report --compact',
     'ops:dba-telemetry-report --json --compact',
     'ops:dba-telemetry-report --markdown --compact',
@@ -95,6 +227,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:reject-codes --json --days=30',
     'genealogy:reject-codes --compact',
     'genealogy:reject-codes --json --compact',
+    'genealogy:manager --tree=4 --json --compact',
     'genealogy:review-feedback --days=30 --json',
     'genealogy:review-feedback --compact',
     'genealogy:review-feedback --json --compact',
@@ -114,6 +247,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:evidence-asset-capture-review --json --compact',
     'genealogy:evidence-asset-capture-executor --json --compact',
     'genealogy:media-intake-report --json --compact',
+    'genealogy:media-intake-report --tree=4 --json --compact',
     'genealogy:media-intake-report --markdown --compact',
     'genealogy:media-intake-report --dry-run --json --compact',
     'genealogy:media-intake-run --dry-run --json --compact',
@@ -126,6 +260,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:agent-triage --json',
     'genealogy:agent-triage --compact',
     'genealogy:agent-triage --json --compact',
+    'genealogy:agent-triage --days=30 --json --compact',
+    'genealogy:health-audit --tree=4 --json --aggregate --compact',
     'genealogy:source-registry --validate',
     'genealogy:source-registry --validate --json --compact',
     'awo:replay --window=7d --json',
@@ -147,6 +283,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'news:bias-tags-audit --json --compact',
     'news:pushover-proof --workflow=news_brief --compact',
     'news:pushover-proof --workflow=news_brief --json --compact',
+    'news:pushover-proof --workflow=\'Cybersecurity News Brief\' --compact',
+    'news:pushover-proof --workflow=\'Cybersecurity News Brief\' --json --compact',
     'news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --compact',
     'news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --json --compact',
     'news:source-inventory --workflow=news_brief --days=7 --strict --json',
@@ -163,6 +301,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'joplin:rag-reconcile --json --event-hours=24',
     'joplin:rag-reconcile --json --event-hours=24 --triggered-only',
     'joplin:rag-reconcile --json --event-hours=24 --triggered-only --limit=50 --max-delete-candidates=50 --max-dependent-rows=5000',
+    'joplin:rag-refresh-touch --json --compact --limit=50 --max-candidates=200',
     'rag:scale-baseline --json',
     'rag:scale-baseline --markdown',
     'rag:scale-review --json',
@@ -201,6 +340,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   }
   assert.match(listing, /php artisan ops:operator-evidence --compact/);
   assert.match(listing, /php artisan ops:operator-evidence --json --compact/);
+  assert.match(listing, /php artisan ops:agent-tool-policy-refresh --json --compact/);
+  assert.match(listing, /php artisan ops:agent-tool-policy-refresh --apply --json --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --json/);
   assert.match(listing, /php artisan ops:review-backlog-report --dry-run --json --compact/);
   assert.match(listing, /php artisan ops:review-backlog-report --compact/);
@@ -212,6 +353,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=materializable-remediation --json/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json/);
   assert.match(listing, /php artisan ops:review-backlog-report --next-target --focus=aged-review --json/);
+  assert.match(listing, /php artisan ops:review-backlog-report --json --compact --next-target --focus=face-photo-repair-packet/);
   assert.match(listing, /php artisan ops:offline-smoke --json --compact/);
   assert.match(listing, /php artisan ops:agent-doctor --compact/);
   assert.match(listing, /php artisan ops:agent-doctor --json --compact/);
@@ -226,18 +368,31 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan llm:sync-providers --json --compact/);
   assert.match(listing, /php artisan llm:sync-providers --json --compact --no-live/);
   assert.match(listing, /php artisan codex:exec-smoke --json/);
+  assert.match(listing, /php artisan bitllm:privacy-gate --eval --json/);
   assert.match(listing, /php artisan ops:local-runtime-scorecard --json --compact/);
   assert.match(listing, /php artisan ops:scheduled-output-audit --json --compact --fail-on-violations/);
+  assert.match(listing, /php artisan ops:runtime-diagnostics --json --compact/);
+  assert.match(listing, /php artisan ops:runtime-diagnostics --window=60m --focus=all --json --compact/);
+  assert.match(listing, /php artisan ops:runtime-diagnostics --window=24h --json --compact/);
+  assert.match(listing, /php artisan ops:runtime-diagnostics --window=24h --focus=all --json --compact/);
+  assert.match(listing, /php artisan ops:queue-fit-audit --json --compact/);
+  assert.match(listing, /php artisan ops:runtime-policy-leak-audit --json --compact/);
   assert.match(listing, /php artisan ollama:drift-check --json --compact --no-fail/);
   assert.match(listing, /php artisan ollama:eval-scorecard --json --compact/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --json/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --json --compact/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --markdown/);
   assert.match(listing, /php artisan ops:capacity-checkpoint --dry-run --json/);
+  assert.match(listing, /php artisan ops:capacity-utilization-manager --json --compact/);
+  assert.match(listing, /php artisan ops:capacity-utilization-manager --dry-run --json --compact/);
   assert.match(listing, /php artisan ops:arc-retention --json --compact/);
   assert.match(listing, /php artisan ops:face-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json/);
   assert.match(listing, /php artisan ops:face-named-only-slice --limit=10 --json/);
+  assert.match(listing, /php artisan ops:face-same-person-candidates --tree=4 --person-id=2203 --limit=10 --seed-limit=20 --scan-per-seed=50 --json --compact/);
+  assert.match(listing, /php artisan ops:face-person-source-provenance-report --tree=4 --json --compact --limit=10/);
+  assert.match(listing, /php artisan ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --limit=25 --json/);
+  assert.match(listing, /php artisan ops:face-person-source-repair-packet-refill --tree=4 --json --compact --dry-run/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --markdown --dry-run/);
   assert.match(listing, /php artisan files:reconcile-lifecycle --compact/);
@@ -248,11 +403,14 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan joplin:rag-reconcile --json --event-hours=24/);
   assert.match(listing, /php artisan joplin:rag-reconcile --json --event-hours=24 --triggered-only/);
   assert.match(listing, /php artisan joplin:rag-reconcile --json --event-hours=24 --triggered-only --limit=50 --max-delete-candidates=50 --max-dependent-rows=5000/);
+  assert.match(listing, /php artisan joplin:rag-refresh-touch --json --compact --limit=50 --max-candidates=200/);
   assert.match(listing, /php artisan rag:scale-baseline --json/);
   assert.match(listing, /php artisan rag:scale-review --json/);
   assert.match(listing, /php artisan rag:scale-review --markdown/);
   assert.match(listing, /php artisan rag:scale-review --compact/);
   assert.match(listing, /php artisan rag:scale-review --json --compact/);
+  assert.match(listing, /php artisan genealogy:media-intake-report --tree=4 --json --compact/);
+  assert.match(listing, /php artisan genealogy:health-audit --tree=4 --json --aggregate --compact/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json --compact/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --markdown --compact/);
@@ -278,6 +436,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:packet-reason-codes --days=30 --json/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --compact/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --json --compact/);
+  assert.match(listing, /php artisan genealogy:manager --tree=4 --json --compact/);
   assert.match(listing, /php artisan genealogy:review-feedback --compact/);
   assert.match(listing, /php artisan genealogy:review-feedback --json --compact/);
   assert.match(listing, /php artisan genealogy:reject-codes --compact/);
@@ -287,6 +446,7 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan scheduler:optimize-report --compact/);
   assert.match(listing, /php artisan news:bias-tags-audit --compact/);
   assert.match(listing, /php artisan news:pushover-proof --workflow=news_brief --compact/);
+  assert.match(listing, /php artisan news:pushover-proof --workflow='Cybersecurity News Brief' --json --compact/);
   assert.match(listing, /php artisan news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --json --compact/);
   assert.match(listing, /php artisan rag:backlog-report --compact/);
   assert.match(listing, /php artisan rag:backlog-report --json --compact/);
@@ -323,6 +483,9 @@ test('next-target focus variants stay blocked unless they are canonical allowlis
     'ops:review-backlog-report --next-target --focus=aged-review --markdown',
     'ops:review-backlog-report --json --next-target --focus=aged-review',
     'ops:review-backlog-report --next-target --json --focus=aged-review',
+    'ops:review-backlog-report --next-target --focus=face-photo-repair-packet --json --compact',
+    'ops:review-backlog-report --json --next-target --focus=face-photo-repair-packet',
+    'ops:review-backlog-report --json --compact --focus=face-photo-repair-packet --next-target',
   ]) {
     assert.equal(ALLOWED_COMMANDS[command], undefined, `${command} should not be allowlisted`);
 
@@ -352,15 +515,35 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
     'joplin:rag-reconcile --json --event-hours=24 --triggered-only --execute',
     'joplin:rag-reconcile --json --event-hours=24 --triggered-only --limit=100 --max-delete-candidates=50 --max-dependent-rows=5000',
     'joplin:rag-reconcile --json --event-hours=72 --triggered-only',
+    'joplin:rag-refresh-touch --execute --confirm --json --compact --limit=50 --max-candidates=200',
+    'joplin:rag-refresh-touch --json --compact --limit=50 --max-candidates=200 --execute',
+    'joplin:rag-refresh-touch --compact --json --limit=50 --max-candidates=200',
+    'joplin:rag-refresh-touch --json --compact --limit=100 --max-candidates=200',
     'ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json --execute',
     'ops:face-mixed-cluster-report --limit=10 --sample-faces=3 --json',
     'ops:face-mixed-cluster-report --limit=5 --sample-faces=10 --json',
     'ops:face-named-only-slice --limit=25 --json',
     'ops:face-named-only-slice --limit=10 --json --cluster=80',
-    'ops:scheduled-output-audit --json --compact',
+    'ops:face-same-person-candidates --tree=4 --person-id=2203 --limit=25 --json --compact',
+    'ops:face-person-source-provenance-report --tree=4 --json --limit=25',
+    'ops:face-person-source-repair-plan --tree=4 --limit=25 --json',
+    'ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --json --limit=25',
+    'ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --limit=25 --write --confirm --json',
+    'ops:face-person-source-repair-packet-refill --tree=4 --write --confirm --json --compact',
+    'ops:face-person-source-repair-packet-refill --tree=4 --json --compact',
+    'ops:face-person-source-repair-packet-refill --tree=4 --dry-run --json --compact',
     'ops:scheduled-output-audit --compact --json --fail-on-violations',
     'ops:scheduled-output-audit --json --fail-on-violations --compact',
     'ops:scheduled-output-audit --json --compact --details --fail-on-violations',
+    'ops:capacity-utilization-manager --execute --json --compact',
+    'ops:capacity-utilization-manager --json --compact --execute',
+    'ops:capacity-utilization-manager --compact --json',
+    'ops:capacity-utilization-manager --dry-run --compact --json',
+    'ops:runtime-policy-leak-audit --compact --json',
+    'ops:runtime-policy-leak-audit --json --compact --strict',
+    'genealogy:manager --tree=4 --execute --json --compact',
+    'genealogy:manager --json --compact --tree=4',
+    'genealogy:manager --tree=4 --json',
     'ops:operator-evidence --json',
     'ops:offline-smoke --json',
     'ops:agent-doctor --json --since=24',

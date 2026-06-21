@@ -32,7 +32,33 @@ class BitLlmPrivacyGateService
         $redactedInput = $this->truthy($options['redacted_input'] ?? true);
         $prompt = $this->prompt($request);
         $started = microtime(true);
-        $providerRows = $this->eligibleProviderRows();
+
+        if (! $redactedInput) {
+            return [
+                'success' => false,
+                'decision' => null,
+                'provider' => null,
+                'model' => null,
+                'error' => 'BitLLM privacy gate requires redacted_input=true.',
+                'raw_response' => '',
+                'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                'policy_checked' => true,
+            ];
+        }
+
+        $providerRows = $this->eligibleProviderRows($prompt);
+        if ($providerRows === []) {
+            return [
+                'success' => false,
+                'decision' => null,
+                'provider' => null,
+                'model' => null,
+                'error' => 'No eligible local BitLLM privacy gate provider passed table route_policy checks.',
+                'raw_response' => '',
+                'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                'policy_checked' => true,
+            ];
+        }
 
         $prefilter = $this->applyPrefilterDenyRules($request, $providerRows);
         if ($prefilter !== null) {
@@ -46,11 +72,14 @@ class BitLlmPrivacyGateService
                 'duration_ms' => (int) ((microtime(true) - $started) * 1000),
                 'deterministic' => true,
                 'rule' => $prefilter['rule'] ?? null,
+                'policy_checked' => true,
             ];
         }
 
         $result = $this->ai()->process($prompt, [
             'prefer_external' => true,
+            'caller' => 'bitllm_privacy_gate',
+            'request_kind' => 'privacy_gate',
             'model_role' => self::MODEL_ROLE,
             'require_model_role' => true,
             'redacted_input' => $redactedInput,
@@ -67,6 +96,24 @@ class BitLlmPrivacyGateService
 
         $text = trim((string) ($result['response'] ?? ''));
         $decision = $this->extractDecision($text);
+        $providerId = trim((string) ($result['provider'] ?? ''));
+        $eligibleProviderIds = array_map(
+            static fn (object $row): string => (string) ($row->instance_id ?? ''),
+            $providerRows
+        );
+
+        if (($result['success'] ?? false) && $decision !== null && ! in_array($providerId, $eligibleProviderIds, true)) {
+            return [
+                'success' => false,
+                'decision' => null,
+                'provider' => $result['provider'] ?? null,
+                'model' => $result['model'] ?? null,
+                'error' => 'BitLLM privacy gate result came from a provider that failed table route_policy eligibility.',
+                'raw_response' => $text,
+                'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                'policy_checked' => true,
+            ];
+        }
 
         if (! ($result['success'] ?? false) || $decision === null) {
             return [
@@ -77,6 +124,7 @@ class BitLlmPrivacyGateService
                 'error' => $result['error'] ?? ($decision === null ? 'BitLLM response did not contain deny/allow.' : 'BitLLM request failed.'),
                 'raw_response' => $text,
                 'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                'policy_checked' => true,
             ];
         }
 
@@ -88,6 +136,7 @@ class BitLlmPrivacyGateService
             'error' => null,
             'raw_response' => $text,
             'duration_ms' => $result['duration_ms'] ?? (int) ((microtime(true) - $started) * 1000),
+            'policy_checked' => true,
         ];
     }
 
@@ -250,7 +299,7 @@ class BitLlmPrivacyGateService
     /**
      * @return array<int,object>
      */
-    private function eligibleProviderRows(): array
+    private function eligibleProviderRows(?string $prompt = null): array
     {
         if (! Schema::hasTable('llm_instances')) {
             return [];
@@ -278,15 +327,59 @@ class BitLlmPrivacyGateService
 
         return $query
             ->get()
-            ->filter(function (object $row): bool {
-                $config = $this->decodeJson($row->config ?? null);
-                $models = is_array($config['models'] ?? null) ? $config['models'] : [];
-
-                return is_string($models[self::MODEL_ROLE] ?? null)
-                    && (string) ($row->quarantine_status ?? 'none') !== 'quarantined';
+            ->filter(function (object $row) use ($prompt): bool {
+                return $this->providerSupportsPrivacyGate($row, $prompt);
             })
             ->values()
             ->all();
+    }
+
+    private function providerSupportsPrivacyGate(object $row, ?string $prompt = null): bool
+    {
+        if ((string) ($row->quarantine_status ?? 'none') === 'quarantined') {
+            return false;
+        }
+
+        $config = $this->decodeJson($row->config ?? null);
+        $models = is_array($config['models'] ?? null) ? $config['models'] : [];
+        if (! is_string($models[self::MODEL_ROLE] ?? null) || trim((string) $models[self::MODEL_ROLE]) === '') {
+            return false;
+        }
+
+        $policy = is_array($config['route_policy'] ?? null) ? $config['route_policy'] : [];
+        if ((string) ($policy['mode'] ?? '') !== 'narrow') {
+            return false;
+        }
+
+        $allowedRoles = $this->stringList($policy['allowed_model_roles'] ?? $policy['allowed_roles'] ?? null);
+        if (! in_array(self::MODEL_ROLE, $allowedRoles, true)) {
+            return false;
+        }
+
+        if ($this->truthy($policy['allow_generic_fallback'] ?? true)) {
+            return false;
+        }
+
+        if (! $this->truthy($policy['require_redacted_input'] ?? false)) {
+            return false;
+        }
+
+        if (! $this->truthy($policy['require_model_role'] ?? false)) {
+            return false;
+        }
+
+        $allowedDecisions = array_values(array_unique($this->stringList($policy['allowed_decisions'] ?? null, true)));
+        sort($allowedDecisions);
+        if ($allowedDecisions !== ['allow', 'deny']) {
+            return false;
+        }
+
+        $maxPromptChars = $this->positiveInt($policy['max_prompt_chars'] ?? null);
+        if ($maxPromptChars === null) {
+            return false;
+        }
+
+        return $prompt === null || strlen($prompt) <= $maxPromptChars;
     }
 
     /**
@@ -395,6 +488,47 @@ class BitLlmPrivacyGateService
         }
 
         return (bool) $value;
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function stringList(mixed $value, bool $lowercase = false): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($value as $item) {
+            if (! is_string($item)) {
+                continue;
+            }
+
+            $item = trim($item);
+            if ($item === '') {
+                continue;
+            }
+
+            $items[] = $lowercase ? strtolower($item) : $item;
+        }
+
+        return $items;
+    }
+
+    private function positiveInt(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value > 0 ? $value : null;
+        }
+
+        if (is_string($value) && ctype_digit(trim($value))) {
+            $value = (int) trim($value);
+
+            return $value > 0 ? $value : null;
+        }
+
+        return null;
     }
 
     private function decodeJson(mixed $value): array

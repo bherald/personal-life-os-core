@@ -2,12 +2,25 @@
 
 namespace App\Engine;
 
+use App\Services\CodeReviewService;
+use App\Services\Genealogy\GenealogyMCPService;
+use App\Services\JoplinFilesService;
+use App\Services\NextcloudContactsService;
 use App\Services\NextcloudService;
+use App\Services\OfflinePolicyService;
 use App\Services\RAGService;
+use App\Services\RepoDevMCPService;
+use App\Services\SearXNGMCPService;
+use App\Services\SystemConfigService;
+use App\Services\TimeService;
+use App\Services\WebResearchService;
+use App\Services\WorkflowService;
 use Exception;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process as ProcessFacade;
+use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Process\Process;
 
 /**
@@ -23,6 +36,26 @@ use Symfony\Component\Process\Process;
  */
 class MCPRouter
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'mcp.router_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'timeout_seconds' => 60,
+        'log_calls' => true,
+        'cache_catalog_ttl_seconds' => 3600,
+        'tool_timeouts_seconds' => [
+            'puppeteer.puppeteer_navigate' => 60,
+            'puppeteer.puppeteer_evaluate' => 45,
+            'puppeteer.puppeteer_screenshot' => 45,
+            'puppeteer.*' => 30,
+            'web-research.*' => 45,
+            'prompt-compressor.compress_prompt' => 120,
+            'prompt-compressor.compress_file' => 120,
+            'prompt-compressor.compress_diff' => 120,
+            'prompt-compressor.context_retrieve' => 120,
+            'prompt-compressor.*' => 30,
+        ],
+    ];
+
     private array $config;
 
     private int $timeout;
@@ -31,12 +64,26 @@ class MCPRouter
 
     private int $cacheTtl;
 
+    /** @var array<string,mixed> */
+    private array $runtimePolicy;
+
     public function __construct()
     {
         $this->config = config('mcp.servers', []);
-        $this->timeout = config('mcp.router.timeout', 30);
-        $this->logCalls = config('mcp.router.log_calls', true);
-        $this->cacheTtl = config('mcp.router.cache_catalog_ttl', 3600);
+        $defaultPolicy = $this->defaultRuntimePolicy();
+        $this->runtimePolicy = $this->loadRuntimePolicy($defaultPolicy);
+        $this->timeout = $this->positivePolicyInt(
+            $this->runtimePolicy['timeout_seconds'] ?? null,
+            (int) $defaultPolicy['timeout_seconds']
+        );
+        $this->logCalls = $this->policyBool(
+            $this->runtimePolicy['log_calls'] ?? null,
+            (bool) $defaultPolicy['log_calls']
+        );
+        $this->cacheTtl = $this->positivePolicyInt(
+            $this->runtimePolicy['cache_catalog_ttl_seconds'] ?? null,
+            (int) $defaultPolicy['cache_catalog_ttl_seconds']
+        );
     }
 
     /**
@@ -96,7 +143,7 @@ class MCPRouter
         $tools = $this->getAvailableTools();
 
         try {
-            $policy = app(\App\Services\OfflinePolicyService::class);
+            $policy = app(OfflinePolicyService::class);
         } catch (\Throwable $e) {
             return $tools;
         }
@@ -2388,6 +2435,11 @@ class MCPRouter
             throw new Exception("MCP server is disabled: {$server}");
         }
 
+        $registryPolicyDenial = $this->denyIfRegistryPolicyRefuses($server, $tool);
+        if ($registryPolicyDenial !== null) {
+            throw new Exception($registryPolicyDenial);
+        }
+
         // 3b P02d + R2 (2026-04-19) policy gate — refuses:
         //   (a) internet-class / protected servers under offline profiles
         //       (per-server allowlist via trust_boundary + hybrid_profiles_allowed),
@@ -2407,6 +2459,86 @@ class MCPRouter
         return $this->callExternalTool($server, $serverConfig, $tool, $params, $effectiveTimeout);
     }
 
+    private function denyIfRegistryPolicyRefuses(string $server, string $tool): ?string
+    {
+        if (! Schema::hasTable('agent_tool_registry')) {
+            return null;
+        }
+
+        $columns = array_flip(Schema::getColumnListing('agent_tool_registry'));
+        foreach (['mcp_server', 'mcp_tool', 'enabled'] as $requiredColumn) {
+            if (! isset($columns[$requiredColumn])) {
+                return null;
+            }
+        }
+
+        $select = array_values(array_intersect([
+            'name',
+            'enabled',
+            'availability_status',
+            'last_error',
+        ], array_keys($columns)));
+
+        try {
+            $query = DB::table('agent_tool_registry')
+                ->select($select)
+                ->where('mcp_server', $server)
+                ->where('mcp_tool', $tool)
+                ->where(function ($query) use ($columns): void {
+                    $query->where('enabled', 0);
+                    if (isset($columns['availability_status'])) {
+                        $query->orWhereIn('availability_status', ['disabled', 'unavailable']);
+                    }
+                })
+                ->orderBy('enabled');
+
+            if (isset($columns['availability_status'])) {
+                $query->orderByRaw("CASE availability_status WHEN 'disabled' THEN 0 WHEN 'unavailable' THEN 1 ELSE 2 END");
+            }
+
+            $row = $query->first();
+        } catch (\Throwable $e) {
+            Log::warning('MCPRouter: registry policy lookup failed; continuing with runtime policy gates', [
+                'server' => $server,
+                'tool' => $tool,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        if ($row === null) {
+            return null;
+        }
+
+        $availability = strtolower(trim((string) ($row->availability_status ?? 'unknown')));
+        $lastError = trim((string) ($row->last_error ?? ''));
+        $suffix = $lastError !== '' ? " {$lastError}" : '';
+
+        if (! (bool) ($row->enabled ?? false)) {
+            return sprintf(
+                'MCP tool %s/%s is disabled by agent_tool_registry row %s.%s',
+                $server,
+                $tool,
+                (string) ($row->name ?? 'unknown'),
+                $suffix
+            );
+        }
+
+        if (in_array($availability, ['disabled', 'unavailable'], true)) {
+            return sprintf(
+                'MCP tool %s/%s is %s by agent_tool_registry row %s.%s',
+                $server,
+                $tool,
+                $availability,
+                (string) ($row->name ?? 'unknown'),
+                $suffix
+            );
+        }
+
+        return null;
+    }
+
     /**
      * Consult OfflinePolicyService for a 3b profile-aware decision on this
      * MCP tool call. R2 (2026-04-19): now evaluates BOTH server admission
@@ -2420,7 +2552,7 @@ class MCPRouter
     private function denyIfOfflinePolicyRefuses(string $server, string $tool = '', array $params = []): ?string
     {
         try {
-            $policy = app(\App\Services\OfflinePolicyService::class);
+            $policy = app(OfflinePolicyService::class);
         } catch (\Throwable $e) {
             return null;
         }
@@ -2528,29 +2660,84 @@ class MCPRouter
      */
     private function getToolTimeout(string $server, string $tool): int
     {
-        // Puppeteer tools need longer timeouts for page rendering
-        if ($server === 'puppeteer') {
-            return match ($tool) {
-                'puppeteer_navigate' => 60,  // Page load can take time
-                'puppeteer_evaluate' => 45,  // Script execution
-                'puppeteer_screenshot' => 45, // Rendering
-                default => 30,
-            };
+        $toolTimeouts = $this->runtimePolicy['tool_timeouts_seconds'] ?? [];
+        if (! is_array($toolTimeouts)) {
+            $toolTimeouts = [];
         }
 
-        // Web research tools may need more time for API calls
-        if ($server === 'web-research') {
-            return 45;
-        }
-
-        if ($server === 'prompt-compressor') {
-            return match ($tool) {
-                'compress_prompt', 'compress_file', 'compress_diff', 'context_retrieve' => 120,
-                default => 30,
-            };
+        foreach ([$server.'.'.$tool, $server.'.*'] as $key) {
+            if (array_key_exists($key, $toolTimeouts)) {
+                return $this->positivePolicyInt($toolTimeouts[$key], $this->timeout);
+            }
         }
 
         return $this->timeout;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function loadRuntimePolicy(array $defaultPolicy): array
+    {
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, $defaultPolicy);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        $policy = array_replace($defaultPolicy, $configured);
+        $configuredToolTimeouts = $configured['tool_timeouts_seconds'] ?? null;
+        $policy['tool_timeouts_seconds'] = is_array($configuredToolTimeouts)
+            ? array_replace($defaultPolicy['tool_timeouts_seconds'], $configuredToolTimeouts)
+            : $defaultPolicy['tool_timeouts_seconds'];
+
+        return $policy;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function defaultRuntimePolicy(): array
+    {
+        return array_replace(self::DEFAULT_RUNTIME_POLICY, [
+            'timeout_seconds' => (int) config('mcp.router.timeout', self::DEFAULT_RUNTIME_POLICY['timeout_seconds']),
+            'log_calls' => (bool) config('mcp.router.log_calls', self::DEFAULT_RUNTIME_POLICY['log_calls']),
+            'cache_catalog_ttl_seconds' => (int) config('mcp.router.cache_catalog_ttl', self::DEFAULT_RUNTIME_POLICY['cache_catalog_ttl_seconds']),
+        ]);
+    }
+
+    private function positivePolicyInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    private function policyBool(mixed $value, bool $fallback): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (bool) $value;
+        }
+
+        if (is_string($value)) {
+            $parsed = filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+
+            return $parsed ?? $fallback;
+        }
+
+        return $fallback;
     }
 
     /**
@@ -2610,7 +2797,7 @@ class MCPRouter
      */
     private function callWorkflowTool(string $tool, array $params): array
     {
-        $workflowService = app(\App\Services\WorkflowService::class);
+        $workflowService = app(WorkflowService::class);
 
         return match ($tool) {
             'workflow_list' => [
@@ -2748,7 +2935,7 @@ class MCPRouter
      */
     private function callNextcloudContactsTool(string $tool, array $params): array
     {
-        $contactsService = app(\App\Services\NextcloudContactsService::class);
+        $contactsService = app(NextcloudContactsService::class);
 
         return match ($tool) {
             'get_address_books' => [
@@ -2778,7 +2965,7 @@ class MCPRouter
      */
     private function callJoplinFilesTool(string $tool, array $params): array
     {
-        $joplinService = app(\App\Services\JoplinFilesService::class);
+        $joplinService = app(JoplinFilesService::class);
 
         return match ($tool) {
             'joplin_search' => [
@@ -2815,7 +3002,7 @@ class MCPRouter
      */
     private function callTimeTool(string $tool, array $params): array
     {
-        $timeService = app(\App\Services\TimeService::class);
+        $timeService = app(TimeService::class);
 
         return match ($tool) {
             'get_current_time' => $timeService->get_current_time($params),
@@ -2829,7 +3016,7 @@ class MCPRouter
      */
     private function callWebResearchTool(string $tool, array $params): array
     {
-        $webResearchService = app(\App\Services\WebResearchService::class);
+        $webResearchService = app(WebResearchService::class);
 
         return match ($tool) {
             'web_search' => $this->formatWebSearchResults(
@@ -2868,7 +3055,7 @@ class MCPRouter
      */
     private function callCodeReviewTool(string $tool, array $params): array
     {
-        $codeReviewService = app(\App\Services\CodeReviewService::class);
+        $codeReviewService = app(CodeReviewService::class);
 
         return match ($tool) {
             'code_review' => $codeReviewService->reviewCode(
@@ -2898,7 +3085,7 @@ class MCPRouter
      */
     private function callRepoDevTool(string $tool, array $params): array
     {
-        $repoDevService = app(\App\Services\RepoDevMCPService::class);
+        $repoDevService = app(RepoDevMCPService::class);
 
         return match ($tool) {
             'find_repo_files' => $repoDevService->findRepoFiles(
@@ -2950,7 +3137,7 @@ class MCPRouter
      */
     private function callSearXNGTool(string $tool, array $params): array
     {
-        $searxngService = app(\App\Services\SearXNGMCPService::class);
+        $searxngService = app(SearXNGMCPService::class);
 
         return match ($tool) {
             'searxng_search' => $searxngService->searxng_search(
@@ -2980,7 +3167,7 @@ class MCPRouter
      */
     private function callGenealogyTool(string $tool, array $params): array
     {
-        $service = app(\App\Services\Genealogy\GenealogyMCPService::class);
+        $service = app(GenealogyMCPService::class);
 
         return match ($tool) {
             'gedcom_parse' => $service->gedcom_parse(
@@ -3712,8 +3899,9 @@ class MCPRouter
      * 3. Send tool call request
      * 4. Parse and return result
      */
-    private function callExternalTool(string $serverName, array $serverConfig, string $tool, array $params, int $timeout = 30): mixed
+    private function callExternalTool(string $serverName, array $serverConfig, string $tool, array $params, ?int $timeout = null): mixed
     {
+        $timeout = $this->positivePolicyInt($timeout, $this->timeout);
         $command = $serverConfig['command'];
         $args = $serverConfig['args'] ?? [];
 

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Services\AgentLoopService;
 use App\Services\SpeculativeExecutionService;
+use App\Services\SystemConfigService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -21,7 +22,7 @@ use Throwable;
  *
  * When both branches complete, the last-finishing branch triggers arbitration inline.
  *
- * Redis coordination keys (all with 30min TTL):
+ * Redis coordination keys (TTL follows agents.speculative_execution_runtime_policy):
  * - speculative:{specRunId}:status — overall run status
  * - speculative:{specRunId}:{branch}:status — pending|running|completed|failed
  * - speculative:{specRunId}:{branch}:result — JSON blob (full AgentLoopService result)
@@ -30,10 +31,22 @@ class SpeculativeBranchJob implements ShouldQueue
 {
     use Queueable;
 
+    private const RUNTIME_POLICY_CONFIG_KEY = 'agents.speculative_execution_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'branch_timeout_seconds' => 1200,
+        'branch_tries' => 1,
+        'coordination_ttl_seconds' => 1800,
+        'arbitration_lock_seconds' => 300,
+        'request_flag_ttl_seconds' => 3600,
+        'auto_disable_ttl_seconds' => 86400,
+    ];
+
     public int $timeout = 1200;  // 20 minutes max per branch
     public int $tries = 1;       // No retries — speculative is best-effort
 
-    private const REDIS_TTL = 1800; // 30 minutes
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function __construct(
         private string $specRunId,
@@ -43,6 +56,8 @@ class SpeculativeBranchJob implements ShouldQueue
         private string $mode,
         private array $options = []
     ) {
+        $this->applyRuntimePolicy();
+
         $this->onQueue('speculative');
     }
 
@@ -60,8 +75,8 @@ class SpeculativeBranchJob implements ShouldQueue
 
         // Update DB: branch running
         $this->updateBranchStatus('running');
-        Cache::put("{$redisPrefix}:{$this->branch}:status", 'running', self::REDIS_TTL);
-        Cache::put("{$redisPrefix}:status", 'running', self::REDIS_TTL);
+        Cache::put("{$redisPrefix}:{$this->branch}:status", 'running', $this->coordinationTtlSeconds());
+        Cache::put("{$redisPrefix}:status", 'running', $this->coordinationTtlSeconds());
 
         Log::info("SpeculativeBranch: Starting", [
             'spec_run_id' => $this->specRunId,
@@ -86,8 +101,8 @@ class SpeculativeBranchJob implements ShouldQueue
             $tokensUsed = $result['tokens_used'] ?? 0;
 
             // Store result in Redis
-            Cache::put("{$redisPrefix}:{$this->branch}:result", json_encode($result), self::REDIS_TTL);
-            Cache::put("{$redisPrefix}:{$this->branch}:status", 'completed', self::REDIS_TTL);
+            Cache::put("{$redisPrefix}:{$this->branch}:result", json_encode($result), $this->coordinationTtlSeconds());
+            Cache::put("{$redisPrefix}:{$this->branch}:status", 'completed', $this->coordinationTtlSeconds());
 
             // Update DB
             $this->updateBranchStatus('completed');
@@ -105,11 +120,11 @@ class SpeculativeBranchJob implements ShouldQueue
         } catch (Throwable $e) {
             $durationMs = (int) round((microtime(true) - $startTime) * 1000);
 
-            Cache::put("{$redisPrefix}:{$this->branch}:status", 'failed', self::REDIS_TTL);
+            Cache::put("{$redisPrefix}:{$this->branch}:status", 'failed', $this->coordinationTtlSeconds());
             Cache::put("{$redisPrefix}:{$this->branch}:result", json_encode([
                 'success' => false,
                 'error' => $e->getMessage(),
-            ]), self::REDIS_TTL);
+            ]), $this->coordinationTtlSeconds());
 
             $this->updateBranchStatus('failed');
             $this->updateBranchMetrics(0, $durationMs);
@@ -135,7 +150,7 @@ class SpeculativeBranchJob implements ShouldQueue
         ]);
 
         $redisPrefix = "speculative:{$this->specRunId}";
-        Cache::put("{$redisPrefix}:{$this->branch}:status", 'failed', self::REDIS_TTL);
+        Cache::put("{$redisPrefix}:{$this->branch}:status", 'failed', $this->coordinationTtlSeconds());
         $this->updateBranchStatus('failed');
         $this->checkAndArbitrate();
     }
@@ -180,7 +195,7 @@ class SpeculativeBranchJob implements ShouldQueue
         }
 
         // Use a lock to prevent both branches from triggering arbitration simultaneously
-        $arbitrationLock = Cache::lock("speculative_arbitration:{$this->specRunId}", 300);
+        $arbitrationLock = Cache::lock("speculative_arbitration:{$this->specRunId}", $this->arbitrationLockSeconds());
         if (!$arbitrationLock->get()) {
             return; // Other branch already arbitrating
         }
@@ -200,5 +215,62 @@ class SpeculativeBranchJob implements ShouldQueue
         } finally {
             $arbitrationLock->release();
         }
+    }
+
+    private function applyRuntimePolicy(): void
+    {
+        $this->timeout = $this->runtimePolicyInt('branch_timeout_seconds');
+        $this->tries = $this->runtimePolicyInt('branch_tries');
+    }
+
+    private function coordinationTtlSeconds(): int
+    {
+        return $this->runtimePolicyInt('coordination_ttl_seconds');
+    }
+
+    private function arbitrationLockSeconds(): int
+    {
+        return $this->runtimePolicyInt('arbitration_lock_seconds');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

@@ -36,7 +36,7 @@ class GenealogyReviewPacketDecisionService
                 'accepted_fact_mutations' => false,
                 'proposal_materialization' => 'not_implemented',
             ], $reasonCode),
-            'Packet marked reviewed; proposal materialization remains preview-only.',
+            'Packet marked reviewed; no accepted FT facts were changed and proposal materialization remains preview-only.',
             requirePreviewOnly: true
         );
     }
@@ -53,7 +53,7 @@ class GenealogyReviewPacketDecisionService
                 'accepted_fact_mutations' => false,
                 'proposal_materialization' => 'not_implemented',
             ], $reasonCode),
-            'Packet reviewed; safe research-task previews were materialized where supported.',
+            'Packet reviewed; no accepted FT facts were changed. Safe research-task previews were materialized where supported.',
             requirePreviewOnly: true,
             materializeSafeResearchTasks: true
         );

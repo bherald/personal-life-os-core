@@ -84,7 +84,10 @@ class FaceCandidateService
 
         $candidates = $tokens === []
             ? []
-            : $this->rankCandidates($treeId['id'], $tokens, $normalizedFaceName, $limit, $photoYear);
+            : $this->mergeIdentityCandidates(
+                $this->rankCandidates($treeId['id'], $tokens, $normalizedFaceName, $limit, $photoYear),
+                $this->rankKnownFaceIdentities($fileRegistryFaceId, $treeId['id'], $tokens, $normalizedFaceName, $limit, $photoYear)
+            );
 
         $rejectedCandidateIds = $includeRejected ? [] : $this->rejectedCandidateIds($fileRegistryFaceId);
         if ($rejectedCandidateIds !== []) {
@@ -99,7 +102,7 @@ class FaceCandidateService
             'status' => 200,
             'tree_id' => $treeId['id'],
             'face' => $this->facePayload($face),
-            'candidates' => $candidates,
+            'candidates' => array_slice($candidates, 0, $limit),
             'candidate_state' => $this->candidateState($tokens, $candidates),
             'suggested_action' => $this->suggestedAction($candidates),
             'candidate_review_posture' => $this->candidateReviewPosture(),
@@ -141,6 +144,8 @@ class FaceCandidateService
         ?int $photoYear
     ): array {
         $searchTokens = $this->expandedNameTokens($tokens);
+
+        $candidatePoolLimit = max($limit * 20, 250);
 
         $query = DB::table('genealogy_persons as gp')
             ->join('genealogy_trees as gt', 'gt.id', '=', 'gp.tree_id')
@@ -193,7 +198,16 @@ class FaceCandidateService
                 DB::raw('COALESCE(face_counts.face_count, 0) AS face_count'),
                 DB::raw('COALESCE(name_variants.variant_names, "") AS variant_names')
             )
-            ->limit(max($limit * 5, 50))
+            ->orderByRaw(
+                "CASE
+                    WHEN LOWER(CONCAT_WS(' ', gp.given_name, gp.surname)) = ? THEN 0
+                    WHEN LOWER(COALESCE(name_variants.variant_names, '')) LIKE ? THEN 1
+                    WHEN LOWER(CONCAT_WS(' ', gp.given_name, gp.surname)) LIKE ? THEN 2
+                    ELSE 3
+                END",
+                [$normalizedFaceName, '%'.$normalizedFaceName.'%', $normalizedFaceName.'%']
+            )
+            ->limit($candidatePoolLimit)
             ->get();
 
         return $query
@@ -203,6 +217,9 @@ class FaceCandidateService
 
                 return [
                     'genealogy_person_id' => (int) $person->id,
+                    'identity_key' => 'genealogy:'.(int) $person->id,
+                    'identity_type' => 'genealogy_person',
+                    'bridge_priority' => 1,
                     'tree_id' => (int) $person->tree_id,
                     'name' => trim((string) $person->name),
                     'given_name' => $person->given_name,
@@ -223,6 +240,7 @@ class FaceCandidateService
                     'age_at_photo' => $lifespanContext['age_at_photo'],
                     'lifespan_warnings' => $lifespanContext['lifespan_warnings'],
                     'face_count' => (int) $person->face_count,
+                    'known_face_count' => (int) $person->face_count,
                     'score' => $score,
                     'reasons' => $reasons,
                 ];
@@ -235,6 +253,228 @@ class FaceCandidateService
                 ['genealogy_person_id', 'asc'],
             ])
             ->take($limit)
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Known face labels are real identities for review even when they have not
+     * been bridged to an FT person yet.
+     *
+     * @param  list<string>  $tokens
+     * @return list<array<string, mixed>>
+     */
+    private function rankKnownFaceIdentities(
+        int $fileRegistryFaceId,
+        int $treeId,
+        array $tokens,
+        string $normalizedFaceName,
+        int $limit,
+        ?int $photoYear
+    ): array {
+        $searchTokens = $this->expandedNameTokens($tokens);
+        $candidatePoolLimit = max($limit * 20, 250);
+
+        $query = DB::table('file_registry_faces as frf')
+            ->leftJoin('genealogy_persons as gp', 'gp.id', '=', 'frf.genealogy_person_id')
+            ->leftJoin('genealogy_trees as gt', 'gt.id', '=', 'gp.tree_id')
+            ->where('frf.hidden', 0)
+            ->where('frf.id', '<>', $fileRegistryFaceId)
+            ->whereRaw("NULLIF(TRIM(frf.person_name), '') IS NOT NULL")
+            ->whereRaw("LOWER(TRIM(frf.person_name)) <> 'unknown'")
+            ->where(function ($query) use ($treeId): void {
+                $query->whereNull('frf.genealogy_person_id')
+                    ->orWhere('gp.tree_id', $treeId);
+            })
+            ->where(function ($query) use ($searchTokens): void {
+                foreach ($searchTokens as $token) {
+                    $like = '%'.$token.'%';
+                    $query->orWhereRaw('LOWER(frf.person_name) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(gp.given_name) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(gp.surname) LIKE ?', [$like])
+                        ->orWhereRaw("LOWER(CONCAT_WS(' ', gp.given_name, gp.surname)) LIKE ?", [$like]);
+                }
+            })
+            ->select(
+                'frf.person_name',
+                'frf.genealogy_person_id',
+                'gp.id',
+                'gp.tree_id',
+                'gp.given_name',
+                'gp.surname',
+                'gp.nickname',
+                'gp.birth_date',
+                'gp.death_date',
+                'gp.living',
+                'gp.privacy_override',
+                'gt.privacy as tree_privacy',
+                'gt.living_privacy',
+                DB::raw("CONCAT_WS(' ', gp.given_name, gp.surname) AS name"),
+                DB::raw('COUNT(*) AS face_count')
+            )
+            ->groupBy(
+                'frf.person_name',
+                'frf.genealogy_person_id',
+                'gp.id',
+                'gp.tree_id',
+                'gp.given_name',
+                'gp.surname',
+                'gp.nickname',
+                'gp.birth_date',
+                'gp.death_date',
+                'gp.living',
+                'gp.privacy_override',
+                'gt.privacy',
+                'gt.living_privacy'
+            )
+            ->orderByRaw(
+                "CASE
+                    WHEN LOWER(frf.person_name) = ? THEN 0
+                    WHEN LOWER(frf.person_name) LIKE ? THEN 1
+                    ELSE 2
+                END",
+                [$normalizedFaceName, $normalizedFaceName.'%']
+            )
+            ->orderByRaw('COUNT(*) DESC')
+            ->limit($candidatePoolLimit)
+            ->get();
+
+        return $query
+            ->map(function (object $identity) use ($tokens, $normalizedFaceName, $photoYear): array {
+                [$score, $reasons] = $this->scoreKnownFaceIdentity($identity, $tokens, $normalizedFaceName);
+                $linkedPersonId = $identity->genealogy_person_id !== null ? (int) $identity->genealogy_person_id : null;
+                $faceLabel = trim((string) $identity->person_name);
+                $canonicalName = trim((string) ($identity->name ?? ''));
+                $labelMatchesLinkedPerson = $linkedPersonId !== null
+                    && $canonicalName !== ''
+                    && $this->normalizeName($faceLabel) === $this->normalizeName($canonicalName);
+                $personId = $labelMatchesLinkedPerson ? $linkedPersonId : null;
+                $lifespanContext = $personId !== null
+                    ? $this->lifespanContext($identity, $photoYear)
+                    : [
+                        'photo_date_context' => [
+                            'projection_only' => true,
+                            'photo_year' => $photoYear,
+                            'birth_year' => null,
+                            'death_year' => null,
+                        ],
+                        'lifespan_fit' => $photoYear === null ? 'unknown_photo_date' : 'standalone_face_label',
+                        'age_at_photo' => null,
+                        'lifespan_warnings' => [],
+                    ];
+
+                return [
+                    'genealogy_person_id' => $personId,
+                    'identity_key' => $personId !== null
+                        ? 'genealogy:'.$personId
+                        : 'face_label:'.$this->normalizeName($faceLabel),
+                    'identity_type' => $personId !== null ? 'genealogy_person' : 'face_label',
+                    'bridge_priority' => $personId !== null ? 1 : 0,
+                    'tree_id' => $personId !== null && $identity->tree_id !== null ? (int) $identity->tree_id : null,
+                    'name' => $personId !== null && $canonicalName !== '' ? $canonicalName : $faceLabel,
+                    'person_name' => $faceLabel,
+                    'face_label' => $faceLabel,
+                    'given_name' => $personId !== null ? ($identity->given_name ?? null) : null,
+                    'surname' => $personId !== null ? ($identity->surname ?? null) : null,
+                    'nickname' => $personId !== null ? ($identity->nickname ?? null) : null,
+                    'birth_date' => $personId !== null ? ($identity->birth_date ?? null) : null,
+                    'death_date' => $personId !== null ? ($identity->death_date ?? null) : null,
+                    'living' => $personId !== null ? $this->nullableBool($identity->living ?? null) : null,
+                    'living_status' => $personId !== null ? $this->livingStatus($identity->living ?? null) : 'unknown',
+                    'privacy_override' => $personId !== null ? $this->privacyOverride($identity->privacy_override ?? null) : 'default',
+                    'tree_privacy' => $personId !== null ? $this->treePrivacy($identity->tree_privacy ?? null) : 'unknown',
+                    'living_privacy' => $personId !== null ? $this->livingPrivacy($identity->living_privacy ?? null) : 'unknown',
+                    'privacy_state' => $personId !== null ? $this->privacyState($identity) : 'standalone_face_label',
+                    'requires_elevated_review' => $personId !== null ? $this->requiresElevatedReview($identity) : false,
+                    'review_posture' => $personId !== null ? $this->reviewPosture($identity) : $this->standaloneFaceLabelPosture(),
+                    'photo_date_context' => $lifespanContext['photo_date_context'],
+                    'lifespan_fit' => $lifespanContext['lifespan_fit'],
+                    'age_at_photo' => $lifespanContext['age_at_photo'],
+                    'lifespan_warnings' => $lifespanContext['lifespan_warnings'],
+                    'face_count' => (int) $identity->face_count,
+                    'known_face_count' => (int) $identity->face_count,
+                    'score' => $score,
+                    'reasons' => $reasons,
+                ];
+            })
+            ->filter(fn (array $candidate): bool => $candidate['score'] > 0.0)
+            ->sortBy([
+                ['score', 'desc'],
+                ['bridge_priority', 'desc'],
+                ['known_face_count', 'desc'],
+                ['name', 'asc'],
+                ['identity_key', 'asc'],
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $genealogyCandidates
+     * @param  list<array<string, mixed>>  $faceIdentityCandidates
+     * @return list<array<string, mixed>>
+     */
+    private function mergeIdentityCandidates(array $genealogyCandidates, array $faceIdentityCandidates): array
+    {
+        $merged = [];
+
+        foreach ([...$genealogyCandidates, ...$faceIdentityCandidates] as $candidate) {
+            $key = (string) ($candidate['identity_key'] ?? '');
+            if ($key === '') {
+                continue;
+            }
+
+            if (! isset($merged[$key])) {
+                $merged[$key] = $candidate;
+                continue;
+            }
+
+            $existing = $merged[$key];
+            $existingScore = (float) ($existing['score'] ?? 0.0);
+            $candidateScore = (float) ($candidate['score'] ?? 0.0);
+
+            if ($candidateScore > $existingScore) {
+                $candidate['reasons'] = array_values(array_unique(array_merge(
+                    (array) ($existing['reasons'] ?? []),
+                    (array) ($candidate['reasons'] ?? [])
+                )));
+                $candidate['known_face_count'] = max(
+                    (int) ($existing['known_face_count'] ?? 0),
+                    (int) ($candidate['known_face_count'] ?? 0)
+                );
+                $candidate['face_count'] = max((int) ($existing['face_count'] ?? 0), (int) ($candidate['face_count'] ?? 0));
+                $merged[$key] = $candidate;
+                continue;
+            }
+
+            $existing['reasons'] = array_values(array_unique(array_merge(
+                (array) ($existing['reasons'] ?? []),
+                (array) ($candidate['reasons'] ?? [])
+            )));
+            $existing['known_face_count'] = max(
+                (int) ($existing['known_face_count'] ?? 0),
+                (int) ($candidate['known_face_count'] ?? 0)
+            );
+            $existing['face_count'] = max((int) ($existing['face_count'] ?? 0), (int) ($candidate['face_count'] ?? 0));
+            if (empty($existing['face_label']) && ! empty($candidate['face_label'])) {
+                $existing['face_label'] = $candidate['face_label'];
+            }
+            if (empty($existing['person_name']) && ! empty($candidate['person_name'])) {
+                $existing['person_name'] = $candidate['person_name'];
+            }
+            $merged[$key] = $existing;
+        }
+
+        return collect(array_values($merged))
+            ->sortBy([
+                ['score', 'desc'],
+                ['bridge_priority', 'desc'],
+                ['known_face_count', 'desc'],
+                ['surname', 'asc'],
+                ['given_name', 'asc'],
+                ['name', 'asc'],
+                ['identity_key', 'asc'],
+            ])
             ->values()
             ->all();
     }
@@ -305,6 +545,52 @@ class FaceCandidateService
         if ($score < 0.60 && $this->tokenOverlapCount($full, $tokens) > 0) {
             $score = max($score, 0.50);
             $reasons[] = 'name_token';
+        }
+
+        return [round($score, 2), array_values(array_unique($reasons))];
+    }
+
+    /**
+     * @param  list<string>  $tokens
+     * @return array{0:float,1:list<string>}
+     */
+    private function scoreKnownFaceIdentity(object $identity, array $tokens, string $normalizedFaceName): array
+    {
+        $label = $this->normalizeName((string) ($identity->person_name ?? ''));
+        if ($label === '') {
+            return [0.0, []];
+        }
+
+        $labelTokens = $this->nameTokens($label);
+        $overlap = count(array_intersect($labelTokens, $tokens));
+        $score = 0.0;
+        $reasons = [];
+
+        if ($normalizedFaceName !== '' && $label === $normalizedFaceName) {
+            $score = 1.0;
+            $reasons[] = 'known_face_exact';
+        } elseif ($tokens !== [] && count(array_diff($tokens, $labelTokens)) === 0) {
+            $score = 0.94;
+            $reasons[] = 'known_face_all_tokens';
+        } elseif ($overlap >= 2) {
+            $score = 0.86;
+            $reasons[] = 'known_face_token_overlap';
+        } elseif ($overlap === 1) {
+            $score = 0.50;
+            $reasons[] = 'known_face_token';
+        }
+
+        $canonicalName = $this->normalizeName((string) ($identity->name ?? ''));
+        $hasLinkedPerson = ($identity->genealogy_person_id ?? null) !== null;
+        $labelMatchesLinkedPerson = $hasLinkedPerson && $canonicalName !== '' && $label === $canonicalName;
+
+        if (! $hasLinkedPerson) {
+            $reasons[] = 'standalone_face_label';
+        } elseif (! $labelMatchesLinkedPerson) {
+            $reasons[] = 'face_label_bridge_mismatch';
+            $reasons[] = 'standalone_face_label';
+        } else {
+            $reasons[] = 'face_label_with_ft_bridge';
         }
 
         return [round($score, 2), array_values(array_unique($reasons))];
@@ -461,7 +747,20 @@ class FaceCandidateService
         }
 
         $topScore = (float) ($candidates[0]['score'] ?? 0.0);
-        $secondScore = (float) ($candidates[1]['score'] ?? 0.0);
+        $topName = $this->candidateNormalizedName($candidates[0]);
+        $secondScore = 0.0;
+        foreach (array_slice($candidates, 1) as $candidate) {
+            if (
+                empty($candidate['genealogy_person_id'])
+                && $topName !== ''
+                && $this->candidateNormalizedName($candidate) === $topName
+            ) {
+                continue;
+            }
+
+            $secondScore = (float) ($candidate['score'] ?? 0.0);
+            break;
+        }
         $topReasons = $candidates[0]['reasons'] ?? [];
         if (
             $topScore >= 0.95
@@ -477,6 +776,19 @@ class FaceCandidateService
         }
 
         return 'ambiguous';
+    }
+
+    /**
+     * @param  array<string, mixed>  $candidate
+     */
+    private function candidateNormalizedName(array $candidate): string
+    {
+        return $this->normalizeName((string) (
+            $candidate['face_label']
+            ?? $candidate['person_name']
+            ?? $candidate['name']
+            ?? ''
+        ));
     }
 
     /**
@@ -615,6 +927,10 @@ class FaceCandidateService
     private function suggestedAction(array $candidates): string
     {
         $topScore = (float) ($candidates[0]['score'] ?? 0.0);
+
+        if ($topScore >= 0.85 && empty($candidates[0]['genealogy_person_id'])) {
+            return 'use_name';
+        }
 
         if ($topScore >= 0.85) {
             return 'link';
@@ -815,6 +1131,27 @@ class FaceCandidateService
             'create_person_allowed' => false,
             'metadata_writeback_allowed' => false,
             'posture_reason' => 'named_only_candidate_projection',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function standaloneFaceLabelPosture(): array
+    {
+        return [
+            'projection_only' => true,
+            'operator_review_required' => true,
+            'operator_link_available' => false,
+            'operator_decision_available' => true,
+            'automation_allowed' => false,
+            'automatic_link_allowed' => false,
+            'create_person_allowed' => false,
+            'metadata_writeback_allowed' => true,
+            'posture_reason' => 'standalone_face_label_candidate',
+            'badges' => [
+                ['key' => 'standalone-face-label', 'label' => 'Known face label', 'tone' => 'safe'],
+            ],
         ];
     }
 

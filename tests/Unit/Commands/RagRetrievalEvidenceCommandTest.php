@@ -49,6 +49,7 @@ class RagRetrievalEvidenceCommandTest extends TestCase
         $this->assertSame('ordered_query_hashes_and_type_filters', $payload['evidence_contract']['query_set_hash_basis']);
         $this->assertSame('redacted_by_default', $payload['evidence_contract']['query_text']);
         $this->assertSame('redacted_by_default', $payload['evidence_contract']['results']);
+        $this->assertSame('enabled_default', $payload['evidence_contract']['query_traces']);
         $this->assertSame($this->querySetHash([
             ['query' => 'family photos', 'type' => null],
             ['query' => 'scheduler evidence', 'type' => null],
@@ -68,6 +69,32 @@ class RagRetrievalEvidenceCommandTest extends TestCase
         $this->assertSame(substr(hash('sha256', 'family photos'), 0, 16), $payload['queries'][0]['query_hash']);
         $this->assertArrayNotHasKey('results', $payload['queries'][0]);
         $this->assertSame('observe_empty', $payload['queries'][1]['status']);
+    }
+
+    public function test_no_trace_option_disables_rag_query_trace_writes(): void
+    {
+        $service = Mockery::mock(RAGService::class);
+        $service->shouldReceive('search')
+            ->once()
+            ->with('private audit query', 2, null, false, null, ['trace' => false])
+            ->andReturn([
+                ['document' => (object) ['title' => 'Audit Note', 'document_type' => 'note', 'content' => 'Evidence note'], 'similarity' => 0.66],
+            ]);
+        $this->app->instance(RAGService::class, $service);
+
+        $exit = Artisan::call('rag:retrieval-evidence', [
+            '--query' => ['private audit query'],
+            '--limit' => 2,
+            '--no-trace' => true,
+            '--json' => true,
+        ]);
+        $output = Artisan::output();
+        $payload = json_decode($output, true);
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('disabled_by_operator_option', $payload['evidence_contract']['query_traces']);
+        $this->assertStringNotContainsString('private audit query', $output);
+        $this->assertSame(substr(hash('sha256', 'private audit query'), 0, 16), $payload['queries'][0]['query_hash']);
     }
 
     public function test_query_set_hash_is_stable_across_repeated_runs_when_labels_change(): void
@@ -256,6 +283,7 @@ class RagRetrievalEvidenceCommandTest extends TestCase
         $this->assertStringContainsString('Query set hash basis: `ordered_query_hashes_and_type_filters`', $output);
         $this->assertStringContainsString('Query text: `redacted_by_default`', $output);
         $this->assertStringContainsString('Results: `redacted_by_default`', $output);
+        $this->assertStringContainsString('Query traces: `enabled_default`', $output);
         $this->assertStringContainsString('query_duration_p95_ms', $output);
         $this->assertStringContainsString('| Label | Query Hash | Type | Status | Results |', $output);
         $this->assertStringContainsString('`genealogy_person`', $output);

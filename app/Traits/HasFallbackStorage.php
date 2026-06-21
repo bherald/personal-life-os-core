@@ -3,6 +3,7 @@
 namespace App\Traits;
 
 use App\Controllers\NotificationController;
+use App\Services\SystemConfigService;
 use Exception;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
@@ -28,6 +29,39 @@ use Illuminate\Support\Facades\Log;
  */
 trait HasFallbackStorage
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'workflow.fallback_storage_runtime_policy';
+
+    private const DEFAULT_CONNECTION_ERROR_PATTERNS = [
+        'cURL error 7',
+        'cURL error 28',
+        'cURL error 6',
+        'Connection refused',
+        'Failed to connect',
+        'Could not resolve host',
+        'Network is unreachable',
+        'Connection reset',
+        'Connection timed out',
+        'Operation timed out',
+        'SSL connection timeout',
+        'ETIMEDOUT',
+        'ECONNREFUSED',
+        'ENOTFOUND',
+        'ECONNRESET',
+    ];
+
+    private const DEFAULT_FALLBACK_DIRECTORY_MODE = 0755;
+
+    private const DEFAULT_NOTIFICATION_FILE_PREVIEW_LIMIT = 10;
+
+    private const DEFAULT_NOTIFICATION_FILENAME_MAX_CHARS = 50;
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'connection_error_patterns' => self::DEFAULT_CONNECTION_ERROR_PATTERNS,
+        'fallback_directory_mode' => '0755',
+        'notification_file_preview_limit' => self::DEFAULT_NOTIFICATION_FILE_PREVIEW_LIMIT,
+        'notification_filename_max_chars' => self::DEFAULT_NOTIFICATION_FILENAME_MAX_CHARS,
+    ];
+
     /**
      * Whether we're in fallback mode (service unreachable)
      */
@@ -43,6 +77,15 @@ trait HasFallbackStorage
      * Files written to fallback during this execution
      */
     protected array $fallbackFiles = [];
+
+    /**
+     * Cached table-owned runtime policy.
+     *
+     * @var array<string,mixed>|null
+     */
+    private ?array $fallbackStorageRuntimePolicy = null;
+
+    private string $fallbackStorageRuntimePolicySource = 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY;
 
     /**
      * Get the fallback storage path
@@ -62,25 +105,7 @@ trait HasFallbackStorage
      */
     protected function isConnectionError(string $error): bool
     {
-        $connectionPatterns = [
-            'cURL error 7',           // Failed to connect
-            'cURL error 28',          // Connection timed out
-            'cURL error 6',           // Could not resolve host
-            'Connection refused',
-            'Failed to connect',
-            'Could not resolve host',
-            'Network is unreachable',
-            'Connection reset',
-            'Connection timed out',
-            'Operation timed out',
-            'SSL connection timeout',
-            'ETIMEDOUT',
-            'ECONNREFUSED',
-            'ENOTFOUND',
-            'ECONNRESET',
-        ];
-
-        foreach ($connectionPatterns as $pattern) {
+        foreach ($this->connectionErrorPatterns() as $pattern) {
             if (stripos($error, $pattern) !== false) {
                 return true;
             }
@@ -102,6 +127,7 @@ trait HasFallbackStorage
                 Log::warning('HasFallbackStorage: Connection error detected, switching to fallback mode', [
                     'service' => $this->fallbackIdentifier,
                     'error' => $error,
+                    'runtime_policy_source' => $this->fallbackStorageRuntimePolicySource,
                 ]);
                 $this->fallbackMode = true;
             }
@@ -127,7 +153,7 @@ trait HasFallbackStorage
 
             // Ensure fallback directory exists
             if (! File::isDirectory($fallbackPath)) {
-                File::makeDirectory($fallbackPath, 0755, true);
+                File::makeDirectory($fallbackPath, $this->fallbackDirectoryMode(), true);
             }
 
             // Clean filename
@@ -152,6 +178,7 @@ trait HasFallbackStorage
                 'service' => $this->fallbackIdentifier,
                 'filename' => $actualFilename,
                 'size' => strlen($content),
+                'runtime_policy_source' => $this->fallbackStorageRuntimePolicySource,
             ], $metadata));
 
             return [
@@ -165,6 +192,7 @@ trait HasFallbackStorage
                 'service' => $this->fallbackIdentifier,
                 'filename' => $filename ?? 'unknown',
                 'error' => $e->getMessage(),
+                'runtime_policy_source' => $this->fallbackStorageRuntimePolicySource,
             ], $metadata));
 
             return [
@@ -223,12 +251,14 @@ trait HasFallbackStorage
             Log::info('HasFallbackStorage: Fallback notification sent', [
                 'service' => $this->fallbackIdentifier,
                 'file_count' => count($this->fallbackFiles),
+                'runtime_policy_source' => $this->fallbackStorageRuntimePolicySource,
             ]);
 
         } catch (Exception $e) {
             Log::error('HasFallbackStorage: Failed to send fallback notification', [
                 'service' => $this->fallbackIdentifier,
                 'error' => $e->getMessage(),
+                'runtime_policy_source' => $this->fallbackStorageRuntimePolicySource,
             ]);
         }
     }
@@ -248,12 +278,21 @@ trait HasFallbackStorage
         $message .= "storage/app/{$folder}/\n\n";
         $message .= "Files:\n";
 
-        foreach (array_slice($this->fallbackFiles, 0, 10) as $file) {
-            $message .= '- '.substr($file, 0, 50)."\n";
+        $previewLimit = $this->runtimePolicyPositiveInt(
+            'notification_file_preview_limit',
+            self::DEFAULT_NOTIFICATION_FILE_PREVIEW_LIMIT
+        );
+        $filenameMaxChars = $this->runtimePolicyPositiveInt(
+            'notification_filename_max_chars',
+            self::DEFAULT_NOTIFICATION_FILENAME_MAX_CHARS
+        );
+
+        foreach (array_slice($this->fallbackFiles, 0, $previewLimit) as $file) {
+            $message .= '- '.substr($file, 0, $filenameMaxChars)."\n";
         }
 
-        if ($count > 10) {
-            $message .= '... and '.($count - 10)." more\n";
+        if ($count > $previewLimit) {
+            $message .= '... and '.($count - $previewLimit)." more\n";
         }
 
         $message .= "\nImport manually when service is back online.";
@@ -298,5 +337,81 @@ trait HasFallbackStorage
     {
         $this->fallbackMode = false;
         $this->fallbackFiles = [];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function connectionErrorPatterns(): array
+    {
+        $patterns = $this->fallbackStorageRuntimePolicy()['connection_error_patterns'] ?? self::DEFAULT_CONNECTION_ERROR_PATTERNS;
+        if (! is_array($patterns)) {
+            return self::DEFAULT_CONNECTION_ERROR_PATTERNS;
+        }
+
+        $cleanPatterns = [];
+        foreach ($patterns as $pattern) {
+            if (is_string($pattern) && trim($pattern) !== '') {
+                $cleanPatterns[] = trim($pattern);
+            }
+        }
+
+        return $cleanPatterns !== [] ? $cleanPatterns : self::DEFAULT_CONNECTION_ERROR_PATTERNS;
+    }
+
+    private function fallbackDirectoryMode(): int
+    {
+        $mode = $this->fallbackStorageRuntimePolicy()['fallback_directory_mode'] ?? self::DEFAULT_RUNTIME_POLICY['fallback_directory_mode'];
+        if (is_int($mode)) {
+            $mode = (string) $mode;
+        }
+
+        if (is_string($mode)) {
+            $mode = trim($mode);
+            if (preg_match('/^0?[0-7]{3,4}$/', $mode) === 1) {
+                return octdec($mode);
+            }
+        }
+
+        return self::DEFAULT_FALLBACK_DIRECTORY_MODE;
+    }
+
+    private function runtimePolicyPositiveInt(string $key, int $fallback): int
+    {
+        $value = $this->fallbackStorageRuntimePolicy()[$key] ?? null;
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function fallbackStorageRuntimePolicy(): array
+    {
+        if ($this->fallbackStorageRuntimePolicy !== null) {
+            return $this->fallbackStorageRuntimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        $policy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+        if (array_key_exists('connection_error_patterns', $configured)) {
+            $policy['connection_error_patterns'] = $configured['connection_error_patterns'];
+        }
+
+        return $this->fallbackStorageRuntimePolicy = $policy;
     }
 }

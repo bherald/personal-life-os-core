@@ -41,8 +41,8 @@
         Does this source or evidence belong with the target person?
       </div>
       <div class="operator-question-note">
-        Packet actions affect the packet review state. They are not line-item source decisions.
-        If any candidate line is uncertain, use Reject, Clarify, or Defer rather than treating packet approval as an attach-all action.
+        Packet actions affect the packet review state. They are not line-item source decisions and do not update accepted FT facts.
+        If any candidate line is uncertain, use Reject, Clarify, or Defer rather than treating packet review as an attach-all action.
       </div>
     </section>
 
@@ -100,6 +100,31 @@
           v-for="row in reviewProofRows"
           :key="row.key"
           class="checklist-row proof-row"
+          :class="checklistStateClass(row.state)"
+        >
+          <span class="checklist-state">{{ checklistStateLabel(row.state) }}</span>
+          <span class="checklist-label">{{ row.label }}</span>
+          <span class="checklist-value" :title="row.value">{{ row.value }}</span>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="workTrailRows.length" class="packet-section work-trail-section">
+      <div class="section-heading">
+        <span>Work trail</span>
+        <span class="section-status preview">display only</span>
+      </div>
+      <div v-if="workTrailSummaryRows.length" class="kv-grid compact work-trail-summary">
+        <div v-for="row in workTrailSummaryRows" :key="row.key" class="kv-row">
+          <span class="kv-key">{{ row.label }}</span>
+          <span class="kv-value">{{ row.value }}</span>
+        </div>
+      </div>
+      <div class="checklist-grid work-trail-grid">
+        <div
+          v-for="row in workTrailRows"
+          :key="row.key"
+          class="checklist-row work-trail-row"
           :class="checklistStateClass(row.state)"
         >
           <span class="checklist-state">{{ checklistStateLabel(row.state) }}</span>
@@ -679,7 +704,7 @@
           :title="markReviewedDisabledTitle"
           @click="submitDecision('approve')"
         >
-          Mark reviewed
+          Mark reviewed - no FT write
         </button>
         <button
           type="button"
@@ -838,6 +863,7 @@ const reviewFocus = computed(() => objectValue(props.context?.review_focus))
 const packetOutcome = computed(() => objectValue(props.context?.packet_outcome))
 const reviewProof = computed(() => objectValue(props.context?.review_proof))
 const reviewPass = computed(() => objectValue(props.context?.review_pass))
+const workTrail = computed(() => objectValue(props.context?.work_trail))
 const packetChecklist = computed(() => objectValue(props.context?.review_checklist))
 const evidenceLens = computed(() => objectValue(props.context?.evidence_lens))
 const remediationOrigin = computed(() => objectValue(reviewFocus.value.remediation_origin))
@@ -918,6 +944,29 @@ const reviewPassRows = computed(() => {
     reviewPassRow('raw_identifiers', 'Raw identifiers', displayBoolean(posture.raw_identifiers_included), posture.raw_identifiers_included === true ? 'blocked' : 'ok'),
     reviewPassRow('tokens', 'Tokens included', displayBoolean(posture.tokens_included), posture.tokens_included === true ? 'blocked' : 'ok'),
     reviewPassRow('locators', 'Locators included', displayBoolean(posture.locators_included), posture.locators_included === true ? 'blocked' : 'ok'),
+  ].filter(Boolean)
+})
+
+const workTrailRows = computed(() => arrayValue(workTrail.value.rows)
+  .filter(isPlainObject)
+  .map((row) => ({
+    key: stringOrNull(row.key) || compactJson(row),
+    label: stringOrNull(row.label) || labelize(row.key || 'work trail'),
+    value: displayValue(row.value),
+    state: stringOrNull(row.state) || 'warning',
+  })))
+
+const workTrailSummaryRows = computed(() => {
+  const summary = objectValue(workTrail.value.summary)
+
+  return [
+    workTrailSummaryRow('mode', 'Mode', workTrail.value.mode),
+    workTrailSummaryRow('sources', 'Sources', summary.source_count),
+    workTrailSummaryRow('claims', 'Claims', summary.claim_count),
+    workTrailSummaryRow('media', 'Media', workTrailMediaSummary(summary)),
+    workTrailSummaryRow('validation', 'Validation', summary.validation_state),
+    workTrailSummaryRow('preview', 'Preview', workTrailPreviewSummary(summary)),
+    workTrailSummaryRow('outcome', 'Outcome', summary.outcome_state),
   ].filter(Boolean)
 })
 
@@ -1293,6 +1342,24 @@ function originRow(key, label, value) {
 function outcomeRow(key, label, value) {
   if (value === null || value === undefined || value === '') return null
   return { key, label, raw: value, value: displayValue(value) }
+}
+
+function workTrailSummaryRow(key, label, value) {
+  if (value === null || value === undefined || value === '') return null
+  return { key, label, value: displayValue(value) }
+}
+
+function workTrailMediaSummary(summary) {
+  const resolved = numberOrNull(summary.resolved_media_count)
+  const missing = numberOrNull(summary.missing_media_count)
+  if (resolved === null && missing === null) return null
+  return `${resolved ?? 0} resolved, ${missing ?? 0} missing`
+}
+
+function workTrailPreviewSummary(summary) {
+  if (summary.apply_preview_persisted === true) return 'persisted'
+  if (summary.apply_preview_generated === true) return 'generated'
+  return 'missing'
 }
 
 function reviewPassRow(key, label, value, state = 'warning') {
@@ -2522,6 +2589,18 @@ function objectKeys(value) {
 
 .review-focus-section {
   border-color: rgba(255, 204, 102, 0.26);
+}
+
+.work-trail-section {
+  border-color: rgba(180, 148, 255, 0.26);
+}
+
+.work-trail-summary {
+  margin-bottom: 0.55rem;
+}
+
+.work-trail-grid {
+  margin-top: 0.2rem;
 }
 
 .operator-question-section {

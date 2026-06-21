@@ -8,6 +8,7 @@ use App\Services\NewsArticleService;
 use App\Services\NextcloudService;
 use App\Services\Ops\AgentRecursionCallsRetentionService;
 use App\Services\OpsMCPService;
+use App\Services\SystemConfigService;
 use App\Services\WorkflowDiagnosticsService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -39,8 +40,33 @@ class OpsMaintenanceJob implements ShouldQueue
 {
     use Queueable;
 
+    private const RUNTIME_POLICY_CONFIG_KEY = 'ops.ops_maintenance_job_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'timeout_seconds' => 1800,
+        'tries' => 3,
+        'backoff_seconds' => [60, 120, 300],
+        'overlap_release_after_seconds' => 300,
+        'overlap_expire_after_seconds' => 1800,
+        'continuation_threshold_seconds' => 300,
+        'checkpoint_ttl_seconds' => 3600,
+        'continuation_delay_seconds' => 30,
+        'report_cache_ttl_hours' => 6,
+        'dump_process_timeout_seconds' => 300,
+        'backup_keep_count' => 5,
+        'failed_scheduled_job_scan_hours' => 24,
+        'default_scheduled_job_timeout_minutes' => 60,
+        'stuck_job_timeout_buffer_minutes' => 10,
+        'old_failed_jobs_retention_days' => 30,
+        'old_failed_jobs_delete_limit' => 10000,
+        'stale_agent_session_hours' => 2,
+        'old_workflow_runs_retention_days' => 90,
+        'workflow_runs_delete_limit' => 5000,
+        'log_rotation_max_bytes' => 10485760,
+    ];
+
     /**
-     * Job timeout in seconds (increased to 30 minutes for large scans)
+     * Job timeout in seconds.
      */
     public $timeout = 1800;
 
@@ -55,14 +81,12 @@ class OpsMaintenanceJob implements ShouldQueue
     public $backoff = [60, 120, 300];
 
     /**
-     * Time threshold to trigger continuation (5 minutes before timeout)
-     */
-    private const CONTINUATION_THRESHOLD = 300;
-
-    /**
      * Cache key prefix for checkpoints
      */
     private const CHECKPOINT_KEY = 'ops_maintenance_checkpoint';
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     /**
      * Checkpoint data - tracks which phases are complete
@@ -86,8 +110,10 @@ class OpsMaintenanceJob implements ShouldQueue
      */
     public function __construct(?string $sessionId = null)
     {
-        $this->onQueue('high');
         $this->sessionId = $sessionId ?? uniqid('ops_', true);
+        $this->applyRuntimePolicy();
+
+        $this->onQueue('high');
     }
 
     /**
@@ -97,8 +123,8 @@ class OpsMaintenanceJob implements ShouldQueue
     {
         return [
             (new WithoutOverlapping('ops-maintenance'))
-                ->releaseAfter(300)
-                ->expireAfter(1800),
+                ->releaseAfter($this->runtimePolicyInt('overlap_release_after_seconds'))
+                ->expireAfter($this->runtimePolicyInt('overlap_expire_after_seconds')),
         ];
     }
 
@@ -110,7 +136,7 @@ class OpsMaintenanceJob implements ShouldQueue
         $elapsed = microtime(true) - $this->jobStartTime;
         $remaining = $this->timeout - $elapsed;
 
-        return $remaining < self::CONTINUATION_THRESHOLD;
+        return $remaining < $this->runtimePolicyInt('continuation_threshold_seconds');
     }
 
     /**
@@ -124,11 +150,16 @@ class OpsMaintenanceJob implements ShouldQueue
             'elapsed_seconds' => round(microtime(true) - $this->jobStartTime, 2),
         ]);
 
-        // Save checkpoint to cache (expires in 1 hour)
-        Cache::put(self::CHECKPOINT_KEY.':'.$this->sessionId, $this->checkpoint, 3600);
+        Cache::put(
+            self::CHECKPOINT_KEY.':'.$this->sessionId,
+            $this->checkpoint,
+            $this->runtimePolicyInt('checkpoint_ttl_seconds')
+        );
 
         // Dispatch continuation job with same session ID
-        self::dispatch($this->sessionId)->delay(now()->addSeconds(30));
+        self::dispatch($this->sessionId)->delay(
+            now()->addSeconds($this->runtimePolicyInt('continuation_delay_seconds'))
+        );
     }
 
     /**
@@ -171,7 +202,11 @@ class OpsMaintenanceJob implements ShouldQueue
      */
     private function saveCheckpoint(): void
     {
-        Cache::put(self::CHECKPOINT_KEY.':'.$this->sessionId, $this->checkpoint, 3600);
+        Cache::put(
+            self::CHECKPOINT_KEY.':'.$this->sessionId,
+            $this->checkpoint,
+            $this->runtimePolicyInt('checkpoint_ttl_seconds')
+        );
     }
 
     /**
@@ -528,7 +563,7 @@ class OpsMaintenanceJob implements ShouldQueue
                 'logs' => $logResults,
                 'report' => $report,
                 'timestamp' => now()->toIso8601String(),
-            ], now()->addHours(6));
+            ], now()->addHours($this->runtimePolicyInt('report_cache_ttl_hours')));
             $alertResult = ['success' => true];
 
             // Get issue summary for logging
@@ -1573,7 +1608,8 @@ class OpsMaintenanceJob implements ShouldQueue
                 ],
                 ['MYSQL_PWD' => $mysqlPassword],
                 $mysqlFile,
-                $stderrFile
+                $stderrFile,
+                $this->runtimePolicyInt('dump_process_timeout_seconds')
             );
             $stderr = file_exists($stderrFile) ? trim(file_get_contents($stderrFile)) : '';
             @unlink($stderrFile);
@@ -1616,7 +1652,8 @@ class OpsMaintenanceJob implements ShouldQueue
                 ],
                 ['PGPASSWORD' => $pgPassword],
                 $pgFile,
-                $stderrFile
+                $stderrFile,
+                $this->runtimePolicyInt('dump_process_timeout_seconds')
             );
             $stderr = file_exists($stderrFile) ? trim(file_get_contents($stderrFile)) : '';
             @unlink($stderrFile);
@@ -1667,8 +1704,9 @@ class OpsMaintenanceJob implements ShouldQueue
         throw new \RuntimeException('No writable backup directory available');
     }
 
-    private function runDumpProcess(array $command, array $env, string $stdoutFile, string $stderrFile, int $timeoutSeconds = 300): int
+    private function runDumpProcess(array $command, array $env, string $stdoutFile, string $stderrFile, ?int $timeoutSeconds = null): int
     {
+        $timeoutSeconds ??= $this->runtimePolicyInt('dump_process_timeout_seconds');
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['file', $stdoutFile, 'w'],
@@ -1706,8 +1744,9 @@ class OpsMaintenanceJob implements ShouldQueue
     /**
      * Clean old backup files, keeping only the most recent N
      */
-    private function cleanOldBackups(string $backupDir, string $pattern, int $keep = 5): void
+    private function cleanOldBackups(string $backupDir, string $pattern, ?int $keep = null): void
     {
+        $keep ??= $this->runtimePolicyInt('backup_keep_count');
         $backups = glob("{$backupDir}/{$pattern}");
         if (count($backups) <= $keep) {
             return;
@@ -1733,8 +1772,8 @@ class OpsMaintenanceJob implements ShouldQueue
                   AND COALESCE(stall_exempt, 0) = 0
                   AND COALESCE(job_type, '') <> 'agent_task'
                   AND last_run_status IN ('failed', 'running')
-                  AND last_run_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)
-            ");
+                  AND last_run_at > ?
+            ", [now()->subHours($this->runtimePolicyInt('failed_scheduled_job_scan_hours'))]);
 
             if (empty($failedJobs)) {
                 return [];
@@ -1754,7 +1793,11 @@ class OpsMaintenanceJob implements ShouldQueue
                     }
 
                     $runTime = now()->diffInMinutes(\Carbon\Carbon::parse($job->last_run_at));
-                    $allowedRuntime = ($job->timeout_minutes ?? 60) + 10; // Job timeout + 10 min buffer
+                    $timeoutMinutes = (int) ($job->timeout_minutes ?? 0);
+                    if ($timeoutMinutes <= 0) {
+                        $timeoutMinutes = $this->runtimePolicyInt('default_scheduled_job_timeout_minutes');
+                    }
+                    $allowedRuntime = $timeoutMinutes + $this->runtimePolicyInt('stuck_job_timeout_buffer_minutes');
                     if ($runTime < $allowedRuntime) {
                         continue; // Still running within allowed time (job timeout + buffer)
                     }
@@ -1799,9 +1842,10 @@ class OpsMaintenanceJob implements ShouldQueue
     private function cleanOldFailedJobs(): int
     {
         try {
-            $threshold = now()->subDays(30);
+            $threshold = now()->subDays($this->runtimePolicyInt('old_failed_jobs_retention_days'));
+            $limit = $this->runtimePolicyInt('old_failed_jobs_delete_limit');
 
-            return DB::delete('DELETE FROM failed_jobs WHERE failed_at < ? LIMIT 10000', [$threshold]);
+            return DB::delete("DELETE FROM failed_jobs WHERE failed_at < ? LIMIT {$limit}", [$threshold]);
         } catch (\Exception $e) {
             Log::warning('Failed to clean old failed jobs', ['error' => $e->getMessage()]);
 
@@ -1818,7 +1862,8 @@ class OpsMaintenanceJob implements ShouldQueue
             $expired = DB::update(
                 "UPDATE agent_sessions SET status = 'expired', updated_at = NOW()
                  WHERE status = 'active'
-                 AND last_activity_at < DATE_SUB(NOW(), INTERVAL 2 HOUR)"
+                 AND last_activity_at < ?",
+                [now()->subHours($this->runtimePolicyInt('stale_agent_session_hours'))]
             );
             if ($expired > 0) {
                 Log::info('Ops: Expired stale agent sessions', ['count' => $expired]);
@@ -1838,7 +1883,7 @@ class OpsMaintenanceJob implements ShouldQueue
     private function cleanOldWorkflowRuns(): int
     {
         try {
-            $threshold = now()->subDays(90);
+            $threshold = now()->subDays($this->runtimePolicyInt('old_workflow_runs_retention_days'));
             $oldRuns = DB::select('SELECT id FROM workflow_runs WHERE started_at < ?', [$threshold]);
             $oldIds = array_column($oldRuns, 'id');
 
@@ -1846,7 +1891,7 @@ class OpsMaintenanceJob implements ShouldQueue
                 return 0;
             }
 
-            $oldIds = array_slice($oldIds, 0, 5000);
+            $oldIds = array_slice($oldIds, 0, $this->runtimePolicyInt('workflow_runs_delete_limit'));
 
             // Delete related data first (cascade should handle this but be safe)
             $placeholders = implode(',', array_fill(0, count($oldIds), '?'));
@@ -1895,7 +1940,7 @@ class OpsMaintenanceJob implements ShouldQueue
     private function rotateLogs(): int
     {
         $logPath = storage_path('logs');
-        $maxSize = 10 * 1024 * 1024; // 10MB
+        $maxSize = $this->runtimePolicyInt('log_rotation_max_bytes');
         $rotatedCount = 0;
 
         if (! File::exists($logPath)) {
@@ -2017,6 +2062,73 @@ class OpsMaintenanceJob implements ShouldQueue
         Log::warning("OpsMaintenanceJob: {$phase} failed", [
             'error' => $e->getMessage(),
         ]);
+    }
+
+    private function applyRuntimePolicy(): void
+    {
+        $this->timeout = $this->runtimePolicyInt('timeout_seconds');
+        $this->tries = $this->runtimePolicyInt('tries');
+        $this->backoff = $this->runtimePolicyIntList('backoff_seconds');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function runtimePolicyIntList(string $key): array
+    {
+        $fallback = self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (! is_array($value)) {
+            return $fallback;
+        }
+
+        $ints = array_values(array_filter(
+            array_map(fn ($item) => is_numeric($item) ? (int) $item : 0, $value),
+            fn (int $item) => $item > 0
+        ));
+
+        return $ints !== [] ? $ints : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 
     private function nextcloudLibraryRoot(): string

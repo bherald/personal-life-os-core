@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Services\AgentEpisodicMemoryService;
 use App\Services\AIService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class EpisodicMemoryCommand extends Command
@@ -25,8 +26,8 @@ class EpisodicMemoryCommand extends Command
 
     public function handle(AgentEpisodicMemoryService $service): int
     {
-        if (($this->option('json') || $this->option('compact')) && ($this->option('archive') || $this->option('backfill'))) {
-            $this->error('The --json/--compact options are only supported for read-only stats.');
+        if (($this->option('json') || $this->option('compact')) && $this->option('archive')) {
+            $this->error('The --json/--compact options are only supported for stats and bounded backfill.');
 
             return 1;
         }
@@ -126,13 +127,13 @@ class EpisodicMemoryCommand extends Command
      */
     private function statsPayload(array $stats, ?string $agentId): array
     {
+        $compact = (bool) $this->option('compact');
         $payload = [
             'generated_at' => now()->toIso8601String(),
             'command' => 'episodic:memory',
             'mode' => 'stats',
-            'compact' => (bool) $this->option('compact'),
+            'compact' => $compact,
             'status' => 'pass',
-            'agent_id' => $agentId,
             'summary' => [
                 'total' => (int) ($stats['total'] ?? 0),
                 'active' => (int) ($stats['active'] ?? 0),
@@ -144,17 +145,19 @@ class EpisodicMemoryCommand extends Command
                 'avg_tokens' => (int) ($stats['avg_tokens'] ?? 0),
                 'outcome_count' => count((array) ($stats['outcomes'] ?? [])),
                 'agent_count' => count((array) ($stats['per_agent'] ?? [])),
+                'agent_filter_applied' => $agentId !== null,
             ],
         ];
 
-        if (! $this->option('compact')) {
+        if (! $compact) {
+            $payload['agent_id'] = $agentId;
             $payload['outcomes'] = (array) ($stats['outcomes'] ?? []);
             $payload['per_agent'] = array_values((array) ($stats['per_agent'] ?? []));
 
             return $payload;
         }
 
-        $payload['top_agents'] = array_slice(array_values((array) ($stats['per_agent'] ?? [])), 0, 10);
+        $payload['top_agents'] = $this->compactAgentRollup(array_slice(array_values((array) ($stats['per_agent'] ?? [])), 0, 10));
 
         return $payload;
     }
@@ -213,7 +216,9 @@ class EpisodicMemoryCommand extends Command
             return 1;
         }
 
-        $this->info(($dryRun ? 'Previewing' : 'Backfilling')." episodic summaries from agent_episodes (last {$days} days, limit {$limit})...");
+        if (! $this->option('json')) {
+            $this->info(($dryRun ? 'Previewing' : 'Backfilling')." episodic summaries from agent_episodes (last {$days} days, limit {$limit})...");
+        }
 
         // Get distinct sessions from agent_episodes that don't have summaries yet
         $whereAgent = $agentFilter ? 'AND ae.agent_id = ?' : '';
@@ -244,15 +249,49 @@ class EpisodicMemoryCommand extends Command
         ", $bindings);
 
         $total = count($sessions);
-        $this->info("Found {$total} candidate session(s) without summaries.");
+        if (! $this->option('json')) {
+            $this->info("Found {$total} candidate session(s) without summaries.");
+        }
 
         if ($total === 0) {
+            if ($this->option('json')) {
+                $this->line($this->encodeJson($this->backfillPayload(
+                    dryRun: $dryRun,
+                    days: $days,
+                    limit: $limit,
+                    agentFilter: $agentFilter,
+                    sessions: [],
+                    processed: 0,
+                    created: 0,
+                    failed: 0,
+                    errors: [],
+                )));
+
+                return 0;
+            }
+
             $this->info('Nothing to backfill.');
 
             return 0;
         }
 
         if ($dryRun) {
+            if ($this->option('json')) {
+                $this->line($this->encodeJson($this->backfillPayload(
+                    dryRun: true,
+                    days: $days,
+                    limit: $limit,
+                    agentFilter: $agentFilter,
+                    sessions: $sessions,
+                    processed: 0,
+                    created: 0,
+                    failed: 0,
+                    errors: [],
+                )));
+
+                return 0;
+            }
+
             $this->table(
                 ['Agent', 'Candidate sessions', 'Episodes', 'Tokens'],
                 $this->backfillPreviewRows($sessions)
@@ -264,8 +303,10 @@ class EpisodicMemoryCommand extends Command
 
         $success = 0;
         $failed = 0;
-        $bar = $this->output->createProgressBar($total);
-        $bar->start();
+        $errors = [];
+        $showProgress = ! $this->option('json');
+        $bar = $showProgress ? $this->output->createProgressBar($total) : null;
+        $bar?->start();
 
         foreach ($sessions as $sess) {
             try {
@@ -353,16 +394,43 @@ class EpisodicMemoryCommand extends Command
 
             } catch (\Throwable $e) {
                 $failed++;
-                $this->newLine();
-                $this->warn("  Error for {$sess->agent_id}/{$sess->session_id}: {$e->getMessage()}");
+                $errors[] = [
+                    'agent_id' => (string) ($sess->agent_id ?? 'unknown'),
+                    'session_id_hash' => hash('sha256', (string) ($sess->session_id ?? '')),
+                    'error' => $e->getMessage(),
+                ];
+                if ($showProgress) {
+                    $this->newLine();
+                    $this->warn("  Error for {$sess->agent_id}/{$sess->session_id}: {$e->getMessage()}");
+                }
             }
 
-            $bar->advance();
+            $bar?->advance();
             usleep(50000); // 50ms between to not hammer DB
         }
 
-        $bar->finish();
-        $this->newLine(2);
+        if ($showProgress) {
+            $bar?->finish();
+            $this->newLine(2);
+        }
+
+        $this->forgetAgentDoctorEvidenceCache($success);
+
+        if ($this->option('json')) {
+            $this->line($this->encodeJson($this->backfillPayload(
+                dryRun: false,
+                days: $days,
+                limit: $limit,
+                agentFilter: $agentFilter,
+                sessions: $sessions,
+                processed: $total,
+                created: $success,
+                failed: $failed,
+                errors: $errors,
+            )));
+
+            return $failed > 0 ? 1 : 0;
+        }
 
         $this->table(
             ['Metric', 'Count'],
@@ -374,6 +442,15 @@ class EpisodicMemoryCommand extends Command
         );
 
         return $failed > 0 ? 1 : 0;
+    }
+
+    private function forgetAgentDoctorEvidenceCache(int $createdSummaries): void
+    {
+        if ($createdSummaries < 1) {
+            return;
+        }
+
+        Cache::forget('operator_evidence:agent_doctor:v1');
     }
 
     /**
@@ -406,6 +483,120 @@ class EpisodicMemoryCommand extends Command
             ],
             array_keys($byAgent),
             $byAgent
+        );
+    }
+
+    /**
+     * @param  list<object>  $sessions
+     * @param  list<array<string, string>>  $errors
+     * @return array<string, mixed>
+     */
+    private function backfillPayload(
+        bool $dryRun,
+        int $days,
+        int $limit,
+        ?string $agentFilter,
+        array $sessions,
+        int $processed,
+        int $created,
+        int $failed,
+        array $errors,
+    ): array {
+        $compact = (bool) $this->option('compact');
+        $agentRollup = $this->backfillAgentRollup($sessions);
+        $payload = [
+            'generated_at' => now()->toIso8601String(),
+            'command' => 'episodic:memory',
+            'mode' => 'backfill',
+            'compact' => $compact,
+            'status' => $failed > 0 ? 'error' : 'pass',
+            'dry_run' => $dryRun,
+            'confirmed' => ! $dryRun && (bool) $this->option('confirm'),
+            'days' => $days,
+            'limit' => $limit,
+            'summary' => [
+                'candidate_sessions' => count($sessions),
+                'candidate_episodes' => array_sum(array_map(
+                    static fn (object $session): int => (int) ($session->episode_count ?? 0),
+                    $sessions
+                )),
+                'candidate_tokens' => array_sum(array_map(
+                    static fn (object $session): int => (int) ($session->total_tokens ?? 0),
+                    $sessions
+                )),
+                'processed_sessions' => $processed,
+                'summaries_created' => $created,
+                'failed' => $failed,
+                'agent_filter_applied' => $agentFilter !== null,
+                'agent_rollup_count' => count($agentRollup),
+            ],
+        ];
+
+        if ($compact) {
+            $payload['agent_rollup'] = $this->compactAgentRollup($agentRollup);
+            $payload['error_count'] = count($errors);
+
+            return $payload;
+        }
+
+        $payload['agent_id'] = $agentFilter;
+        $payload['agent_rollup'] = $agentRollup;
+        $payload['errors'] = array_slice($errors, 0, 10);
+
+        return $payload;
+    }
+
+    /**
+     * @param  list<object>  $sessions
+     * @return list<array{agent_id:string,candidate_sessions:int,candidate_episodes:int,candidate_tokens:int}>
+     */
+    private function backfillAgentRollup(array $sessions): array
+    {
+        return array_map(
+            static fn (array $row): array => [
+                'agent_id' => (string) $row[0],
+                'candidate_sessions' => (int) $row[1],
+                'candidate_episodes' => (int) $row[2],
+                'candidate_tokens' => (int) $row[3],
+            ],
+            $this->backfillPreviewRows($sessions)
+        );
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $rows
+     * @return list<array<string, int|float|string|null>>
+     */
+    private function compactAgentRollup(array $rows): array
+    {
+        return array_map(
+            static function (array $row, int $index): array {
+                $compact = ['rank' => $index + 1];
+
+                foreach ([
+                    'total',
+                    'active',
+                    'successes',
+                    'failures',
+                    'avg_importance',
+                    'candidate_sessions',
+                    'candidate_episodes',
+                    'candidate_tokens',
+                ] as $key) {
+                    if (array_key_exists($key, $row)) {
+                        $value = $row[$key];
+                        if (is_numeric($value)) {
+                            $value = str_contains((string) $value, '.') ? (float) $value : (int) $value;
+                        }
+
+                        $compact[$key] = $value;
+                    }
+                }
+
+                return $compact;
+            },
+            array_values($rows),
+            array_keys(array_values($rows))
         );
     }
 }

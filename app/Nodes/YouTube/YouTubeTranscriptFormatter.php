@@ -5,6 +5,7 @@ namespace App\Nodes\YouTube;
 use App\Nodes\BaseNode;
 use App\Services\AgentGuardrailService;
 use App\Services\AIService;
+use App\Services\SystemConfigService;
 use Exception;
 use Illuminate\Support\Facades\Log;
 
@@ -21,22 +22,45 @@ use Illuminate\Support\Facades\Log;
  */
 class YouTubeTranscriptFormatter extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'youtube.transcript_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'formatter_enabled_default' => true,
+        'formatter_batch_size' => 5,
+        'formatter_skip_if_no_transcript_default' => true,
+        'formatter_missing_key_points_retries' => 1,
+        'formatter_batch_delay_seconds' => 1,
+        'formatter_min_formatted_chars' => 100,
+        'formatter_max_seconds' => 240,
+    ];
+
     private ?AIService $aiService = null;
 
     private ?AgentGuardrailService $guardrail = null;
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function execute(array $input): array
     {
         try {
             // Get configuration
-            $enabled = $this->getConfigValue('enabled', true);
-            $batchSize = $this->getConfigValue('batch_size', 5);
-            $skipIfNoTranscript = $this->getConfigValue('skip_if_no_transcript', true);
+            $enabled = $this->configuredBool('enabled') ?? $this->runtimePolicyBool('formatter_enabled_default');
+            $batchSize = $this->configuredPositiveInt('batch_size') ?? $this->runtimePolicyInt('formatter_batch_size');
+            $skipIfNoTranscript = $this->configuredBool('skip_if_no_transcript')
+                ?? $this->runtimePolicyBool('formatter_skip_if_no_transcript_default');
+            $missingKeyPointRetries = $this->configuredNonNegativeInt('missing_key_points_retries')
+                ?? $this->runtimePolicyNonNegativeInt('formatter_missing_key_points_retries');
+            $batchDelaySeconds = $this->configuredNonNegativeInt('batch_delay_seconds')
+                ?? $this->runtimePolicyNonNegativeInt('formatter_batch_delay_seconds');
+            $maxSeconds = $this->configuredPositiveInt('max_seconds') ?? $this->runtimePolicyInt('formatter_max_seconds');
 
             if (! $enabled) {
                 Log::info('YouTubeTranscriptFormatter: Formatting disabled, skipping');
 
-                return $this->standardOutput($input);
+                return $this->standardOutput($input, [
+                    'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
+                ]);
             }
 
             // Get videos from input (handles both wrapped and direct input)
@@ -58,7 +82,7 @@ class YouTubeTranscriptFormatter extends BaseNode
             $formattedCount = 0;
             $skippedCount = 0;
             $failedCount = 0;
-            $this->initTimeLimit();
+            $this->initTimeLimit($maxSeconds);
 
             foreach ($videos as $index => &$video) {
                 if (! $this->hasTimeRemaining()) {
@@ -96,20 +120,24 @@ class YouTubeTranscriptFormatter extends BaseNode
                         // Extract key points from the formatted output
                         $extracted = $this->extractKeyPoints($formattedTranscript);
 
-                        // INF-9: Retry once if key points are empty (LLM didn't follow format)
-                        if (empty($extracted['key_points'])) {
+                        // INF-9: Retry if key points are empty (LLM didn't follow format)
+                        for ($retry = 1; empty($extracted['key_points']) && $retry <= $missingKeyPointRetries; $retry++) {
                             Log::info('YouTubeTranscriptFormatter: Key points missing, retrying', [
                                 'video_id' => $video['video_id'],
+                                'retry' => $retry,
+                                'max_retries' => $missingKeyPointRetries,
                             ]);
                             $retryResult = $this->formatTranscript(
                                 $video['transcript_full_text'],
                                 $video['title']
                             );
-                            if ($retryResult) {
-                                $retryExtracted = $this->extractKeyPoints($retryResult);
-                                if (! empty($retryExtracted['key_points'])) {
-                                    $extracted = $retryExtracted;
-                                }
+                            if (! $retryResult) {
+                                continue;
+                            }
+
+                            $retryExtracted = $this->extractKeyPoints($retryResult);
+                            if (! empty($retryExtracted['key_points'])) {
+                                $extracted = $retryExtracted;
                             }
                         }
 
@@ -142,9 +170,11 @@ class YouTubeTranscriptFormatter extends BaseNode
                 }
 
                 // Batch processing delay to avoid rate limits
-                if (($formattedCount % $batchSize) === 0 && $formattedCount > 0) {
-                    Log::debug('YouTubeTranscriptFormatter: Batch complete, brief pause');
-                    sleep(1); // 1 second pause between batches
+                if (($formattedCount % $batchSize) === 0 && $formattedCount > 0 && $batchDelaySeconds > 0) {
+                    Log::debug('YouTubeTranscriptFormatter: Batch complete, brief pause', [
+                        'seconds' => $batchDelaySeconds,
+                    ]);
+                    sleep($batchDelaySeconds);
                 }
             }
             unset($video); // Break reference
@@ -168,6 +198,11 @@ class YouTubeTranscriptFormatter extends BaseNode
                 'transcripts_formatted' => $formattedCount,
                 'transcripts_skipped' => $skippedCount,
                 'transcripts_failed' => $failedCount,
+                'batch_size' => $batchSize,
+                'batch_delay_seconds' => $batchDelaySeconds,
+                'missing_key_points_retries' => $missingKeyPointRetries,
+                'max_seconds' => $maxSeconds,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ]);
 
         } catch (Exception $e) {
@@ -208,10 +243,13 @@ class YouTubeTranscriptFormatter extends BaseNode
             $formatted = $result['response'];
 
             // Validate result
-            if (empty($formatted) || strlen($formatted) < 100) {
+            $minFormattedChars = $this->configuredPositiveInt('min_formatted_chars')
+                ?? $this->runtimePolicyInt('formatter_min_formatted_chars');
+            if (empty($formatted) || strlen($formatted) < $minFormattedChars) {
                 Log::warning('YouTubeTranscriptFormatter: AI returned suspiciously short result', [
                     'original_length' => strlen($transcript),
                     'formatted_length' => strlen($formatted),
+                    'min_formatted_chars' => $minFormattedChars,
                 ]);
 
                 return null;
@@ -288,6 +326,115 @@ PROMPT;
         }
 
         return $this->guardrail;
+    }
+
+    private function configuredBool(string $key): ?bool
+    {
+        $value = $this->getConfigValue($key);
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
+    }
+
+    private function configuredPositiveInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : null;
+    }
+
+    private function configuredNonNegativeInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue >= 0 ? $intValue : null;
+    }
+
+    private function runtimePolicyBool(string $key): bool
+    {
+        $fallback = (bool) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? $fallback;
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyNonNegativeInt(string $key): int
+    {
+        return $this->nonNegativeInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    private function nonNegativeInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue >= 0 ? $intValue : $fallback;
     }
 
     /**

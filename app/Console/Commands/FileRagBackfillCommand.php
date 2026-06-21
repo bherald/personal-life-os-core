@@ -3,6 +3,8 @@
 namespace App\Console\Commands;
 
 use App\Services\FileCategorizationRAGService;
+use App\Services\Ops\MediaWorkloadAdmissionService;
+use Cron\CronExpression;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -17,7 +19,9 @@ use Illuminate\Support\Facades\Log;
 class FileRagBackfillCommand extends Command
 {
     private const FALLBACK_SECONDS_PER_FILE = 45.0;
+
     private const MIN_TARGET_MINUTES = 10;
+
     private const MAX_TARGET_MINUTES = 120;
 
     protected $signature = 'files:rag-backfill
@@ -25,6 +29,7 @@ class FileRagBackfillCommand extends Command
                             {--dry-run : Show what would be indexed without changing data}
                             {--stats : Show current backfill status and exit}
                             {--priority=described : Priority mode: described, ocr, all}
+                            {--force-low-disk : Bypass media workload admission warning/block for operator-approved catch-up}
                             {--batch-size=50 : Files per batch before throttle pause}
                             {--throttle-ms=200 : Milliseconds to pause between batches}';
 
@@ -36,8 +41,15 @@ class FileRagBackfillCommand extends Command
             return $this->showStats();
         }
 
+        $dryRun = (bool) $this->option('dry-run');
+        if (! $dryRun) {
+            $admission = $this->admitMediaWorkload('file_rag_backfill');
+            if ($admission !== Command::SUCCESS) {
+                return $admission;
+            }
+        }
+
         $limit = $this->resolveEffectiveLimit((int) $this->option('limit'));
-        $dryRun = $this->option('dry-run');
         $priority = $this->option('priority');
         $batchSize = (int) $this->option('batch-size');
         $throttleMs = (int) $this->option('throttle-ms');
@@ -49,6 +61,7 @@ class FileRagBackfillCommand extends Command
         if (empty($files)) {
             $this->info('No files pending RAG indexing.');
             $this->line('[ITEMS_PROCESSED:0]');
+
             return Command::SUCCESS;
         }
 
@@ -63,9 +76,9 @@ class FileRagBackfillCommand extends Command
         if ($dryRun) {
             $this->table(
                 ['ID', 'UUID', 'Filename', 'Has Description', 'Has OCR'],
-                array_map(fn($f) => [
+                array_map(fn ($f) => [
                     $f->id,
-                    substr($f->asset_uuid, 0, 8) . '...',
+                    substr($f->asset_uuid, 0, 8).'...',
                     substr(basename($f->current_path), 0, 40),
                     $f->ai_description ? 'Yes' : 'No',
                     $f->ai_detected_text ? 'Yes' : 'No',
@@ -75,6 +88,7 @@ class FileRagBackfillCommand extends Command
                 $this->line(sprintf('... and %d more', count($files) - 20));
             }
             $this->line('[ITEMS_PROCESSED:0]');
+
             return Command::SUCCESS;
         }
 
@@ -137,7 +151,9 @@ class FileRagBackfillCommand extends Command
                 }
             }
 
-            if ($earlyExit) break;
+            if ($earlyExit) {
+                break;
+            }
 
             // Throttle between batches (skip after last batch)
             if ($throttleMs > 0 && $batchIndex < count($batches) - 1) {
@@ -158,7 +174,31 @@ class FileRagBackfillCommand extends Command
         );
 
         $this->line("[ITEMS_PROCESSED:{$processed}]");
+
         return $errors > ($indexed / 2) ? Command::FAILURE : Command::SUCCESS;
+    }
+
+    private function admitMediaWorkload(string $workload): int
+    {
+        $service = app(MediaWorkloadAdmissionService::class);
+        $decision = $service->evaluate($workload, [
+            'force' => (bool) $this->option('force-low-disk'),
+        ]);
+        $line = $service->compactLine($decision);
+
+        if (($decision['allowed'] ?? false) !== true) {
+            $this->error('Media workload admission blocked: '.$line);
+
+            return Command::FAILURE;
+        }
+
+        if (($decision['would_block'] ?? false) === true) {
+            $this->warn('Media workload admission warning: '.$line);
+        } else {
+            $this->line('Media workload admission: '.$line);
+        }
+
+        return Command::SUCCESS;
     }
 
     private function resolveEffectiveLimit(int $requestedLimit): int
@@ -174,6 +214,7 @@ class FileRagBackfillCommand extends Command
                 'original' => $requestedLimit,
                 'capped' => $cap,
             ]);
+
             return $cap;
         }
 
@@ -219,18 +260,18 @@ class FileRagBackfillCommand extends Command
         $targetMinutes = $defaultMinutes;
 
         try {
-            $job = DB::selectOne("
+            $job = DB::selectOne('
                 SELECT cron_expression, timeout_minutes
                 FROM scheduled_jobs
                 WHERE name = ?
                 LIMIT 1
-            ", [$jobName]);
+            ', [$jobName]);
 
-            if (!$job) {
+            if (! $job) {
                 return $targetMinutes;
             }
 
-            $timeoutTarget = !empty($job->timeout_minutes)
+            $timeoutTarget = ! empty($job->timeout_minutes)
                 ? max(self::MIN_TARGET_MINUTES, ((int) $job->timeout_minutes) - 5)
                 : null;
             $intervalTarget = $this->getIntervalSafeMinutes($job->cron_expression ?? null);
@@ -238,9 +279,9 @@ class FileRagBackfillCommand extends Command
             $candidates = array_values(array_filter([
                 $timeoutTarget,
                 $intervalTarget,
-            ], fn($value) => $value !== null && $value > 0));
+            ], fn ($value) => $value !== null && $value > 0));
 
-            if (!empty($candidates)) {
+            if (! empty($candidates)) {
                 $targetMinutes = min($candidates);
             }
         } catch (\Exception $e) {
@@ -252,12 +293,12 @@ class FileRagBackfillCommand extends Command
 
     private function getIntervalSafeMinutes(?string $cronExpression): ?int
     {
-        if (!$cronExpression) {
+        if (! $cronExpression) {
             return null;
         }
 
         try {
-            $cron = new \Cron\CronExpression($cronExpression);
+            $cron = new CronExpression($cronExpression);
             $first = $cron->getNextRunDate(now()->toDateTimeImmutable());
             $second = $cron->getNextRunDate($first);
             $intervalMinutes = (int) floor(($second->getTimestamp() - $first->getTimestamp()) / 60);
@@ -281,16 +322,16 @@ class FileRagBackfillCommand extends Command
 
         switch ($priority) {
             case 'described':
-                $where .= " AND fr.ai_description IS NOT NULL";
+                $where .= ' AND fr.ai_description IS NOT NULL';
                 break;
             case 'ocr':
-                $where .= " AND fr.ai_detected_text IS NOT NULL";
+                $where .= ' AND fr.ai_detected_text IS NOT NULL';
                 break;
             case 'all':
                 // No additional filter
                 break;
             default:
-                $where .= " AND fr.ai_description IS NOT NULL";
+                $where .= ' AND fr.ai_description IS NOT NULL';
         }
 
         return DB::select("

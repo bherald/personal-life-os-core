@@ -5,6 +5,7 @@ namespace App\Services;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class OfflineConfigWritebackService
 {
@@ -50,34 +51,42 @@ class OfflineConfigWritebackService
 
     private function upsertProfile(array $profile): int
     {
-        $existing = DB::selectOne(
-            'SELECT id FROM llm_model_profiles WHERE profile_name = ? LIMIT 1',
-            [$profile['profile']]
-        );
-
         $payload = [
-            $profile['recommended_model'],
-            $profile['description'] ?? null,
-            json_encode($profile['use_cases'] ?? [], JSON_UNESCAPED_SLASHES),
-            $profile['notes'] ?? null,
+            'model_name' => $profile['recommended_model'],
+            'description' => $profile['description'] ?? null,
+            'use_cases' => json_encode($profile['use_cases'] ?? [], JSON_UNESCAPED_SLASHES),
+            'notes' => $profile['notes'] ?? null,
+            'enabled' => 1,
+            'updated_at' => now(),
         ];
 
-        if ($existing) {
-            DB::update(
-                'UPDATE llm_model_profiles
-                 SET model_name = ?, description = ?, use_cases = ?, notes = ?, enabled = 1, updated_at = NOW()
-                 WHERE id = ?',
-                [...$payload, $existing->id]
-            );
-
-            return 1;
+        if (Schema::hasColumn('llm_model_profiles', 'status')) {
+            $payload['status'] = 'active';
         }
 
-        DB::insert(
-            'INSERT INTO llm_model_profiles
-             (profile_name, model_name, description, use_cases, enabled, notes, created_at, updated_at)
-             VALUES (?, ?, ?, ?, 1, ?, NOW(), NOW())',
-            [$profile['profile'], ...$payload]
+        if (Schema::hasColumn('llm_model_profiles', 'capabilities')) {
+            $payload['capabilities'] = json_encode($profile['capabilities'] ?? $profile['use_cases'] ?? [], JSON_UNESCAPED_SLASHES);
+        }
+
+        if (Schema::hasColumn('llm_model_profiles', 'quality_rating') && isset($profile['quality_rating'])) {
+            $payload['quality_rating'] = (int) $profile['quality_rating'];
+        }
+
+        if (Schema::hasColumn('llm_model_profiles', 'requires_override')) {
+            $payload['requires_override'] = 0;
+        }
+
+        if (Schema::hasColumn('llm_model_profiles', 'metadata')) {
+            $payload['metadata'] = json_encode(['source' => 'offline_config_writeback'], JSON_UNESCAPED_SLASHES);
+        }
+
+        if (! DB::table('llm_model_profiles')->where('profile_name', $profile['profile'])->exists()) {
+            $payload['created_at'] = now();
+        }
+
+        DB::table('llm_model_profiles')->updateOrInsert(
+            ['profile_name' => $profile['profile']],
+            $payload
         );
 
         return 1;

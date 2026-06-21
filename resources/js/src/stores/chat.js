@@ -6,6 +6,9 @@ export const useChatStore = defineStore('chat', {
     conversations: [],
     currentConversation: null,
     messages: [],
+    modelModes: [],
+    privateSupported: false,
+    overrideSupported: false,
     loading: false,
     sending: false,
     error: null,
@@ -42,6 +45,22 @@ export const useChatStore = defineStore('chat', {
 
   actions: {
     /**
+     * Fetch model profiles and capability metadata for the selector.
+     */
+    async fetchModelModes() {
+      try {
+        const response = await api.get('/chat/model-modes');
+        this.modelModes = response.modes || [];
+        this.privateSupported = !!response.private_supported;
+        this.overrideSupported = !!response.override_supported;
+        return { success: true, modes: this.modelModes };
+      } catch (error) {
+        this.error = error.response?.data?.message || 'Failed to fetch model modes';
+        return { success: false, error: this.error };
+      }
+    },
+
+    /**
      * Fetch all conversations
      */
     async fetchConversations() {
@@ -62,7 +81,7 @@ export const useChatStore = defineStore('chat', {
     /**
      * Create a new conversation
      */
-    async createConversation(title = null, modelMode = 'standard', isPrivate = false) {
+    async createConversation(title = null, modelMode = 'standard', isPrivate = false, modelOverride = false) {
       this.loading = true;
       this.error = null;
       try {
@@ -70,6 +89,7 @@ export const useChatStore = defineStore('chat', {
           title,
           model_mode: modelMode,
           is_private: isPrivate || modelMode === 'uncensored',
+          model_override: modelOverride,
         });
         if (response.success) {
           this.currentConversation = response.conversation;
@@ -173,7 +193,7 @@ export const useChatStore = defineStore('chat', {
     /**
      * Send a message and get AI response (non-streaming fallback)
      */
-    async sendMessage(content) {
+    async sendMessage(content, attachments = []) {
       if (!this.currentConversation) {
         // Create a new conversation if none exists
         const result = await this.createConversation();
@@ -186,9 +206,12 @@ export const useChatStore = defineStore('chat', {
       this.error = null;
 
       try {
+        const hasAttachments = attachments.length > 0;
+        const payload = hasAttachments ? this.buildMessageFormData(content, attachments) : { content };
         const response = await api.post(
           `/chat/conversations/${this.currentConversation.id}/messages`,
-          { content }
+          payload,
+          hasAttachments ? { headers: { 'Content-Type': 'multipart/form-data' } } : undefined
         );
 
         if (response.success) {
@@ -213,7 +236,7 @@ export const useChatStore = defineStore('chat', {
     /**
      * Send a message and stream AI response in real-time
      */
-    async sendMessageStream(content) {
+    async sendMessageStream(content, attachments = []) {
       if (!this.currentConversation) {
         // Create a new conversation if none exists
         const result = await this.createConversation();
@@ -231,7 +254,8 @@ export const useChatStore = defineStore('chat', {
           id: Date.now(), // Temporary ID
           conversation_id: this.currentConversation.id,
           role: 'user',
-          content: content,
+          content: content || this.attachmentOnlyContent(attachments),
+          attachments: attachments.map((file, index) => this.fileToAttachmentPayload(file, index)),
           created_at: new Date().toISOString(),
         };
         this.messages.push(userMessage);
@@ -256,15 +280,17 @@ export const useChatStore = defineStore('chat', {
         // Use fetch with ReadableStream for POST support
         return new Promise(async (resolve, reject) => {
           try {
+            const hasAttachments = attachments.length > 0;
             const response = await fetch(
               `/api/chat/conversations/${this.currentConversation.id}/messages/stream`,
               {
                 method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Accept': 'text/event-stream',
-                },
-                body: JSON.stringify({ content }),
+                headers: hasAttachments
+                  ? { 'Accept': 'text/event-stream' }
+                  : { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+                body: hasAttachments
+                  ? this.buildMessageFormData(content, attachments)
+                  : JSON.stringify({ content }),
               }
             );
 
@@ -301,6 +327,9 @@ export const useChatStore = defineStore('chat', {
                     case 'start':
                       // Update user message with real ID from server
                       userMessage.id = data.user_message_id;
+                      if (data.user_attachments) {
+                        userMessage.attachments = data.user_attachments;
+                      }
                       break;
 
                     case 'content':
@@ -356,6 +385,7 @@ export const useChatStore = defineStore('chat', {
                         id: data.assistant_message_id,
                         tokens: data.tokens,
                         intent: data.intent || this.messages[assistantMessageIndex].intent,
+                        attachmentProcessing: data.attachment_processing || [],
                         streaming: undefined, // Remove streaming flag
                       };
 
@@ -363,6 +393,9 @@ export const useChatStore = defineStore('chat', {
                       if (data.ragSources && data.ragSources.length > 0) {
                         completedMessage.ragSources = data.ragSources;
                         console.log('Setting ragSources on completed message:', data.ragSources);
+                      }
+                      if (data.assistant_attachments && data.assistant_attachments.length > 0) {
+                        completedMessage.attachments = data.assistant_attachments;
                       }
 
                       // Replace the message using splice to guarantee Vue reactivity
@@ -418,8 +451,8 @@ export const useChatStore = defineStore('chat', {
     /**
      * Start a new conversation (creates one and sets as current)
      */
-    async startNewConversation(modelMode = 'standard') {
-      return await this.createConversation(null, modelMode, modelMode === 'uncensored');
+    async startNewConversation(modelMode = 'standard', isPrivate = false, modelOverride = false) {
+      return await this.createConversation(null, modelMode, isPrivate || modelMode === 'uncensored', modelOverride);
     },
 
     /**
@@ -556,6 +589,43 @@ export const useChatStore = defineStore('chat', {
         const errorMsg = error.response?.data?.message || 'Failed to save to knowledge base';
         return { success: false, error: errorMsg };
       }
+    },
+
+    buildMessageFormData(content, attachments = []) {
+      const formData = new FormData();
+      formData.append('content', content || '');
+      attachments.forEach((file) => formData.append('attachments[]', file));
+      return formData;
+    },
+
+    attachmentOnlyContent(attachments = []) {
+      if (!attachments.length) return '';
+      return `Please review the attached file(s): ${attachments.map(file => file.name).join(', ')}`;
+    },
+
+    fileToAttachmentPayload(file, index) {
+      return {
+        id: `local-${Date.now()}-${index}`,
+        name: file.name,
+        mime_type: file.type || 'application/octet-stream',
+        media_type: this.classifyFileMediaType(file),
+        capability: 'pending_upload',
+        size_bytes: file.size || 0,
+        processing_status: 'uploading',
+        local: true,
+      };
+    },
+
+    classifyFileMediaType(file) {
+      const type = (file.type || '').toLowerCase();
+      const name = (file.name || '').toLowerCase();
+      if (type.startsWith('image/') || /\.(jpg|jpeg|png|gif|bmp|tiff|tif|webp|heic)$/.test(name)) return 'image';
+      if (type.startsWith('audio/') || /\.(mp3|wav|flac|aac|m4a|ogg|wma|aiff)$/.test(name)) return 'audio';
+      if (type.startsWith('video/') || /\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|mpg|mpeg)$/.test(name)) return 'video';
+      if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+      if (type.startsWith('text/') || /\.(txt|md|csv|json|xml|html|htm|log)$/.test(name)) return 'text';
+      if (/\.(doc|docx|odt|rtf|xls|xlsx|ppt|pptx)$/.test(name)) return 'document';
+      return 'file';
     },
   },
 });

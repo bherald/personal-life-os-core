@@ -4,7 +4,9 @@ namespace App\Console\Commands;
 
 use App\Services\Genealogy\GenealogyMediaEnrichmentService;
 use Illuminate\Console\Command;
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Process;
 
 /**
  * N140 — Media → AI Vetting → Person Enrichment Pipeline command.
@@ -17,8 +19,11 @@ class GenealogyEnrichMedia extends Command
                             {--tree=    : Tree ID (omit to run all trees)}
                             {--media=   : Process a single media ID}
                             {--preview  : Preview a transcript-backed intake packet for a single media ID}
+                            {--preview-timeout=45 : Max seconds to spend building a single preview}
+                            {--preview-worker : Internal worker mode for timeout-isolated preview execution}
                             {--limit=10 : Max records per tree}
                             {--dry-run  : Show eligible records without processing}
+                            {--execute  : Allow proposal-generating enrichment writes}
                             {--status   : Show pipeline stats and exit}
                             {--quarantined : Show skipped/quarantined media details in status mode}';
 
@@ -26,17 +31,39 @@ class GenealogyEnrichMedia extends Command
 
     public function handle(GenealogyMediaEnrichmentService $enricher): int
     {
+        if ($this->option('execute') && $this->option('dry-run')) {
+            $this->error('Use either --execute or --dry-run, not both.');
+
+            return self::FAILURE;
+        }
+
         if ($this->option('status')) {
             return $this->showStatus();
         }
 
         if ($mediaId = $this->option('media')) {
+            if ($this->option('preview') && ! $this->option('preview-worker')) {
+                return $this->runPreviewWorkerProcess((int) $mediaId);
+            }
+
+            if (! $this->option('execute') && ! $this->option('dry-run') && ! $this->option('preview')) {
+                $this->error('Single-media enrichment can generate review proposals and requires --execute. Use --dry-run or --preview for observe-only checks.');
+
+                return self::FAILURE;
+            }
+
             return $this->handleSingle($enricher, (int) $mediaId);
         }
 
         $treeId = $this->option('tree') ? (int) $this->option('tree') : null;
         $limit = max(1, (int) $this->option('limit'));
         $dryRun = $this->option('dry-run');
+
+        if (! $dryRun && ! $this->option('execute')) {
+            $this->error('Batch enrichment can generate review proposals and requires --execute. Use --dry-run for observe-only checks.');
+
+            return self::FAILURE;
+        }
 
         if ($treeId) {
             $results = [$treeId => $enricher->processBatch($treeId, $limit, $dryRun)];
@@ -89,7 +116,14 @@ class GenealogyEnrichMedia extends Command
         $this->line("analysis_status={$media->analysis_status} | enrichment_status=".($media->enrichment_status ?? 'null'));
 
         if ($this->option('preview')) {
-            $result = $enricher->previewMediaIntakePacket($mediaId);
+            try {
+                $result = $this->previewMediaIntakePacketWithTimeout($enricher, $mediaId);
+            } catch (GenealogyEnrichMediaPreviewTimeoutException $e) {
+                $this->error($e->getMessage());
+
+                return 1;
+            }
+
             if (! ($result['success'] ?? false)) {
                 $this->error('Preview failed: '.($result['reason'] ?? 'unknown'));
 
@@ -131,6 +165,12 @@ class GenealogyEnrichMedia extends Command
             return 0;
         }
 
+        if ($this->option('dry-run')) {
+            $this->info('Dry run only; no enrichment proposals will be generated.');
+
+            return 0;
+        }
+
         $result = $enricher->processMedia($mediaId);
 
         if ($result['skipped']) {
@@ -147,6 +187,85 @@ class GenealogyEnrichMedia extends Command
         $this->info("Done — proposals: {$result['proposals']} | relationships: {$result['relationships']} | matched: {$result['matched']} | unmatched: {$result['unmatched']}");
 
         return 0;
+    }
+
+    private function runPreviewWorkerProcess(int $mediaId): int
+    {
+        $timeoutSeconds = $this->previewTimeoutSeconds();
+
+        try {
+            $result = Process::timeout($timeoutSeconds)->run([
+                PHP_BINARY,
+                'artisan',
+                'genealogy:enrich-media',
+                '--media='.$mediaId,
+                '--preview',
+                '--preview-worker',
+                '--preview-timeout='.$timeoutSeconds,
+                '--no-interaction',
+            ]);
+        } catch (ProcessTimedOutException) {
+            $this->error(
+                "Preview timed out after {$timeoutSeconds}s; retry with a smaller/faster candidate or increase --preview-timeout."
+            );
+
+            return 1;
+        }
+
+        if ($result->output() !== '') {
+            $this->output->write($result->output());
+        }
+
+        if ($result->errorOutput() !== '') {
+            $this->error(trim($result->errorOutput()));
+        }
+
+        return $result->exitCode() ?? ($result->successful() ? 0 : 1);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function previewMediaIntakePacketWithTimeout(GenealogyMediaEnrichmentService $enricher, int $mediaId): array
+    {
+        $timeoutSeconds = $this->previewTimeoutSeconds();
+        if (! $this->supportsPreviewAlarm()) {
+            return $enricher->previewMediaIntakePacket($mediaId);
+        }
+
+        $previousHandler = pcntl_signal_get_handler(SIGALRM);
+        $previousAsync = pcntl_async_signals();
+        pcntl_async_signals(true);
+        pcntl_signal(SIGALRM, function () use ($timeoutSeconds): void {
+            throw new GenealogyEnrichMediaPreviewTimeoutException(
+                "Preview timed out after {$timeoutSeconds}s; retry with a smaller/faster candidate or increase --preview-timeout."
+            );
+        });
+
+        pcntl_alarm($timeoutSeconds);
+        try {
+            return $enricher->previewMediaIntakePacket($mediaId);
+        } finally {
+            pcntl_alarm(0);
+            if ($previousHandler !== false) {
+                pcntl_signal(SIGALRM, $previousHandler);
+            }
+            pcntl_async_signals($previousAsync);
+        }
+    }
+
+    private function previewTimeoutSeconds(): int
+    {
+        return max(1, min(300, (int) $this->option('preview-timeout')));
+    }
+
+    private function supportsPreviewAlarm(): bool
+    {
+        return extension_loaded('pcntl')
+            && function_exists('pcntl_alarm')
+            && function_exists('pcntl_async_signals')
+            && function_exists('pcntl_signal')
+            && function_exists('pcntl_signal_get_handler');
     }
 
     private function showStatus(): int
@@ -273,3 +392,5 @@ class GenealogyEnrichMedia extends Command
         return implode(',', array_map(static fn (string $value): string => "'".str_replace("'", "''", $value)."'", $values));
     }
 }
+
+class GenealogyEnrichMediaPreviewTimeoutException extends \RuntimeException {}

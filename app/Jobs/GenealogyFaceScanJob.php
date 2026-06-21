@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Services\Genealogy\GenealogyMediaService;
+use App\Services\SystemConfigService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -21,16 +22,38 @@ class GenealogyFaceScanJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    /** Maximum job runtime in seconds (2 hours) */
-    public int $timeout = 7200;
+    private const RUNTIME_POLICY_CONFIG_KEY = 'genealogy.face_scan_job_runtime_policy';
 
-    /** Number of retry attempts */
-    public int $tries = 1;
+    private const DEFAULT_TIMEOUT_SECONDS = 7200;
+
+    private const DEFAULT_TRIES = 1;
+
+    private const DEFAULT_QUEUE = 'long-running';
+
+    private const DEFAULT_STATUS_CACHE_TTL_HOURS = 24;
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'timeout_seconds' => self::DEFAULT_TIMEOUT_SECONDS,
+        'tries' => self::DEFAULT_TRIES,
+        'queue' => self::DEFAULT_QUEUE,
+        'status_cache_ttl_hours' => self::DEFAULT_STATUS_CACHE_TTL_HOURS,
+    ];
+
+    public int $timeout = self::DEFAULT_TIMEOUT_SECONDS;
+
+    public int $tries = self::DEFAULT_TRIES;
 
     protected int $treeId;
+
     protected string $folder;
+
     protected bool $recursive;
+
     protected string $jobId;
+
+    private int $statusCacheTtlHours = self::DEFAULT_STATUS_CACHE_TTL_HOURS;
+
+    private string $runtimePolicySource = 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY;
 
     /**
      * Create a new job instance.
@@ -42,8 +65,11 @@ class GenealogyFaceScanJob implements ShouldQueue
         $this->recursive = $recursive;
         $this->jobId = uniqid('face_scan_', true);
 
-        // Use long-running queue due to 2-hour timeout
-        $this->onQueue('long-running');
+        $policy = $this->runtimePolicy();
+        $this->timeout = $this->positiveInt($policy['timeout_seconds'] ?? null, self::DEFAULT_TIMEOUT_SECONDS);
+        $this->tries = $this->positiveInt($policy['tries'] ?? null, self::DEFAULT_TRIES);
+        $this->statusCacheTtlHours = $this->positiveInt($policy['status_cache_ttl_hours'] ?? null, self::DEFAULT_STATUS_CACHE_TTL_HOURS);
+        $this->onQueue($this->stringValue($policy['queue'] ?? null, self::DEFAULT_QUEUE));
     }
 
     /**
@@ -70,6 +96,10 @@ class GenealogyFaceScanJob implements ShouldQueue
                 'tree_id' => $this->treeId,
                 'folder' => $this->folder,
                 'recursive' => $this->recursive,
+                'timeout_seconds' => $this->timeout,
+                'tries' => $this->tries,
+                'status_cache_ttl_hours' => $this->statusCacheTtlHours,
+                'runtime_policy_source' => $this->runtimePolicySource,
                 'progress' => [
                     'files_scanned' => 0,
                     'files_with_faces' => 0,
@@ -82,10 +112,14 @@ class GenealogyFaceScanJob implements ShouldQueue
                 'errors' => [],
             ]);
 
-            Log::info("GenealogyFaceScanJob started", [
+            Log::info('GenealogyFaceScanJob started', [
                 'job_id' => $this->jobId,
                 'tree_id' => $this->treeId,
                 'folder' => $this->folder,
+                'timeout_seconds' => $this->timeout,
+                'tries' => $this->tries,
+                'status_cache_ttl_hours' => $this->statusCacheTtlHours,
+                'runtime_policy_source' => $this->runtimePolicySource,
             ]);
 
             // Run the face scan with progress callback
@@ -98,7 +132,7 @@ class GenealogyFaceScanJob implements ShouldQueue
                     $current = Cache::get($cacheKey, []);
                     $current['progress'] = $progress;
                     $current['updated_at'] = now()->toIso8601String();
-                    Cache::put($cacheKey, $current, now()->addHours(24));
+                    Cache::put($cacheKey, $current, $this->statusCacheExpiresAt());
                 }
             );
 
@@ -113,12 +147,14 @@ class GenealogyFaceScanJob implements ShouldQueue
                 'recursive' => $this->recursive,
                 'results' => $results,
                 'errors' => $results['errors'] ?? [],
+                'runtime_policy_source' => $this->runtimePolicySource,
             ]);
 
-            Log::info("GenealogyFaceScanJob completed", [
+            Log::info('GenealogyFaceScanJob completed', [
                 'job_id' => $this->jobId,
                 'tree_id' => $this->treeId,
                 'results' => $results,
+                'runtime_policy_source' => $this->runtimePolicySource,
             ]);
 
         } catch (\Exception $e) {
@@ -131,12 +167,14 @@ class GenealogyFaceScanJob implements ShouldQueue
                 'tree_id' => $this->treeId,
                 'folder' => $this->folder,
                 'error' => $e->getMessage(),
+                'runtime_policy_source' => $this->runtimePolicySource,
             ]);
 
-            Log::error("GenealogyFaceScanJob failed", [
+            Log::error('GenealogyFaceScanJob failed', [
                 'job_id' => $this->jobId,
                 'tree_id' => $this->treeId,
                 'error' => $e->getMessage(),
+                'runtime_policy_source' => $this->runtimePolicySource,
             ]);
 
             throw $e;
@@ -148,7 +186,12 @@ class GenealogyFaceScanJob implements ShouldQueue
      */
     protected function updateStatus(string $cacheKey, array $status): void
     {
-        Cache::put($cacheKey, $status, now()->addHours(24));
+        Cache::put($cacheKey, $status, $this->statusCacheExpiresAt());
+    }
+
+    private function statusCacheExpiresAt(): \DateTimeInterface
+    {
+        return now()->addHours($this->statusCacheTtlHours);
     }
 
     /**
@@ -165,13 +208,53 @@ class GenealogyFaceScanJob implements ShouldQueue
             'tree_id' => $this->treeId,
             'folder' => $this->folder,
             'error' => $exception->getMessage(),
+            'runtime_policy_source' => $this->runtimePolicySource,
         ]);
 
-        Log::error("GenealogyFaceScanJob failed", [
+        Log::error('GenealogyFaceScanJob failed', [
             'job_id' => $this->jobId,
             'tree_id' => $this->treeId,
             'error' => $exception->getMessage(),
+            'runtime_policy_source' => $this->runtimePolicySource,
             'trace' => $exception->getTraceAsString(),
         ]);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    private function stringValue(mixed $value, string $fallback): string
+    {
+        if (! is_string($value) || trim($value) === '') {
+            return $fallback;
+        }
+
+        return trim($value);
     }
 }

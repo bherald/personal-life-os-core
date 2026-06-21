@@ -71,6 +71,7 @@
               <span v-if="clusterSessionStats.identified > 0" class="text-ops-gold">+{{ clusterSessionStats.identified }} identified</span>
               <span v-if="clusterSessionStats.hidden > 0" class="ml-1">{{ clusterSessionStats.hidden }} hidden</span>
               <span v-if="clusterSessionStats.merged > 0" class="ml-1 text-ops-peach">{{ clusterSessionStats.merged }} merged</span>
+              <span v-if="clusterSessionStats.assigned > 0" class="ml-1 text-ops-gold">{{ clusterSessionStats.assigned }} assigned</span>
             </template>
             <template v-else>
               <span v-if="sessionStats.named > 0" class="text-ops-gold">+{{ sessionStats.named }} named</span>
@@ -257,6 +258,14 @@
       @confirm="handleEditConfirm"
     />
 
+    <FaceRenamePreviewDialog
+      :visible="renamePreviewVisible"
+      :preview="renamePreview"
+      :loading="renamePreviewLoading"
+      @close="renamePreviewVisible = false"
+      @confirm="handleRenamePreviewConfirm"
+    />
+
     <FaceMergeDialog
       :visible="mergeDialogVisible"
       :sourceName="mergeSource"
@@ -316,6 +325,7 @@
       :cluster="splitDialogCluster"
       :faces="splitDialogFaces"
       :loadingFaces="splitDialogLoading"
+      :tree-id="genealogyBridgeTreeId"
       @close="splitDialogVisible = false"
       @confirm="handleSplitConfirm"
     />
@@ -359,6 +369,7 @@ import FacesNamedOnly from '../components/faces/FacesNamedOnly.vue'
 import FacesClustered from '../components/faces/FacesClustered.vue'
 import FaceEditDialog from '../components/faces/FaceEditDialog.vue'
 import FaceMergeDialog from '../components/faces/FaceMergeDialog.vue'
+import FaceRenamePreviewDialog from '../components/faces/FaceRenamePreviewDialog.vue'
 import FaceClipboard from '../components/faces/FaceClipboard.vue'
 import FacesHidden from '../components/faces/FacesHidden.vue'
 import FacesUnidentified from '../components/faces/FacesUnidentified.vue'
@@ -385,7 +396,7 @@ const {
   loadRecognized, loadNewFaces, loadMoreRecognized, loadMoreNew,
   loadHidden, loadMoreHidden, loadNamedOnly, unhideFace,
   nameFace, bulkName, bulkHide, toggleHide,
-  renamePerson, searchPersons, undoLast,
+  previewRenamePerson, renamePerson, searchPersons, undoLast,
   debouncedSearch, toggleSelect, selectRange, clearSelection,
   handleKeydown, refreshAll,
 } = useFacesData()
@@ -400,7 +411,7 @@ const {
   selectedClusterCount, hasClusterUndo, focusedCluster,
   loadClusters, loadMoreClusters,
   identifyCluster, batchIdentifyClusters,
-  mergeClusterIds, splitCluster, hideCluster, restoreCluster,
+  mergeClusterIds, splitCluster, assignFaces, hideCluster, restoreCluster,
   loadSimilarClusters, loadClusterFaces, loadPhotoContext,
   undoLastClusterAction,
   toggleClusterSelect, clearClusterSelection,
@@ -417,6 +428,12 @@ const mergeSource = ref('')
 const mergeTarget = ref('')
 const mergeSourceCount = ref(0)
 const mergeTargetCount = ref(0)
+
+// Scoped face rename preview
+const renamePreviewVisible = ref(false)
+const renamePreviewLoading = ref(false)
+const renamePreview = ref(null)
+const renamePendingPayload = ref(null)
 
 // Bulk name dialog (faces)
 const bulkNameDialogVisible = ref(false)
@@ -476,7 +493,7 @@ const currentSelectedCount = computed(() => {
 const hasSessionActivity = computed(() => {
   if (activeTab.value === 'clusters') {
     const cs = clusterSessionStats.value
-    return cs.identified > 0 || cs.hidden > 0 || cs.merged > 0 || cs.split > 0
+    return cs.identified > 0 || cs.hidden > 0 || cs.merged > 0 || cs.split > 0 || cs.assigned > 0
   }
   return sessionStats.value.named > 0 || sessionStats.value.hidden > 0
 })
@@ -656,9 +673,26 @@ async function openClusterSplitDialog(cluster) {
   splitDialogLoading.value = false
 }
 
-async function handleSplitConfirm({ faceIds, mode }) {
+async function handleSplitConfirm({ faceIds, assignment }) {
   splitDialogVisible.value = false
   if (splitDialogCluster.value) {
+    if (assignment?.name) {
+      const allSelected = faceIds.length === splitDialogFaces.value.length
+      if (!allSelected) {
+        const splitResult = await splitCluster(splitDialogCluster.value.id, faceIds)
+        if (!splitResult?.success) return
+      }
+
+      await assignFaces(
+        faceIds,
+        assignment.name,
+        assignment.genealogyPersonId,
+        assignment.treeId
+      )
+      loadGenealogyBridgeStats()
+      return
+    }
+
     await splitCluster(splitDialogCluster.value.id, faceIds)
   }
 }
@@ -721,7 +755,11 @@ function handleNewFaceSelect({ faceId, shift }) {
 }
 
 function viewPersonMedia(person) {
-  router.push({ path: '/media/faces/person', query: { name: person.person_name } })
+  const query = { name: person.person_name || person.name || person.genealogy_name || '' }
+  if (person.genealogy_person_id) {
+    query.genealogy_person_id = person.genealogy_person_id
+  }
+  router.push({ path: '/media/faces/person', query })
 }
 
 async function handleUnhideFace(faceId) {
@@ -745,18 +783,40 @@ function openEditDialog(person) {
 
 async function handleEditConfirm(updated) {
   editDialogVisible.value = false
-  if (updated.person_name !== updated.originalName) {
-    const existingPerson = recognized.value.find(p => p.person_name === updated.person_name)
-    if (existingPerson) {
-      mergeSource.value = updated.originalName
-      mergeTarget.value = updated.person_name
-      mergeSourceCount.value = editDialogPerson.value?.face_count || 0
-      mergeTargetCount.value = existingPerson.face_count || 0
-      mergeDialogVisible.value = true
-    } else {
-      await renamePerson(updated.originalName, updated.person_name)
-    }
+
+  const oldName = updated.originalName || updated.displayName || ''
+  const sourceNames = Array.isArray(updated.source_names) ? updated.source_names : []
+  const payload = {
+    old_name: oldName,
+    new_name: updated.person_name,
+    scope_type: updated.scope_type || 'name',
+    source_names: sourceNames,
+    genealogy_person_id: updated.genealogy_person_id || null,
   }
+
+  if (payload.scope_type === 'name' && payload.old_name === payload.new_name && sourceNames.length === 0) {
+    return
+  }
+
+  renamePendingPayload.value = payload
+  renamePreview.value = null
+  renamePreviewVisible.value = true
+  renamePreviewLoading.value = true
+  renamePreview.value = await previewRenamePerson(payload)
+  renamePreviewLoading.value = false
+}
+
+async function handleRenamePreviewConfirm() {
+  if (!renamePendingPayload.value) return
+
+  const result = await renamePerson(renamePendingPayload.value)
+  if (result?.success) {
+    loadGenealogyBridgeStats()
+  }
+
+  renamePreviewVisible.value = false
+  renamePreview.value = null
+  renamePendingPayload.value = null
 }
 
 async function handleMergeConfirm() {
@@ -828,8 +888,8 @@ function onBulkNameInput() {
 }
 
 function selectBulkNameSuggestion(s) {
-  bulkNameValue.value = s.name || s.person_name
-  bulkNameGenealogyPersonId.value = s.genealogy_person_id || s.id || null
+  bulkNameValue.value = s.person_name || s.face_label || s.name || s.genealogy_name || ''
+  bulkNameGenealogyPersonId.value = parseTreeId(s.genealogy_person_id) || parseTreeId(s.id)
   bulkNameSuggestions.value = []
   submitBulkName()
 }

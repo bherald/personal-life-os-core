@@ -20,6 +20,7 @@ export const genealogyBatchApplyInput = z.object({
     author: z.string().max(500).optional(),
     publication: z.string().max(5000).optional(),
     repository: z.string().max(255).optional(),
+    url: z.string().max(500).optional(),
     notes: z.string().max(10000).optional(),
     source_quality: z.enum(['original', 'derivative', 'authored']).optional(),
     source_category: z.enum(['original', 'derivative', 'authored']).optional(),
@@ -309,7 +310,7 @@ async function upsertSource(
 ): Promise<number> {
   const now = new Date();
   const fields = pickDefined(source, [
-    'author', 'publication', 'repository', 'notes', 'source_quality',
+    'author', 'publication', 'repository', 'url', 'notes', 'source_quality',
     'source_category', 'information_quality',
   ]);
   fields.classification_method = 'manual';

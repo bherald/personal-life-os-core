@@ -526,10 +526,13 @@ class RAGService
      * @param string|null $documentType Optional filter by document type
      * @param bool|string $useHyde Enable HyDE query expansion (true, false, or 'auto')
      *                             'auto' uses HyDEService::shouldUseHyde() to decide
+     * @param array{trace?: bool} $options Search options. Set trace=false for approved read-only evidence runs.
      */
-    public function search(string $query, int $limit = 5, ?string $documentType = null, bool|string $useHyde = false, ?string $agentId = null): array
+    public function search(string $query, int $limit = 5, ?string $documentType = null, bool|string $useHyde = false, ?string $agentId = null, array $options = []): array
     {
         try {
+            $traceQueries = (bool) ($options['trace'] ?? true);
+
             // HyDE (Hypothetical Document Embeddings) query expansion
             // When enabled, delegates to HyDEService which generates a hypothetical answer
             // and embeds that instead of the original query
@@ -633,11 +636,12 @@ class RAGService
                 $results = $this->applyTemporalDecay($results);
             }
 
-            // Record trace
-            try {
-                $this->getTracingService()->startTrace($query);
-            } catch (\Exception $e) {
-                Log::debug('RAGService: trace recording failed', ['error' => $e->getMessage()]);
+            if ($traceQueries) {
+                try {
+                    $this->getTracingService()->startTrace($query);
+                } catch (\Exception $e) {
+                    Log::debug('RAGService: trace recording failed', ['error' => $e->getMessage()]);
+                }
             }
 
             Log::info('RAG search completed', [

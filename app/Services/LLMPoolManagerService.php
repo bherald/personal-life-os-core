@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * LLMPoolManagerService - Dynamic Multi-Provider LLM Routing
@@ -256,11 +257,17 @@ class LLMPoolManagerService
                 }
             }
 
-            // Exclude instances that don't advertise a model for the requested role.
-            // Keeps selection honest — a host with no config.models.quality should
-            // not win for quality work just because it is fast.
-            if ($role !== null && $instance->instance_type === 'ollama') {
-                if ($this->resolveRoleModel($instance, $role) === null) {
+            // Exclude instances whose table-owned route policy does not allow
+            // the requested role. Ollama additionally must advertise an
+            // explicit role model so fallback iteration cannot silently widen
+            // from quality/standard into a light model.
+            if ($role !== null) {
+                $config = $this->decodeInstanceConfig($instance);
+                if (! $this->providerConfigAllowsModelRole($config, $role)) {
+                    continue;
+                }
+
+                if ($instance->instance_type === 'ollama' && $this->resolveRoleModel($instance, $role) === null) {
                     continue;
                 }
             }
@@ -269,7 +276,7 @@ class LLMPoolManagerService
             $score = $this->calculateRoutingScore($instance, $preferInstance, $urgency, $role);
 
             // Check if busy (affects score but doesn't exclude)
-            $isBusy = $this->isInstanceBusy($instance->instance_id);
+            $isBusy = $this->isInstanceBusyForInstance($instance);
 
             $candidates[] = [
                 'instance' => $instance,
@@ -368,15 +375,138 @@ class LLMPoolManagerService
             }
         }
 
+        if ($role !== null) {
+            $score += $this->providerRoleBias($instance, $role);
+        }
+
         // Role fitness bonus (0-20 points): let each instance advertise its strength
         // through config.models.{role}. For reasoning-heavy roles a bigger model wins;
         // for latency-sensitive roles a smaller model wins. This is what lets the 4070
         // win `coding`/`quality` work on score without a hardcoded preference list.
         if ($role !== null && $instance->instance_type === 'ollama') {
             $score += $this->scoreRoleFit($instance, $role);
+            $score -= $this->recentRoleAttemptPenalty($instance, $role);
         }
 
         return min(100, max(0, $score));
+    }
+
+    private function providerRoleBias(object $instance, string $role): float
+    {
+        $policy = $this->getProviderRoleBiasPolicy();
+        if (! (bool) ($policy['enabled'] ?? false)) {
+            return 0.0;
+        }
+
+        $instanceId = trim((string) ($instance->instance_id ?? ''));
+        if ($instanceId === '') {
+            return 0.0;
+        }
+
+        $roles = is_array($policy['roles'] ?? null) ? $policy['roles'] : [];
+        $rolePolicy = is_array($roles[$role] ?? null) ? $roles[$role] : [];
+        $bias = $rolePolicy[$instanceId] ?? null;
+        if (! is_numeric($bias)) {
+            return 0.0;
+        }
+
+        $maxAbsBias = max(0.0, (float) ($policy['max_abs_bias'] ?? 20.0));
+
+        return max(-$maxAbsBias, min($maxAbsBias, (float) $bias));
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function getProviderRoleBiasPolicy(): array
+    {
+        return Cache::remember('llm_provider_role_bias_policy', 60, function (): array {
+            try {
+                $row = DB::selectOne(
+                    "SELECT config_value
+                     FROM system_configs
+                     WHERE section = 'llm'
+                       AND config_key = 'provider_role_bias_policy'
+                     LIMIT 1"
+                );
+
+                $decoded = json_decode((string) ($row->config_value ?? ''), true);
+                if (is_array($decoded) && $decoded !== []) {
+                    return $decoded;
+                }
+            } catch (\Throwable $e) {
+                Log::debug('LLMPoolManager: provider role bias policy config unavailable', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            return ['enabled' => false, 'roles' => []];
+        });
+    }
+
+    /**
+     * Penalize an otherwise healthy host when recent telemetry shows that this
+     * specific caller/role is failing there. This catches cases where unrelated
+     * successful direct calls keep the provider circuit closed while agent-fast
+     * work is timing out repeatedly.
+     */
+    private function recentRoleAttemptPenalty(object $instance, string $role): float
+    {
+        $instanceId = trim((string) ($instance->instance_id ?? ''));
+        if ($instanceId === '') {
+            return 0.0;
+        }
+
+        $requestKind = match ($role) {
+            'embedding' => 'embedding',
+            'vision' => 'vision',
+            default => 'chat',
+        };
+
+        $cacheKey = 'llm_pool:recent_role_attempt_penalty:'.sha1($instanceId.'|'.$role.'|'.$requestKind);
+
+        return (float) Cache::remember($cacheKey, 60, function () use ($instanceId, $role, $requestKind): float {
+            try {
+                $row = DB::selectOne(
+                    'SELECT COUNT(*) AS attempts,
+                            COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) AS failures
+                     FROM llm_model_request_logs
+                     WHERE instance_id = ?
+                       AND model_role = ?
+                       AND caller = ?
+                       AND request_kind = ?
+                       AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)',
+                    [$instanceId, $role, $role.'_agent', $requestKind]
+                );
+            } catch (\Throwable $e) {
+                Log::debug('LLMPoolManager: recent role telemetry lookup failed', [
+                    'instance_id' => $instanceId,
+                    'role' => $role,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return 0.0;
+            }
+
+            $attempts = (int) ($row->attempts ?? 0);
+            $failures = (int) ($row->failures ?? 0);
+            if ($attempts < 5 || $failures === 0) {
+                return 0.0;
+            }
+
+            $failureRate = $failures / max(1, $attempts);
+            if ($failures >= 3 && $failureRate >= 0.25) {
+                return 30.0;
+            }
+            if ($failures >= 3 && $failureRate >= 0.10) {
+                return 15.0;
+            }
+            if ($failureRate >= 0.02) {
+                return 8.0;
+            }
+
+            return 0.0;
+        });
     }
 
     /**
@@ -386,9 +516,9 @@ class LLMPoolManagerService
      */
     private function resolveRoleModel(object $instance, string $role): ?string
     {
-        try {
-            $config = json_decode($instance->config ?? '{}', true) ?: [];
-        } catch (\Throwable $e) {
+        $config = $this->decodeInstanceConfig($instance);
+
+        if (! $this->providerConfigAllowsModelRole($config, $role)) {
             return null;
         }
 
@@ -399,16 +529,71 @@ class LLMPoolManagerService
     }
 
     /**
+     * @return array<string,mixed>
+     */
+    private function decodeInstanceConfig(object $instance): array
+    {
+        try {
+            $config = json_decode($instance->config ?? '{}', true);
+        } catch (\Throwable) {
+            return [];
+        }
+
+        return is_array($config) ? $config : [];
+    }
+
+    /**
+     * @param  array<string,mixed>  $providerConfig
+     */
+    private function providerConfigAllowsModelRole(array $providerConfig, string $role): bool
+    {
+        $routePolicy = is_array($providerConfig['route_policy'] ?? null) ? $providerConfig['route_policy'] : [];
+        $allowedRoles = $routePolicy['allowed_model_roles']
+            ?? $providerConfig['allowed_model_roles']
+            ?? null;
+
+        if (is_array($allowedRoles) && $allowedRoles !== []) {
+            $allowedRoles = array_values(array_filter($allowedRoles, 'is_string'));
+            if (! in_array($role, $allowedRoles, true)) {
+                return false;
+            }
+        }
+
+        $models = is_array($providerConfig['models'] ?? null) ? $providerConfig['models'] : [];
+        $hasRoleModel = is_string($models[$role] ?? null) && trim((string) $models[$role]) !== '';
+        $requiresRoleModel = $this->truthyDbValue($routePolicy['require_model_role'] ?? false)
+            || ! $this->truthyDbValue($routePolicy['allow_generic_fallback'] ?? true);
+
+        if ($requiresRoleModel && ! $hasRoleModel) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function truthyDbValue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value)) {
+            return $value === 1;
+        }
+
+        if (is_string($value)) {
+            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+        }
+
+        return (bool) $value;
+    }
+
+    /**
      * Score how well an instance's advertised model fits the requested role.
-     *
-     * Heavy roles (quality/coding/standard/vision/uncensored): bigger parameter
-     * count scores higher — more headroom for complex reasoning or JSON discipline.
-     *
-     * Light roles (fast/embedding): smaller parameter count scores higher —
-     * latency dominates over model capability.
-     *
-     * Returns 0 when the instance does not advertise the role or the parameter
-     * count cannot be parsed.
+     * The scoring policy is table-owned so model/hardware evidence can evolve
+     * without changing framework code. Identical model tags receive identical
+     * role-fit credit across hosts; per-host telemetry decides ordering after
+     * that.
      */
     private function scoreRoleFit(object $instance, string $role): float
     {
@@ -422,21 +607,83 @@ class LLMPoolManagerService
             return 0;
         }
 
-        $heavyRoles = ['quality', 'coding', 'standard', 'vision', 'uncensored'];
-        $lightRoles = ['fast', 'embedding'];
+        $policy = $this->getRoleFitPolicy();
+        $rolePolicies = is_array($policy['roles'] ?? null) ? $policy['roles'] : [];
+        $rolePolicy = is_array($rolePolicies[$role] ?? null) ? $rolePolicies[$role] : [];
 
-        if (in_array($role, $heavyRoles, true)) {
-            // 4B=4, 8B=12, 14B=19, 32B=20 (clamped). Bigger = better for heavy work.
-            return min(20.0, max(0.0, ($params - 2) * 1.5));
+        if ($rolePolicy === []) {
+            $default = is_array($policy['default'] ?? null) ? $policy['default'] : [];
+
+            return min(
+                (float) ($default['max_bonus'] ?? 10.0),
+                max(0.0, (float) ($default['bonus'] ?? 10.0))
+            );
         }
 
-        if (in_array($role, $lightRoles, true)) {
-            // 2B=20, 4B=16, 8B=8, 14B=0. Smaller = better for latency-sensitive work.
-            return min(20.0, max(0.0, 24.0 - ($params * 2.0)));
+        $direction = (string) ($rolePolicy['direction'] ?? 'larger');
+        $maxBonus = max(0.0, (float) ($rolePolicy['max_bonus'] ?? 20.0));
+        $scale = (float) ($rolePolicy['scale'] ?? 1.0);
+        $baseBonus = (float) ($rolePolicy['base_bonus'] ?? 0.0);
+
+        if ($direction === 'larger') {
+            $minParams = (float) ($rolePolicy['min_params_b'] ?? 0.0);
+
+            return min($maxBonus, max(0.0, $baseBonus + (($params - $minParams) * $scale)));
         }
 
-        // Unknown role — moderate bonus, avoids silently disadvantaging new roles
-        return 10.0;
+        if ($direction === 'smaller') {
+            $targetParams = (float) ($rolePolicy['target_params_b'] ?? 0.0);
+
+            return min($maxBonus, max(0.0, $baseBonus - (max(0.0, $params - $targetParams) * $scale)));
+        }
+
+        if ($direction === 'fixed') {
+            return min($maxBonus, max(0.0, (float) ($rolePolicy['bonus'] ?? $baseBonus)));
+        }
+
+        return 0.0;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function getRoleFitPolicy(): array
+    {
+        return Cache::remember('llm_role_fit_policy', 60, function (): array {
+            $fallback = [
+                'roles' => [
+                    'quality' => ['direction' => 'larger', 'min_params_b' => 2, 'scale' => 1.5, 'max_bonus' => 20],
+                    'coding' => ['direction' => 'larger', 'min_params_b' => 2, 'scale' => 1.5, 'max_bonus' => 20],
+                    'standard' => ['direction' => 'larger', 'min_params_b' => 2, 'scale' => 1.5, 'max_bonus' => 20],
+                    'vision' => ['direction' => 'larger', 'min_params_b' => 2, 'scale' => 1.5, 'max_bonus' => 20],
+                    'uncensored' => ['direction' => 'larger', 'min_params_b' => 2, 'scale' => 1.5, 'max_bonus' => 20],
+                    'fast' => ['direction' => 'smaller', 'target_params_b' => 2, 'base_bonus' => 20, 'scale' => 2.0, 'max_bonus' => 20],
+                    'embedding' => ['direction' => 'smaller', 'target_params_b' => 2, 'base_bonus' => 20, 'scale' => 2.0, 'max_bonus' => 20],
+                ],
+                'default' => ['bonus' => 10, 'max_bonus' => 10],
+            ];
+
+            try {
+                $row = DB::selectOne(
+                    "SELECT config_value
+                     FROM system_configs
+                     WHERE section = 'llm'
+                       AND config_key = 'role_fit_policy'
+                     LIMIT 1"
+                );
+
+                $decoded = json_decode((string) ($row->config_value ?? ''), true);
+                if (is_array($decoded) && $decoded !== []) {
+                    return $decoded;
+                }
+            } catch (\Throwable $e) {
+                Log::debug('LLMPoolManager: role-fit policy config unavailable; using bootstrap defaults', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            return $fallback;
+        });
     }
 
     /**
@@ -591,7 +838,7 @@ class LLMPoolManagerService
      * @param  string  $instanceId  Instance identifier
      * @param  int  $responseTimeMs  Response time in milliseconds
      */
-    public function recordSuccess(string $instanceId, int $responseTimeMs): void
+    public function recordSuccess(string $instanceId, int $responseTimeMs, array $metadata = []): void
     {
         $instance = $this->getInstance($instanceId);
         if (! $instance || ! $this->isInstanceActive($instance)) {
@@ -624,6 +871,8 @@ class LLMPoolManagerService
             [$responseTimeMs, $responseTimeMs, config('health_thresholds.llm.unhealthy_threshold', self::HEALTH_SCORE_UNHEALTHY_THRESHOLD), $instanceId]
         );
 
+        $this->recordModelUsage($instanceId, $metadata, true, $responseTimeMs);
+
         $this->clearInstanceCache();
     }
 
@@ -633,7 +882,7 @@ class LLMPoolManagerService
      * @param  string  $instanceId  Instance identifier
      * @param  string  $error  Error message
      */
-    public function recordFailure(string $instanceId, string $error, ?int $retryAfterSeconds = null): void
+    public function recordFailure(string $instanceId, string $error, ?int $retryAfterSeconds = null, array $metadata = []): void
     {
         $instance = $this->getInstance($instanceId);
         if (! $instance || ! $this->isInstanceActive($instance)) {
@@ -667,7 +916,128 @@ class LLMPoolManagerService
             $this->openCircuit($instanceId, "Half-open test failed: {$error}", $retryAfterSeconds);
         }
 
+        $metadata['error'] ??= $error;
+        $this->recordModelUsage($instanceId, $metadata, false, null);
+
         $this->clearInstanceCache();
+    }
+
+    private function recordModelUsage(string $instanceId, array $metadata, bool $success, ?int $responseTimeMs): void
+    {
+        $modelName = trim((string) ($metadata['model'] ?? $metadata['model_name'] ?? ''));
+        if ($modelName === '') {
+            return;
+        }
+
+        $tokensPerSecond = $metadata['tokens_per_second'] ?? null;
+        $tokensPerSecond = is_numeric($tokensPerSecond) ? (float) $tokensPerSecond : null;
+        $failureIncrement = $success ? 0 : 1;
+
+        $this->recordModelRequestLog($instanceId, $metadata, $success, $responseTimeMs, $tokensPerSecond);
+
+        try {
+            DB::update(
+                'UPDATE ollama_models om
+                 JOIN llm_instances li ON li.id = om.instance_id
+                 SET
+                    om.avg_response_time_ms = CASE
+                        WHEN ? IS NOT NULL THEN
+                            CASE
+                                WHEN om.total_requests > 0 AND om.avg_response_time_ms IS NOT NULL
+                                    THEN ((om.avg_response_time_ms * om.total_requests) + ?) / (om.total_requests + 1)
+                                ELSE ?
+                            END
+                        ELSE om.avg_response_time_ms
+                    END,
+                    om.avg_tokens_per_second = CASE
+                        WHEN ? IS NOT NULL THEN
+                            CASE
+                                WHEN om.total_requests > 0 AND om.avg_tokens_per_second IS NOT NULL
+                                    THEN ((om.avg_tokens_per_second * om.total_requests) + ?) / (om.total_requests + 1)
+                                ELSE ?
+                            END
+                        ELSE om.avg_tokens_per_second
+                    END,
+                    om.success_rate = (((om.total_requests + 1) - (om.total_failures + ?)) * 100.0) / (om.total_requests + 1),
+                    om.total_failures = om.total_failures + ?,
+                    om.total_requests = om.total_requests + 1,
+                    om.updated_at = NOW()
+                 WHERE li.instance_id = ?
+                   AND om.model_name = ?',
+                [
+                    $responseTimeMs,
+                    $responseTimeMs,
+                    $responseTimeMs,
+                    $tokensPerSecond,
+                    $tokensPerSecond,
+                    $tokensPerSecond,
+                    $failureIncrement,
+                    $failureIncrement,
+                    $instanceId,
+                    $modelName,
+                ]
+            );
+        } catch (\Throwable $e) {
+            Log::debug('LLMPoolManager: model usage telemetry update failed', [
+                'instance_id' => $instanceId,
+                'model' => $modelName,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function recordModelRequestLog(
+        string $instanceId,
+        array $metadata,
+        bool $success,
+        ?int $responseTimeMs,
+        ?float $tokensPerSecond
+    ): void {
+        try {
+            $tableExists = Cache::remember(
+                'llm_model_request_logs_table_exists',
+                60,
+                static fn (): bool => Schema::hasTable('llm_model_request_logs')
+            );
+
+            if (! $tableExists) {
+                return;
+            }
+
+            $instance = DB::table('llm_instances')
+                ->select(['id', 'instance_type'])
+                ->where('instance_id', $instanceId)
+                ->first();
+
+            $error = $metadata['error'] ?? null;
+            if (is_string($error)) {
+                $error = mb_substr($error, 0, 255);
+            } else {
+                $error = null;
+            }
+
+            DB::table('llm_model_request_logs')->insert([
+                'llm_instance_row_id' => $instance->id ?? null,
+                'instance_id' => $instanceId,
+                'instance_type' => $instance->instance_type ?? null,
+                'model_name' => $metadata['model'] ?? $metadata['model_name'] ?? null,
+                'caller' => $metadata['caller'] ?? null,
+                'model_role' => $metadata['model_role'] ?? null,
+                'request_kind' => $metadata['request_kind'] ?? 'chat',
+                'success' => $success ? 1 : 0,
+                'latency_ms' => $responseTimeMs,
+                'tokens_per_second' => $tokensPerSecond,
+                'quality_score' => $metadata['quality_score'] ?? null,
+                'escalated' => array_key_exists('escalated', $metadata) ? (bool) $metadata['escalated'] : null,
+                'error_summary' => $error,
+                'created_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::debug('LLMPoolManager: model request log insert failed', [
+                'instance_id' => $instanceId,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     private function isInstanceActive(object $instance): bool
@@ -797,7 +1167,12 @@ class LLMPoolManagerService
      */
     public function isInstanceBusy(string $instanceId): bool
     {
-        return Cache::has("llm_busy_lock:{$instanceId}");
+        $instance = $this->getInstance($instanceId);
+        if (! $instance) {
+            return false;
+        }
+
+        return $this->isInstanceBusyForInstance($instance);
     }
 
     /**
@@ -815,18 +1190,19 @@ class LLMPoolManagerService
             return false;
         }
 
-        $cacheKey = "llm_busy_lock:{$instanceId}";
-        $ttl = $ttl ?? self::BUSY_LOCK_DEFAULT_TTL;
+        $policy = $this->resolveSlotPolicy($instance, $ttl);
+        $ttl = $policy['request_ttl_seconds'];
 
         // Check max concurrent
-        $currentLocks = $this->getActiveLockCount($instanceId);
-        if ($currentLocks >= $instance->max_concurrent) {
+        $maxConcurrent = max(1, (int) ($instance->max_concurrent ?? 1));
+        $currentLocks = $this->getActiveLockCountForInstance($instance);
+        if ($currentLocks >= $maxConcurrent) {
             return false;
         }
 
         // For single-concurrent instances, use simple lock
-        if ($instance->max_concurrent == 1) {
-            return Cache::add($cacheKey, [
+        if ($maxConcurrent === 1) {
+            return Cache::add($policy['busy_lock_key'], [
                 'request_id' => $requestId,
                 'started_at' => now()->toDateTimeString(),
                 'pid' => getmypid(),
@@ -834,7 +1210,7 @@ class LLMPoolManagerService
         }
 
         // For multi-concurrent, use slot system
-        return $this->acquireSlot($instanceId, $requestId, $ttl);
+        return $this->acquireSlot($instance, $requestId, $ttl);
     }
 
     /**
@@ -850,12 +1226,12 @@ class LLMPoolManagerService
             return false;
         }
 
-        $cacheKey = "llm_busy_lock:{$instanceId}";
+        $policy = $this->resolveSlotPolicy($instance);
 
         if ($instance->max_concurrent == 1) {
-            $lockData = Cache::get($cacheKey);
+            $lockData = Cache::get($policy['busy_lock_key']);
             if ($lockData && ($lockData['request_id'] ?? null) === $requestId) {
-                Cache::forget($cacheKey);
+                Cache::forget($policy['busy_lock_key']);
 
                 return true;
             }
@@ -864,7 +1240,7 @@ class LLMPoolManagerService
         }
 
         // Multi-concurrent slot release
-        return $this->releaseSlot($instanceId, $requestId);
+        return $this->releaseSlot($instance, $requestId);
     }
 
     /**
@@ -874,7 +1250,27 @@ class LLMPoolManagerService
      */
     private function getActiveLockCount(string $instanceId): int
     {
-        $slotsKey = "llm_slots:{$instanceId}";
+        $instance = $this->getInstance($instanceId);
+        if (! $instance) {
+            return 0;
+        }
+
+        return $this->getActiveLockCountForInstance($instance);
+    }
+
+    private function isInstanceBusyForInstance(object $instance): bool
+    {
+        $maxConcurrent = max(1, (int) ($instance->max_concurrent ?? 1));
+        if ($maxConcurrent > 1) {
+            return $this->getActiveLockCountForInstance($instance) >= $maxConcurrent;
+        }
+
+        return Cache::has($this->resolveSlotPolicy($instance)['busy_lock_key']);
+    }
+
+    private function getActiveLockCountForInstance(object $instance): int
+    {
+        $slotsKey = $this->resolveSlotPolicy($instance)['slot_cache_key'];
         $slots = Cache::get($slotsKey, []);
 
         // Clean stale slots
@@ -893,13 +1289,14 @@ class LLMPoolManagerService
     /**
      * Acquire a slot for multi-concurrent instances
      */
-    private function acquireSlot(string $instanceId, string $requestId, int $ttl): bool
+    private function acquireSlot(object $instance, string $requestId, int $ttl): bool
     {
-        $slotsKey = "llm_slots:{$instanceId}";
+        $policy = $this->resolveSlotPolicy($instance, $ttl);
+        $slotsKey = $policy['slot_cache_key'];
 
-        return Cache::lock("{$slotsKey}_lock", 5)->get(function () use ($slotsKey, $instanceId, $requestId, $ttl) {
-            $instance = $this->getInstance($instanceId);
+        return Cache::lock($policy['slot_lock_key'], $policy['lock_ttl_seconds'])->get(function () use ($slotsKey, $instance, $requestId, $policy) {
             $slots = Cache::get($slotsKey, []);
+            $maxConcurrent = max(1, (int) ($instance->max_concurrent ?? 1));
 
             // Clean stale slots
             $slots = array_filter($slots, function ($slot) {
@@ -910,8 +1307,8 @@ class LLMPoolManagerService
                 return true;
             });
 
-            if (count($slots) >= $instance->max_concurrent) {
-                Cache::put($slotsKey, $slots, $ttl * 2);
+            if (count($slots) >= $maxConcurrent) {
+                Cache::put($slotsKey, $slots, $policy['slot_cache_ttl_seconds']);
 
                 return false;
             }
@@ -922,7 +1319,7 @@ class LLMPoolManagerService
                 'pid' => getmypid(),
             ];
 
-            Cache::put($slotsKey, $slots, $ttl * 2);
+            Cache::put($slotsKey, $slots, $policy['slot_cache_ttl_seconds']);
 
             return true;
         });
@@ -931,21 +1328,83 @@ class LLMPoolManagerService
     /**
      * Release a slot for multi-concurrent instances
      */
-    private function releaseSlot(string $instanceId, string $requestId): bool
+    private function releaseSlot(object $instance, string $requestId): bool
     {
-        $slotsKey = "llm_slots:{$instanceId}";
+        $policy = $this->resolveSlotPolicy($instance);
+        $slotsKey = $policy['slot_cache_key'];
 
-        return Cache::lock("{$slotsKey}_lock", 5)->get(function () use ($slotsKey, $requestId) {
+        return Cache::lock($policy['slot_lock_key'], $policy['lock_ttl_seconds'])->get(function () use ($slotsKey, $requestId, $policy) {
             $slots = Cache::get($slotsKey, []);
             if (isset($slots[$requestId])) {
                 unset($slots[$requestId]);
-                Cache::put($slotsKey, $slots, self::BUSY_LOCK_DEFAULT_TTL * 2);
+                Cache::put($slotsKey, $slots, $policy['slot_cache_ttl_seconds']);
 
                 return true;
             }
 
             return false;
         });
+    }
+
+    /**
+     * @return array{
+     *     busy_lock_key:string,
+     *     slot_cache_key:string,
+     *     slot_lock_key:string,
+     *     request_ttl_seconds:int,
+     *     slot_cache_ttl_seconds:int,
+     *     lock_ttl_seconds:int
+     * }
+     */
+    private function resolveSlotPolicy(object $instance, ?int $requestTtlOverride = null): array
+    {
+        $config = $this->decodeInstanceConfig($instance);
+        $policy = is_array($config['slot_policy'] ?? null) ? $config['slot_policy'] : [];
+
+        $requestTtl = $requestTtlOverride
+            ?? $this->positivePolicyInt($policy['request_ttl_seconds'] ?? null, self::BUSY_LOCK_DEFAULT_TTL);
+        $slotCacheTtl = $this->positivePolicyInt(
+            $policy['slot_cache_ttl_seconds'] ?? null,
+            $requestTtl * 2
+        );
+        $lockTtl = $this->positivePolicyInt($policy['lock_ttl_seconds'] ?? null, 5);
+
+        $busyPrefix = $this->policyString($policy['busy_lock_key_prefix'] ?? null, 'llm_busy_lock');
+        $slotPrefix = $this->policyString($policy['slot_cache_key_prefix'] ?? null, 'llm_slots');
+        $lockSuffix = $this->policyString($policy['slot_lock_key_suffix'] ?? null, '_lock');
+        $instanceId = (string) $instance->instance_id;
+        $slotCacheKey = "{$slotPrefix}:{$instanceId}";
+
+        return [
+            'busy_lock_key' => "{$busyPrefix}:{$instanceId}",
+            'slot_cache_key' => $slotCacheKey,
+            'slot_lock_key' => "{$slotCacheKey}{$lockSuffix}",
+            'request_ttl_seconds' => $requestTtl,
+            'slot_cache_ttl_seconds' => $slotCacheTtl,
+            'lock_ttl_seconds' => $lockTtl,
+        ];
+    }
+
+    private function positivePolicyInt(mixed $value, int $fallback): int
+    {
+        if (is_int($value) && $value > 0) {
+            return $value;
+        }
+
+        if (is_string($value) && ctype_digit($value) && (int) $value > 0) {
+            return (int) $value;
+        }
+
+        return $fallback;
+    }
+
+    private function policyString(mixed $value, string $fallback): string
+    {
+        if (is_string($value) && trim($value) !== '') {
+            return trim($value);
+        }
+
+        return $fallback;
     }
 
     /**
@@ -1030,6 +1489,7 @@ class LLMPoolManagerService
         try {
             $healthy = match ($instance->instance_type) {
                 'ollama' => $this->healthCheckOllama($instance),
+                'local_llm' => $this->probeLocalOpenAICompatible($instance),
                 'claude_cli' => $this->healthCheckClaudeCli($instance),
                 'codex_cli' => $this->healthCheckCodexCli($instance),
                 default => $this->healthCheckGeneric($instance),
@@ -1540,8 +2000,8 @@ class LLMPoolManagerService
         );
 
         foreach ($instances as &$instance) {
-            $instance->is_busy = $this->isInstanceBusy($instance->instance_id);
-            $instance->active_slots = $this->getActiveLockCount($instance->instance_id);
+            $instance->is_busy = $this->isInstanceBusyForInstance($instance);
+            $instance->active_slots = $this->getActiveLockCountForInstance($instance);
             $instance->capabilities = json_decode($instance->capabilities, true);
             $instance->config = json_decode($instance->config, true);
         }

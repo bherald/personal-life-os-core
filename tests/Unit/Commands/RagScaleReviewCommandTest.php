@@ -46,6 +46,7 @@ class RagScaleReviewCommandTest extends TestCase
                 'query_set_hash_basis' => 'ordered_query_hashes_and_type_filters',
                 'query_text' => 'redacted_by_default',
                 'results' => 'included_by_operator_option',
+                'query_traces' => 'disabled_by_operator_option',
             ],
             'queries' => [
                 [
@@ -80,6 +81,7 @@ class RagScaleReviewCommandTest extends TestCase
         $this->assertSame('observe_only', $decoded['retrieval']['evidence_contract_mode']);
         $this->assertSame('redacted_by_default', $decoded['retrieval']['query_text_policy']);
         $this->assertSame('included_by_operator_option', $decoded['retrieval']['results_policy']);
+        $this->assertSame('disabled_by_operator_option', $decoded['retrieval']['query_trace_policy']);
         $this->assertSame(900, $decoded['retrieval']['latency_p95_ms']);
         $this->assertFalse($decoded['retrieval']['result_content_redacted']);
         $this->assertStringContainsString('result content', implode(' ', $decoded['recommendations']));
@@ -105,7 +107,8 @@ class RagScaleReviewCommandTest extends TestCase
         $this->assertNull($decoded['retrieval']['evidence_contract_mode']);
         $this->assertNull($decoded['retrieval']['query_text_policy']);
         $this->assertNull($decoded['retrieval']['results_policy']);
-        $this->assertStringContainsString('Run rag:retrieval-evidence --json', implode(' ', $decoded['recommendations']));
+        $this->assertNull($decoded['retrieval']['query_trace_policy']);
+        $this->assertStringContainsString('Run rag:retrieval-evidence --no-trace --json', implode(' ', $decoded['recommendations']));
     }
 
     public function test_compact_json_output_keeps_operator_headlines_without_verbose_payload(): void

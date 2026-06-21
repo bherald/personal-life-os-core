@@ -55,6 +55,16 @@ class AIService
     // CONFIGURATION CONSTANTS
     // ═══════════════════════════════════════════════════════════════════
 
+    private const RUNTIME_POLICY_CONFIG_KEY = 'ai.service_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'short_prompt_fast_threshold_chars' => 100,
+        'available_models_connect_timeout_seconds' => 5,
+        'available_models_request_timeout_seconds' => 10,
+        'available_models_cache_ttl_seconds' => 300,
+        'model_profiles_cache_ttl_seconds' => 60,
+    ];
+
     // Timeout configuration (seconds)
     // Note: Even with OLLAMA_KEEP_ALIVE=10m, model may unload between status check
     // and actual request. Use conservative timeouts that account for reload time.
@@ -88,13 +98,12 @@ class AIService
 
     // Claude CLI concurrency configuration (with dynamic auto-scaling)
     // Note: Max slots scale dynamically based on CPU cores and available memory
-    // N82: CLAUDE_MIN_CONCURRENT/DEFAULT_MAX/ABSOLUTE_MAX/OLLAMA_FALLBACK_MIN read from config/agents.php
     private const CLAUDE_SLOT_TTL = 180;          // Max slot duration (was 600s/10min — calls take 10-60s)
 
     private const CLAUDE_SLOTS_CACHE_KEY = 'claude_cli_slots';
 
     private const CLAUDE_SLOT_STALE_SECONDS = 90; // Consider slot stale if PID dead (was 300s/5min)
-    // N119c: All scaling thresholds moved to config/agents.php — no hardcoded constants
+    // Slot scaling thresholds are table-owned in system_configs.ai.claude_slot_scaling_policy.
 
     // Wait-for-slot configuration (fault tolerance with progressive backoff)
     private const SLOT_WAIT_TIMEOUT_SECONDS = 60;   // Max wait for slot (was 300s/5min — pointless waiting that long)
@@ -480,7 +489,8 @@ class AIService
         }
 
         // Check prompt length - short prompts may benefit from fast model
-        if (strlen($prompt) < 100 && ! str_contains($promptLower, 'explain')) {
+        if (strlen($prompt) < $this->runtimePolicyInt('short_prompt_fast_threshold_chars', 100)
+            && ! str_contains($promptLower, 'explain')) {
             return 'fast';
         }
 
@@ -507,7 +517,9 @@ class AIService
 
         try {
             $url = $this->ollamaInstances[0]['url'];
-            $response = Http::connectTimeout(5)->timeout(10)->get("{$url}/api/tags");
+            $response = Http::connectTimeout($this->runtimePolicyInt('available_models_connect_timeout_seconds', 5))
+                ->timeout($this->runtimePolicyInt('available_models_request_timeout_seconds', 10))
+                ->get("{$url}/api/tags");
 
             if ($response->successful()) {
                 $models = $response->json()['models'] ?? [];
@@ -517,7 +529,7 @@ class AIService
                     $model['profile'] = $this->getModelProfile($model['name']);
                 }
 
-                Cache::put($cacheKey, $models, 300); // Cache for 5 minutes
+                Cache::put($cacheKey, $models, $this->runtimePolicyInt('available_models_cache_ttl_seconds', 300));
 
                 return $models;
             }
@@ -574,7 +586,7 @@ class AIService
                         'use_cases' => json_decode($row->use_cases ?? '[]', true) ?: [],
                     ];
                 }
-                Cache::put('llm_model_profiles', $profiles, 60);
+                Cache::put('llm_model_profiles', $profiles, $this->runtimePolicyInt('model_profiles_cache_ttl_seconds', 60));
                 $this->modelProfiles = $profiles;
 
                 return $profiles;
@@ -659,6 +671,12 @@ class AIService
 
             if ($row) {
                 $config = json_decode($row->config ?? '{}', true) ?: [];
+                if (! $this->providerConfigAllowsModelRole($config, $role)) {
+                    $this->providerModelCache[$cacheKey] = null;
+
+                    return null;
+                }
+
                 $model = $config['models'][$role]
                     ?? $config['models']['standard']
                     ?? $config['default_model']
@@ -1014,8 +1032,8 @@ PROMPT;
         if (! $preferExternal) {
             // Step 1: Try each Ollama instance with retry + backoff
             // When multiple instances exist, skip busy ones instead of waiting (try next instance)
-            $multiInstance = count($this->getHealthyOllamaInstancesForConfig($config)) > 1;
-            foreach ($this->getHealthyOllamaInstancesForConfig($config) as $instance) {
+            $ollamaInstances = $this->getOrderedTextOllamaInstances($modelRole, $config);
+            foreach ($ollamaInstances as $instance) {
                 // N119c: Resolve model_role per instance (quality, standard, fast, etc.).
                 // Graceful downgrade: if requested role unavailable, try standard → default_model
                 $instanceModel = $requestedModel;
@@ -1049,11 +1067,17 @@ PROMPT;
                     }
                 }
 
+                $instanceRequestConfig = $this->applyOllamaInstanceRuntimeConfig(
+                    $config,
+                    $instance,
+                    (string) ($modelRole ?? 'standard')
+                );
+
                 // Never wait for a busy Ollama lock — fall through to external providers immediately.
                 // Vision mode already does this (line ~896). Text mode was blocking 30s on single-instance.
-                $config['skip_if_busy'] = $config['skip_if_busy'] ?? true;
+                $instanceRequestConfig['skip_if_busy'] = $instanceRequestConfig['skip_if_busy'] ?? true;
 
-                $result = $this->tryOllamaWithRetry($instance, $prompt, $instanceModel, $config);
+                $result = $this->tryOllamaWithRetry($instance, $prompt, $instanceModel, $instanceRequestConfig);
 
                 if ($result['success']) {
                     // AI-1: Cascade quality check — escalate if local response is low quality
@@ -1161,7 +1185,7 @@ PROMPT;
         // Step 3: If prefer_external was set, try Ollama as last resort
         if ($preferExternal) {
             $config['skip_if_busy'] = $config['skip_if_busy'] ?? true;
-            foreach ($this->getHealthyOllamaInstancesForConfig($config) as $instance) {
+            foreach ($this->getOrderedTextOllamaInstances($modelRole, $config) as $instance) {
                 // N119c: Resolve model_role per-instance (same as Step 1)
                 $instanceModel = $requestedModel;
                 if ($modelRole) {
@@ -1296,13 +1320,16 @@ PROMPT;
             $ollamaHandled = true;
         }
 
+        $externalFallbackDisabled = ! empty($config['disable_external_fallback'])
+            || ! empty($config['local_only']);
+
         // External vision providers (OpenRouter, Gemini, Mistral pixtral, etc.)
         // Images are private by default unless the caller explicitly classifies
         // the payload as non-sensitive.
         $sensitiveData = $config['sensitive_data'] ?? false;
         $visionProviders = $this->getVisionCapableProviders($sensitiveData);
 
-        if (! empty($visionProviders)) {
+        if (! $externalFallbackDisabled && ! empty($visionProviders)) {
             // Read image content if it's a file path
             $imageData = $imageContent;
             if (! str_contains($imageContent, "\0") && strlen($imageContent) < 512 && file_exists($imageContent)) {
@@ -1327,16 +1354,20 @@ PROMPT;
 
                 $attempts[$provider['id'].'_vision'] = $result['error'];
             }
+        } elseif ($externalFallbackDisabled) {
+            $attempts['external_vision'] = 'Disabled by caller privacy/local-only config';
         }
 
         // Claude CLI vision (supports multiple concurrent calls)
-        if ($this->isClaudeCliEnabled() && ! $this->isCircuitOpen('claude_cli_vision')) {
+        if (! empty($config['disable_claude_fallback'])) {
+            $attempts['claude_cli_vision'] = 'Disabled by caller privacy/local-only config';
+        } elseif ($this->isClaudeCliEnabled() && ! $this->isCircuitOpen('claude_cli_vision')) {
             // Try to acquire a Claude slot
             $slotId = $this->acquireClaudeSlot($requestId);
 
             if ($slotId === null) {
                 // No slots available - all Claude instances busy
-                $attempts['claude_cli_vision'] = 'No Claude slots available (max concurrent: '.config('agents.claude_absolute_max', 20).')';
+                $attempts['claude_cli_vision'] = 'No Claude slots available (max concurrent: '.$this->getDynamicClaudeMaxSlots().')';
                 Log::info('AIService: Vision request queued - no Claude slots', [
                     'slot_usage' => $this->getClaudeSlotUsage(),
                 ]);
@@ -1833,27 +1864,10 @@ PROMPT;
         $ollamaProviders = array_values(array_filter($providers, fn ($p) => ($p['instance_type'] ?? '') === 'ollama'));
         $externalProviders = array_values(array_filter($providers, fn ($p) => ($p['instance_type'] ?? '') !== 'ollama'));
 
-        usort($ollamaProviders, function (array $a, array $b) {
-            $aBusy = $this->isOllamaBusy($a['id'] ?? null);
-            $bBusy = $this->isOllamaBusy($b['id'] ?? null);
-            if ($aBusy !== $bBusy) {
-                return $aBusy <=> $bBusy;
-            }
-
-            $aPriority = (int) ($a['priority'] ?? 999);
-            $bPriority = (int) ($b['priority'] ?? 999);
-            if ($aPriority !== $bPriority) {
-                return $aPriority <=> $bPriority;
-            }
-
-            $aHealth = (float) ($a['health_score'] ?? 0);
-            $bHealth = (float) ($b['health_score'] ?? 0);
-            if ($aHealth !== $bHealth) {
-                return $bHealth <=> $aHealth;
-            }
-
-            return strcmp((string) ($a['id'] ?? ''), (string) ($b['id'] ?? ''));
-        });
+        // Ollama providers arrive from orderOllamaInstancesForRole(), which is
+        // already pool-scored for health, busy state, role-fit, and table-owned
+        // provider-role bias. Do not re-sort them here by legacy priority, or
+        // embedding routes will erase the DB policy that keeps idle local hosts busy.
 
         usort($externalProviders, function (array $a, array $b) {
             $aPriority = (int) ($a['priority'] ?? 999);
@@ -2218,7 +2232,7 @@ PROMPT;
             $ollamaStatus = $this->getOllamaStatus($model, $instance['url']);
 
             if (! $ollamaStatus['available']) {
-                $this->recordFailure($providerId);
+                $this->recordFailure($providerId, 'Ollama not available', null, $this->modelTelemetry($config, $model));
 
                 return [
                     'success' => false,
@@ -2277,7 +2291,7 @@ PROMPT;
                     $config['ollama_model'] = $model;
                     $response = $this->aiRouter->processWithAI($prompt, $config);
 
-                    $this->recordSuccess($providerId, microtime(true) - $startTime);
+                    $this->recordSuccess($providerId, microtime(true) - $startTime, $this->modelTelemetry($config, $model));
 
                     return [
                         'success' => true,
@@ -2320,7 +2334,7 @@ PROMPT;
                 }
             }
 
-            $this->recordFailure($providerId, $lastError);
+            $this->recordFailure($providerId, $lastError, null, $this->modelTelemetry($config, $model));
 
             return [
                 'success' => false,
@@ -2373,7 +2387,10 @@ PROMPT;
             $ollamaStatus = $this->getOllamaStatus($perInstanceVisionModel, $instance['url']);
 
             if (! $ollamaStatus['available']) {
-                $this->recordFailure($providerId, 'Ollama not available');
+                $this->recordFailure($providerId, 'Ollama not available', null, $this->modelTelemetry($config, $perInstanceVisionModel, [
+                    'instance_id' => $baseProviderId,
+                    'request_kind' => 'vision',
+                ]));
 
                 return ['success' => false, 'error' => 'Ollama not available', 'skip_to_fallback' => true];
             }
@@ -2392,7 +2409,10 @@ PROMPT;
                 try {
                     $startTime = microtime(true);
                     $response = $this->aiRouter->processWithImage($imageContent, $prompt, $config);
-                    $this->recordSuccess($providerId, microtime(true) - $startTime);
+                    $this->recordSuccess($providerId, microtime(true) - $startTime, $this->modelTelemetry($config, $perInstanceVisionModel, [
+                        'instance_id' => $baseProviderId,
+                        'request_kind' => 'vision',
+                    ]));
 
                     return [
                         'success' => true,
@@ -2415,7 +2435,10 @@ PROMPT;
                 }
             }
 
-            $this->recordFailure($providerId, $lastError);
+            $this->recordFailure($providerId, $lastError, null, $this->modelTelemetry($config, $perInstanceVisionModel, [
+                'instance_id' => $baseProviderId,
+                'request_kind' => 'vision',
+            ]));
 
             return ['success' => false, 'error' => $lastError];
 
@@ -2463,8 +2486,8 @@ PROMPT;
                     );
                     $duration = microtime(true) - $startTime;
                     $this->recordSuccess($providerId, $duration);
-                    // Also record on the base instance ID so pool manager updates llm_instances table
-                    $this->recordSuccess($baseInstanceId, $duration);
+                    // Also record on the base instance ID so pool manager updates llm_instances and model telemetry.
+                    $this->recordSuccess($baseInstanceId, $duration, ['model' => $this->embeddingModel, 'request_kind' => 'embedding']);
 
                     return [
                         'success' => true,
@@ -2494,12 +2517,14 @@ PROMPT;
             );
             if (! $isContextLength) {
                 $this->recordFailure($providerId);
+                $this->recordFailure($baseInstanceId, $lastError, null, ['model' => $this->embeddingModel, 'request_kind' => 'embedding']);
             }
 
             return ['success' => false, 'error' => $lastError, 'context_length_exceeded' => $isContextLength];
 
         } catch (Exception $e) {
             $this->recordFailure($providerId);
+            $this->recordFailure($baseInstanceId, $e->getMessage(), null, ['model' => $this->embeddingModel, 'request_kind' => 'embedding']);
 
             return ['success' => false, 'error' => $e->getMessage()];
         }
@@ -2939,9 +2964,18 @@ PROMPT;
 
         $startTime = microtime(true);
         $result = app(CodexExecConnectorService::class)->execute($prompt, $config);
+        $metadata = $this->codexExecTelemetry($config, $result);
 
         if ($result['success'] ?? false) {
-            $this->recordSuccess($providerId, microtime(true) - $startTime);
+            $this->recordSuccess($providerId, microtime(true) - $startTime, $metadata);
+
+            return $result;
+        }
+
+        if (($result['error_type'] ?? null) === 'capacity') {
+            Log::info('AIService: Codex Exec capacity unavailable; leaving provider health unchanged', [
+                'error' => $result['error'] ?? null,
+            ]);
 
             return $result;
         }
@@ -2952,9 +2986,35 @@ PROMPT;
             Cache::put('rate_limit_codex_exec', true, $retryAfterSeconds);
         }
 
-        $this->recordFailure($providerId, (string) ($result['error'] ?? 'Unknown Codex Exec error'), $retryAfterSeconds);
+        $this->recordFailure($providerId, (string) ($result['error'] ?? 'Unknown Codex Exec error'), $retryAfterSeconds, $metadata);
 
         return $result;
+    }
+
+    /**
+     * @param  array<string,mixed>  $config
+     * @param  array<string,mixed>  $result
+     * @return array<string,mixed>
+     */
+    private function codexExecTelemetry(array $config, array $result): array
+    {
+        $metadata = $this->modelTelemetry(
+            $config,
+            is_string($result['model'] ?? null) ? $result['model'] : null,
+            [
+                'instance_id' => 'codex_exec',
+                'caller' => 'codex_exec',
+                'request_kind' => 'chat',
+                'escalated' => true,
+            ]
+        );
+
+        if (empty($metadata['model_role'])) {
+            $role = $config['model_role'] ?? null;
+            $metadata['model_role'] = is_string($role) && trim($role) !== '' ? trim($role) : 'standard';
+        }
+
+        return $metadata;
     }
 
     private function retryAfterSecondsFromProviderError(string $error): int
@@ -3115,6 +3175,82 @@ PROMPT;
         $routePolicy = is_array($providerConfig['route_policy'] ?? null) ? $providerConfig['route_policy'] : [];
         $role = (string) ($requestConfig['model_role'] ?? 'standard');
 
+        if (! $this->providerConfigAllowsModelRole(
+            $providerConfig,
+            $role,
+            $this->truthyDbValue($requestConfig['require_model_role'] ?? false)
+        )) {
+            return false;
+        }
+
+        if ($this->truthyDbValue($routePolicy['require_redacted_input'] ?? false)
+            && ! $this->truthyDbValue($requestConfig['redacted_input'] ?? false)
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Apply table-owned Ollama runtime options for a specific host and role.
+     * Example llm_instances.config shape:
+     *   role_runtime.standard.think = false
+     *   role_runtime.standard.options.num_ctx = 4096
+     *
+     * Caller-supplied request options still win over table defaults.
+     *
+     * @param  array<string,mixed>  $requestConfig
+     * @param  array<string,mixed>  $instance
+     * @return array<string,mixed>
+     */
+    private function applyOllamaInstanceRuntimeConfig(array $requestConfig, array $instance, string $role): array
+    {
+        $providerConfig = is_array($instance['config'] ?? null) ? $instance['config'] : [];
+        $roleRuntime = is_array($providerConfig['role_runtime'] ?? null) ? $providerConfig['role_runtime'] : [];
+        $runtime = is_array($roleRuntime[$role] ?? null) ? $roleRuntime[$role] : [];
+
+        if ($runtime === []) {
+            return $requestConfig;
+        }
+
+        $merged = $requestConfig;
+
+        if (array_key_exists('think', $runtime) && ! array_key_exists('ollama_think', $merged)) {
+            $merged['ollama_think'] = $this->truthyDbValue($runtime['think']);
+        }
+
+        if (isset($runtime['options']) && is_array($runtime['options'])) {
+            $merged['ollama_options'] = array_merge(
+                $runtime['options'],
+                is_array($merged['ollama_options'] ?? null) ? $merged['ollama_options'] : []
+            );
+        }
+
+        if (isset($runtime['prompt_prefix']) && is_string($runtime['prompt_prefix']) && ! array_key_exists('ollama_prompt_prefix', $merged)) {
+            $merged['ollama_prompt_prefix'] = $runtime['prompt_prefix'];
+        }
+
+        foreach (['num_ctx', 'temperature', 'max_tokens', 'ai_timeout'] as $key) {
+            if (array_key_exists($key, $runtime) && ! array_key_exists($key, $merged)) {
+                $merged[$key] = $runtime[$key];
+            }
+        }
+
+        return $merged;
+    }
+
+    /**
+     * Enforce table-owned role policy from an llm_instances.config payload.
+     *
+     * @param  array<string,mixed>  $providerConfig
+     */
+    private function providerConfigAllowsModelRole(
+        array $providerConfig,
+        string $role,
+        bool $requestRequiresModelRole = false
+    ): bool {
+        $routePolicy = is_array($providerConfig['route_policy'] ?? null) ? $providerConfig['route_policy'] : [];
         $allowedRoles = $routePolicy['allowed_model_roles']
             ?? $providerConfig['allowed_model_roles']
             ?? null;
@@ -3126,23 +3262,13 @@ PROMPT;
             }
         }
 
-        $allowGenericFallback = $this->truthyDbValue($routePolicy['allow_generic_fallback'] ?? true);
-        if (! $allowGenericFallback && in_array($role, ['standard', 'quality', 'coding', 'vision', 'embedding'], true)) {
-            return false;
-        }
+        $models = is_array($providerConfig['models'] ?? null) ? $providerConfig['models'] : [];
+        $hasRoleModel = is_string($models[$role] ?? null) && trim((string) $models[$role]) !== '';
+        $requiresRoleModel = $requestRequiresModelRole
+            || $this->truthyDbValue($routePolicy['require_model_role'] ?? false)
+            || ! $this->truthyDbValue($routePolicy['allow_generic_fallback'] ?? true);
 
-        $requireModelRole = $this->truthyDbValue($requestConfig['require_model_role'] ?? false)
-            || $this->truthyDbValue($routePolicy['require_model_role'] ?? false);
-        if ($requireModelRole) {
-            $models = is_array($providerConfig['models'] ?? null) ? $providerConfig['models'] : [];
-            if (! is_string($models[$role] ?? null) || trim((string) $models[$role]) === '') {
-                return false;
-            }
-        }
-
-        if ($this->truthyDbValue($routePolicy['require_redacted_input'] ?? false)
-            && ! $this->truthyDbValue($requestConfig['redacted_input'] ?? false)
-        ) {
+        if ($requiresRoleModel && ! $hasRoleModel) {
             return false;
         }
 
@@ -3594,7 +3720,7 @@ PROMPT;
                 Cache::put($rpmKey, $currentRpm + 1, 60);
             }
 
-            $this->recordSuccess($providerId, microtime(true) - $startTime);
+            $this->recordSuccess($providerId, microtime(true) - $startTime, $this->modelTelemetry($config, $model));
 
             return [
                 'success' => true,
@@ -3622,7 +3748,7 @@ PROMPT;
                 Cache::put("rate_limit_{$providerId}", true, $retryAfterSeconds);
             }
 
-            $this->recordFailure($providerId, $e->getMessage(), $retryAfterSeconds);
+            $this->recordFailure($providerId, $e->getMessage(), $retryAfterSeconds, $this->modelTelemetry($config, $model ?? null));
 
             return [
                 'success' => false,
@@ -4125,12 +4251,50 @@ PROMPT;
         return array_merge($stats, ['state' => $normalizedState]);
     }
 
+    private function modelTelemetry(array $config, ?string $model, array $metadata = []): array
+    {
+        if ($model !== null && trim($model) !== '') {
+            $metadata['model'] = $model;
+        }
+
+        $caller = $config['caller'] ?? $config['telemetry_caller'] ?? null;
+        if (is_string($caller) && trim($caller) !== '') {
+            $metadata['caller'] = trim($caller);
+        }
+
+        $modelRole = $config['model_role'] ?? null;
+        if (is_string($modelRole) && trim($modelRole) !== '') {
+            $metadata['model_role'] = trim($modelRole);
+        }
+
+        $requestKind = $config['request_kind'] ?? null;
+        if (is_string($requestKind) && trim($requestKind) !== '') {
+            $metadata['request_kind'] = trim($requestKind);
+        }
+
+        return $metadata;
+    }
+
+    private function normalizeMetricMetadata(array $metadata): array
+    {
+        if (empty($metadata['caller'])) {
+            $metadata['caller'] = self::$agentModelRole ? (self::$agentModelRole.'_agent') : 'direct';
+        }
+
+        if (empty($metadata['model_role']) && self::$agentModelRole) {
+            $metadata['model_role'] = self::$agentModelRole;
+        }
+
+        return $metadata;
+    }
+
     /**
      * Record successful request
      */
-    private function recordSuccess(string $providerId, float $duration): void
+    private function recordSuccess(string $providerId, float $duration, array $metadata = []): void
     {
         $durationMs = (int) ($duration * 1000);
+        $metadata = $this->normalizeMetricMetadata($metadata);
 
         if (! $this->shouldRecordProviderHealth($providerId)) {
             return;
@@ -4139,7 +4303,7 @@ PROMPT;
         // Update pool manager if available (persistent storage)
         if ($this->useDynamicPool && $this->poolManager) {
             try {
-                $this->poolManager->recordSuccess($providerId, $durationMs);
+                $this->poolManager->recordSuccess($metadata['instance_id'] ?? $providerId, $durationMs, $metadata);
             } catch (Exception $e) {
                 Log::debug('AIService: Pool manager recordSuccess failed', ['error' => $e->getMessage()]);
             }
@@ -4172,8 +4336,10 @@ PROMPT;
     /**
      * Record failed request
      */
-    private function recordFailure(string $providerId, ?string $error = null, ?int $retryAfterSeconds = null): void
+    private function recordFailure(string $providerId, ?string $error = null, ?int $retryAfterSeconds = null, array $metadata = []): void
     {
+        $metadata = $this->normalizeMetricMetadata($metadata);
+
         if (! $this->shouldRecordProviderHealth($providerId)) {
             return;
         }
@@ -4181,7 +4347,7 @@ PROMPT;
         // Update pool manager if available (persistent storage)
         if ($this->useDynamicPool && $this->poolManager) {
             try {
-                $this->poolManager->recordFailure($providerId, $error ?? 'Unknown error', $retryAfterSeconds);
+                $this->poolManager->recordFailure($metadata['instance_id'] ?? $providerId, $error ?? 'Unknown error', $retryAfterSeconds, $metadata);
             } catch (Exception $e) {
                 Log::debug('AIService: Pool manager recordFailure failed', ['error' => $e->getMessage()]);
             }
@@ -4420,19 +4586,21 @@ PROMPT;
 
         $dynamicMax = $this->getDynamicClaudeMaxSlots();
         $ollamaHealth = $this->getOllamaHealthStatus();
+        $slotPolicy = $this->getClaudeSlotScalingPolicy();
 
         return [
             'active' => count($activeSlots),
             'max' => $dynamicMax,
-            'default_max' => config('agents.claude_default_max', 10),
-            'absolute_max' => config('agents.claude_absolute_max', 20),
-            'static_min' => config('agents.claude_min_concurrent', 3),
+            'default_max' => $this->positiveArrayInt($slotPolicy, 'default_max'),
+            'absolute_max' => $this->positiveArrayInt($slotPolicy, 'absolute_max'),
+            'static_min' => $this->positiveArrayInt($slotPolicy, 'min_concurrent'),
             'available' => max(0, $dynamicMax - count($activeSlots)),
             'slots' => $activeSlots,
             'system_load' => $this->getSystemLoad(),
             'ollama_healthy' => $ollamaHealth['healthy'],
             'ollama_status' => $ollamaHealth,
             'scaling_mode' => $ollamaHealth['healthy'] ? 'normal' : 'ollama_fallback',
+            'policy_source' => 'system_configs.ai.claude_slot_scaling_policy',
         ];
     }
 
@@ -4806,7 +4974,7 @@ PROMPT;
      * Get dynamic max concurrent Claude slots based on system resources and provider health
      *
      * Implements aggressive resource-aware auto-scaling:
-     * 1. Base capacity: CLAUDE_SLOTS_PER_CORE * cpu_count (e.g., 2 * 8 cores = 16 slots)
+     * 1. Base capacity: table-owned slots_per_core * cpu_count
      * 2. Scale down only when resources are constrained
      * 3. When Ollama is down: Scale UP aggressively (Claude becomes primary)
      * 4. Critical resource state: Emergency minimum mode
@@ -4818,45 +4986,64 @@ PROMPT;
         $systemLoad = $this->getSystemLoad();
         $ollamaHealth = $this->getOllamaHealthStatus();
         $cpuCount = max(1, $systemLoad['cpu_count']);
+        $policy = $this->getClaudeSlotScalingPolicy();
 
-        // N119c: All thresholds from config/agents.php — per-core normalized values
-        $loadScaleUp = config('agents.claude_load_scale_up', 1.5);
-        $loadScaleDown = config('agents.claude_load_scale_down', 3.0);
-        $loadCritical = config('agents.claude_load_critical', 5.0);
-        $memMinFree = config('agents.claude_memory_min_free_mb', 512);
-        $memCritical = config('agents.claude_memory_critical_mb', 256);
-        $slotsPerCore = config('agents.claude_slots_per_core', 2);
+        $loadScaleUp = $this->positiveArrayFloat($policy, 'load_scale_up');
+        $loadScaleDown = $this->positiveArrayFloat($policy, 'load_scale_down');
+        $loadCritical = $this->positiveArrayFloat($policy, 'load_critical');
+        $memMinFree = $this->positiveArrayInt($policy, 'memory_min_free_mb');
+        $memCritical = $this->positiveArrayInt($policy, 'memory_critical_mb');
+        $slotsPerCore = $this->positiveArrayFloat($policy, 'slots_per_core') ?? 1.0;
+        $absoluteMax = $this->positiveArrayInt($policy, 'absolute_max');
+        $minConcurrent = $this->positiveArrayInt($policy, 'min_concurrent') ?? 1;
+        $defaultMax = $this->positiveArrayInt($policy, 'default_max') ?? $minConcurrent;
+        $fallbackMin = $this->positiveArrayInt($policy, 'ollama_fallback_min') ?? $minConcurrent;
+        $constrainedDivisor = $this->positiveArrayFloat($policy, 'constrained_resource_divisor');
+        $ollamaDownDivisor = $this->positiveArrayFloat($policy, 'ollama_down_resource_divisor');
+        $middleGroundDivisor = $this->positiveArrayFloat($policy, 'middle_ground_resource_divisor');
+        $goodResourceFraction = $this->positiveArrayFloat($policy, 'good_resource_fraction');
+        $memoryScaleUpMultiplier = $this->positiveArrayFloat($policy, 'memory_scale_up_multiplier');
+        $memoryGoodMultiplier = $this->positiveArrayFloat($policy, 'memory_good_multiplier');
 
         // Normalize load per CPU core for fair comparison
         $normalizedLoad = $systemLoad['load_1m'] / $cpuCount;
 
-        // Calculate resource-based maximum (cores * slots_per_core, capped at absolute max)
-        $resourceBasedMax = min(
-            config('agents.claude_absolute_max', 20),
-            $cpuCount * $slotsPerCore
-        );
+        // Calculate resource-based maximum; absolute cap is table-owned and optional.
+        $resourceBasedMax = max(1, (int) ceil($cpuCount * $slotsPerCore));
+        if ($absoluteMax !== null) {
+            $resourceBasedMax = min($absoluteMax, $resourceBasedMax);
+        }
 
-        // CRITICAL STATE: Emergency minimum mode (per-core load > 5.0 or memory < 256MB)
-        if ($systemLoad['memory_free_mb'] < $memCritical || $normalizedLoad > $loadCritical) {
+        // CRITICAL STATE: emergency minimum mode when configured thresholds are crossed.
+        if (($memCritical !== null && $systemLoad['memory_free_mb'] < $memCritical)
+            || ($loadCritical !== null && $normalizedLoad > $loadCritical)
+        ) {
             $this->logScalingDecision('critical', [
                 'reason' => 'Critical resources',
                 'memory_free_mb' => $systemLoad['memory_free_mb'],
                 'normalized_load' => $normalizedLoad,
                 'threshold' => $loadCritical,
-                'max_slots' => config('agents.claude_min_concurrent', 3),
+                'max_slots' => $minConcurrent,
             ]);
 
-            return config('agents.claude_min_concurrent', 3);
+            return $minConcurrent;
         }
 
         // OLLAMA DOWN: Scale UP Claude aggressively to compensate
         if (! $ollamaHealth['healthy']) {
-            if ($normalizedLoad < $loadScaleUp && $systemLoad['memory_free_mb'] > $memMinFree * 2) {
-                $maxSlots = config('agents.claude_absolute_max', 20);
-            } elseif ($normalizedLoad < $loadScaleDown && $systemLoad['memory_free_mb'] > $memMinFree) {
+            if ($loadScaleUp !== null
+                && $memMinFree !== null
+                && $memoryScaleUpMultiplier !== null
+                && $normalizedLoad < $loadScaleUp
+                && $systemLoad['memory_free_mb'] > ($memMinFree * $memoryScaleUpMultiplier)
+            ) {
                 $maxSlots = $resourceBasedMax;
+            } elseif ($loadScaleDown !== null && $memMinFree !== null && $normalizedLoad < $loadScaleDown && $systemLoad['memory_free_mb'] > $memMinFree) {
+                $maxSlots = $resourceBasedMax;
+            } elseif ($ollamaDownDivisor !== null) {
+                $maxSlots = max($fallbackMin, (int) ceil($resourceBasedMax / $ollamaDownDivisor));
             } else {
-                $maxSlots = max(config('agents.claude_ollama_fallback_min', 8), (int) ceil($resourceBasedMax / 2));
+                $maxSlots = max($fallbackMin, $resourceBasedMax);
             }
 
             $this->logScalingDecision('ollama_down', [
@@ -4872,8 +5059,10 @@ PROMPT;
         // NORMAL OPERATION: Ollama healthy, scale based on resources
 
         // High load - scale down moderately (Ollama handles most load)
-        if ($normalizedLoad > $loadScaleDown) {
-            $slots = max(config('agents.claude_min_concurrent', 3), (int) ceil($resourceBasedMax / 3));
+        if ($loadScaleDown !== null && $normalizedLoad > $loadScaleDown) {
+            $slots = $constrainedDivisor !== null
+                ? max($minConcurrent, (int) ceil($resourceBasedMax / $constrainedDivisor))
+                : $minConcurrent;
             $this->logScalingDecision('high_load', [
                 'reason' => 'High system load',
                 'normalized_load' => $normalizedLoad,
@@ -4885,8 +5074,10 @@ PROMPT;
         }
 
         // Low memory - scale down moderately
-        if ($systemLoad['memory_free_mb'] < $memMinFree) {
-            $slots = max(config('agents.claude_min_concurrent', 3), (int) ceil($resourceBasedMax / 3));
+        if ($memMinFree !== null && $systemLoad['memory_free_mb'] < $memMinFree) {
+            $slots = $constrainedDivisor !== null
+                ? max($minConcurrent, (int) ceil($resourceBasedMax / $constrainedDivisor))
+                : $minConcurrent;
             $this->logScalingDecision('low_memory', [
                 'reason' => 'Low memory',
                 'memory_free_mb' => $systemLoad['memory_free_mb'],
@@ -4898,17 +5089,135 @@ PROMPT;
         }
 
         // Excellent resources - allow full resource-based maximum
-        if ($normalizedLoad < $loadScaleUp && $systemLoad['memory_free_mb'] > $memMinFree * 3) {
+        if ($loadScaleUp !== null
+            && $memMinFree !== null
+            && $memoryScaleUpMultiplier !== null
+            && $normalizedLoad < $loadScaleUp
+            && $systemLoad['memory_free_mb'] > ($memMinFree * $memoryScaleUpMultiplier)
+        ) {
             return $resourceBasedMax;
         }
 
         // Good resources - use most of resource-based max
-        if ($normalizedLoad < $loadScaleDown && $systemLoad['memory_free_mb'] > $memMinFree * 2) {
-            return max(config('agents.claude_default_max', 10), (int) ceil($resourceBasedMax * 0.8));
+        if ($loadScaleDown !== null
+            && $memMinFree !== null
+            && $memoryGoodMultiplier !== null
+            && $goodResourceFraction !== null
+            && $normalizedLoad < $loadScaleDown
+            && $systemLoad['memory_free_mb'] > ($memMinFree * $memoryGoodMultiplier)
+        ) {
+            return max($defaultMax, (int) ceil($resourceBasedMax * $goodResourceFraction));
         }
 
         // Middle ground - use default max or half of resource-based, whichever is higher
-        return max(config('agents.claude_default_max', 10), (int) ceil($resourceBasedMax / 2));
+        return $middleGroundDivisor !== null
+            ? max($defaultMax, (int) ceil($resourceBasedMax / $middleGroundDivisor))
+            : max($defaultMax, $resourceBasedMax);
+    }
+
+    /**
+     * @return array<string,int|float>
+     */
+    private function getClaudeSlotScalingPolicy(): array
+    {
+        return Cache::remember('ai_claude_slot_scaling_policy', 60, function (): array {
+            try {
+                $row = DB::selectOne(
+                    "SELECT config_value
+                     FROM system_configs
+                     WHERE section = 'ai'
+                       AND config_key = 'claude_slot_scaling_policy'
+                     LIMIT 1"
+                );
+
+                $decoded = json_decode((string) ($row->config_value ?? ''), true);
+                if (! is_array($decoded)) {
+                    return [];
+                }
+
+                $policy = [];
+                foreach ($decoded as $key => $value) {
+                    if (! is_string($key) || ! is_numeric($value)) {
+                        continue;
+                    }
+
+                    $policy[$key] = str_contains($key, 'ratio')
+                        || str_contains($key, 'fraction')
+                        || str_contains($key, 'multiplier')
+                        || str_contains($key, 'scale')
+                        || str_contains($key, 'divisor')
+                        || str_contains($key, 'core')
+                            ? (float) $value
+                            : (int) $value;
+                }
+
+                return $policy;
+            } catch (\Throwable $e) {
+                Log::debug('AIService: Claude slot scaling policy unavailable', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            return [];
+        });
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function runtimePolicyInt(string $key, int $fallback): int
+    {
+        $value = $this->runtimePolicy()[$key] ?? null;
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    /**
+     * @param  array<string,int|float>  $values
+     */
+    private function positiveArrayInt(array $values, string $key): ?int
+    {
+        if (! isset($values[$key]) || ! is_numeric($values[$key])) {
+            return null;
+        }
+
+        $value = (int) $values[$key];
+
+        return $value > 0 ? $value : null;
+    }
+
+    /**
+     * @param  array<string,int|float>  $values
+     */
+    private function positiveArrayFloat(array $values, string $key): ?float
+    {
+        if (! isset($values[$key]) || ! is_numeric($values[$key])) {
+            return null;
+        }
+
+        $value = (float) $values[$key];
+
+        return $value > 0 ? $value : null;
     }
 
     /**
@@ -5066,10 +5375,7 @@ PROMPT;
                     'capabilities' => $capabilities,
                     'urgency' => $config['urgency'] ?? 'normal',
                     'prefer_instance' => $config['preferred_ollama_instance_ids'][0] ?? null,
-                    'exclude_instances' => array_values(array_diff(
-                        array_map('strval', $this->listAllOllamaInstanceIds()),
-                        array_map('strval', (array) ($config['allowed_ollama_instance_ids'] ?? []))
-                    )) ?: [],
+                    'exclude_instances' => $this->excludedOllamaInstanceIds($config),
                 ]);
 
                 if ($selected !== null && ($selected['instance']->instance_type ?? '') === 'ollama') {
@@ -5090,7 +5396,10 @@ PROMPT;
         }
 
         // Fallback: use the legacy healthy-instance list filtered by config.
-        $instances = $this->getHealthyOllamaInstancesForConfig($config);
+        $instances = $this->filterOllamaInstancesForRole(
+            $this->getHealthyOllamaInstancesForConfig($config),
+            $role
+        );
 
         return $instances[0] ?? null;
     }
@@ -5120,6 +5429,8 @@ PROMPT;
                     'role' => $role,
                     'capabilities' => $capabilities,
                     'urgency' => $config['urgency'] ?? 'normal',
+                    'prefer_instance' => $config['preferred_ollama_instance_ids'][0] ?? null,
+                    'exclude_instances' => $this->excludedOllamaInstanceIds($config),
                 ]);
 
                 if ($selected !== null && ! empty($selected['all_candidates'])) {
@@ -5137,6 +5448,7 @@ PROMPT;
                         }
                     }
 
+                    $ordered = $this->filterOllamaInstancesForRole($ordered, $role);
                     if (! empty($ordered)) {
                         return $ordered;
                     }
@@ -5150,7 +5462,25 @@ PROMPT;
         }
 
         // Fallback: legacy priority-ordered list.
-        return $this->getHealthyOllamaInstancesForConfig($config);
+        return $this->filterOllamaInstancesForRole(
+            $this->getHealthyOllamaInstancesForConfig($config),
+            $role
+        );
+    }
+
+    /**
+     * @param  array<int,array<string,mixed>>  $instances
+     * @return array<int,array<string,mixed>>
+     */
+    private function filterOllamaInstancesForRole(array $instances, string $role): array
+    {
+        return array_values(array_filter(
+            $instances,
+            fn (array $instance): bool => $this->providerConfigAllowsModelRole(
+                is_array($instance['config'] ?? null) ? $instance['config'] : [],
+                $role
+            )
+        ));
     }
 
     /**
@@ -5178,6 +5508,19 @@ PROMPT;
         }
     }
 
+    private function excludedOllamaInstanceIds(array $config): array
+    {
+        $allowed = $config['allowed_ollama_instance_ids'] ?? null;
+        if (! is_array($allowed) || $allowed === []) {
+            return [];
+        }
+
+        return array_values(array_diff(
+            array_map('strval', $this->listAllOllamaInstanceIds()),
+            array_map('strval', $allowed)
+        ));
+    }
+
     /**
      * Get healthy Ollama instances filtered by request config.
      */
@@ -5197,6 +5540,13 @@ PROMPT;
         }));
 
         return $this->sortOllamaInstancesByPreference($filtered, $preferred);
+    }
+
+    private function getOrderedTextOllamaInstances(?string $modelRole, array $config): array
+    {
+        $role = $modelRole ?: 'standard';
+
+        return $this->orderOllamaInstancesForRole($role, $config);
     }
 
     private function applyPreferredOllamaInstanceOrder(array $config, ?string $modelRole): array
@@ -5357,8 +5707,10 @@ PROMPT;
     {
         $providers = [];
 
-        // 1. Ollama instances (local, preferred) — reuse existing healthy instance logic
-        $ollamaInstances = $this->getHealthyOllamaInstances();
+        // 1. Ollama instances (local, preferred) — use role-aware pool ordering
+        // so table-owned embedding/health bias can keep otherwise idle local
+        // hardware busy without changing global provider priority.
+        $ollamaInstances = $this->orderOllamaInstancesForRole('embedding');
         foreach ($ollamaInstances as $instance) {
             $instance['instance_type'] = 'ollama';
             $providers[] = $instance;
@@ -6477,7 +6829,7 @@ PROMPT;
             // suppressAlert=true because extractContent has OCR fallback
             $prompt = 'Extract ALL text from this image. If it is a document, transcribe the complete text content. If it is a photo, describe what you see in detail including any visible text.';
 
-            $result = $this->processImage($imageContent, $prompt, ['suppressAlert' => true]);
+            $result = $this->processImage($imageContent, $prompt, ['suppressAlert' => true] + $options);
 
             return [
                 'success' => $result['success'],
@@ -6917,7 +7269,7 @@ PROMPT;
                  VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, NOW())',
                 [
                     $initial['prompt_hash'] ?? '',
-                    self::$agentModelRole ? (self::$agentModelRole.'_agent') : 'direct',
+                    $config['caller'] ?? (self::$agentModelRole ? (self::$agentModelRole.'_agent') : 'direct'),
                     $initial['provider'] ?? 'ollama',
                     $initial['model'] ?? null,
                     $initial['reason'] ?? null,

@@ -81,7 +81,9 @@ class GenealogyMediaIntakeReportService
     public function compactPayload(array $payload): array
     {
         unset($payload['root'], $payload['media_by_type'], $payload['samples']);
+        unset($payload['tree_id']);
         $payload['compact'] = true;
+        $payload['tree_filter_applied'] = true;
         $payload['posture'] = $this->posture(pathsIncluded: false);
         $payload['pipeline_plan'] = array_map(
             static fn (array $step): array => [

@@ -3,6 +3,8 @@
 namespace App\Console\Commands;
 
 use App\Controllers\NotificationController;
+use App\Services\AgentProceduralMemoryService;
+use App\Services\ErrorTrackingService;
 use App\Services\OfflineAuditService;
 use App\Services\OfflinePolicyService;
 use App\Services\OllamaModelRegistryService;
@@ -255,27 +257,50 @@ class MorningDigestCommand extends Command
         $date = now()->format('l M d g:i A');
         $lines = [];
 
-        // System
+        // System signal: routine green rows stay out of the report.
         $load = sys_getloadavg();
         $mem = $this->getMemory();
         $rootPct = $this->diskPct('/');
 
-        $lines[] = '<b>SYSTEM</b>';
-        $lines[] = "  Load Average     {$this->colorVal($load[0], $load[0] < 8, $load[0] < 16)}  (4 cores)";
-        $lines[] = "  Memory           {$mem['used_gb']} / {$mem['total_gb']} GB";
-        $lines[] = "  Disk Root        {$this->colorPct($rootPct, true)}  (".$this->freeSpace('/').' free)';
+        $systemLines = [];
+        if ($load[0] >= 8) {
+            $systemLines[] = "  Load Average     {$this->colorVal($load[0], $load[0] < 8, $load[0] < 16)}  (4 cores)";
+        }
+        $memTotal = is_numeric($mem['total_gb']) ? (int) $mem['total_gb'] : 0;
+        $memUsed = is_numeric($mem['used_gb']) ? (int) $mem['used_gb'] : 0;
+        $memPct = $memTotal > 0 ? (int) round(($memUsed / $memTotal) * 100) : 0;
+        if ($memPct >= 80) {
+            $memColor = $memPct >= 90 ? self::RED : self::YELLOW;
+            $systemLines[] = "  Memory           {$memUsed} / {$memTotal} GB  ".$this->c($memColor, "{$memPct}%");
+        }
+        if ($rootPct >= 70) {
+            $systemLines[] = "  Disk Root        {$this->colorPct($rootPct, true)}  (".$this->freeSpace('/').' free)';
+        }
         if (! $smoke) {
             $storageRoot = $this->getStorageRoot();
-            $storagePct = $this->diskPct($storageRoot);
-            $lines[] = "  Disk Storage     {$this->colorPct($storagePct, true)}  (".$this->freeSpace($storageRoot).' free)';
-            if ($storagePct > 90) {
-                $this->issues[] = "Storage disk at {$storagePct}%";
+            $storageUsage = $this->diskUsage($storageRoot);
+            if ($storageUsage === null) {
+                $systemLines[] = '  Disk Storage     '.$this->c(self::YELLOW, 'unavailable').'  (path not mounted)';
+            } else {
+                $storagePct = $storageUsage['pct'];
+                if ($storagePct >= 70) {
+                    $systemLines[] = "  Disk Storage     {$this->colorPct($storagePct, true)}  ({$storageUsage['free']} free)";
+                }
+                if ($storagePct > 90) {
+                    $this->issues[] = "Storage disk at {$storagePct}%";
+                }
             }
         }
-        $lines[] = '  Uptime           '.$this->getUptime();
 
         if ($rootPct > 90) {
             $this->issues[] = "Root disk at {$rootPct}%";
+        }
+
+        if ($systemLines !== []) {
+            $lines[] = '<b>SYSTEM</b>';
+            foreach ($systemLines as $line) {
+                $lines[] = $line;
+            }
         }
 
         // Backups and filesystem-backed storage checks are skipped in smoke mode.
@@ -286,28 +311,44 @@ class MorningDigestCommand extends Command
             $lines[] = "  MySQL            {$this->c($backup['mysql_color'], $backup['mysql_size'])}   {$backup['mysql_date']}  {$backup['mysql_label']}";
             $lines[] = "  PostgreSQL       {$this->c($backup['pg_color'], $backup['pg_size'])}   {$backup['pg_date']}  {$backup['pg_label']}";
             if ($backup['running']) {
-                $lines[] = '  '.$this->c(self::YELLOW, $backup['detail']);
+                $lines[] = '  Status           '.$this->c(self::YELLOW, $backup['detail']);
             } elseif ($backup['healthy']) {
-                $lines[] = '  '.$this->c(self::GREEN, 'Good');
+                $lines[] = '  Status           '.$this->c(self::GREEN, 'Good');
             } else {
-                $lines[] = '  '.$this->c(self::RED, $backup['detail']);
+                $lines[] = '  Status           '.$this->c(self::RED, $backup['detail']);
                 $this->issues[] = "Backup: {$backup['detail']}";
             }
         }
 
-        // Services
+        // Services: show only degraded/unavailable checks.
         $services = $this->getServiceStatus();
-        $lines[] = '';
-        $lines[] = '<b>SERVICES</b>';
-        $lines[] = '  Redis            '.$this->statusColor($services['redis'] !== null, $services['redis'] ?? 'DOWN');
-        $lines[] = '  Horizon          '.$this->statusColor($services['horizon'] !== null && $services['horizon'] > 0, $services['horizon'] !== null ? "{$services['horizon']} workers" : 'DOWN');
-        $lines[] = '  Ollama Primary   '.$this->statusColor($services['ollama_primary'] !== false, $services['ollama_primary'] ?: 'DOWN');
-        $lines[] = '  Ollama Secondary '.$this->statusColor($services['ollama_secondary'] !== false, $services['ollama_secondary'] ?: 'DOWN');
+        $serviceLines = [];
+        if ($services['redis'] === null) {
+            $serviceLines[] = '  Redis            '.$this->statusColor(false, 'DOWN');
+            $this->issues[] = 'Redis unavailable';
+        }
+        if ($services['horizon'] === null || $services['horizon'] <= 0) {
+            $serviceLines[] = '  Horizon          '.$this->statusColor(false, $services['horizon'] !== null ? "{$services['horizon']} workers" : 'DOWN');
+            $this->issues[] = 'Horizon has no active workers';
+        }
+        if ($services['ollama_primary'] === false) {
+            $serviceLines[] = '  Ollama Primary   '.$this->statusColor(false, 'DOWN');
+        }
+        if ($services['ollama_secondary'] === false) {
+            $serviceLines[] = '  Ollama Secondary '.$this->statusColor(false, 'DOWN');
+        }
 
         // GPU
         $gpu = $this->getGpuStatus();
-        if ($gpu) {
-            $lines[] = "  GPU              {$gpu}";
+        if ($gpu && str_contains(strip_tags($gpu), 'unavailable')) {
+            $serviceLines[] = "  GPU              {$gpu}";
+        }
+        if ($serviceLines !== []) {
+            $lines[] = '';
+            $lines[] = '<b>SERVICES</b>';
+            foreach ($serviceLines as $line) {
+                $lines[] = $line;
+            }
         }
 
         // Routing (Row 4 — visibility into profile + offline kill switch +
@@ -340,11 +381,11 @@ class MorningDigestCommand extends Command
             }
         }
 
-        // LLM Providers
+        // LLM usage is a daily reference, not a cumulative provider counter.
         $llm = $this->getLLMUsageExpanded($hours);
         if (! empty($llm)) {
             $lines[] = '';
-            $lines[] = '<b>LLM PROVIDERS (last 24h)</b>';
+            $lines[] = '<b>LLM USAGE ('.$hours.'h)</b>';
             foreach ($llm as $l) {
                 $lines[] = $l;
             }
@@ -366,24 +407,35 @@ class MorningDigestCommand extends Command
     {
         $lines = [];
 
-        // Jobs summary
         $failedJobs = $this->getFailedJobs($hours);
         $stalledJobs = $this->getStalledJobs();
         $runningCnt = $this->getRunningJobCount();
-        $successCnt = $this->getSuccessJobCount($hours);
-
-        $lines[] = '<b>SCHEDULED JOBS</b>';
-        $lines[] = "  Running Now      {$runningCnt}";
-        $lines[] = '  Succeeded (24h)  '.$this->c(self::GREEN, (string) $successCnt);
         $failCnt = count($failedJobs);
-        $lines[] = '  Failed Now       '.($failCnt > 0 ? $this->c(self::RED, (string) $failCnt) : $this->c(self::GREEN, '0'));
         $stallCnt = count($stalledJobs);
-        $lines[] = '  Stalled Now      '.($stallCnt > 0 ? $this->c(self::RED, (string) $stallCnt) : '0');
-
-        // Trailing failure hotspots
         $jobFailRates = $this->getJobFailureRates();
+
+        $jobLines = [];
+        if ($runningCnt > 0) {
+            $jobLines[] = '  Running Now      '.$this->c(self::YELLOW, (string) $runningCnt);
+        }
+        if ($failCnt > 0) {
+            $jobLines[] = '  Failed Now       '.$this->c(self::RED, (string) $failCnt);
+        }
+        if ($stallCnt > 0) {
+            $jobLines[] = '  Stalled Now      '.$this->c(self::RED, (string) $stallCnt);
+        }
+
+        if ($jobLines !== [] || ! empty($jobFailRates)) {
+            $lines[] = '<b>SCHEDULED JOBS</b>';
+            foreach ($jobLines as $line) {
+                $lines[] = $line;
+            }
+        }
+
         if (! empty($jobFailRates)) {
-            $lines[] = '';
+            if ($jobLines !== []) {
+                $lines[] = '';
+            }
             $lines[] = '<b>24H FAILURE HOTSPOTS (>25%)</b>';
             foreach ($jobFailRates as $jf) {
                 $color = $jf->fail_pct >= 75 ? self::RED : self::YELLOW;
@@ -398,22 +450,15 @@ class MorningDigestCommand extends Command
             $this->issues[] = 'Job stalled: '.$this->formatJobIssueLabel($j)." ({$j->running_min}m)";
         }
 
-        // Agent productivity
         $agents = $this->getAgentStats($hours);
         $agentProd = $this->getAgentProductivity($hours);
-
-        $lines[] = '';
-        $lines[] = '<b>AGENT PRODUCTIVITY</b>';
-        $lines[] = "  Sessions         {$agents['completed']} completed";
-        $errLine = $agents['errors'] > 0 ? $this->c(self::RED, "{$agents['errors']} errors") : $this->c(self::GREEN, '0 errors');
-        $lines[] = "  Errors           {$errLine}";
-        $lines[] = '  Tokens Used      '.$this->shortNum(max(0, $agents['tokens']));
+        $agentLines = [];
 
         if ($agents['errors'] > 0) {
+            $agentLines[] = '  Errors           '.$this->c(self::RED, "{$agents['errors']} errors");
             $this->issues[] = "{$agents['errors']} agent errors";
         }
 
-        // Zero-yield and queue depth
         $zeroYield = $this->identifyZeroYieldAgents($agentProd['agents']);
         $highQueue = [];
         foreach ($agentProd['agents'] as $a) {
@@ -421,6 +466,17 @@ class MorningDigestCommand extends Command
                 $highQueue[] = "    {$a['agent_id']}: {$a['pending_queue']} pending";
             }
         }
+
+        if ($agentLines !== [] || ! empty($zeroYield) || ! empty($highQueue)) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            $lines[] = '<b>AGENT PRODUCTIVITY</b>';
+            foreach ($agentLines as $line) {
+                $lines[] = $line;
+            }
+        }
+
         if (! empty($zeroYield)) {
             $lines[] = '';
             $lines[] = '  '.$this->c(self::YELLOW, 'Zero-Yield Completed Agents');
@@ -437,8 +493,18 @@ class MorningDigestCommand extends Command
             }
         }
 
-        foreach ($this->getReviewerFeedbackLines() as $line) {
-            $lines[] = $line;
+        $reviewerFeedback = $this->getReviewerFeedbackLines();
+        if ($reviewerFeedback !== []) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            foreach ($reviewerFeedback as $line) {
+                $lines[] = $line;
+            }
+        }
+
+        if ($lines === []) {
+            $lines[] = $this->c(self::GRAY, 'No scheduled job or agent backlogs');
         }
 
         return [
@@ -465,7 +531,7 @@ class MorningDigestCommand extends Command
     private function getReviewerFeedbackLines(): array
     {
         try {
-            $rollup = app(\App\Services\AgentProceduralMemoryService::class)
+            $rollup = app(AgentProceduralMemoryService::class)
                 ->getReviewerFeedbackForAllAgents(30);
         } catch (\Throwable $e) {
             Log::debug('ops:daily-report: reviewer feedback rollup failed', ['error' => $e->getMessage()]);
@@ -516,15 +582,8 @@ class MorningDigestCommand extends Command
     private function buildMsg3FilePipelines(): array
     {
         $pipeline = $this->getPipelineBacklog();
-        $totalFiles = $this->safeQuery(fn ($s) => (int) (DB::selectOne($s)?->c ?? 0),
-            "SELECT COUNT(*) as c FROM file_registry WHERE status = 'active'");
-
+        $throughput = $this->getPipelineThroughput(24);
         $lines = [];
-        $lines[] = '<b>ACTIVE FILES: '.number_format($totalFiles).'</b>';
-
-        // Enrichment progress with color coding
-        $lines[] = '';
-        $lines[] = '<b>ENRICHMENT PROGRESS</b>';
 
         $enrichItems = [
             'Thumbnails' => $pipeline['thumbs'],
@@ -534,32 +593,49 @@ class MorningDigestCommand extends Command
             'EXIF Metadata' => $pipeline['exif'],
         ];
 
+        $enrichLines = [];
         foreach ($enrichItems as $label => $data) {
-            $pct = $data['total'] > 0 ? round(($data['total'] - $data['pending']) / $data['total'] * 100, 1) : 100;
-            $done = $data['total'] - $data['pending'];
+            $pending = (int) ($data['pending'] ?? 0);
+            $total = (int) ($data['total'] ?? 0);
+            if ($pending <= 0) {
+                continue;
+            }
+            $pct = $total > 0 ? round(($total - $pending) / $total * 100, 1) : 0;
+            $done = max(0, $total - $pending);
             $color = $pct >= 90 ? self::GREEN : ($pct >= 50 ? self::YELLOW : self::RED);
-            $lines[] = '  '.str_pad($label, 22).$this->c($color, number_format($done).' done').'  '.number_format($data['pending']).' left  '.$this->c($color, "{$pct}%");
+            $enrichLines[] = '  '.str_pad($label, 22).$this->c($color, number_format($pending).' left').'  '.number_format($done).' done  '.$this->c($color, "{$pct}%");
+        }
+        if ($enrichLines !== []) {
+            $lines[] = '<b>ENRICHMENT BACKLOGS</b>';
+            foreach ($enrichLines as $line) {
+                $lines[] = $line;
+            }
         }
 
-        // EXIF writeback
-        $lines[] = '';
-        $lines[] = '<b>EXIF WRITEBACK</b>';
-        $wbPending = $pipeline['writeback']['pending'];
-        $wbColor = $wbPending > 50000 ? self::RED : ($wbPending > 10000 ? self::YELLOW : self::GREEN);
-        $lines[] = '  Date Writeback     '.$this->c($wbColor, number_format($wbPending).' pending');
+        $wbPending = (int) ($pipeline['writeback']['pending'] ?? 0);
+        if ($wbPending > 0) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            $wbColor = $wbPending > 50000 ? self::RED : ($wbPending > 10000 ? self::YELLOW : self::GREEN);
+            $lines[] = '<b>EXIF WRITEBACK</b>';
+            $lines[] = '  Date Writeback     '.$this->c($wbColor, number_format($wbPending).' pending');
+        }
 
-        // File RAG index
         $ragData = $pipeline['rag'];
-        $ragPct = $ragData['total'] > 0 ? round(($ragData['total'] - $ragData['pending']) / $ragData['total'] * 100, 1) : 0;
-        $ragColor = $ragPct >= 90 ? self::GREEN : ($ragPct >= 50 ? self::YELLOW : self::RED);
-        $lines[] = '';
-        $lines[] = '<b>FILE RAG INDEX</b>';
-        $lines[] = '  Indexed            '.$this->c($ragColor, number_format($ragData['total'] - $ragData['pending'])).' of '.number_format($ragData['total']).'  '.$this->c($ragColor, "{$ragPct}%");
-        $lines[] = '  Pending            '.number_format($ragData['pending']);
+        $ragPending = (int) ($ragData['pending'] ?? 0);
+        $ragTotal = (int) ($ragData['total'] ?? 0);
+        $ragPct = $ragTotal > 0 ? round(($ragTotal - $ragPending) / $ragTotal * 100, 1) : 100;
+        if ($ragPending > 0 || $ragPct < 100) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            $ragColor = $ragPct >= 90 ? self::GREEN : ($ragPct >= 50 ? self::YELLOW : self::RED);
+            $lines[] = '<b>FILE RAG INDEX</b>';
+            $lines[] = '  Pending            '.$this->c($ragColor, number_format($ragPending)).' of '.number_format($ragTotal).'  '.$this->c($ragColor, "{$ragPct}%");
+        }
 
-        // Pipeline velocity
-        $throughput = $this->getPipelineThroughput(24);
-        if (array_sum($throughput) > 0) {
+        if ($lines !== [] && array_sum($throughput) > 0) {
             $lines[] = '';
             $lines[] = '<b>VELOCITY (last 24h)</b>';
             if ($throughput['ai'] > 0) {
@@ -573,12 +649,15 @@ class MorningDigestCommand extends Command
             }
         }
 
-        // Stall detection
         foreach (['ai_img' => 'AI Tagging', 'faces' => 'Face Detection', 'phash' => 'Perceptual Hash'] as $key => $label) {
             $p = $pipeline[$key];
             if ($p['pending'] > 100 && $throughput[$this->throughputKey($key)] === 0) {
                 $this->issues[] = "Pipeline stalled: {$label} (".number_format($p['pending']).' pending, 0 processed)';
             }
+        }
+
+        if ($lines === []) {
+            $lines[] = $this->c(self::GRAY, 'No file pipeline backlogs');
         }
 
         return [
@@ -595,105 +674,210 @@ class MorningDigestCommand extends Command
     {
         $lines = [];
         $ragBacklog = $this->getRagBacklogOverview();
-        $ragTotal = $ragBacklog['documents'];
+        $ragTotal = (int) ($ragBacklog['documents'] ?? 0);
+        $ragLines = [];
 
-        $lines[] = '<b>RAG DOCUMENTS: '.number_format($ragTotal).'</b>';
-
-        // RAPTOR
         $raptorPending = (int) ($ragBacklog['raptor']['pending'] ?? 0);
         $raptorThroughput = (int) ($ragBacklog['raptor']['throughput_per_day'] ?? 0);
         $raptorEtaDays = $ragBacklog['raptor']['eta_days'] ?? null;
-        $raptorColor = $raptorPending > 1000 ? self::RED : ($raptorPending > 100 ? self::YELLOW : self::GREEN);
-        $lines[] = '';
-        $lines[] = '<b>RAPTOR Summaries</b>';
-        $lines[] = '  Backlog            '.$this->c($raptorColor, number_format($raptorPending).' pending');
-        if ($raptorPending > 0 && $raptorThroughput > 0 && $raptorEtaDays !== null) {
-            $lines[] = '  Burn-down          +'.number_format($raptorThroughput).'/day, ETA '.$this->formatEtaDays((float) $raptorEtaDays);
+        if ($raptorPending > 0) {
+            $raptorColor = $raptorPending > 1000 ? self::RED : ($raptorPending > 100 ? self::YELLOW : self::GREEN);
+            $ragLines[] = '<b>RAPTOR Summaries</b>';
+            $ragLines[] = '  Backlog            '.$this->c($raptorColor, number_format($raptorPending).' pending');
+            if ($raptorThroughput > 0 && $raptorEtaDays !== null) {
+                $ragLines[] = '  Burn-down          +'.number_format($raptorThroughput).'/day, ETA '.$this->formatEtaDays((float) $raptorEtaDays);
+            }
         }
 
-        // Sentence embeddings
         $sentencePending = (int) ($ragBacklog['sentence']['pending'] ?? 0);
         $sentenceThroughput = (int) ($ragBacklog['sentence']['throughput_per_day'] ?? 0);
         $sentenceEtaDays = $ragBacklog['sentence']['eta_days'] ?? null;
-        $seColor = $sentencePending > 5000 ? self::RED : ($sentencePending > 1000 ? self::YELLOW : self::GREEN);
-        $lines[] = '';
-        $lines[] = '<b>Sentence Embeddings</b>';
-        $lines[] = '  Backlog            '.$this->c($seColor, number_format($sentencePending).' pending');
-        if ($sentencePending > 0 && $sentenceThroughput > 0 && $sentenceEtaDays !== null) {
-            $lines[] = '  Burn-down          +'.number_format($sentenceThroughput).'/day, ETA '.$this->formatEtaDays((float) $sentenceEtaDays);
-        }
-
-        // Knowledge graph
-        $kgPending = (int) ($ragBacklog['kg']['pending'] ?? 0);
-        $kgFresh = (int) ($ragBacklog['kg']['fresh'] ?? 0);
-        $kgStale = (int) ($ragBacklog['kg']['stale'] ?? 0);
-        $kgThroughput = (int) ($ragBacklog['kg']['throughput_per_day'] ?? 0);
-        $kgEtaDays = $ragBacklog['kg']['eta_days'] ?? null;
-        $kgColor = $kgPending > 10000 ? self::RED : ($kgPending > 2000 ? self::YELLOW : self::GREEN);
-        $lines[] = '';
-        $lines[] = '<b>Knowledge Graph</b>';
-        $lines[] = '  Backlog            '.$this->c(
-            $kgColor,
-            number_format($kgPending).' pending ('.number_format($kgFresh).' fresh, '.number_format($kgStale).' stale)'
-        );
-        $lines[] = '  Entities           '.number_format((int) ($ragBacklog['kg']['entities'] ?? 0));
-        if ($kgPending > 0 && $kgThroughput > 0 && $kgEtaDays !== null) {
-            $lines[] = '  Burn-down          +'.number_format($kgThroughput).'/day, ETA '.$this->formatEtaDays((float) $kgEtaDays);
-        }
-
-        // RLM
-        $rlm = $this->getRLMStats($hours);
-        if ($rlm['total_calls'] > 0) {
-            $lines[] = '';
-            $lines[] = '<b>RLM RECURSION (last 24h)</b>';
-            $lines[] = '  Calls              '.number_format($rlm['total_calls']);
-            $lines[] = '  Tokens             '.$this->shortNum(max(0, $rlm['total_tokens']));
-            $lines[] = "  Local Processing   {$rlm['local_pct']}%";
-            $lines[] = "  Move-On Nudges     {$rlm['move_ons']}";
-            if ($rlm['disabled_services'] > 0) {
-                $lines[] = '  '.$this->c(self::YELLOW, "Disabled: {$rlm['disabled_names']}");
-                $this->issues[] = "RLM disabled for: {$rlm['disabled_names']}";
+        if ($sentencePending > 0) {
+            if ($ragLines !== []) {
+                $ragLines[] = '';
+            }
+            $seColor = $sentencePending > 5000 ? self::RED : ($sentencePending > 1000 ? self::YELLOW : self::GREEN);
+            $ragLines[] = '<b>Sentence Embeddings</b>';
+            $ragLines[] = '  Backlog            '.$this->c($seColor, number_format($sentencePending).' pending');
+            if ($sentenceThroughput > 0 && $sentenceEtaDays !== null) {
+                $ragLines[] = '  Burn-down          +'.number_format($sentenceThroughput).'/day, ETA '.$this->formatEtaDays((float) $sentenceEtaDays);
             }
         }
-        // Master switch
+
+        $kgFresh = (int) ($ragBacklog['kg']['fresh'] ?? 0);
+        $kgStale = (int) ($ragBacklog['kg']['stale'] ?? 0);
+        $kgPending = (int) ($ragBacklog['kg']['pending'] ?? ($kgFresh + $kgStale));
+        $kgThroughput = (int) ($ragBacklog['kg']['throughput_per_day'] ?? 0);
+        $kgEtaDays = $ragBacklog['kg']['eta_days'] ?? null;
+        if ($kgPending > 0) {
+            if ($ragLines !== []) {
+                $ragLines[] = '';
+            }
+            $kgColor = $kgPending > 10000 ? self::RED : ($kgPending > 2000 ? self::YELLOW : self::GREEN);
+            $ragLines[] = '<b>Knowledge Graph</b>';
+            $ragLines[] = '  Backlog            '.$this->c(
+                $kgColor,
+                number_format($kgPending).' pending ('.number_format($kgFresh).' fresh, '.number_format($kgStale).' stale)'
+            );
+            $ragLines[] = '  Entities           '.number_format((int) ($ragBacklog['kg']['entities'] ?? 0));
+            if ($kgThroughput > 0 && $kgEtaDays !== null) {
+                $ragLines[] = '  Burn-down          +'.number_format($kgThroughput).'/day, ETA '.$this->formatEtaDays((float) $kgEtaDays);
+            }
+        }
+
+        if ($ragLines !== []) {
+            $lines[] = '<b>RAG DOCUMENTS: '.number_format($ragTotal).'</b>';
+            foreach ($ragLines as $line) {
+                $lines[] = $line;
+            }
+        }
+
+        $rlm = $this->getRLMStats($hours);
+        $rlmLines = [];
+        if ($rlm['disabled_services'] > 0) {
+            $rlmLines[] = '  '.$this->c(self::YELLOW, "Disabled: {$rlm['disabled_names']}");
+            $this->issues[] = "RLM disabled for: {$rlm['disabled_names']}";
+        }
         try {
             $masterEnabled = DB::selectOne(
                 "SELECT config_value FROM system_configs WHERE section = 'recursion' AND config_key = 'master_enabled' LIMIT 1"
             );
             if ($masterEnabled && $masterEnabled->config_value === 'false') {
-                $lines[] = '  '.$this->c(self::RED, 'MASTER SWITCH OFF — all recursion bypassed');
+                $rlmLines[] = '  '.$this->c(self::RED, 'MASTER SWITCH OFF - all recursion bypassed');
                 $this->issues[] = 'RLM master switch OFF';
             }
         } catch (\Throwable) {
         }
-
-        // Genealogy
-        $genea = $this->getGenealogyDigest();
-        $lines[] = '';
-        $lines[] = '<b>GENEALOGY</b>';
-        $lines[] = '  Persons            '.number_format($genea['total_persons']);
-        $lines[] = '  Research Queue     '.($genea['pending_review'] > 10
-            ? $this->c(self::YELLOW, "{$genea['pending_review']} pending")
-            : "{$genea['pending_review']} pending");
-        $lines[] = "  Last Research      {$genea['last_run']}";
-        if ($genea['total_persons'] > 0) {
-            $covPct = round(100 - ($genea['never_searched'] / $genea['total_persons'] * 100));
-            $covColor = $covPct >= 80 ? self::GREEN : ($covPct >= 50 ? self::YELLOW : self::RED);
-            $lines[] = '  Coverage           '.$this->c($covColor, "{$covPct}%")."  ({$genea['never_searched']} never searched)";
+        if ($rlmLines !== []) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            $lines[] = '<b>RLM RECURSION</b>';
+            foreach ($rlmLines as $line) {
+                $lines[] = $line;
+            }
         }
 
-        // RSS
+        $genea = $this->getGenealogyDigest($hours);
+        $geneaLines = $this->buildGenealogyDigestLines($genea, $hours);
+        if ($geneaLines !== []) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            foreach ($geneaLines as $line) {
+                $lines[] = $line;
+            }
+        }
+
         $rss = $this->getRssHealth();
-        $lines[] = '';
-        $rssColor = $rss['failing'] > 0 ? self::YELLOW : self::GREEN;
-        $lines[] = '<b>RSS FEEDS</b>';
-        $lines[] = '  '.$this->c($rssColor, "{$rss['healthy']}/{$rss['total']} healthy").($rss['failing'] > 0 ? '  '.$this->c(self::RED, "{$rss['failing']} failing") : '');
+        if ($rss['failing'] > 0) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            $lines[] = '<b>RSS FEEDS</b>';
+            $lines[] = '  '.$this->c(self::YELLOW, "{$rss['healthy']}/{$rss['total']} healthy").'  '.$this->c(self::RED, "{$rss['failing']} failing");
+            $this->issues[] = "{$rss['failing']} RSS feed(s) failing";
+        }
+
+        if ($lines === []) {
+            $lines[] = $this->c(self::GRAY, 'No RAG, genealogy, or RSS backlogs');
+        }
 
         return [
             'title' => '🔍  PLOS Daily — RAG & Genealogy (4/5)',
             'body' => implode("\n", $lines),
             'emergency' => false,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $genea
+     * @return string[]
+     */
+    private function buildGenealogyDigestLines(array $genea, int $hours): array
+    {
+        $lines = [];
+        $queueTotal = (int) ($genea['queue_total'] ?? 0);
+        $totalPersons = (int) ($genea['total_persons'] ?? 0);
+
+        if ($queueTotal <= 0 && $totalPersons <= 0 && (int) ($genea['pending_review'] ?? 0) <= 0) {
+            return [];
+        }
+
+        $lines[] = '<b>GENEALOGY</b>';
+        if ($totalPersons > 0) {
+            $lines[] = '  Persons            '.number_format($totalPersons);
+        }
+
+        $lastRun = (string) ($genea['last_run'] ?? 'error');
+        if ($lastRun !== 'never' && ! $this->isBadDigestRun($lastRun)) {
+            $lines[] = "  Last Research      {$lastRun}";
+        } elseif ($this->isBadDigestRun($lastRun)) {
+            $lines[] = "  Last Research      {$lastRun}";
+            $this->issues[] = "Genealogy last research {$lastRun}";
+        }
+
+        $supervisorRun = (string) ($genea['supervisor_last_run'] ?? 'never');
+        if ($supervisorRun !== 'never') {
+            $lines[] = "  Supervisor         {$supervisorRun}";
+            if ($this->isBadDigestRun($supervisorRun)) {
+                $this->issues[] = "Genealogy supervisor {$supervisorRun}";
+            }
+        }
+
+        if ($queueTotal > 0) {
+            $pending = (int) ($genea['queue_pending'] ?? 0);
+            $inProgress = (int) ($genea['queue_in_progress'] ?? 0);
+            $completed = (int) ($genea['queue_completed'] ?? 0);
+            $skipped = (int) ($genea['queue_skipped'] ?? 0);
+            $pendingLabel = number_format($pending).' pending';
+            if ($pending > 25) {
+                $pendingLabel = $this->c(self::YELLOW, $pendingLabel);
+            }
+            $lines[] = '  FT4 Queue          '.$pendingLabel.', '.number_format($inProgress).' running, '.number_format($completed).' done, '.number_format($skipped).' skipped';
+
+            $completedWindow = (int) ($genea['queue_completed_window'] ?? 0);
+            $findingsWindow = (int) ($genea['queue_findings_window'] ?? 0);
+            $reviewItemsWindow = (int) ($genea['queue_review_items_window'] ?? 0);
+            if ($completedWindow > 0 || $findingsWindow > 0 || $reviewItemsWindow > 0) {
+                $lines[] = '  FT4 Work ('.$hours.'h)   '.number_format($completedWindow).' done, '.number_format($findingsWindow).' findings, '.number_format($reviewItemsWindow).' reviews';
+            }
+        }
+
+        if ($totalPersons > 0) {
+            $neverSearched = (int) ($genea['never_searched'] ?? 0);
+            $searched24h = (int) ($genea['searched_24h'] ?? 0);
+            $covPct = round(100 - ($neverSearched / $totalPersons * 100));
+            $covColor = $covPct >= 80 ? self::GREEN : ($covPct >= 50 ? self::YELLOW : self::RED);
+            $lines[] = '  FT4 Coverage       '.$this->c($covColor, "{$covPct}%").'  '.number_format($searched24h).' searched/24h, '.number_format($neverSearched).' never';
+        }
+
+        $mediaNeeds = (int) ($genea['media_rag_pending_stale_files'] ?? 0);
+        $mediaIndexed = (int) ($genea['media_rag_indexed_window'] ?? 0);
+        if ($mediaNeeds > 0 || $mediaIndexed > 0) {
+            $mediaColor = $mediaNeeds > 5000 ? self::RED : ($mediaNeeds > 1000 ? self::YELLOW : self::GREEN);
+            $lines[] = '  FT4 Media RAG      '.$this->c($mediaColor, number_format($mediaNeeds).' pending/stale').', +'.number_format($mediaIndexed).'/'.$hours.'h';
+        }
+
+        $pendingReview = (int) ($genea['pending_review'] ?? 0);
+        if ($pendingReview > 0) {
+            $reviewLabel = $pendingReview >= 10
+                ? $this->c(self::YELLOW, number_format($pendingReview).' pending')
+                : number_format($pendingReview).' pending';
+            $lines[] = '  Review Blockers    '.$reviewLabel.'  findings '.number_format((int) ($genea['review_genealogy_finding'] ?? 0)).
+                ', packets '.number_format((int) ($genea['review_genealogy_review_packet'] ?? 0)).
+                ', capture '.number_format((int) ($genea['review_genealogy_evidence_asset_capture'] ?? 0));
+        }
+
+        return $lines;
+    }
+
+    private function isBadDigestRun(string $run): bool
+    {
+        return $run === 'never'
+            || str_contains($run, 'FAILED')
+            || str_contains($run, 'TIMEOUT')
+            || str_contains($run, 'ERROR');
     }
 
     /**
@@ -709,7 +893,7 @@ class MorningDigestCommand extends Command
         $lines[] = '<b>REVIEW QUEUE: '.($totalPending > 0 ? $this->c(self::YELLOW, "{$totalPending} pending") : $this->c(self::GREEN, '0 pending')).'</b>';
         foreach ($review as $r) {
             if ($r->pending > 0) {
-                $lines[] = '  '.str_pad($r->label, 22).$r->pending;
+                $lines[] = sprintf('  %-28s%s', (string) $r->label, (string) $r->pending);
             }
         }
 
@@ -728,7 +912,7 @@ class MorningDigestCommand extends Command
 
         // System errors from DB
         try {
-            $topErrors = app(\App\Services\ErrorTrackingService::class)->getTopErrors(3, '24 hours');
+            $topErrors = app(ErrorTrackingService::class)->getTopErrors(3, '24 hours');
             if (! empty($topErrors)) {
                 $lines[] = '';
                 $lines[] = '<b>TOP SYSTEM ERRORS</b>';
@@ -774,18 +958,19 @@ class MorningDigestCommand extends Command
             }
         }
 
+        $followUps = $this->getTodoFollowUpLines();
+        if ($followUps !== []) {
+            $lines[] = '';
+            $lines[] = '<b>FOLLOW-UP LIST</b>';
+            foreach ($followUps as $line) {
+                $lines[] = $line;
+            }
+        }
+
         // ACTION ITEMS
         $lines[] = '';
-        if (! empty($this->issues)) {
-            $lines[] = $this->c(self::RED, '<b>ACTION ITEMS ('.count($this->issues).')</b>');
-            foreach (array_slice($this->issues, 0, 8) as $issue) {
-                $lines[] = ' → '.$this->c(self::RED, $issue);
-            }
-            if (count($this->issues) > 8) {
-                $lines[] = ' +'.(count($this->issues) - 8).' more';
-            }
-        } else {
-            $lines[] = $this->c(self::GREEN, '<b>ALL CLEAR — No action items</b>');
+        foreach ($this->buildActionFooterLines($totalPending) as $line) {
+            $lines[] = $line;
         }
 
         return [
@@ -793,6 +978,33 @@ class MorningDigestCommand extends Command
             'body' => implode("\n", $lines),
             'emergency' => true,
         ];
+    }
+
+    /**
+     * @return string[]
+     */
+    private function buildActionFooterLines(int $totalPending): array
+    {
+        if (! empty($this->issues)) {
+            $lines = [$this->c(self::RED, '<b>ACTION ITEMS ('.count($this->issues).')</b>')];
+            foreach (array_slice($this->issues, 0, 8) as $issue) {
+                $lines[] = ' → '.$this->c(self::RED, $issue);
+            }
+            if (count($this->issues) > 8) {
+                $lines[] = ' +'.(count($this->issues) - 8).' more';
+            }
+
+            return $lines;
+        }
+
+        if ($totalPending > 0) {
+            return [
+                $this->c(self::YELLOW, '<b>REVIEW WORK PENDING — No system action items</b>'),
+                ' → Open Review Hub when ready; pending review rows are not emergency alerts.',
+            ];
+        }
+
+        return [$this->c(self::GREEN, '<b>ALL CLEAR — No action items</b>')];
     }
 
     // =========================================================================
@@ -1088,6 +1300,64 @@ class MorningDigestCommand extends Command
         return $zeroYield;
     }
 
+    /**
+     * @return string[]
+     */
+    private function getTodoFollowUpLines(int $limit = 5): array
+    {
+        $path = base_path('docs/TODO.md');
+        if (! is_readable($path)) {
+            return [];
+        }
+
+        $items = [];
+        foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+            $trimmed = trim($line);
+            if (! str_starts_with($trimmed, '|') || str_contains($trimmed, '---')) {
+                continue;
+            }
+
+            $cols = array_map('trim', explode('|', trim($trimmed, '|')));
+            if ($cols === [] || in_array($cols[0], ['Pri', 'ID'], true)) {
+                continue;
+            }
+
+            if (count($cols) >= 6 && is_numeric($cols[0])) {
+                $id = $cols[1];
+                $status = $cols[2];
+                $next = $cols[4];
+            } elseif (count($cols) >= 4) {
+                $id = $cols[0];
+                $status = $cols[1];
+                $next = $cols[2];
+            } else {
+                continue;
+            }
+
+            $haystack = strtolower($id.' '.$status.' '.$next);
+            if (! str_contains($haystack, 'follow-up') && ! str_contains($haystack, 'maintenance')) {
+                continue;
+            }
+
+            $items[] = '  '.$id.' - '.$this->truncateDigestText($next, 118);
+            if (count($items) >= $limit) {
+                break;
+            }
+        }
+
+        return $items;
+    }
+
+    private function truncateDigestText(string $text, int $max): string
+    {
+        $clean = trim((string) preg_replace('/\s+/', ' ', strip_tags($text)));
+        if (mb_strlen($clean) <= $max) {
+            return $clean;
+        }
+
+        return rtrim(mb_substr($clean, 0, max(0, $max - 3)), " \t\n\r\0\x0B.").'...';
+    }
+
     private function getAlerts(int $hours): array
     {
         try {
@@ -1183,7 +1453,7 @@ class MorningDigestCommand extends Command
         return '~'.number_format($etaDays, 1).' days';
     }
 
-    private function getGenealogyDigest(): array
+    private function getGenealogyDigest(int $hours = 24): array
     {
         $defaults = [
             'last_run' => 'error', 'pending_review' => 0,
@@ -1191,46 +1461,175 @@ class MorningDigestCommand extends Command
             'enrich_pending' => 0, 'htr_pending' => 0,
             'total_persons' => 0, 'never_searched' => 0,
             'searched_24h' => 0, 'exhausted' => 0,
+            'supervisor_last_run' => 'never',
+            'queue_pending' => 0, 'queue_in_progress' => 0,
+            'queue_completed' => 0, 'queue_skipped' => 0,
+            'queue_failed' => 0, 'queue_total' => 0,
+            'queue_completed_window' => 0,
+            'queue_findings_window' => 0,
+            'queue_review_items_window' => 0,
+            'media_rag_pending_stale_files' => 0,
+            'media_rag_indexed_window' => 0,
+            'review_genealogy_finding' => 0,
+            'review_genealogy_review_packet' => 0,
+            'review_genealogy_evidence_asset_capture' => 0,
         ];
         try {
-            $lastSession = DB::selectOne("SELECT status, created_at FROM agent_sessions WHERE agent_name = 'genealogy-researcher' ORDER BY created_at DESC LIMIT 1");
+            $lastSession = $this->getLatestGenealogyResearchRun();
             $pendingReview = (int) (DB::selectOne("SELECT COUNT(*) as c FROM agent_review_queue WHERE review_type LIKE 'genealogy%' AND status = 'pending'")?->c ?? 0);
             try {
                 $pendingReview += (int) (DB::connection('pgsql_rag')->selectOne("SELECT COUNT(*) as c FROM research_facts f JOIN research_missions m ON m.id = f.mission_id WHERE f.review_status = 'pending' AND m.domain_category = 'genealogy'")?->c ?? 0);
             } catch (\Throwable) {
             }
 
-            if (! $lastSession) {
-                $lastRun = 'never';
-            } else {
-                $lastRunAt = now()->parse($lastSession->created_at);
-                $status = $lastSession->status === 'completed' ? 'OK' : strtoupper($lastSession->status);
-                $lastRun = $lastRunAt->format('M d g:iA').' '.$status;
-            }
+            $lastRun = $this->formatDigestRun($lastSession);
+            $supervisorRun = $this->formatDigestRun($this->getLatestScheduledRun('genealogy_supervisor'));
 
             $mediaStat = DB::selectOne('SELECT tree_id, COUNT(*) as total FROM genealogy_media GROUP BY tree_id ORDER BY total DESC LIMIT 1');
             $treeId = $mediaStat->tree_id ?? '?';
+            $treeParam = $treeId !== '?' ? (int) $treeId : 0;
 
             $coverage = DB::selectOne(
                 'SELECT COUNT(*) AS total_persons, SUM(CASE WHEN last_searched_at IS NULL THEN 1 ELSE 0 END) AS never_searched,
                         SUM(CASE WHEN last_searched_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END) AS searched_24h,
                         SUM(CASE WHEN research_exhaustion_score >= 0.90 THEN 1 ELSE 0 END) AS exhausted
                  FROM genealogy_person_coverage WHERE tree_id = ?',
-                [$treeId !== '?' ? (int) $treeId : 0]
+                [$treeParam]
             );
 
-            return [
+            $queue = DB::selectOne(
+                "SELECT
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                    SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                    SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped,
+                    SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN status = 'completed' AND completed_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS completed_window,
+                    SUM(CASE WHEN status = 'completed' AND completed_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN findings_count ELSE 0 END) AS findings_window,
+                    SUM(CASE WHEN status = 'completed' AND completed_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN review_items_count ELSE 0 END) AS review_items_window
+                 FROM genealogy_research_queue
+                 WHERE tree_id = ?",
+                [$hours, $hours, $hours, $treeParam]
+            );
+
+            $mediaRag = DB::selectOne(
+                "SELECT
+                    SUM(CASE WHEN (
+                        rag_indexed_at IS NULL
+                        OR (
+                            rag_indexed_at IS NOT NULL
+                            AND updated_at > rag_indexed_at
+                            AND (
+                                NULLIF(TRIM(COALESCE(title, '')), '') IS NOT NULL
+                                OR NULLIF(TRIM(COALESCE(description, '')), '') IS NOT NULL
+                                OR NULLIF(TRIM(COALESCE(ai_description, '')), '') IS NOT NULL
+                                OR NULLIF(TRIM(COALESCE(transcription_text, '')), '') IS NOT NULL
+                                OR NULLIF(TRIM(COALESCE(transcription, '')), '') IS NOT NULL
+                            )
+                        )
+                    ) AND file_exists = 1 THEN 1 ELSE 0 END) AS pending_stale_files,
+                    SUM(CASE WHEN rag_indexed_at >= DATE_SUB(NOW(), INTERVAL ? HOUR) THEN 1 ELSE 0 END) AS indexed_window
+                 FROM genealogy_media
+                 WHERE tree_id = ?",
+                [$hours, $treeParam]
+            );
+
+            $reviewRows = DB::select(
+                "SELECT review_type, COUNT(*) AS c
+                 FROM agent_review_queue
+                 WHERE status = 'pending'
+                   AND review_type IN (
+                     'genealogy_finding',
+                     'genealogy_review_packet',
+                     'genealogy_evidence_asset_capture'
+                   )
+                   AND (expires_at IS NULL OR expires_at > NOW())
+                 GROUP BY review_type"
+            );
+
+            $reviewCounts = [
+                'genealogy_finding' => 0,
+                'genealogy_review_packet' => 0,
+                'genealogy_evidence_asset_capture' => 0,
+            ];
+            foreach ($reviewRows as $row) {
+                $type = (string) ($row->review_type ?? '');
+                if (array_key_exists($type, $reviewCounts)) {
+                    $reviewCounts[$type] = (int) ($row->c ?? 0);
+                }
+            }
+
+            return array_merge($defaults, [
                 'last_run' => $lastRun, 'pending_review' => $pendingReview,
+                'supervisor_last_run' => $supervisorRun,
                 'tree_id' => $treeId, 'media_total' => (int) ($mediaStat->total ?? 0),
                 'face_link' => '—', 'enrich_pending' => 0, 'htr_pending' => 0,
                 'total_persons' => (int) ($coverage->total_persons ?? 0),
                 'never_searched' => (int) ($coverage->never_searched ?? 0),
                 'searched_24h' => (int) ($coverage->searched_24h ?? 0),
                 'exhausted' => (int) ($coverage->exhausted ?? 0),
-            ];
+                'queue_pending' => (int) ($queue->pending ?? 0),
+                'queue_in_progress' => (int) ($queue->in_progress ?? 0),
+                'queue_completed' => (int) ($queue->completed ?? 0),
+                'queue_skipped' => (int) ($queue->skipped ?? 0),
+                'queue_failed' => (int) ($queue->failed ?? 0),
+                'queue_total' => (int) ($queue->total ?? 0),
+                'queue_completed_window' => (int) ($queue->completed_window ?? 0),
+                'queue_findings_window' => (int) ($queue->findings_window ?? 0),
+                'queue_review_items_window' => (int) ($queue->review_items_window ?? 0),
+                'media_rag_pending_stale_files' => (int) ($mediaRag->pending_stale_files ?? 0),
+                'media_rag_indexed_window' => (int) ($mediaRag->indexed_window ?? 0),
+                'review_genealogy_finding' => $reviewCounts['genealogy_finding'],
+                'review_genealogy_review_packet' => $reviewCounts['genealogy_review_packet'],
+                'review_genealogy_evidence_asset_capture' => $reviewCounts['genealogy_evidence_asset_capture'],
+            ]);
         } catch (\Throwable) {
             return $defaults;
         }
+    }
+
+    private function formatDigestRun(?object $run): string
+    {
+        if (! $run) {
+            return 'never';
+        }
+
+        $runAt = now()->parse($run->created_at);
+        $status = in_array($run->status, ['completed', 'success'], true) ? 'OK' : strtoupper((string) $run->status);
+
+        return $runAt->format('M d g:iA').' '.$status;
+    }
+
+    private function getLatestScheduledRun(string $jobName): ?object
+    {
+        return DB::selectOne(
+            "SELECT r.status, r.started_at AS created_at
+             FROM scheduled_job_runs r
+             JOIN scheduled_jobs j ON j.id = r.scheduled_job_id
+             WHERE j.name = ?
+               AND r.status IN ('success', 'failed', 'timeout')
+             ORDER BY r.started_at DESC
+             LIMIT 1",
+            [$jobName]
+        );
+    }
+
+    private function getLatestGenealogyResearchRun(): ?object
+    {
+        $scheduled = $this->getLatestScheduledRun('genealogy_agent_research_queue');
+
+        if ($scheduled !== null) {
+            return $scheduled;
+        }
+
+        return DB::selectOne(
+            "SELECT status, created_at
+             FROM agent_sessions
+             WHERE agent_name = 'genealogy-researcher'
+             ORDER BY created_at DESC
+             LIMIT 1"
+        );
     }
 
     private function getRssHealth(): array
@@ -1270,38 +1669,32 @@ class MorningDigestCommand extends Command
 
         $lines = [];
 
-        $profileTag = $profile === 'default'
-            ? $this->c(self::GREEN, $profile)
-            : $this->c(self::YELLOW, $profile);
-        $lines[] = '  Profile          '.$profileTag;
         if ($profile !== 'default') {
+            $lines[] = '  Profile          '.$this->c(self::YELLOW, $profile);
             $this->issues[] = "Routing profile is '{$profile}' (not default)";
         }
 
-        $offlineTag = $offline
-            ? $this->c(self::RED, 'ACTIVE')
-            : $this->c(self::GREEN, 'off');
-        $lines[] = '  Offline Mode     '.$offlineTag;
         if ($offline) {
-            $this->issues[] = 'Offline mode kill switch is ACTIVE — external LLMs blocked';
+            $lines[] = '  Offline Mode     '.$this->c(self::RED, 'ACTIVE');
+            $this->issues[] = 'Offline mode kill switch is ACTIVE - external LLMs blocked';
         }
 
         try {
             $audit = app(OfflineAuditService::class)->summarizeWindow($hours);
             if (($audit['result'] ?? null) === 'ok') {
                 $denied = (int) ($audit['denied'] ?? 0);
-                $deniedPerHour = (float) ($audit['denied_per_hour'] ?? 0.0);
-                $lines[] = '  Offline Denies   '.($denied > 0
-                    ? $this->c(self::YELLOW, number_format($denied).' in '.$hours.'h ('.$deniedPerHour.'/h)')
-                    : $this->c(self::GREEN, '0 in '.$hours.'h'));
+                if ($denied > 0) {
+                    $deniedPerHour = (float) ($audit['denied_per_hour'] ?? 0.0);
+                    $lines[] = '  Offline Denies   '.$this->c(self::YELLOW, number_format($denied).' in '.$hours.'h ('.$deniedPerHour.'/h)');
 
-                $topDenials = $audit['top_denials'] ?? [];
-                if ($denied > 0 && is_array($topDenials) && $topDenials !== []) {
-                    $top = array_slice(array_map(
-                        static fn (array $row) => ($row['operation'] ?? 'unknown').'='.($row['count'] ?? 0),
-                        $topDenials
-                    ), 0, 3);
-                    $lines[] = '  Denial Top       '.implode(', ', $top);
+                    $topDenials = $audit['top_denials'] ?? [];
+                    if (is_array($topDenials) && $topDenials !== []) {
+                        $top = array_slice(array_map(
+                            static fn (array $row) => ($row['operation'] ?? 'unknown').'='.($row['count'] ?? 0),
+                            $topDenials
+                        ), 0, 3);
+                        $lines[] = '  Denial Top       '.implode(', ', $top);
+                    }
                     $this->issues[] = number_format($denied).' offline policy denial(s) in last '.$hours.'h';
                 }
             }
@@ -1320,9 +1713,7 @@ class MorningDigestCommand extends Command
             $circuits = [];
         }
 
-        if ($circuits === []) {
-            $lines[] = '  Circuits         '.$this->c(self::GREEN, 'all closed');
-        } else {
+        if ($circuits !== []) {
             $open = array_values(array_filter($circuits, static fn ($r) => $r->circuit_state === 'open'));
             $half = array_values(array_filter($circuits, static fn ($r) => $r->circuit_state === 'half_open'));
             $label = $this->c(self::RED, count($open).' open').
@@ -1407,9 +1798,7 @@ class MorningDigestCommand extends Command
         }
 
         if ($totalPhantom === 0 && $totalInfo === 0 && $unreachable === []) {
-            $lines[] = '  Ollama Drift     '.$this->c(self::GREEN, 'clean');
-
-            return $lines;
+            return [];
         }
 
         if ($totalPhantom > 0) {
@@ -1480,9 +1869,7 @@ class MorningDigestCommand extends Command
 
         $total = array_sum(array_map(static fn ($r) => (int) $r->n, $rows));
         if ($total === 0) {
-            // No silent self-heals in the window — still show the all-clear
-            // so the operator knows the signal is wired, not broken.
-            return ['  Dead-PID reconciles  '.$this->c(self::GREEN, '0 in last '.$hours.'h')];
+            return [];
         }
 
         $lines = [];
@@ -1509,29 +1896,72 @@ class MorningDigestCommand extends Command
     {
         try {
             $rows = DB::select(
-                'SELECT instance_name, total_requests, circuit_state, avg_response_ms
-                 FROM llm_instances WHERE is_active = 1 AND total_requests > 0 ORDER BY total_requests DESC'
+                'SELECT li.instance_name,
+                        li.instance_type,
+                        li.circuit_state,
+                        COALESCE(COUNT(l.id), 0) AS daily_requests,
+                        COALESCE(SUM(CASE WHEN l.success = 0 THEN 1 ELSE 0 END), 0) AS daily_failures,
+                        COALESCE(SUM(CASE WHEN l.escalated = 1 THEN 1 ELSE 0 END), 0) AS escalated_requests,
+                        ROUND(AVG(l.latency_ms)) AS avg_latency_ms
+                 FROM llm_instances li
+                 LEFT JOIN llm_model_request_logs l
+                   ON l.instance_id = li.instance_id
+                  AND l.created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                 WHERE li.is_active = 1
+                 GROUP BY li.id, li.instance_name, li.instance_type, li.circuit_state, li.priority
+                 ORDER BY daily_requests DESC, li.priority ASC, li.instance_name ASC',
+                [$hours]
             );
             if (empty($rows)) {
-                return [];
+                return [
+                    '  LOCAL total       0 calls',
+                    '  EXTERNAL total    0 calls',
+                ];
             }
 
-            $parts = [];
+            $totals = ['LOCAL' => 0, 'EXTERNAL' => 0];
+            $providerLines = [];
             foreach ($rows as $r) {
-                $reqs = (int) $r->total_requests;
-                if ($reqs < 1) {
-                    continue;
+                $scope = $this->llmUsageScope((string) ($r->instance_type ?? ''));
+                $reqs = (int) ($r->daily_requests ?? 0);
+                $failures = (int) ($r->daily_failures ?? 0);
+                $escalated = (int) ($r->escalated_requests ?? 0);
+                $totals[$scope] += $reqs;
+
+                $name = trim((string) ($r->instance_name ?? 'unknown')) ?: 'unknown';
+                $circuitState = (string) ($r->circuit_state ?? 'closed');
+                $circuitFlag = $circuitState !== 'closed' ? $this->c(self::RED, ' '.$circuitState) : '';
+                $failureFlag = $failures > 0 ? $this->c(self::RED, '  '.$failures.' attempt fail') : '';
+                $escalationFlag = $escalated > 0 ? $this->c(self::YELLOW, '  '.$escalated.' esc') : '';
+                $latencyMs = (int) ($r->avg_latency_ms ?? 0);
+                $latency = $latencyMs > 5000 ? $this->c(self::YELLOW, '  '.round($latencyMs / 1000, 1).'s avg') : '';
+
+                $failureRate = $reqs > 0 ? $failures / $reqs : ($failures > 0 ? 1.0 : 0.0);
+                if ($failures >= 25 || $failureRate >= 0.02) {
+                    $this->issues[] = "LLM provider attempt failures: {$name} {$failures}/{$reqs} in {$hours}h";
                 }
-                $name = str_pad($r->instance_name, 22);
-                $circuitFlag = $r->circuit_state !== 'closed' ? $this->c(self::RED, ' OPEN') : '';
-                $latency = $r->avg_response_ms > 5000 ? $this->c(self::YELLOW, '  '.round($r->avg_response_ms / 1000, 1).'s avg') : '';
-                $parts[] = "  {$name}".number_format($reqs)." calls{$circuitFlag}{$latency}";
+
+                $providerLines[] = "  [{$scope}] {$name}: ".$this->shortNum($reqs)." calls{$failureFlag}{$escalationFlag}{$circuitFlag}{$latency}";
             }
 
-            return $parts;
-        } catch (\Throwable) {
-            return [];
+            return array_merge([
+                '  LOCAL total       '.$this->shortNum($totals['LOCAL']).' calls',
+                '  EXTERNAL total    '.$this->shortNum($totals['EXTERNAL']).' calls',
+            ], $providerLines);
+        } catch (\Throwable $e) {
+            Log::debug('ops:daily-report: llm daily usage query failed', ['error' => $e->getMessage()]);
+            $this->issues[] = 'LLM daily usage query unavailable';
+
+            return [
+                '  LOCAL total       unavailable',
+                '  EXTERNAL total    unavailable',
+            ];
         }
+    }
+
+    private function llmUsageScope(string $instanceType): string
+    {
+        return in_array($instanceType, ['ollama', 'local_llm'], true) ? 'LOCAL' : 'EXTERNAL';
     }
 
     private function getServiceStatus(): array
@@ -1549,7 +1979,7 @@ class MorningDigestCommand extends Command
         }
 
         try {
-            $pgrep = \Illuminate\Support\Facades\Process::timeout(5)->run(['pgrep', '-fc', 'horizon:work']);
+            $pgrep = Process::timeout(5)->run(['pgrep', '-fc', 'horizon:work']);
             $out = trim($pgrep->output());
             $result['horizon'] = $out !== '' ? (int) $out : null;
         } catch (\Throwable) {
@@ -1614,7 +2044,7 @@ class MorningDigestCommand extends Command
     private function getGpuStatus(): ?string
     {
         try {
-            $out = \Illuminate\Support\Facades\Process::timeout(5)->run([
+            $out = Process::timeout(5)->run([
                 'nvidia-smi',
                 '--query-gpu=name,memory.used,memory.total',
                 '--format=csv,noheader',
@@ -1639,16 +2069,7 @@ class MorningDigestCommand extends Command
 
     private function freeSpace(string $path): string
     {
-        try {
-            $free = @disk_free_space($path);
-            if (! $free) {
-                return '?';
-            }
-
-            return round($free / 1073741824).' GB';
-        } catch (\Throwable) {
-            return '?';
-        }
+        return $this->diskUsage($path)['free'] ?? '?';
     }
 
     private function getPipelineThroughput(int $hours): array
@@ -1856,6 +2277,14 @@ class MorningDigestCommand extends Command
 
     private function diskPct(string $path): int
     {
+        return $this->diskUsage($path)['pct'] ?? 0;
+    }
+
+    /**
+     * @return array{pct:int,free:string}|null
+     */
+    private function diskUsage(string $path): ?array
+    {
         $oldAlarm = 0;
         if (function_exists('pcntl_alarm')) {
             $oldAlarm = pcntl_alarm(10);
@@ -1868,11 +2297,15 @@ class MorningDigestCommand extends Command
                 pcntl_alarm($oldAlarm);
             }
         }
-        if (! $total || $total == 0) {
-            return 0;
+
+        if ($total === false || $free === false || $total <= 0) {
+            return null;
         }
 
-        return (int) round(($total - $free) / $total * 100);
+        return [
+            'pct' => (int) round(($total - $free) / $total * 100),
+            'free' => round($free / 1073741824).' GB',
+        ];
     }
 
     private function getMemory(): array

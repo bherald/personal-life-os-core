@@ -346,6 +346,8 @@ class CapacityCheckpointService
                 'scheduler_warning_recommendations' => (int) ($summary['scheduler_warning_recommendations'] ?? 0),
                 'runtime_failed_runs' => $summary['runtime_failed_runs'] ?? null,
                 'runtime_timeout_runs' => $summary['runtime_timeout_runs'] ?? null,
+                'runtime_recovered_problem_runs' => $summary['runtime_recovered_problem_runs'] ?? null,
+                'runtime_unrecovered_problem_runs' => $summary['runtime_unrecovered_problem_runs'] ?? null,
                 'stale_agent_sessions' => $summary['stale_agent_sessions'] ?? null,
                 'past_deadline_jobs' => $summary['past_deadline_jobs'] ?? null,
                 'queue_depth_total' => $summary['queue_depth_total'] ?? null,
@@ -588,8 +590,11 @@ class CapacityCheckpointService
         $past = is_array($recovery['past_deadline_jobs'] ?? null) ? $recovery['past_deadline_jobs'] : [];
         $locks = is_array($recovery['locks'] ?? null) ? $recovery['locks'] : [];
 
+        $taskFailures = (int) ($taskCounts['failed'] ?? 0) + (int) ($taskCounts['timeout'] ?? 0);
         $failedRuns = (int) ($distribution['failed'] ?? 0);
         $timeoutRuns = (int) ($distribution['timeout'] ?? 0);
+        $unrecoveredProblemRuns = (int) ($runs['problem_runs_unrecovered'] ?? ($failedRuns + $timeoutRuns));
+        $recoveredProblemRuns = (int) ($runs['problem_runs_recovered'] ?? 0);
         $staleSessions = (int) ($stale['count'] ?? 0);
         $pastDeadlineJobs = (int) ($past['count'] ?? 0);
         $queryFailed = in_array('query_failed', [
@@ -600,7 +605,7 @@ class CapacityCheckpointService
             $past['result'] ?? null,
         ], true);
 
-        $status = $queryFailed || $failedRuns > 0 || $timeoutRuns > 0 || $staleSessions > 0 || $pastDeadlineJobs > 0
+        $status = $queryFailed || $taskFailures > 0 || $unrecoveredProblemRuns > 0 || $staleSessions > 0 || $pastDeadlineJobs > 0
             ? 'observe_warning'
             : 'observe_ok';
 
@@ -617,6 +622,8 @@ class CapacityCheckpointService
             'run_total' => (int) ($runs['total'] ?? 0),
             'failed_runs' => $failedRuns,
             'timeout_runs' => $timeoutRuns,
+            'unrecovered_problem_runs' => $unrecoveredProblemRuns,
+            'recovered_problem_runs' => $recoveredProblemRuns,
             'percent_success' => $runs['percent_success'] ?? null,
             'median_duration_ms' => $runs['median_duration_ms'] ?? null,
             'p95_duration_ms' => $runs['p95_duration_ms'] ?? null,
@@ -679,6 +686,8 @@ class CapacityCheckpointService
             'runtime_run_total' => isset($runtime['run_total']) ? (int) $runtime['run_total'] : null,
             'runtime_failed_runs' => isset($runtime['failed_runs']) ? (int) $runtime['failed_runs'] : null,
             'runtime_timeout_runs' => isset($runtime['timeout_runs']) ? (int) $runtime['timeout_runs'] : null,
+            'runtime_unrecovered_problem_runs' => isset($runtime['unrecovered_problem_runs']) ? (int) $runtime['unrecovered_problem_runs'] : null,
+            'runtime_recovered_problem_runs' => isset($runtime['recovered_problem_runs']) ? (int) $runtime['recovered_problem_runs'] : null,
             'stale_agent_sessions' => isset($runtime['stale_agent_sessions']) ? (int) $runtime['stale_agent_sessions'] : null,
             'past_deadline_jobs' => isset($runtime['past_deadline_jobs']) ? (int) $runtime['past_deadline_jobs'] : null,
             'dba_status' => $this->normalizeStatus((string) ($evidence['dba_telemetry']['status'] ?? 'observe_warning')),

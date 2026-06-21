@@ -35,11 +35,23 @@ use Illuminate\Support\Str;
  */
 class SpeculativeExecutionService implements ReviewApprovalHandler
 {
-    private const REDIS_TTL = 1800;             // 30 minutes for coordination keys
-    private const DISABLE_TTL = 86400;          // 24 hours auto-disable cooldown
+    private const RUNTIME_POLICY_CONFIG_KEY = 'agents.speculative_execution_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'branch_timeout_seconds' => 1200,
+        'branch_tries' => 1,
+        'coordination_ttl_seconds' => 1800,
+        'arbitration_lock_seconds' => 300,
+        'request_flag_ttl_seconds' => 3600,
+        'auto_disable_ttl_seconds' => 86400,
+    ];
+
     // N82: runtime thresholds read from config/agents.php
 
     private ?AIService $aiService = null;
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     private function getAIService(): AIService
     {
@@ -84,9 +96,9 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
 
         // Set Redis coordination state
         $prefix = "speculative:{$specRunId}";
-        Cache::put("{$prefix}:status", 'pending', self::REDIS_TTL);
-        Cache::put("{$prefix}:branch_a:status", 'pending', self::REDIS_TTL);
-        Cache::put("{$prefix}:branch_b:status", 'pending', self::REDIS_TTL);
+        Cache::put("{$prefix}:status", 'pending', $this->coordinationTtlSeconds());
+        Cache::put("{$prefix}:branch_a:status", 'pending', $this->coordinationTtlSeconds());
+        Cache::put("{$prefix}:branch_b:status", 'pending', $this->coordinationTtlSeconds());
 
         // Dispatch branch jobs to Horizon speculative queue
         $branchOptions = array_diff_key($options, array_flip([
@@ -101,7 +113,7 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
 
         // Update status to running
         DB::update("UPDATE speculative_executions SET status = 'running' WHERE spec_run_id = ?", [$specRunId]);
-        Cache::put("{$prefix}:status", 'running', self::REDIS_TTL);
+        Cache::put("{$prefix}:status", 'running', $this->coordinationTtlSeconds());
 
         Log::info("SpeculativeExecution: Dispatched", [
             'spec_run_id' => $specRunId,
@@ -425,7 +437,7 @@ PROMPT;
 
         // Clean up Redis
         $prefix = "speculative:{$specRunId}";
-        Cache::put("{$prefix}:status", 'completed', self::REDIS_TTL);
+        Cache::put("{$prefix}:status", 'completed', $this->coordinationTtlSeconds());
 
         $winningResult = $winner === 'branch_a' ? $resultA : $resultB;
 
@@ -460,7 +472,7 @@ PROMPT;
             WHERE spec_run_id = ?
         ", [$reason, $specRunId]);
 
-        Cache::put("speculative:{$specRunId}:status", 'failed', self::REDIS_TTL);
+        Cache::put("speculative:{$specRunId}:status", 'failed', $this->coordinationTtlSeconds());
 
         Log::warning("SpeculativeExecution: Failed", [
             'spec_run_id' => $specRunId,
@@ -673,14 +685,14 @@ PROMPT;
         }
 
         if ($stats->avg_uplift < config('agents.speculative_min_uplift', 10.0)) {
-            Cache::put("speculative_disabled:{$agentId}", true, self::DISABLE_TTL);
+            Cache::put("speculative_disabled:{$agentId}", true, $this->autoDisableTtlSeconds());
 
             Log::warning("SpeculativeExecution: Auto-disabled for agent", [
                 'agent_id' => $agentId,
                 'avg_uplift' => round($stats->avg_uplift, 2),
                 'threshold' => config('agents.speculative_min_uplift', 10.0),
                 'runs_evaluated' => $stats->total_runs,
-                'cooldown_hours' => self::DISABLE_TTL / 3600,
+                'cooldown_hours' => $this->autoDisableTtlSeconds() / 3600,
             ]);
         }
     }
@@ -743,7 +755,7 @@ PROMPT;
             $specRunId,
         ]);
 
-        Cache::put("speculative:{$specRunId}:status", 'cancelled', self::REDIS_TTL);
+        Cache::put("speculative:{$specRunId}:status", 'cancelled', $this->coordinationTtlSeconds());
 
         Log::info("SpeculativeExecution: Cancelled", ['spec_run_id' => $specRunId]);
         return true;
@@ -909,12 +921,12 @@ PROMPT;
         Cache::put("speculative_request:{$agentId}", [
             'reason' => $reason,
             'requested_at' => now()->toISOString(),
-        ], 3600); // 1 hour TTL
+        ], $this->requestFlagTtlSeconds());
 
         return [
             'success' => true,
             'message' => "Speculative execution requested for next run of {$agentId}",
-            'flag_ttl_minutes' => 60,
+            'flag_ttl_minutes' => (int) ceil($this->requestFlagTtlSeconds() / 60),
         ];
     }
 
@@ -983,5 +995,61 @@ PROMPT;
             0, 4
         );
         return implode('_', $words) ?: 'unknown';
+    }
+
+    private function coordinationTtlSeconds(): int
+    {
+        return $this->runtimePolicyInt('coordination_ttl_seconds');
+    }
+
+    private function requestFlagTtlSeconds(): int
+    {
+        return $this->runtimePolicyInt('request_flag_ttl_seconds');
+    }
+
+    private function autoDisableTtlSeconds(): int
+    {
+        return $this->runtimePolicyInt('auto_disable_ttl_seconds');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

@@ -5,6 +5,7 @@ namespace Tests\Feature\Console;
 use App\Services\AIService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -70,7 +71,8 @@ class AgentMemoryStatsCommandTest extends TestCase
             '--compact' => true,
         ]);
 
-        $payload = json_decode((string) Artisan::output(), true);
+        $output = (string) Artisan::output();
+        $payload = json_decode($output, true);
 
         $this->assertSame(0, $exit);
         $this->assertSame('pass', $payload['status']);
@@ -82,6 +84,8 @@ class AgentMemoryStatsCommandTest extends TestCase
         $this->assertSame(2, $payload['summary']['outcome_count']);
         $this->assertArrayHasKey('top_agents', $payload);
         $this->assertArrayNotHasKey('outcomes', $payload);
+        $this->assertStringNotContainsString('"agent_id":', $output);
+        $this->assertStringNotContainsString('alpha-agent', $output);
     }
 
     public function test_episodic_memory_json_mode_rejects_mutating_options(): void
@@ -94,7 +98,7 @@ class AgentMemoryStatsCommandTest extends TestCase
 
         $this->assertSame(1, $exit);
         $this->assertStringContainsString(
-            'The --json/--compact options are only supported for read-only stats.',
+            'The --json/--compact options are only supported for stats and bounded backfill.',
             (string) Artisan::output()
         );
     }
@@ -152,6 +156,8 @@ class AgentMemoryStatsCommandTest extends TestCase
             ],
         ]);
 
+        Cache::put('operator_evidence:agent_doctor:v1', ['stale' => true], now()->addMinutes(15));
+
         $exit = Artisan::call('episodic:memory', [
             '--backfill' => true,
             '--dry-run' => true,
@@ -167,6 +173,74 @@ class AgentMemoryStatsCommandTest extends TestCase
         $this->assertStringContainsString('Dry run complete', $output);
         $this->assertStringContainsString('alpha-agent', $output);
         $this->assertStringNotContainsString('alpha-session', $output);
+        $this->assertTrue(Cache::has('operator_evidence:agent_doctor:v1'));
+    }
+
+    public function test_episodic_memory_backfill_json_mode_emits_compact_payload_without_progress_output(): void
+    {
+        $this->mock(AIService::class, function ($mock): void {
+            $mock->shouldReceive('generateEmbedding')
+                ->andReturn(['success' => false]);
+        });
+
+        DB::table('agent_episodes')->insert([
+            [
+                'agent_id' => 'alpha-agent',
+                'session_id' => 'alpha-session',
+                'event_type' => 'task_started',
+                'summary' => 'Backfill alpha task',
+                'details' => null,
+                'tokens_used' => 10,
+                'duration_ms' => 100,
+                'created_at' => now()->subMinutes(10),
+            ],
+            [
+                'agent_id' => 'alpha-agent',
+                'session_id' => 'alpha-session',
+                'event_type' => 'task_completed',
+                'summary' => 'Alpha completed',
+                'details' => null,
+                'tokens_used' => 20,
+                'duration_ms' => 200,
+                'created_at' => now()->subMinutes(9),
+            ],
+        ]);
+
+        Cache::put('operator_evidence:agent_doctor:v1', ['stale' => true], now()->addMinutes(15));
+
+        $exit = Artisan::call('episodic:memory', [
+            '--backfill' => true,
+            '--days' => 2,
+            '--limit' => 5,
+            '--confirm' => true,
+            '--json' => true,
+            '--compact' => true,
+        ]);
+
+        $output = trim((string) Artisan::output());
+        $payload = json_decode($output, true);
+
+        $this->assertSame(0, $exit, $output);
+        $this->assertStringStartsWith('{', $output);
+        $this->assertIsArray($payload);
+        $this->assertSame('pass', $payload['status']);
+        $this->assertSame('backfill', $payload['mode']);
+        $this->assertTrue($payload['compact']);
+        $this->assertFalse($payload['dry_run']);
+        $this->assertTrue($payload['confirmed']);
+        $this->assertSame(1, $payload['summary']['candidate_sessions']);
+        $this->assertSame(2, $payload['summary']['candidate_episodes']);
+        $this->assertSame(1, $payload['summary']['processed_sessions']);
+        $this->assertSame(1, $payload['summary']['summaries_created']);
+        $this->assertSame(0, $payload['summary']['failed']);
+        $this->assertSame(1, $payload['summary']['agent_rollup_count']);
+        $this->assertSame(1, $payload['agent_rollup'][0]['rank']);
+        $this->assertSame(1, DB::table('agent_episode_summaries')->count());
+        $this->assertStringNotContainsString('0/1', $output);
+        $this->assertStringNotContainsString('"agent_id":', $output);
+        $this->assertStringNotContainsString('alpha-agent', $output);
+        $this->assertStringNotContainsString('alpha-session', $output);
+        $this->assertFalse(Cache::has('operator_evidence:agent_doctor:v1'));
     }
 
     public function test_episodic_memory_backfill_matches_existing_summaries_by_agent_and_skips_null_sessions(): void

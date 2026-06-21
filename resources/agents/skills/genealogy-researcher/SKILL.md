@@ -484,8 +484,9 @@ records. Never assume one spelling.
 
 For EACH of the selected persons, use **at least 3 different tools**:
 
-- `source_search_all` — search all supported automated sources in one call. Use as a broad sweep for a person before
-  calling individual tools. Each source has a circuit breaker — if one is down, others still run.
+- `source_search_all` — search supported automated sources in one call only after adding
+  date/place/relative/occupation anchors. For FT4, prefer source-backed fill-ins for blank facts,
+  relationships, and source/media gaps before broad coverage. Each source has a circuit breaker — if one is down, others still run.
 - `generate_record_hints` — check for matching records in databases
 - `wikitree_search` — search WikiTree's 30M+ collaborative profiles (free, no API key). Best for US
   colonial-era (pre-1850) and European ancestry. When a match is found, call `wikitree_get_person`

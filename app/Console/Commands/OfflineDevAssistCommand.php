@@ -1032,22 +1032,24 @@ class OfflineDevAssistCommand extends Command
      */
     private function reassertPayload(string $tail): array
     {
-        $stale = (int) ($tail !== '' ? $tail : '10');
-        if ($stale <= 0) {
-            $stale = 10;
+        $args = [
+            '--json' => true,
+        ];
+
+        if ($tail !== '') {
+            $args['--stale'] = (int) $tail;
         }
 
-        $exit = Artisan::call('routing:reassert', [
-            '--json' => true,
-            '--stale' => $stale,
-        ]);
+        $exit = Artisan::call('routing:reassert', $args);
 
         $payload = $this->sanitizeSlashOutputPayload($this->decodeJsonOutput((string) Artisan::output()));
+        $stale = (int) ($payload['stale_threshold_minutes'] ?? ($args['--stale'] ?? 0));
 
         return [
             'command' => '/reassert',
             'type' => $exit === 0 ? 'reassert' : 'error',
             'stale_minutes' => $stale,
+            'stale_source' => $payload['stale_threshold_source'] ?? null,
             'result' => $payload,
         ];
     }

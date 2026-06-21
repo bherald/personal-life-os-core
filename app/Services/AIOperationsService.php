@@ -172,10 +172,22 @@ class AIOperationsService
             FROM llm_instances WHERE is_active = 1
         ');
 
-        // Claude CLI slot usage
-        $claudeSlots = Cache::get('claude_cli_slots', []);
-        $activeSlots = count(array_filter($claudeSlots, fn ($s) => ! empty($s)));
-        $maxClaudeSlots = (int) config('agents.claude_absolute_max', 20);
+        // Claude CLI slot usage is governed by AIService's table-owned policy.
+        try {
+            $claudeSlotUsage = app(AIService::class)->getClaudeSlotUsage();
+        } catch (\Throwable $e) {
+            Log::debug('AIOperationsService: Claude slot usage unavailable', [
+                'error' => $e->getMessage(),
+            ]);
+            $claudeSlots = Cache::get('claude_cli_slots', []);
+            $activeSlots = count(array_filter($claudeSlots, fn ($s) => ! empty($s)));
+            $claudeSlotUsage = [
+                'active' => $activeSlots,
+                'max' => $activeSlots,
+                'available' => 0,
+                'policy_source' => 'unavailable',
+            ];
+        }
 
         // GPU lock status
         $ollamaBusy = Cache::has('ollama_busy_lock');
@@ -205,9 +217,10 @@ class AIOperationsService
         return [
             'instances' => array_map(fn ($i) => (array) $i, $instances),
             'claude_slots' => [
-                'active' => $activeSlots,
-                'max' => $maxClaudeSlots,
-                'available' => max(0, $maxClaudeSlots - $activeSlots),
+                'active' => (int) ($claudeSlotUsage['active'] ?? 0),
+                'max' => (int) ($claudeSlotUsage['max'] ?? 0),
+                'available' => (int) ($claudeSlotUsage['available'] ?? 0),
+                'policy_source' => $claudeSlotUsage['policy_source'] ?? null,
             ],
             'gpu' => [
                 'ollama_busy' => $ollamaBusy,

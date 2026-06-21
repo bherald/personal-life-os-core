@@ -47,7 +47,11 @@ class OpsFaceBridgeAlignmentReportCommand extends Command
         $payload['summary']['sample_gap_counts'] = $sampleCounts;
         $payload['summary']['sample_person_count'] = count(array_unique(array_column($samples, 'person_id')));
         $payload['summary']['sample_media_count'] = count(array_filter(array_unique(array_column($samples, 'genealogy_media_id'))));
-        $payload['rows'] = (bool) $this->option('compact') ? [] : $samples;
+        if ((bool) $this->option('compact')) {
+            $payload = $this->compactPayload($payload);
+        } else {
+            $payload['rows'] = $samples;
+        }
 
         if ($exactCounts) {
             $payload['exact_counts'] = $this->exactCounts($treeId, $includeDeleted);
@@ -235,6 +239,21 @@ class OpsFaceBridgeAlignmentReportCommand extends Command
             'rows' => [],
             'next_action' => 'inspect_samples_before_repair',
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function compactPayload(array $payload): array
+    {
+        unset($payload['rows'], $payload['filters']['tree_id']);
+        $payload['compact'] = true;
+        $payload['filters']['tree_filter_applied'] = $this->positiveIntOption('tree') !== null;
+        $payload['summary']['row_identifiers_included'] = false;
+        $payload['posture']['row_identifiers_included'] = false;
+
+        return $payload;
     }
 
     /**

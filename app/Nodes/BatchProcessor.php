@@ -5,6 +5,7 @@ namespace App\Nodes;
 use App\Exceptions\NodeTimeoutException;
 use App\Services\AIService;
 use App\Services\BiasRatingService;
+use App\Services\SystemConfigService;
 use App\Traits\RecursionAware;
 use Exception;
 use Illuminate\Support\Facades\Log;
@@ -28,6 +29,19 @@ class BatchProcessor extends BaseNode
 {
     use RecursionAware;
 
+    private const RUNTIME_POLICY_CONFIG_KEY = 'news.batch_processor_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'batch_size' => 15,
+        'max_articles' => 60,
+        'ai_timeout_seconds' => 180,
+        'node_timeout_seconds' => 300,
+        'notification_reserve_seconds' => 60,
+        'min_ai_batch_timeout_seconds' => 90,
+        'model_role' => 'quality',
+        'max_tokens' => 2048,
+    ];
+
     private const STRICT_FORMATTER_SYSTEM_PROMPT = <<<'PROMPT'
 You format article data into final notification text. Output only the finished article lines requested by the user prompt. Do not include analysis, chain-of-thought, task restatements, headings that were not requested, prompt text, instructions, rules, examples, context labels, or batch commentary. Use only the supplied article fields.
 PROMPT;
@@ -35,6 +49,9 @@ PROMPT;
     private BiasRatingService $biasService;
 
     private AIService $aiService;
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function execute(array $input): array
     {
@@ -56,14 +73,14 @@ PROMPT;
             $fallbackFormattedText = $this->extractFormattedText($input);
 
             // Configuration
-            $batchSize = (int) $this->getConfigValue('batch_size', 15);
-            $maxArticles = (int) $this->getConfigValue('max_articles', 60);
+            $batchSize = (int) $this->getConfigValue('batch_size', $this->runtimePolicyInt('batch_size'));
+            $maxArticles = (int) $this->getConfigValue('max_articles', $this->runtimePolicyInt('max_articles'));
             $aiPrompt = $this->getConfigValue('ai_prompt');
-            $aiTimeout = (int) $this->getConfigValue('ai_timeout', 180);
+            $aiTimeout = (int) $this->getConfigValue('ai_timeout', $this->runtimePolicyInt('ai_timeout_seconds'));
             $pushoverFormat = $this->getConfigValue('pushover_format', 'html');
-            $nodeTimeout = (int) $this->getConfigValue('timeout_seconds', 300);
-            $notificationReserveSeconds = max(0, (int) $this->getConfigValue('notification_reserve_seconds', 60));
-            $minAiBatchTimeout = max(1, (int) $this->getConfigValue('min_ai_batch_timeout', 90));
+            $nodeTimeout = (int) $this->getConfigValue('timeout_seconds', $this->runtimePolicyInt('node_timeout_seconds'));
+            $notificationReserveSeconds = max(0, (int) $this->getConfigValue('notification_reserve_seconds', $this->runtimePolicyInt('notification_reserve_seconds')));
+            $minAiBatchTimeout = max(1, (int) $this->getConfigValue('min_ai_batch_timeout', $this->runtimePolicyInt('min_ai_batch_timeout_seconds')));
             $aiBudgetSeconds = max(0, $nodeTimeout - $notificationReserveSeconds);
             $nodeStartedAt = microtime(true);
 
@@ -180,8 +197,8 @@ PROMPT;
                         'ai_timeout' => $batchAiTimeout,
                         'ai_mode' => $this->config['ai_mode'] ?? 'auto',
                         'temperature' => $this->config['temperature'] ?? 0.0,
-                        'model_role' => $this->config['model_role'] ?? 'quality',
-                        'max_tokens' => (int) ($this->config['max_tokens'] ?? 2048),
+                        'model_role' => $this->config['model_role'] ?? $this->runtimePolicyString('model_role'),
+                        'max_tokens' => (int) ($this->config['max_tokens'] ?? $this->runtimePolicyInt('max_tokens')),
                         'use_cache' => false,
                         'dedup' => false,
                         'suppressAlert' => true,
@@ -341,6 +358,57 @@ PROMPT;
     {
         return is_scalar($message)
             && str_contains((string) $message, 'Node timeout:');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyString(string $key): string
+    {
+        $value = $this->runtimePolicy()[$key] ?? self::DEFAULT_RUNTIME_POLICY[$key];
+        if (! is_string($value) || trim($value) === '') {
+            return (string) self::DEFAULT_RUNTIME_POLICY[$key];
+        }
+
+        return trim($value);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 
     /**

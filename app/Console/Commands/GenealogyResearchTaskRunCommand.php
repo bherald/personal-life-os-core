@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\AgentLoopService;
+use App\Services\Genealogy\GenealogyCleanRoomGuidanceService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -27,7 +28,7 @@ class GenealogyResearchTaskRunCommand extends Command
 
     protected $description = 'Run bounded non-face Genea research tasks from genealogy_research_tasks';
 
-    public function handle(AgentLoopService $agentLoop): int
+    public function handle(AgentLoopService $agentLoop, GenealogyCleanRoomGuidanceService $cleanRoomGuidance): int
     {
         $treeId = max(1, (int) $this->option('tree'));
         $limit = max(1, min(10, (int) $this->option('limit')));
@@ -66,6 +67,7 @@ class GenealogyResearchTaskRunCommand extends Command
                 'review_first_writes_enabled' => $execute && $confirmedReviewWrite,
                 'task_status_writes_enabled' => $execute,
             ],
+            'clean_room_guidance' => $cleanRoomGuidance->summary(),
             'tasks' => array_map(fn (object $task): array => $this->taskPlan($task, $timeoutMinutes, $permissions), $tasks),
             'results' => [],
         ];
@@ -82,7 +84,7 @@ class GenealogyResearchTaskRunCommand extends Command
         }
 
         foreach ($tasks as $task) {
-            $payload['results'][] = $this->runTask($agentLoop, $task, $maxIterations, $timeoutMinutes, $permissions);
+            $payload['results'][] = $this->runTask($agentLoop, $cleanRoomGuidance, $task, $maxIterations, $timeoutMinutes, $permissions);
         }
 
         $payload['status'] = collect($payload['results'])->contains(fn (array $row): bool => ($row['status'] ?? null) === 'failed')
@@ -157,8 +159,14 @@ class GenealogyResearchTaskRunCommand extends Command
     /**
      * @param  array{person_creation:bool,canonical_facts:bool,downloads:bool,writeback:bool,scheduled_enablement:bool,unanchored:bool}  $permissions
      */
-    private function runTask(AgentLoopService $agentLoop, object $task, int $maxIterations, int $timeoutMinutes, array $permissions): array
-    {
+    private function runTask(
+        AgentLoopService $agentLoop,
+        GenealogyCleanRoomGuidanceService $cleanRoomGuidance,
+        object $task,
+        int $maxIterations,
+        int $timeoutMinutes,
+        array $permissions
+    ): array {
         $taskId = (int) $task->id;
         $treeId = (int) $task->tree_id;
         $blocked = $this->blockedTaskReason($task, $permissions, $timeoutMinutes);
@@ -195,7 +203,7 @@ class GenealogyResearchTaskRunCommand extends Command
         $hasAnchorPerson = $task->person_id !== null;
         $runStartedAt = date('Y-m-d H:i:s');
 
-        $result = $agentLoop->execute('genealogy-records', $this->taskPrompt($task), [
+        $result = $agentLoop->execute('genealogy-records', $this->taskPrompt($task, $cleanRoomGuidance), [
             'tree_id' => $treeId,
             'session_id' => 'genealogy-direct-task-'.$taskId.'-'.uniqid(),
             'notify' => false,
@@ -249,7 +257,7 @@ class GenealogyResearchTaskRunCommand extends Command
             }
         }
 
-        $parsed = $this->parseOutcome((string) ($result['response'] ?? ''));
+        $parsed = $this->parseOutcome((string) ($result['response'] ?? ''), $cleanRoomGuidance);
         $success = (bool) ($result['success'] ?? false);
         $outcomeState = $parsed['outcome_state']
             ?? ($success ? ($findingsCount > 0 ? 'completed' : 'deferred') : 'requeue');
@@ -306,6 +314,13 @@ class GenealogyResearchTaskRunCommand extends Command
                     'duration_ms' => $result['duration_ms'] ?? null,
                     'tokens_used' => $result['tokens_used'] ?? null,
                     'direct_task_runner' => true,
+                    'clean_room_guidance_version' => $parsed['clean_room']['version'],
+                    'evidence_packets' => $parsed['clean_room']['evidence_packets'],
+                    'hypothesis_ledger' => $parsed['clean_room']['hypothesis_ledger'],
+                    'agent_activity_trace' => $parsed['clean_room']['agent_activity_trace'],
+                    'source_tool_gaps' => $parsed['clean_room']['source_tool_gaps'],
+                    'review_gates' => $parsed['clean_room']['review_gates'],
+                    'clean_room_marker_warnings' => $parsed['clean_room']['marker_warnings'],
                 ]),
                 $parsed['scope_reason'] ?? 'none',
                 json_encode($parsed['related_people_used'] ?? []),
@@ -331,7 +346,7 @@ class GenealogyResearchTaskRunCommand extends Command
         ];
     }
 
-    private function taskPrompt(object $task): string
+    private function taskPrompt(object $task, GenealogyCleanRoomGuidanceService $cleanRoomGuidance): string
     {
         $personLine = $task->person_id
             ? "Anchor person ID: {$task->person_id}\n"
@@ -348,8 +363,11 @@ class GenealogyResearchTaskRunCommand extends Command
             ."- Do not use face clusters or photo identity as evidence.\n"
             ."- Operator permits non-face person creation, source-backed canonical facts, downloads, scheduled enablement, and writeback in this operator-approved window, but only through existing bounded tool gates, approved apply paths, and review-first packets where the tool requires review.\n"
             ."- Same-name web hits are leads only until a source provides an identity bridge.\n"
+            ."- FT4 tasks should prefer source-backed expansion and fill-ins for blank facts, relationships, source gaps, and media gaps; submit packets only when source text identifies the target beyond a shared name.\n"
             ."- Use source-backed public/API searches and log negative searches as evidence.\n"
             ."- Document searches in the final outcome and use search-coverage tools when available; do not pass this genealogy_research_tasks ID to GPS-only logging tools unless the runtime supplies a compatible GPS task ID.\n\n"
+            .$cleanRoomGuidance->buildPromptBlock()
+            ."\n"
             ."At the END of your final response, include these exact lines:\n"
             ."OUTCOME_STATE: completed|deferred|requeue|needs_human_review\n"
             ."OUTCOME_REASON: <concise reason>\n"
@@ -357,10 +375,15 @@ class GenealogyResearchTaskRunCommand extends Command
             ."RELATED_PEOPLE_USED: <comma-separated people or none>\n"
             ."SOURCES_CHECKED: <comma-separated source classes>\n"
             ."EVIDENCE_SUMMARY: <concise evidence-backed summary>\n"
-            .'CONFLICTS_FOUND: <concise conflict summary or none>';
+            ."CONFLICTS_FOUND: <concise conflict summary or none>\n"
+            ."EVIDENCE_PACKETS: <JSON array as specified above, or none>\n"
+            ."HYPOTHESIS_LEDGER: <JSON array as specified above, or none>\n"
+            ."AGENT_ACTIVITY_TRACE: <JSON array as specified above, or none>\n"
+            ."SOURCE_TOOL_GAPS: <JSON array as specified above, or none>\n"
+            .'REVIEW_GATES: <JSON object as specified above, or none>';
     }
 
-    private function parseOutcome(string $response): array
+    private function parseOutcome(string $response, GenealogyCleanRoomGuidanceService $cleanRoomGuidance): array
     {
         $extract = function (string $label) use ($response): ?string {
             if (preg_match('/^'.preg_quote($label, '/').':\s*(.+)$/mi', $response, $matches)) {
@@ -386,6 +409,7 @@ class GenealogyResearchTaskRunCommand extends Command
             'sources_checked' => $splitList($extract('SOURCES_CHECKED')),
             'evidence_summary' => $extract('EVIDENCE_SUMMARY'),
             'conflicts_found' => $extract('CONFLICTS_FOUND'),
+            'clean_room' => $cleanRoomGuidance->parseFinalMarkers($response),
         ];
     }
 

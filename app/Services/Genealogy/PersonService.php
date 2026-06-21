@@ -2830,7 +2830,7 @@ class PersonService
     public function rejectGenealogyFinding(string $token, ?string $reason = null): array
     {
         $queueItem = DB::selectOne(
-            'SELECT id, details, agent_id FROM agent_review_queue WHERE token = ?',
+            'SELECT id, details, agent_id, reviewer_notes FROM agent_review_queue WHERE token = ?',
             [$token]
         );
 
@@ -2841,10 +2841,17 @@ class PersonService
         $details = json_decode($queueItem->details ?? '{}', true);
         $personId = (int) ($details['person_id'] ?? 0);
 
-        // Mark the finding as rejected
+        $existingNotes = trim((string) ($queueItem->reviewer_notes ?? ''));
+        $reasonNote = trim((string) $reason);
+        $reviewerNotes = $reasonNote === ''
+            ? ($existingNotes === '' ? null : $existingNotes)
+            : ($existingNotes === '' ? $reasonNote : $existingNotes."\n".$reasonNote);
+
+        // Mark the finding as rejected, preserving the reviewer reason for
+        // review feedback and Genea learning loops.
         DB::update(
-            "UPDATE agent_review_queue SET status = 'rejected', reviewed_at = NOW(), updated_at = NOW() WHERE token = ?",
-            [$token]
+            "UPDATE agent_review_queue SET status = 'rejected', reviewer_notes = ?, reviewed_at = NOW(), updated_at = NOW() WHERE token = ?",
+            [$reviewerNotes, $token]
         );
 
         // Cascade-reject any pending proposed changes for the same person

@@ -79,6 +79,13 @@
         {{ packetReadinessLine.label }}
       </div>
       <div
+        v-if="packetTrailLine"
+        class="packet-trail-line"
+        :title="packetTrailLine.title"
+      >
+        {{ packetTrailLine.label }}
+      </div>
+      <div
         v-if="packetOutcomeLine"
         class="packet-outcome-line"
         :class="`is-${packetOutcomeLine.state}`"
@@ -383,6 +390,39 @@ const packetReadinessLine = computed(() => {
   }
 
   return null
+})
+
+const packetTrailLine = computed(() => {
+  if (!isReviewPacket.value) {
+    return null
+  }
+
+  const sourceCount = numberOrNull(packetFieldValue('source_count'))
+  const claimCount = numberOrNull(packetFieldValue('claim_count'))
+  const mediaCount = numberOrNull(packetFocusFieldValue('resolved_media_count'))
+    ?? numberOrNull(packetFocusFieldValue('media_ref_count'))
+  const preview = formatPacketStatus(packetFocusFieldValue('preview_status'))
+  const readiness = stringOrNull(props.item?.review_focus?.review_readiness?.label)
+  const outcome = stringOrNull(props.item?.packet_outcome?.progress_label)
+    || stringOrNull(props.item?.packet_outcome?.outcome_label)
+
+  const parts = [
+    sourceCount !== null ? `${sourceCount} source${sourceCount === 1 ? '' : 's'}` : null,
+    claimCount !== null ? `${claimCount} claim${claimCount === 1 ? '' : 's'}` : null,
+    mediaCount !== null ? `${mediaCount} media ref${mediaCount === 1 ? '' : 's'}` : null,
+    preview,
+    readiness,
+    outcome,
+  ].filter(Boolean)
+
+  if (!parts.length) {
+    return null
+  }
+
+  return {
+    label: `Trail: ${parts.slice(0, 5).join(' -> ')}`,
+    title: parts.join(' -> '),
+  }
 })
 
 const packetOutcomeLine = computed(() => {
@@ -1019,6 +1059,20 @@ const getImageUrl = (source) => {
 .packet-readiness-line.is-blocked {
   border-left-color: var(--ops-gold);
   background: rgba(255, 204, 102, 0.08);
+}
+
+.packet-trail-line {
+  display: flex;
+  align-items: center;
+  min-height: 1.5rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid rgba(180, 148, 255, 0.7);
+  border-radius: 4px;
+  background: rgba(180, 148, 255, 0.08);
+  color: var(--ops-peach);
+  font-size: 0.74rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .packet-outcome-line {

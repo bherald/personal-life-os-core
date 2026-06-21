@@ -98,16 +98,19 @@ class FaceCandidateDecisionService
         }
 
         $media = $this->resolveExistingMedia($tree['id'], $face);
-        if ($media === null) {
+        $terminalDecision = in_array($action, self::TERMINAL_ACTIONS, true);
+        if ($media === null && ! $terminalDecision) {
             return [
                 'success' => false,
                 'status' => 422,
                 'error' => 'genealogy_media_not_found',
-                'message' => 'Candidate decisions require an existing genealogy_media row; no media or genealogy links were created.',
+                'message' => 'Non-terminal candidate decisions require an existing genealogy_media row; no media or genealogy links were created.',
             ];
         }
 
-        $queue = $this->findQueueRow($fileRegistryFaceId, (int) $media->id, (string) $face->person_name);
+        $mediaId = $media !== null ? (int) $media->id : null;
+        $queue = $this->findQueueRow($fileRegistryFaceId, $mediaId, (string) $face->person_name);
+        $queueMediaId = $mediaId ?? ($queue?->media_id !== null ? (int) $queue->media_id : null);
         $details = $this->decodeDetails($queue?->match_details ?? null);
         $decision = $this->decisionPayload($action, $fileRegistryFaceId, $tree['id'], $candidatePersonId, $input, $userId);
         $details = $this->appendDecision($details, $decision);
@@ -135,7 +138,7 @@ class FaceCandidateDecisionService
                 ->where('id', $queue->id)
                 ->update([
                     'tree_id' => $tree['id'],
-                    'media_id' => (int) $media->id,
+                    'media_id' => $queueMediaId,
                     'file_registry_face_id' => $fileRegistryFaceId,
                     'suggested_person_id' => $candidatePersonId ?? $queue->suggested_person_id,
                     'status' => $status,
@@ -150,7 +153,7 @@ class FaceCandidateDecisionService
         } else {
             DB::table('genealogy_face_match_queue')->insert([
                 'tree_id' => $tree['id'],
-                'media_id' => (int) $media->id,
+                'media_id' => $queueMediaId,
                 'face_name' => (string) $face->person_name,
                 'suggested_person_id' => $candidatePersonId,
                 'match_type' => 'candidate_decision',
@@ -175,6 +178,7 @@ class FaceCandidateDecisionService
             'queue_action' => $queueAction,
             'queue' => [
                 'id' => $queueId,
+                'media_id' => $queueMediaId,
                 'status' => $status,
                 'match_type' => $queue?->match_type ?? 'candidate_decision',
             ],
@@ -244,7 +248,7 @@ class FaceCandidateDecisionService
             ->first();
     }
 
-    private function findQueueRow(int $fileRegistryFaceId, int $mediaId, string $faceName): ?object
+    private function findQueueRow(int $fileRegistryFaceId, ?int $mediaId, string $faceName): ?object
     {
         $byFace = DB::table('genealogy_face_match_queue')
             ->where('file_registry_face_id', $fileRegistryFaceId)
@@ -256,9 +260,14 @@ class FaceCandidateDecisionService
             return $byFace;
         }
 
+        if ($mediaId === null) {
+            return null;
+        }
+
         return DB::table('genealogy_face_match_queue')
             ->where('media_id', $mediaId)
             ->where('face_name', $faceName)
+            ->whereNull('file_registry_face_id')
             ->orderByDesc('updated_at')
             ->orderByDesc('id')
             ->first();

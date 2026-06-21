@@ -3,6 +3,7 @@
 namespace App\Nodes;
 
 use App\Jobs\ExecuteNodeJob;
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -30,13 +31,23 @@ use Illuminate\Http\Client\Pool;
  */
 class FanOutNode extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'workflow.fanout_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'max_parallel' => 10,
+        'http_pool_timeout_seconds' => 30,
+    ];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function execute(array $input): array
     {
         try {
             $inputKey = $this->getConfigValue('input_key', 'items');
             $targetNodeType = $this->getConfigValue('target_node_type');
             $targetNodeConfig = $this->getConfigValue('target_node_config', []);
-            $maxParallel = (int) $this->getConfigValue('max_parallel', 10);
+            $maxParallel = $this->configuredPositiveInt('max_parallel') ?? $this->runtimePolicyInt('max_parallel');
             $httpPoolEnabled = (bool) $this->getConfigValue('http_pool_enabled', false);
             $httpPoolEndpoint = $this->getConfigValue('http_pool_endpoint');
 
@@ -144,6 +155,8 @@ class FanOutNode extends BaseNode
             ], [
                 'parallel_execution' => true,
                 'items_processed' => count($items),
+                'max_parallel' => $maxParallel,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ]);
         } catch (\Throwable $e) {
             Log::error('FanOutNode: Unhandled exception', [
@@ -190,7 +203,8 @@ class FanOutNode extends BaseNode
         $fanOutId = (string) Str::uuid();
         $method = $this->getConfigValue('http_method', 'POST');
         $headers = $this->getConfigValue('http_headers', []);
-        $timeout = (int) $this->getConfigValue('http_timeout', 30);
+        $timeout = $this->configuredPositiveInt('http_timeout')
+            ?? $this->runtimePolicyInt('http_pool_timeout_seconds');
 
         Log::info('FanOutNode: Executing Http::pool', [
             'fan_out_id' => $fanOutId,
@@ -250,6 +264,61 @@ class FanOutNode extends BaseNode
         ], [
             'execution_mode' => 'http_pool',
             'endpoint' => $endpoint,
+            'http_timeout_seconds' => $timeout,
+            'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
         ]);
+    }
+
+    private function configuredPositiveInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : null;
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

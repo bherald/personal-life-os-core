@@ -5,6 +5,7 @@ namespace App\Engine;
 use App\DTOs\TrustEnvelope;
 use App\Services\AIService;
 use App\Services\OfflinePolicyService;
+use App\Services\SystemConfigService;
 use App\Services\TrustBoundaryFormatterService;
 use Exception;
 use Illuminate\Support\Facades\Log;
@@ -25,6 +26,17 @@ use Illuminate\Support\Facades\Log;
  */
 class OllamaToolCaller
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'ai.ollama_tool_caller_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'temperature' => 0.0,
+        'max_tokens' => 500,
+        'timeout_seconds' => 45,
+        'tool_result_max_chars' => 6000,
+        'response_temperature' => 0.1,
+        'direct_response_temperature' => 0.1,
+    ];
+
     private MCPRouter $mcpRouter;
 
     private AIRouter $aiRouter;
@@ -39,6 +51,15 @@ class OllamaToolCaller
 
     private int $timeout;
 
+    private int $toolResultMaxChars;
+
+    private float $responseTemperature;
+
+    private float $directResponseTemperature;
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function __construct(
         ?AIService $aiService = null,
         ?TrustBoundaryFormatterService $trustBoundaryFormatter = null,
@@ -48,9 +69,12 @@ class OllamaToolCaller
         $this->aiRouter = new AIRouter;
         $this->aiService = $aiService ?? app(AIService::class);
         $this->trustBoundaryFormatter = $trustBoundaryFormatter ?? app(TrustBoundaryFormatterService::class);
-        $this->temperature = config('mcp.ollama_tool_calling.temperature', 0.0);
-        $this->maxTokens = config('mcp.ollama_tool_calling.max_tokens', 500);
-        $this->timeout = config('mcp.ollama_tool_calling.timeout', 10);
+        $this->temperature = $this->configuredFloat('mcp.ollama_tool_calling.temperature', 'temperature');
+        $this->maxTokens = $this->configuredPositiveInt('mcp.ollama_tool_calling.max_tokens', 'max_tokens');
+        $this->timeout = $this->configuredPositiveInt('mcp.ollama_tool_calling.timeout', 'timeout_seconds');
+        $this->toolResultMaxChars = $this->configuredPositiveInt('mcp.ollama_tool_calling.tool_result_max_chars', 'tool_result_max_chars');
+        $this->responseTemperature = $this->configuredFloat('mcp.ollama_tool_calling.response_temperature', 'response_temperature');
+        $this->directResponseTemperature = $this->configuredFloat('mcp.ollama_tool_calling.direct_response_temperature', 'direct_response_temperature');
     }
 
     /**
@@ -228,7 +252,7 @@ PROMPT;
             contentType: 'application/json',
             origin: "mcp:{$toolName}",
             payload: $resultJson === false ? '' : $resultJson,
-            maxChars: (int) config('mcp.ollama_tool_calling.tool_result_max_chars', 6000),
+            maxChars: $this->toolResultMaxChars,
         ));
 
         $prompt = <<<PROMPT
@@ -244,7 +268,7 @@ PROMPT;
 
         // E01 Phase 3: Use AIService for resilient response formatting
         $result = $this->aiService->process($prompt, [
-            'temperature' => 0.1,
+            'temperature' => $this->responseTemperature,
         ]);
 
         return $result['success'] ? $result['response'] : 'I processed the tool result but had trouble formatting the response.';
@@ -257,10 +281,73 @@ PROMPT;
     private function directResponse(string $userRequest): string
     {
         $result = $this->aiService->process($userRequest, [
-            'temperature' => 0.1,
+            'temperature' => $this->directResponseTemperature,
         ]);
 
         return $result['success'] ? $result['response'] : 'I apologize, but I encountered an error processing your request.';
+    }
+
+    private function configuredFloat(string $configKey, string $policyKey): float
+    {
+        $configured = config($configKey);
+        if (is_numeric($configured)) {
+            return (float) $configured;
+        }
+
+        return $this->runtimePolicyFloat($policyKey);
+    }
+
+    private function configuredPositiveInt(string $configKey, string $policyKey): int
+    {
+        $configured = config($configKey);
+        if (is_numeric($configured) && (int) $configured > 0) {
+            return (int) $configured;
+        }
+
+        return $this->runtimePolicyInt($policyKey);
+    }
+
+    private function runtimePolicyFloat(string $key): float
+    {
+        $fallback = (float) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? null;
+
+        return is_numeric($value) ? (float) $value : $fallback;
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        $fallback = (int) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? null;
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
     }
 
     /**

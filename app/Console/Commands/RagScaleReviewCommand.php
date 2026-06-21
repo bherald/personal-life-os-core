@@ -162,6 +162,7 @@ class RagScaleReviewCommand extends Command
                 'evidence_contract_mode' => $retrieval['evidence_contract_mode'] ?? null,
                 'query_text_policy' => $retrieval['query_text_policy'] ?? null,
                 'results_policy' => $retrieval['results_policy'] ?? null,
+                'query_trace_policy' => $retrieval['query_trace_policy'] ?? null,
             ],
             'evidence_error_count' => (int) ($scale['evidence_error_count'] ?? 0)
                 + (int) ($backlog['evidence_error_count'] ?? 0)
@@ -205,7 +206,7 @@ class RagScaleReviewCommand extends Command
                 $compact['recommendation_count'],
             ),
             sprintf(
-                'rag_scale compact: backlog_fresh=%s backlog_stale=%s raptor_pending=%s sentence_pending=%s retrieval_redacted=%s query_policy=%s results_policy=%s',
+                'rag_scale compact: backlog_fresh=%s backlog_stale=%s raptor_pending=%s sentence_pending=%s retrieval_redacted=%s query_policy=%s results_policy=%s trace_policy=%s',
                 $backlog['kg_fresh_pending'],
                 $backlog['kg_stale_pending'],
                 $backlog['raptor_pending'],
@@ -213,6 +214,7 @@ class RagScaleReviewCommand extends Command
                 $retrieval['result_content_redacted'] ? 'true' : 'false',
                 $retrieval['query_text_policy'] ?? 'n/a',
                 $retrieval['results_policy'] ?? 'n/a',
+                $retrieval['query_trace_policy'] ?? 'n/a',
             ),
         ])."\n";
     }
@@ -247,6 +249,7 @@ class RagScaleReviewCommand extends Command
             '- Evidence contract mode: `'.($retrieval['evidence_contract_mode'] ?? 'n/a').'`',
             '- Query text policy: `'.($retrieval['query_text_policy'] ?? 'n/a').'`',
             '- Results policy: `'.($retrieval['results_policy'] ?? 'n/a').'`',
+            '- Query trace policy: `'.($retrieval['query_trace_policy'] ?? 'n/a').'`',
             '- Result content redacted: `'.($retrieval['result_content_redacted'] ? 'true' : 'false').'`',
             '- Retrieval p95 ms: `'.($retrieval['latency_p95_ms'] ?? 'n/a').'`',
             '- Evidence errors: `'.$compact['evidence_error_count'].'`',
@@ -356,6 +359,7 @@ class RagScaleReviewCommand extends Command
                 'evidence_contract_mode' => null,
                 'query_text_policy' => null,
                 'results_policy' => null,
+                'query_trace_policy' => null,
             ];
         }
 
@@ -397,6 +401,7 @@ class RagScaleReviewCommand extends Command
             'evidence_contract_mode' => $this->nullableString($contract['mode'] ?? null),
             'query_text_policy' => $this->nullableString($contract['query_text'] ?? null),
             'results_policy' => $this->nullableString($contract['results'] ?? null),
+            'query_trace_policy' => $this->nullableString($contract['query_traces'] ?? null),
         ];
     }
 
@@ -602,7 +607,7 @@ class RagScaleReviewCommand extends Command
         ];
 
         if (! ($retrieval['provided'] ?? false)) {
-            $recommendations[] = 'Run rag:retrieval-evidence --json for an approved redacted query set and pass it with --retrieval-file before structural RAG changes.';
+            $recommendations[] = 'Run rag:retrieval-evidence --no-trace --json for an approved redacted query set and pass it with --retrieval-file before structural RAG changes.';
         }
 
         if ((int) ($backlog['kg']['pending'] ?? 0) > 0) {
@@ -644,6 +649,7 @@ class RagScaleReviewCommand extends Command
             '- Result limit: `'.($payload['retrieval']['limit'] ?? 'n/a').'`',
             '- Query text policy: `'.($payload['retrieval']['query_text_policy'] ?? 'n/a').'`',
             '- Results policy: `'.($payload['retrieval']['results_policy'] ?? 'n/a').'`',
+            '- Query trace policy: `'.($payload['retrieval']['query_trace_policy'] ?? 'n/a').'`',
             '- Retrieval p95 ms: `'.($payload['retrieval']['latency_p95_ms'] ?? 'n/a').'`',
             '',
             '## Recommendations',

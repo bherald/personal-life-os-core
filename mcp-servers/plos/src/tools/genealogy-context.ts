@@ -19,7 +19,7 @@ export async function genealogyContext(input: GenealogyContextInput): Promise<st
 
   if (input.person_ids?.length) {
     result.people = await mysqlRawQuery(
-      `SELECT id, gedcom_id, given_name, surname, nickname, sex, birth_date, birth_place,
+      `SELECT id, gedcom_id, given_name, surname, suffix, nickname, sex, birth_date, birth_place,
               death_date, death_place, living, LEFT(COALESCE(notes,''), ?) AS notes
          FROM genealogy_persons
         WHERE tree_id = ? AND id IN (?)
@@ -31,9 +31,9 @@ export async function genealogyContext(input: GenealogyContextInput): Promise<st
   if (input.family_ids?.length) {
     result.families = await mysqlRawQuery(
       `SELECT f.id, f.gedcom_id, f.husband_id,
-              TRIM(CONCAT(COALESCE(h.given_name,''),' ',COALESCE(h.surname,''))) AS husband,
+              TRIM(CONCAT_WS(' ', NULLIF(TRIM(COALESCE(h.given_name,'')), ''), NULLIF(TRIM(COALESCE(h.surname,'')), ''), NULLIF(TRIM(COALESCE(h.suffix,'')), ''))) AS husband,
               f.wife_id,
-              TRIM(CONCAT(COALESCE(w.given_name,''),' ',COALESCE(w.surname,''))) AS wife,
+              TRIM(CONCAT_WS(' ', NULLIF(TRIM(COALESCE(w.given_name,'')), ''), NULLIF(TRIM(COALESCE(w.surname,'')), ''), NULLIF(TRIM(COALESCE(w.suffix,'')), ''))) AS wife,
               f.marriage_date, f.marriage_place, LEFT(COALESCE(f.notes,''), ?) AS notes
          FROM genealogy_families f
          LEFT JOIN genealogy_persons h ON h.id = f.husband_id
@@ -45,7 +45,7 @@ export async function genealogyContext(input: GenealogyContextInput): Promise<st
 
     result.children = await mysqlRawQuery(
       `SELECT c.family_id, c.person_id,
-              TRIM(CONCAT(COALESCE(p.given_name,''),' ',COALESCE(p.surname,''))) AS child,
+              TRIM(CONCAT_WS(' ', NULLIF(TRIM(COALESCE(p.given_name,'')), ''), NULLIF(TRIM(COALESCE(p.surname,'')), ''), NULLIF(TRIM(COALESCE(p.suffix,'')), ''))) AS child,
               p.birth_date, c.birth_order
          FROM genealogy_children c
          JOIN genealogy_families f ON f.id = c.family_id
@@ -69,7 +69,7 @@ export async function genealogyContext(input: GenealogyContextInput): Promise<st
 
     result.media_links = await mysqlRawQuery(
       `SELECT 'person' AS link_type, pm.media_id, pm.person_id AS entity_id,
-              TRIM(CONCAT(COALESCE(p.given_name,''),' ',COALESCE(p.surname,''))) AS entity_name,
+              TRIM(CONCAT_WS(' ', NULLIF(TRIM(COALESCE(p.given_name,'')), ''), NULLIF(TRIM(COALESCE(p.surname,'')), ''), NULLIF(TRIM(COALESCE(p.suffix,'')), ''))) AS entity_name,
               pm.notes
          FROM genealogy_person_media pm
          JOIN genealogy_media m ON m.id = pm.media_id
@@ -121,7 +121,7 @@ export async function genealogyContext(input: GenealogyContextInput): Promise<st
 
   if (input.source_ids?.length) {
     result.sources = await mysqlRawQuery(
-      `SELECT id, title, author, publication, repository, source_quality,
+      `SELECT id, title, author, publication, repository, url, source_quality,
               source_category, information_quality, LEFT(COALESCE(notes,''), ?) AS notes
          FROM genealogy_sources
         WHERE tree_id = ? AND id IN (?)

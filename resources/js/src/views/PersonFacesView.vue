@@ -17,6 +17,7 @@
         <div class="text-ops-text">
           <span class="text-lg font-semibold">{{ personName }}</span>
           <span class="text-sm text-ops-text-muted ml-2">{{ total }} face{{ total !== 1 ? 's' : '' }}</span>
+          <span v-if="linkedMediaTotal > 0" class="text-sm text-ops-gold ml-2">{{ linkedMediaTotal }} FT-linked photo{{ linkedMediaTotal === 1 ? '' : 's' }}</span>
         </div>
         <div class="flex-1"></div>
         <div v-if="excludedCount > 0" class="text-xs text-ops-gold">
@@ -26,7 +27,7 @@
 
       <!-- Face grid -->
       <div class="flex-1 overflow-y-auto p-4">
-        <div v-if="faces.length === 0 && !loading" class="text-center py-12 text-ops-text-muted">
+        <div v-if="faces.length === 0 && linkedMedia.length === 0 && !loading" class="text-center py-12 text-ops-text-muted">
           <p class="text-lg">No faces found for this person</p>
         </div>
 
@@ -50,6 +51,12 @@
               <!-- Confidence badge -->
               <div class="absolute bottom-1 left-1 px-1.5 py-0.5 text-[10px] rounded bg-black/60 text-ops-text-muted">
                 {{ Math.round((face.confidence || 0) * 100) }}%
+              </div>
+              <div
+                class="absolute left-1 top-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                :class="assignmentBadgeClass(face)"
+              >
+                {{ assignmentLabel(face) }}
               </div>
 
               <!-- Hover overlay with actions -->
@@ -93,6 +100,50 @@
           </div>
         </div>
 
+        <div v-if="linkedMedia.length > 0" class="mt-6 border-t border-ops-peach/20 pt-4">
+          <div class="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div class="text-xs font-semibold uppercase tracking-wide text-ops-gold">
+                FT-linked photos without confirmed face
+              </div>
+              <div class="text-[11px] text-ops-text-muted">
+                These are linked to the FT person, but no visible face row matches this identity yet.
+              </div>
+            </div>
+            <span class="text-xs text-ops-text-muted">{{ linkedMedia.length }} of {{ linkedMediaTotal }}</span>
+          </div>
+
+          <div class="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
+            <div
+              v-for="media in linkedMedia"
+              :key="media.person_media_id"
+              class="group relative overflow-hidden rounded-lg border border-ops-gold/30 bg-ops-plum/20"
+            >
+              <div class="aspect-square overflow-hidden bg-black/40">
+                <img
+                  v-if="media.thumbnail_url"
+                  :src="media.thumbnail_url"
+                  :alt="media.filename"
+                  class="h-full w-full object-cover"
+                  loading="lazy"
+                  @error="onImgError"
+                />
+                <div v-else class="flex h-full w-full items-center justify-center text-xs text-ops-text-muted">
+                  No preview
+                </div>
+              </div>
+              <div class="absolute left-1 top-1 rounded bg-ops-gold/90 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-black">
+                FT link
+              </div>
+              <div class="px-1.5 py-1">
+                <span class="block truncate text-[10px] text-ops-text-muted" :title="media.filename">
+                  {{ media.filename }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Loading -->
         <div v-if="loading" class="text-center py-8">
           <div class="inline-block w-6 h-6 border-2 border-ops-peach border-t-transparent rounded-full animate-spin"></div>
@@ -132,9 +183,9 @@
               v-for="(s, i) in renameSuggestions"
               :key="i"
               class="w-full px-3 py-2 text-sm text-left text-ops-text hover:bg-ops-plum/40"
-              @click="renameValue = s.name; renameSuggestions = []; submitRename()"
+              @click="selectRenameSuggestion(s)"
             >
-              {{ s.name }} <span class="text-ops-text-muted">({{ s.media_count }})</span>
+              {{ s.person_name || s.face_label || s.name }} <span class="text-ops-text-muted">({{ s.media_count || s.face_count || 0 }})</span>
             </button>
           </div>
         </div>
@@ -176,8 +227,11 @@ const route = useRoute()
 const router = useRouter()
 
 const personName = ref(route.query.name || '')
+const genealogyPersonId = ref(route.query.genealogy_person_id || '')
 const faces = ref([])
 const total = ref(0)
+const linkedMedia = ref([])
+const linkedMediaTotal = ref(0)
 const loading = ref(false)
 const selectedIds = ref(new Set())
 const excludedCount = ref(0)
@@ -189,6 +243,7 @@ const hasMore = ref(true)
 // Rename dialog
 const renameDialogVisible = ref(false)
 const renameValue = ref('')
+const renameGenealogyPersonId = ref(null)
 const renameSuggestions = ref([])
 const renameInput = ref(null)
 const renameFaceId = ref(null)
@@ -199,7 +254,7 @@ const sentinel = ref(null)
 let observer = null
 
 onMounted(() => {
-  if (!personName.value) {
+  if (!personName.value && !genealogyPersonId.value) {
     router.replace('/media/faces')
     return
   }
@@ -231,6 +286,8 @@ async function loadFaces(reset = false) {
   if (reset) {
     page.value = 0
     faces.value = []
+    linkedMedia.value = []
+    linkedMediaTotal.value = 0
     hasMore.value = true
   }
 
@@ -238,6 +295,8 @@ async function loadFaces(reset = false) {
     const result = await api.get('/media/faces/person-faces', {
       params: {
         name: personName.value,
+        genealogy_person_id: genealogyPersonId.value || undefined,
+        include_linked_media: reset && genealogyPersonId.value ? 1 : undefined,
         limit: PAGE_SIZE,
         offset: page.value * PAGE_SIZE,
       }
@@ -250,6 +309,13 @@ async function loadFaces(reset = false) {
       faces.value = [...faces.value, ...items]
     }
     total.value = result.total || 0
+    if (reset) {
+      linkedMedia.value = result.linked_media || []
+      linkedMediaTotal.value = result.linked_media_total || linkedMedia.value.length
+    }
+    if (result.person_name) {
+      personName.value = result.person_name
+    }
     hasMore.value = items.length >= PAGE_SIZE
     page.value++
   } catch (e) {
@@ -312,6 +378,7 @@ function openRenameSingle(face) {
   renameFaceId.value = face.face_id
   renameBatch.value = false
   renameValue.value = ''
+  renameGenealogyPersonId.value = null
   renameSuggestions.value = []
   renameDialogVisible.value = true
   nextTick(() => renameInput.value?.focus())
@@ -321,12 +388,14 @@ function openRenameBatch() {
   renameFaceId.value = null
   renameBatch.value = true
   renameValue.value = ''
+  renameGenealogyPersonId.value = null
   renameSuggestions.value = []
   renameDialogVisible.value = true
   nextTick(() => renameInput.value?.focus())
 }
 
 function onRenameInput() {
+  renameGenealogyPersonId.value = null
   clearTimeout(renameSearchTimer)
   const q = renameValue.value.trim()
   if (q.length < 2) { renameSuggestions.value = []; return }
@@ -340,28 +409,75 @@ function onRenameInput() {
   }, 200)
 }
 
+function selectRenameSuggestion(s) {
+  renameValue.value = s.person_name || s.face_label || s.name || s.genealogy_name || ''
+  renameGenealogyPersonId.value = parsePositiveInt(s.genealogy_person_id) || parsePositiveInt(s.id)
+  renameSuggestions.value = []
+  submitRename()
+}
+
 async function submitRename() {
   const newName = renameValue.value.trim()
   if (!newName || newName === personName.value) return
   renameDialogVisible.value = false
 
   const ids = renameBatch.value ? [...selectedIds.value] : [renameFaceId.value]
-  let renamed = 0
-  for (const id of ids) {
-    try {
-      await api.post(`/media/faces/${id}/name`, { person_name: newName })
-      renamed++
-    } catch (e) {
-      console.error('Failed to rename face', id, e)
+  try {
+    const payload = { face_ids: ids, person_name: newName }
+    if (renameGenealogyPersonId.value) {
+      payload.genealogy_person_id = renameGenealogyPersonId.value
     }
-  }
-  if (renamed > 0) {
-    faces.value = faces.value.filter(f => !ids.includes(f.face_id))
-    total.value -= renamed
-    if (renameBatch.value) {
-      selectedIds.value = new Set()
+    const result = await api.post('/media/faces/bulk-name', payload)
+    const renamed = Number.parseInt(String(result?.updated ?? ids.length), 10) || ids.length
+
+    if (renamed > 0) {
+      faces.value = faces.value.filter(f => !ids.includes(f.face_id))
+      total.value -= renamed
+      if (renameBatch.value) {
+        selectedIds.value = new Set()
+      }
     }
+  } catch (e) {
+    console.error('Failed to reassign faces', ids, e)
   }
+}
+
+function parsePositiveInt(value) {
+  const parsed = Number.parseInt(String(value || ''), 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function assignmentState(face) {
+  const currentPersonId = parsePositiveInt(genealogyPersonId.value)
+  const facePersonId = parsePositiveInt(face?.genealogy_person_id)
+
+  if (currentPersonId && facePersonId === currentPersonId) {
+    return 'ft'
+  }
+
+  if (facePersonId) {
+    return 'other-ft'
+  }
+
+  return 'name-only'
+}
+
+function assignmentLabel(face) {
+  if (face?.assignment_label) return face.assignment_label
+
+  const state = assignmentState(face)
+  if (state === 'ft') return 'FT'
+  if (state === 'other-ft') return 'Other FT'
+
+  return 'Name only'
+}
+
+function assignmentBadgeClass(face) {
+  const state = assignmentState(face)
+  if (state === 'ft') return 'bg-ops-gold/90 text-black'
+  if (state === 'other-ft') return 'bg-red-900/85 text-red-100'
+
+  return 'bg-black/75 text-ops-peach'
 }
 
 function refresh() {

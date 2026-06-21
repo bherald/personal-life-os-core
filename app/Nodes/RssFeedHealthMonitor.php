@@ -15,13 +15,15 @@ use Illuminate\Support\Facades\Log;
  *
  * Configuration:
  * - feed_urls: (optional) Array of specific URLs to check, or empty to check all workflow feeds
- * - timeout: (optional) Timeout in seconds (default: 15)
+ * - timeout: (optional) Timeout in seconds (default: system_configs.rss.health_runtime_policy.default_timeout_seconds)
  * - send_alerts: (optional) Send Pushover alerts for failures (default: false)
- * - failure_threshold: (optional) Number of consecutive failures before alerting (default: 3)
+ * - failure_threshold: (optional) Number of consecutive failures before alerting (default: system_configs.rss.health_runtime_policy.alert_failure_threshold)
  * - include_report: (optional) Include full health report in output (default: true)
  */
 class RssFeedHealthMonitor extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'rss.health_runtime_policy';
+
     public function execute(array $input): array
     {
         try {
@@ -29,9 +31,15 @@ class RssFeedHealthMonitor extends BaseNode
 
             // Extract configuration
             $feedUrls = $this->getConfigValue('feed_urls', []);
-            $timeout = (int) $this->getConfigValue('timeout', 15);
+            $configuredTimeout = $this->getConfigValue('timeout');
+            $timeout = is_numeric($configuredTimeout) && (int) $configuredTimeout > 0
+                ? (int) $configuredTimeout
+                : $healthService->defaultTimeoutSeconds();
             $sendAlerts = $this->getConfigValue('send_alerts', false);
-            $failureThreshold = (int) $this->getConfigValue('failure_threshold', 3);
+            $configuredFailureThreshold = $this->getConfigValue('failure_threshold');
+            $failureThreshold = is_numeric($configuredFailureThreshold) && (int) $configuredFailureThreshold > 0
+                ? (int) $configuredFailureThreshold
+                : $healthService->alertFailureThreshold();
             $includeReport = $this->getConfigValue('include_report', true);
 
             $startTime = microtime(true);
@@ -145,6 +153,7 @@ class RssFeedHealthMonitor extends BaseNode
                     'health_percentage' => $summary['health_percentage'],
                     'duration_ms' => $duration,
                     'alerts_sent' => $sendAlerts ? count($feedsNeedingAlerts ?? []) : 0,
+                    'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
                     'checked_at' => now()->toISOString(),
                 ]
             );

@@ -38,9 +38,14 @@ use Illuminate\Support\Facades\Process as ProcessFacade;
  */
 class AIRouter
 {
-    private const DEFAULT_MAX_TOKENS_FALLBACK = 4096;
+    private const RUNTIME_POLICY_CONFIG_KEY = 'ai.router_runtime_policy';
 
-    private const EMBEDDING_CHAR_LIMIT_FALLBACK = 30000;
+    private const DEFAULT_RUNTIME_POLICY = [
+        'text_generation_timeout_seconds' => 120,
+        'default_max_tokens' => 4096,
+        'embedding_char_limit' => 30000,
+        'vision_cli_timeout_seconds' => 180,
+    ];
 
     private string $ollamaUrl;
 
@@ -62,6 +67,9 @@ class AIRouter
 
     private string $agentProxyUrl;
 
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function __construct()
     {
         $ollamaConfig = $this->loadPrimaryOllamaConfig();
@@ -71,10 +79,9 @@ class AIRouter
         $this->ollamaModel = (string) ($roleModels['standard'] ?? $ollamaConfig['default_model'] ?? config('services.ollama.model') ?? '');
         $this->embeddingModel = (string) ($ollamaConfig['embedding_model'] ?? $roleModels['embedding'] ?? config('services.ollama.embedding_model') ?? '');
         $this->visionModel = (string) ($roleModels['vision'] ?? config('services.ollama.vision_model') ?? '');
-        // Base text generation timeout — overridden per operation type below
-        $this->timeout = (int) config('services.ollama.timeout', 120);
-        $this->defaultMaxTokens = (int) config('ai.default_max_tokens', self::DEFAULT_MAX_TOKENS_FALLBACK);
-        $this->embeddingCharLimit = (int) config('ai.embedding_char_limit', self::EMBEDDING_CHAR_LIMIT_FALLBACK);
+        $this->timeout = $this->runtimePolicyInt('text_generation_timeout_seconds');
+        $this->defaultMaxTokens = $this->runtimePolicyInt('default_max_tokens');
+        $this->embeddingCharLimit = $this->runtimePolicyInt('embedding_char_limit');
         $this->mcpRouter = new MCPRouter;
         $this->agentProxyUrl = config('services.claude.agent_proxy_url', 'http://127.0.0.1:8770');
     }
@@ -110,6 +117,47 @@ class AIRouter
     private function trustBoundaryFormatter(): TrustBoundaryFormatterService
     {
         return $this->trustBoundaryFormatter ??= app(TrustBoundaryFormatterService::class);
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 
     private function formatMcpToolResultForPrompt(string $server, string $tool, mixed $payload, bool $isError = false): string
@@ -531,7 +579,7 @@ class AIRouter
 
         try {
             if ($mode === 'local' || $mode === 'auto') {
-                return $this->callOllama($prompt, $temperature, $maxTokens, $systemPrompt, $timeout, $instanceUrl, $instanceModel);
+                return $this->callOllama($prompt, $temperature, $maxTokens, $systemPrompt, $timeout, $instanceUrl, $instanceModel, $config);
             }
         } catch (Exception $e) {
             if ($mode === 'auto') {
@@ -787,7 +835,7 @@ class AIRouter
 
             // Drain both pipes under a hard deadline so a busy stderr stream cannot
             // block the child and cause a false timeout.
-            $visionTimeout = (int) config('services.ollama.timeout', 180);
+            $visionTimeout = $this->runtimePolicyInt('vision_cli_timeout_seconds');
             stream_set_blocking($pipes[1], false);
             stream_set_blocking($pipes[2], false);
             $deadline = microtime(true) + $visionTimeout;
@@ -1234,7 +1282,7 @@ class AIRouter
     /**
      * Call Ollama directly with fault tolerance (offline-first, fast)
      */
-    private function callOllama(string $prompt, float $temperature, int $maxTokens, string $systemPrompt = '', ?int $timeout = null, ?string $instanceUrl = null, ?string $instanceModel = null): string
+    private function callOllama(string $prompt, float $temperature, int $maxTokens, string $systemPrompt = '', ?int $timeout = null, ?string $instanceUrl = null, ?string $instanceModel = null, array $config = []): string
     {
         // Defence-in-depth: sanitize here too in case callOllama is invoked directly
         $prompt = $this->sanitizeUtf8($prompt);
@@ -1256,18 +1304,36 @@ class AIRouter
         try {
             // Circuit breaker protection — use instance-specific key when routing to specific instance
             $circuitKey = $instanceUrl ? 'ollama_api_'.md5($instanceUrl) : 'ollama_api';
-            $response = $circuitBreaker->call($circuitKey, function () use ($retryService, $prompt, $temperature, $maxTokens, $systemPrompt, $requestTimeout, $targetUrl, $targetModel) {
+            $response = $circuitBreaker->call($circuitKey, function () use ($retryService, $prompt, $temperature, $maxTokens, $systemPrompt, $requestTimeout, $targetUrl, $targetModel, $config) {
                 // Retry logic with fixed backoff (AI calls are expensive)
                 return $retryService->retry(
-                    operation: function () use ($prompt, $temperature, $maxTokens, $systemPrompt, $requestTimeout, $targetUrl, $targetModel) {
+                    operation: function () use ($prompt, $temperature, $maxTokens, $systemPrompt, $requestTimeout, $targetUrl, $targetModel, $config) {
                         // Override PHP's default_socket_timeout
                         $originalSocketTimeout = ini_get('default_socket_timeout');
                         ini_set('default_socket_timeout', (string) $requestTimeout);
 
+                        $userPrompt = $prompt;
+                        if (isset($config['ollama_prompt_prefix']) && is_string($config['ollama_prompt_prefix']) && trim($config['ollama_prompt_prefix']) !== '') {
+                            $userPrompt = rtrim($config['ollama_prompt_prefix'])."\n".$userPrompt;
+                        }
+                        if (isset($config['ollama_prompt_suffix']) && is_string($config['ollama_prompt_suffix']) && trim($config['ollama_prompt_suffix']) !== '') {
+                            $userPrompt .= "\n".ltrim($config['ollama_prompt_suffix']);
+                        }
+
                         // Prepend system prompt since /api/generate doesn't support system role
                         $fullPrompt = $systemPrompt
-                            ? "System: {$systemPrompt}\n\nUser: {$prompt}"
-                            : $prompt;
+                            ? "System: {$systemPrompt}\n\nUser: {$userPrompt}"
+                            : $userPrompt;
+
+                        $options = array_merge(
+                            [
+                                'num_predict' => $maxTokens,
+                                'top_p' => 0.9,
+                                'num_ctx' => (int) ($config['num_ctx'] ?? 4096),
+                            ],
+                            is_array($config['ollama_options'] ?? null) ? $config['ollama_options'] : []
+                        );
+                        $think = $config['ollama_think'] ?? false;
 
                         // Use Guzzle timeout options - CURLOPT constants need to be in 'curl' array
                         $response = Http::withOptions([
@@ -1278,14 +1344,10 @@ class AIRouter
                             ->post("{$targetUrl}/api/generate", [
                                 'model' => $targetModel,
                                 'prompt' => $fullPrompt,
-                                'think' => false,
+                                'think' => $think,
                                 'temperature' => $temperature,
                                 'stream' => false,
-                                'options' => [
-                                    'num_predict' => $maxTokens,
-                                    'top_p' => 0.9,
-                                    'num_ctx' => $config['num_ctx'] ?? 4096,
-                                ],
+                                'options' => $options,
                             ]);
 
                         // Restore original socket timeout

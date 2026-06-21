@@ -51,11 +51,45 @@
             v-model="chatMode"
             class="w-full bg-[#1a1a1a] text-[#e0e0e0] border border-[#555] rounded-md px-3 py-1.5 text-xs focus:border-accent focus:outline-none"
           >
-            <option value="standard">Standard</option>
-            <option value="fast">Fast</option>
-            <option value="quality">Quality</option>
-            <option value="uncensored">Uncensored (Private)</option>
+            <option
+              v-for="profile in chatStore.modelModes"
+              :key="profile.id"
+              :value="profile.id"
+            >
+              {{ profile.label }}{{ profile.candidate ? ' (candidate)' : '' }}
+            </option>
           </select>
+          <div v-if="selectedChatMode" class="space-y-2">
+            <div class="flex flex-wrap gap-1">
+              <span
+                v-for="family in selectedChatMode.families"
+                :key="family"
+                class="text-[10px] px-1.5 py-0.5 rounded bg-[#34495e] text-[#d6e0e6]"
+              >
+                {{ family }}
+              </span>
+              <span
+                v-if="selectedChatMode.quality_rating"
+                class="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] text-[#95a5a6]"
+              >
+                {{ selectedChatMode.quality_rating }}
+              </span>
+            </div>
+            <div class="text-[11px] text-[#95a5a6] leading-snug">
+              {{ selectedChatMode.model }}
+            </div>
+          </div>
+          <label class="flex items-center gap-2 text-xs text-[#d6e0e6]">
+            <input v-model="privateChat" type="checkbox" class="form-checkbox">
+            Private routing
+          </label>
+          <label
+            v-if="selectedChatMode?.override_required"
+            class="flex items-center gap-2 text-xs text-[#f39c12]"
+          >
+            <input v-model="modelOverride" type="checkbox" class="form-checkbox">
+            Operator override
+          </label>
         </div>
 
         <!-- Conversation List -->
@@ -199,11 +233,27 @@
                 >Uncensored</span>
               </h2>
               <p class="text-sm text-[#95a5a6]">
-                {{ chatStore.currentConversation.is_private ? 'Messages not saved' : chatStore.messages.length + ' messages' }}
+                {{ chatStore.currentConversation.is_private ? 'Private routing' : chatStore.messages.length + ' messages' }}
                 <span v-if="lastDetectedIntent" class="ml-2 text-accent">
                   {{ getIntentEmoji(lastDetectedIntent.intent) }} {{ lastDetectedIntent.intent.replace(/_/g, ' ') }}
                 </span>
               </p>
+              <div v-if="currentConversationMode" class="mt-1 flex flex-wrap items-center gap-1">
+                <span class="text-[11px] text-[#95a5a6] mr-1">{{ currentConversationMode.model }}</span>
+                <span
+                  v-for="family in currentConversationMode.families"
+                  :key="family"
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-[#1a1a1a] text-[#d6e0e6] border border-[#444]"
+                >
+                  {{ family }}
+                </span>
+                <span
+                  v-if="currentConversationMode.override_required || chatStore.currentConversation.model_override"
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-[#3a2a12] text-[#f39c12] border border-[#704d10]"
+                >
+                  override
+                </span>
+              </div>
             </div>
             <div class="flex gap-2">
               <button
@@ -255,6 +305,27 @@
                 </div>
 
                 <div class="prose prose-sm max-w-none" v-html="renderMarkdown(message.content)" @click="handleCodeCopy"></div>
+
+                <div v-if="message.attachments && message.attachments.length" class="mt-3 flex flex-wrap gap-2">
+                  <a
+                    v-for="attachment in message.attachments"
+                    :key="attachment.id"
+                    :href="attachment.url || null"
+                    :target="attachment.url ? '_blank' : null"
+                    :class="[
+                      'inline-flex items-center gap-2 max-w-full px-2 py-1 rounded border text-xs',
+                      message.role === 'user'
+                        ? 'border-white/30 bg-white/10 text-white'
+                        : 'border-[#555] bg-[#1a1a1a] text-[#d6e0e6]',
+                      attachment.url ? 'hover:border-accent' : ''
+                    ]"
+                    @click.stop
+                  >
+                    <span class="uppercase text-[10px] opacity-75">{{ attachment.media_type || 'file' }}</span>
+                    <span class="truncate max-w-[220px]">{{ attachment.name }}</span>
+                    <span class="opacity-70">{{ formatBytes(attachment.size_bytes) }}</span>
+                  </a>
+                </div>
 
                 <!-- RAG Sources Display (clickable to view full content) -->
                 <div v-if="message.ragSources && message.ragSources.length > 0" class="mt-3 pt-3 border-t border-[#444]">
@@ -322,22 +393,65 @@
 
           <!-- Input Area -->
           <div class="bg-[#2d2d2d] border-t border-[#444] px-6 py-4">
-            <form @submit.prevent="handleSendMessage" class="flex gap-2">
-              <textarea
-                v-model="messageInput"
-                @keydown.enter.exact.prevent="handleSendMessage"
-                placeholder="Type your message... (Enter to send)"
-                class="flex-1 px-4 py-3 bg-[#1a1a1a] border border-[#444] rounded-lg focus:ring-2 focus:ring-accent resize-none text-[#e0e0e0] placeholder-[#95a5a6]"
-                rows="2"
-                :disabled="chatStore.sending"
-              ></textarea>
-              <button
-                type="submit"
-                :disabled="!messageInput.trim() || chatStore.sending"
-                class="btn-primary px-6 py-3 disabled:bg-[#444] disabled:cursor-not-allowed"
-              >
-                Send
-              </button>
+            <form @submit.prevent="handleSendMessage" class="space-y-2">
+              <div v-if="selectedAttachments.length" class="flex flex-wrap gap-2">
+                <div
+                  v-for="(file, index) in selectedAttachments"
+                  :key="`${file.name}-${file.size}-${index}`"
+                  class="inline-flex items-center gap-2 max-w-full px-2 py-1 rounded border border-[#555] bg-[#1a1a1a] text-xs text-[#d6e0e6]"
+                >
+                  <span class="uppercase text-[10px] text-[#95a5a6]">{{ classifyFileMediaType(file) }}</span>
+                  <span class="truncate max-w-[240px]">{{ file.name }}</span>
+                  <span class="text-[#95a5a6]">{{ formatBytes(file.size) }}</span>
+                  <button
+                    type="button"
+                    @click="removeAttachment(index)"
+                    class="text-[#e74c3c] hover:text-white"
+                  >
+                    x
+                  </button>
+                </div>
+              </div>
+              <div v-if="attachmentNotice" class="text-xs text-[#f39c12]">
+                {{ attachmentNotice }}
+              </div>
+              <div class="flex gap-2">
+                <input
+                  ref="fileInput"
+                  type="file"
+                  multiple
+                  :accept="attachmentAccept"
+                  :disabled="!attachmentUploadEnabled || chatStore.sending"
+                  class="hidden"
+                  @change="handleAttachmentSelect"
+                >
+                <button
+                  type="button"
+                  @click="openAttachmentPicker"
+                  :disabled="!attachmentUploadEnabled || chatStore.sending"
+                  class="px-3 py-3 rounded-lg border border-[#555] bg-[#1a1a1a] text-[#d6e0e6] hover:border-accent disabled:opacity-50"
+                  :title="attachmentButtonTitle"
+                >
+                  <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16.5 6.5l-7.78 7.78a3 3 0 104.24 4.24l8.49-8.49a5 5 0 10-7.07-7.07L5.89 11.45a7 7 0 109.9 9.9l7.07-7.07"></path>
+                  </svg>
+                </button>
+                <textarea
+                  v-model="messageInput"
+                  @keydown.enter.exact.prevent="handleSendMessage"
+                  placeholder="Type your message... (Enter to send)"
+                  class="flex-1 px-4 py-3 bg-[#1a1a1a] border border-[#444] rounded-lg focus:ring-2 focus:ring-accent resize-none text-[#e0e0e0] placeholder-[#95a5a6]"
+                  rows="2"
+                  :disabled="chatStore.sending"
+                ></textarea>
+                <button
+                  type="submit"
+                  :disabled="!canSend"
+                  class="btn-primary px-6 py-3 disabled:bg-[#444] disabled:cursor-not-allowed"
+                >
+                  Send
+                </button>
+              </div>
             </form>
           </div>
         </template>
@@ -591,7 +705,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, nextTick, watch } from 'vue';
+import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue';
 import { useChatStore } from '../stores/chat';
 import TopicRefineModal from '../components/TopicRefineModal.vue';
 import MarkdownIt from 'markdown-it';
@@ -611,7 +725,12 @@ const researchTab = ref('queue');
 
 // Chat state
 const chatMode = ref('standard');
+const privateChat = ref(false);
+const modelOverride = ref(false);
 const messageInput = ref('');
+const fileInput = ref(null);
+const selectedAttachments = ref([]);
+const attachmentNotice = ref('');
 const messagesContainer = ref(null);
 const lastDetectedIntent = ref(null);
 const showSystemPromptModal = ref(false);
@@ -678,6 +797,69 @@ const renderResearchMarkdown = (text) => {
     .replace(/\n/g, '<br />');
 };
 
+const ATTACHABLE_INPUT_CAPABILITIES = ['file_input', 'image_input', 'audio_input', 'video_input'];
+const FILE_ACCEPT_BY_CAPABILITY = {
+  image_input: 'image/*,.jpg,.jpeg,.png,.gif,.bmp,.tiff,.tif,.webp,.heic',
+  audio_input: 'audio/*,.mp3,.wav,.flac,.aac,.m4a,.ogg,.wma,.aiff',
+  video_input: 'video/*,.mp4,.mkv,.avi,.mov,.wmv,.flv,.webm,.m4v,.mpg,.mpeg',
+  file_input: '.pdf,.txt,.md,.csv,.json,.xml,.html,.htm,.log,.doc,.docx,.odt,.rtf,.xls,.xlsx,.ppt,.pptx,application/pdf,text/*',
+};
+const REQUIRED_INPUT_CAPABILITY_BY_MEDIA_TYPE = {
+  image: 'image_input',
+  audio: 'audio_input',
+  video: 'video_input',
+  pdf: 'file_input',
+  text: 'file_input',
+  document: 'file_input',
+  file: 'file_input',
+};
+
+const selectedChatMode = computed(() => {
+  return chatStore.modelModes.find(item => item.id === chatMode.value) || null;
+});
+
+const currentConversationMode = computed(() => {
+  if (!chatStore.currentConversation) {
+    return null;
+  }
+
+  const modeId = chatStore.currentConversation?.model_mode || 'standard';
+  return chatStore.modelModes.find(item => item.id === modeId || item.profile === modeId) || null;
+});
+
+const activeAttachmentMode = computed(() => {
+  return currentConversationMode.value || selectedChatMode.value;
+});
+
+const activeInputCapabilities = computed(() => {
+  return new Set(activeAttachmentMode.value?.input_capabilities || []);
+});
+
+const supportedAttachmentCapabilities = computed(() => {
+  return ATTACHABLE_INPUT_CAPABILITIES.filter(capability => activeInputCapabilities.value.has(capability));
+});
+
+const attachmentUploadEnabled = computed(() => supportedAttachmentCapabilities.value.length > 0);
+
+const attachmentAccept = computed(() => {
+  return supportedAttachmentCapabilities.value
+    .map(capability => FILE_ACCEPT_BY_CAPABILITY[capability])
+    .filter(Boolean)
+    .join(',');
+});
+
+const attachmentButtonTitle = computed(() => {
+  return attachmentUploadEnabled.value
+    ? `Attach ${supportedAttachmentCapabilities.value.map(labelInputCapability).join(', ')}`
+    : 'Attachments unavailable for this model';
+});
+
+const canSend = computed(() => {
+  return (messageInput.value.trim().length > 0 || selectedAttachments.value.length > 0)
+    && selectedAttachments.value.every(canAttachFile)
+    && !chatStore.sending;
+});
+
 // Date formatting
 const formatDate = (dateStr) => {
   if (!dateStr) return 'Never';
@@ -704,26 +886,107 @@ const getIntentEmoji = (intent) => {
 
 // Chat handlers
 const handleNewConversation = async () => {
-  const result = await chatStore.startNewConversation(chatMode.value);
-  if (result.success) messageInput.value = '';
+  if (selectedChatMode.value?.override_required && !modelOverride.value) {
+    alert('Check Operator override to use this candidate profile.');
+    return;
+  }
+
+  const result = await chatStore.startNewConversation(
+    chatMode.value,
+    privateChat.value || selectedChatMode.value?.private,
+    modelOverride.value
+  );
+  if (result.success) {
+    messageInput.value = '';
+    selectedAttachments.value = [];
+  }
 };
 
 const handleSelectConversation = async (id) => {
   await chatStore.loadConversation(id);
+  selectedAttachments.value = selectedAttachments.value.filter(canAttachFile);
+  attachmentNotice.value = '';
   await nextTick();
   scrollToBottom();
 };
 
 const handleSendMessage = async () => {
-  if (!messageInput.value.trim() || chatStore.sending) return;
+  if (!canSend.value) return;
   const content = messageInput.value;
+  const attachments = [...selectedAttachments.value];
   messageInput.value = '';
-  const result = await chatStore.sendMessageStream(content);
+  selectedAttachments.value = [];
+  attachmentNotice.value = '';
+  const result = await chatStore.sendMessageStream(content, attachments);
   if (result.success && result.intent) {
     lastDetectedIntent.value = result.intent;
   }
   await nextTick();
   scrollToBottom();
+};
+
+const handleAttachmentSelect = (event) => {
+  const files = Array.from(event.target.files || []);
+  const supportedFiles = files.filter(canAttachFile);
+  const unsupportedCount = files.length - supportedFiles.length;
+  selectedAttachments.value = [...selectedAttachments.value, ...supportedFiles].slice(0, 12);
+  attachmentNotice.value = unsupportedCount > 0
+    ? `${unsupportedCount} file${unsupportedCount === 1 ? '' : 's'} skipped for this model.`
+    : '';
+  event.target.value = '';
+};
+
+const openAttachmentPicker = () => {
+  if (!attachmentUploadEnabled.value || chatStore.sending) {
+    attachmentNotice.value = 'Attachments are not available for this model.';
+    return;
+  }
+
+  attachmentNotice.value = '';
+  fileInput.value?.click();
+};
+
+const removeAttachment = (index) => {
+  selectedAttachments.value.splice(index, 1);
+};
+
+const classifyFileMediaType = (file) => {
+  const type = (file.type || '').toLowerCase();
+  const name = (file.name || '').toLowerCase();
+  if (type.startsWith('image/') || /\.(jpg|jpeg|png|gif|bmp|tiff|tif|webp|heic)$/.test(name)) return 'image';
+  if (type.startsWith('audio/') || /\.(mp3|wav|flac|aac|m4a|ogg|wma|aiff)$/.test(name)) return 'audio';
+  if (type.startsWith('video/') || /\.(mp4|mkv|avi|mov|wmv|flv|webm|m4v|mpg|mpeg)$/.test(name)) return 'video';
+  if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  if (type.startsWith('text/') || /\.(txt|md|csv|json|xml|html|htm|log)$/.test(name)) return 'text';
+  if (/\.(doc|docx|odt|rtf|xls|xlsx|ppt|pptx)$/.test(name)) return 'document';
+  return 'file';
+};
+
+const canAttachFile = (file) => {
+  const requiredCapability = REQUIRED_INPUT_CAPABILITY_BY_MEDIA_TYPE[classifyFileMediaType(file)] || 'file_input';
+  return activeInputCapabilities.value.has(requiredCapability);
+};
+
+const labelInputCapability = (capability) => {
+  return {
+    file_input: 'files',
+    image_input: 'images',
+    audio_input: 'audio',
+    video_input: 'video',
+  }[capability] || capability.replace(/_/g, ' ');
+};
+
+const formatBytes = (bytes) => {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = value / 1024;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index++;
+  }
+  return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[index]}`;
 };
 
 const handleClearConversation = async () => {
@@ -1023,9 +1286,21 @@ watch(() => chatStore.messages.length, () => {
   nextTick(() => scrollToBottom());
 });
 
+watch(selectedChatMode, (profile) => {
+  if (profile?.private) {
+    privateChat.value = true;
+  }
+  if (!profile?.override_required) {
+    modelOverride.value = false;
+  }
+  selectedAttachments.value = selectedAttachments.value.filter(canAttachFile);
+  attachmentNotice.value = '';
+});
+
 // Load on mount
 onMounted(async () => {
   await Promise.all([
+    chatStore.fetchModelModes(),
     chatStore.fetchConversations(),
     loadResearchData(),
   ]);

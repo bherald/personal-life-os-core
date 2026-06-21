@@ -40,3 +40,18 @@ test('genealogy_batch_apply schema requires a reason and positive tree_id', () =
     /Required/
   );
 });
+
+test('genealogy_batch_apply source schema accepts URL fields', () => {
+  const parsed = genealogyBatchApplyInput.parse({
+    tree_id: 4,
+    dry_run: true,
+    reason: 'unit source url batch',
+    sources: [{
+      key: 's1',
+      title: 'Source with URL',
+      url: 'https://example.test/source.pdf',
+    }],
+  });
+
+  assert.equal(parsed.sources?.[0]?.url, 'https://example.test/source.pdf');
+});

@@ -15,6 +15,7 @@ class LocalRuntimeScorecardService
         'php artisan ollama:drift-check --json --compact --no-fail',
         'php artisan ollama:eval-scorecard --json --compact',
         'php artisan llm:sync-providers --json --compact --no-live',
+        'php artisan llm:capability-watch --json --compact',
         'php artisan codex:exec-smoke --json',
     ];
 
@@ -31,6 +32,7 @@ class LocalRuntimeScorecardService
                 'mode' => $this->mode(),
                 'summary' => $this->emptySummary(),
                 'privacy_posture' => $this->emptyPrivacyPosture(),
+                'local_sidecars' => $this->emptyLocalSidecarPosture(),
                 'ollama_eval' => $this->ollamaEvalPosture(),
                 'issues' => [[
                     'code' => 'missing_llm_instances_table',
@@ -50,7 +52,8 @@ class LocalRuntimeScorecardService
 
         $summary = $this->summarize($instances);
         $privacyPosture = $this->privacyPosture($instances);
-        $issues = $this->issues($summary, $privacyPosture);
+        $localSidecars = $this->localSidecarPosture($instances);
+        $issues = $this->issues($summary, $privacyPosture, $localSidecars);
 
         return [
             'generated_at' => $generatedAt->toIso8601String(),
@@ -58,6 +61,7 @@ class LocalRuntimeScorecardService
             'mode' => $this->mode(),
             'summary' => $summary,
             'privacy_posture' => $privacyPosture,
+            'local_sidecars' => $localSidecars,
             'ollama_eval' => $this->ollamaEvalPosture(),
             'issues' => $issues,
             'instances' => $instances,
@@ -83,6 +87,7 @@ class LocalRuntimeScorecardService
             'mode' => (array) ($payload['mode'] ?? $this->mode()),
             'summary' => (array) ($payload['summary'] ?? $this->emptySummary()),
             'privacy_posture' => (array) ($payload['privacy_posture'] ?? $this->emptyPrivacyPosture()),
+            'local_sidecars' => (array) ($payload['local_sidecars'] ?? $this->emptyLocalSidecarPosture()),
             'ollama_eval' => (array) ($payload['ollama_eval'] ?? $this->ollamaEvalPosture()),
             'issues' => $issues,
             'next_commands' => array_values((array) ($payload['next_commands'] ?? self::NEXT_COMMANDS)),
@@ -117,6 +122,7 @@ class LocalRuntimeScorecardService
             'last_success_at',
             'circuit_state',
             'quarantine_status',
+            'config',
             'updated_at',
         ], static fn (string $column): bool => Schema::hasColumn('llm_instances', $column)));
 
@@ -131,17 +137,23 @@ class LocalRuntimeScorecardService
     {
         $type = (string) ($row->instance_type ?? '');
         $providerClass = $this->offlinePolicy->classifyProvider($row);
+        $instanceId = (string) ($row->instance_id ?? '');
+        $backend = (string) ($row->compat_backend ?? '');
+        $config = $this->decodeAssoc($row->config ?? null);
+        $routePolicy = is_array($config['route_policy'] ?? null) ? $config['route_policy'] : [];
         $isLocal = $providerClass === 'local_llm' || in_array($type, ['ollama', 'local_llm'], true);
-        $isCodex = (string) ($row->instance_id ?? '') === 'codex_exec' || $type === 'codex_cli';
+        $isCodex = $instanceId === 'codex_exec' || $type === 'codex_cli';
+        $isLocalSidecar = $type === 'local_llm' || $backend === 'bitnet.cpp' || str_contains(strtolower($instanceId), 'bitnet');
         $allowsPrivate = property_exists($row, 'allows_private_data')
             ? $this->truthy($row->allows_private_data)
             : null;
 
         return [
-            'instance_id' => (string) ($row->instance_id ?? ''),
+            'instance_id' => $instanceId,
             'instance_type' => $type,
             'provider_class' => $providerClass,
             'provider_scope' => $isLocal ? 'local' : ($isCodex ? 'codex_external' : 'external'),
+            'local_sidecar' => $isLocalSidecar,
             'active' => $this->truthy($row->is_active ?? false),
             'healthy' => $this->truthy($row->is_healthy ?? false),
             'health_score' => (int) ($row->health_score ?? 0),
@@ -152,7 +164,7 @@ class LocalRuntimeScorecardService
             'gpu_target' => (string) ($row->gpu_target ?? ''),
             'host_affinity' => (string) ($row->host_affinity ?? ''),
             'runtime_family' => (string) ($row->compat_runtime_family ?? ''),
-            'backend' => (string) ($row->compat_backend ?? ''),
+            'backend' => $backend,
             'capability_count' => count($this->decodeList($row->capabilities ?? null)),
             'supported_model_count' => count($this->decodeList($row->supported_models ?? null)),
             'context_length' => $this->nullableInt($row->context_length ?? null),
@@ -161,6 +173,7 @@ class LocalRuntimeScorecardService
             'allows_private_data' => $allowsPrivate,
             'data_privacy_scope' => (string) ($row->data_privacy_scope ?? 'unknown'),
             'privacy_reviewed' => ! empty($row->privacy_reviewed_at),
+            'route_policy' => $isLocalSidecar ? $this->safeRoutePolicy($routePolicy) : null,
             'last_health_check' => $this->nullableIso8601($row->last_health_check ?? null),
             'last_success_at' => $this->nullableIso8601($row->last_success_at ?? null),
             'updated_at' => $this->nullableIso8601($row->updated_at ?? null),
@@ -290,6 +303,74 @@ class LocalRuntimeScorecardService
         return $posture;
     }
 
+    private function localSidecarPosture(array $instances): array
+    {
+        $posture = $this->emptyLocalSidecarPosture();
+
+        foreach ($instances as $instance) {
+            if (($instance['local_sidecar'] ?? null) !== true) {
+                continue;
+            }
+
+            $active = (bool) ($instance['active'] ?? false);
+            $healthy = (bool) ($instance['healthy'] ?? false);
+            $allowed = ($instance['routability'] ?? '') === 'allowed';
+            $routePolicy = is_array($instance['route_policy'] ?? null) ? $instance['route_policy'] : [];
+            $mode = (string) ($routePolicy['mode'] ?? 'unknown');
+            $allowedRoles = (array) ($routePolicy['allowed_roles'] ?? []);
+            $roleLimited = $allowedRoles !== [] && ! in_array('*', $allowedRoles, true);
+            $genericFallback = ($routePolicy['allow_generic_fallback'] ?? null) === true;
+            $requiresRedaction = ($routePolicy['require_redacted_input'] ?? null) === true;
+            $requiresModelRole = ($routePolicy['require_model_role'] ?? null) === true;
+
+            $posture['total']++;
+            $posture[$active ? 'active' : 'inactive']++;
+
+            if (str_contains(strtolower((string) ($instance['instance_id'] ?? '')), 'bitnet')
+                || (string) ($instance['backend'] ?? '') === 'bitnet.cpp') {
+                $posture['bitnet_instances']++;
+            }
+
+            if ($active && $healthy) {
+                $posture['active_healthy']++;
+            }
+
+            if ($active && $allowed) {
+                $posture['active_allowed']++;
+            }
+
+            if ($active && $mode === 'narrow') {
+                $posture['active_narrow']++;
+            }
+
+            if ($active && $allowed && $healthy && $mode === 'narrow' && $roleLimited && ! $genericFallback && $requiresRedaction && $requiresModelRole) {
+                $posture['active_safe_narrow_allowed']++;
+            }
+
+            if ($active && $genericFallback) {
+                $posture['active_generic_fallback_enabled']++;
+            }
+
+            if ($active && ! $requiresRedaction) {
+                $posture['active_redaction_not_required']++;
+            }
+
+            if ($active && ! $requiresModelRole) {
+                $posture['active_model_role_not_required']++;
+            }
+
+            if ($active && $allowed && ! $roleLimited) {
+                $posture['active_allowed_without_role_limit']++;
+            }
+
+            if ($active && $allowed && $mode !== 'narrow') {
+                $posture['active_allowed_non_narrow']++;
+            }
+        }
+
+        return $posture;
+    }
+
     private function ollamaEvalPosture(): array
     {
         $candidateQueue = (array) config('ollama_eval.candidate_queue', []);
@@ -322,7 +403,7 @@ class LocalRuntimeScorecardService
         ];
     }
 
-    private function issues(array $summary, array $privacyPosture): array
+    private function issues(array $summary, array $privacyPosture, array $localSidecars): array
     {
         $issues = [];
 
@@ -335,6 +416,11 @@ class LocalRuntimeScorecardService
         $this->addIssueIf($issues, $summary['active_stale_compat'] > 0, 'active_stale_compat_runtime', 'watch', $summary['active_stale_compat']);
         $this->addIssueIf($issues, $summary['active_open_circuit'] > 0, 'active_open_circuit_runtime', 'watch', $summary['active_open_circuit']);
         $this->addIssueIf($issues, $privacyPosture['active_privacy_unreviewed'] > 0, 'active_privacy_unreviewed', 'watch', $privacyPosture['active_privacy_unreviewed']);
+        $this->addIssueIf($issues, $localSidecars['active_generic_fallback_enabled'] > 0, 'active_local_sidecar_generic_fallback', 'error', $localSidecars['active_generic_fallback_enabled']);
+        $this->addIssueIf($issues, $localSidecars['active_redaction_not_required'] > 0, 'active_local_sidecar_missing_redaction_gate', 'error', $localSidecars['active_redaction_not_required']);
+        $this->addIssueIf($issues, $localSidecars['active_allowed_without_role_limit'] > 0, 'active_local_sidecar_without_role_limit', 'error', $localSidecars['active_allowed_without_role_limit']);
+        $this->addIssueIf($issues, $localSidecars['active_allowed_non_narrow'] > 0, 'active_local_sidecar_non_narrow', 'watch', $localSidecars['active_allowed_non_narrow']);
+        $this->addIssueIf($issues, $localSidecars['active_model_role_not_required'] > 0, 'active_local_sidecar_missing_model_role_gate', 'watch', $localSidecars['active_model_role_not_required']);
 
         return $issues;
     }
@@ -405,6 +491,25 @@ class LocalRuntimeScorecardService
         ];
     }
 
+    private function emptyLocalSidecarPosture(): array
+    {
+        return [
+            'total' => 0,
+            'active' => 0,
+            'inactive' => 0,
+            'bitnet_instances' => 0,
+            'active_healthy' => 0,
+            'active_allowed' => 0,
+            'active_narrow' => 0,
+            'active_safe_narrow_allowed' => 0,
+            'active_generic_fallback_enabled' => 0,
+            'active_redaction_not_required' => 0,
+            'active_model_role_not_required' => 0,
+            'active_allowed_without_role_limit' => 0,
+            'active_allowed_non_narrow' => 0,
+        ];
+    }
+
     private function emptyPrivacyPosture(): array
     {
         return [
@@ -454,6 +559,27 @@ class LocalRuntimeScorecardService
         return (bool) $value;
     }
 
+    private function safeRoutePolicy(array $routePolicy): array
+    {
+        $allowedRoles = array_values(array_filter(
+            array_map(
+                static fn (mixed $role): string => strtolower(trim((string) $role)),
+                (array) ($routePolicy['allowed_roles'] ?? $routePolicy['allowed_model_roles'] ?? [])
+            ),
+            static fn (string $role): bool => $role !== '' && preg_match('/\A[a-z0-9_.:-]{1,80}\z/', $role) === 1
+        ));
+
+        return [
+            'mode' => $this->bucket((string) ($routePolicy['mode'] ?? 'unknown'), ['narrow', 'bench', 'watch', 'disabled']),
+            'allowed_roles' => array_slice(array_values(array_unique($allowedRoles)), 0, 10),
+            'allowed_role_count' => count(array_unique($allowedRoles)),
+            'allow_generic_fallback' => $this->truthy($routePolicy['allow_generic_fallback'] ?? false),
+            'require_redacted_input' => $this->truthy($routePolicy['require_redacted_input'] ?? false),
+            'require_model_role' => $this->truthy($routePolicy['require_model_role'] ?? false),
+            'max_prompt_chars' => $this->nullableInt($routePolicy['max_prompt_chars'] ?? null),
+        ];
+    }
+
     private function decodeList(mixed $value): array
     {
         if (is_array($value)) {
@@ -467,6 +593,21 @@ class LocalRuntimeScorecardService
         $decoded = json_decode($value, true);
 
         return is_array($decoded) ? array_values($decoded) : [];
+    }
+
+    private function decodeAssoc(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (! is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+
+        return is_array($decoded) ? $decoded : [];
     }
 
     private function nullableInt(mixed $value): ?int

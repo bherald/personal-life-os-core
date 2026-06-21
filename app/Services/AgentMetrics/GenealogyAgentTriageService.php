@@ -63,8 +63,31 @@ class GenealogyAgentTriageService
         $windowDays = max(1, min(365, $windowDays));
         $now = CarbonImmutable::now('UTC');
         $since = $now->subDays($windowDays);
+        $missingTables = $this->missingTables(['scheduled_jobs']);
+
+        if ($missingTables !== []) {
+            return [
+                'version' => 1,
+                'mode' => 'observe',
+                'generated_at' => $now->toIso8601String(),
+                'window_days' => $windowDays,
+                'status' => 'blocked',
+                'summary' => [
+                    'targets_total' => count(self::TARGETS),
+                    'missing_tables' => $missingTables,
+                ],
+                'targets' => [],
+                'recommendations' => ['Restore required agent evidence tables before evaluating genealogy agent triage.'],
+                'note' => 'Read-only triage only; this command does not enable, disable, approve, reject, or schedule agents.',
+            ];
+        }
+
+        $jobs = $this->scheduledJobsByName();
+        if ($jobs === []) {
+            return $this->retiredRemovedPayload($now, $windowDays);
+        }
+
         $missingTables = $this->missingTables([
-            'scheduled_jobs',
             'agent_sessions',
             'agent_episodes',
             'agent_review_queue',
@@ -87,7 +110,6 @@ class GenealogyAgentTriageService
             ];
         }
 
-        $jobs = $this->scheduledJobsByName();
         $sessions = $this->sessionsByAgent($since);
         $episodes = $this->episodesByAgent($since);
         $reviews = $this->reviewsByAgent($since);
@@ -108,6 +130,43 @@ class GenealogyAgentTriageService
             'targets' => $targets,
             'recommendations' => $this->recommendations($targets),
             'note' => 'Read-only triage only; this command does not enable, disable, approve, reject, or schedule agents.',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function retiredRemovedPayload(CarbonImmutable $now, int $windowDays): array
+    {
+        return [
+            'version' => 1,
+            'mode' => 'observe',
+            'generated_at' => $now->toIso8601String(),
+            'window_days' => $windowDays,
+            'status' => 'healthy',
+            'summary' => [
+                'targets_total' => 0,
+                'configured_targets' => 0,
+                'enabled_targets' => 0,
+                'disabled_targets' => 0,
+                'missing_targets' => 0,
+                'blocked_targets' => 0,
+                'degraded_targets' => 0,
+                'watch_targets' => 0,
+                'completed_sessions_window' => 0,
+                'review_outputs_window' => 0,
+                'awo_completed_reviews_window' => 0,
+                'awo_approval_worthy_reviews_window' => 0,
+                'awo_approval_worthy_rate' => null,
+                'targets_needing_review' => [],
+                'retired_targets_total' => count(self::TARGETS),
+                'retired_removed_targets' => count(self::TARGETS),
+                'retired_removed_target_names' => array_column(self::TARGETS, 'job_name'),
+                'active_genealogy_lane' => 'genealogy_agent_research_queue',
+            ],
+            'targets' => [],
+            'recommendations' => [],
+            'note' => 'Legacy broad Genea scheduler lanes are fully retired and absent from scheduled_jobs. Active FT4 work uses queue-driven genealogy_agent_research_queue plus genealogy_supervisor.',
         ];
     }
 

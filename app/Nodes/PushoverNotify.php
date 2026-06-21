@@ -5,20 +5,37 @@ namespace App\Nodes;
 use App\Controllers\NotificationController;
 use App\Exceptions\NodeTimeoutException;
 use App\Services\PushoverRateLimitPolicy;
+use App\Services\SystemConfigService;
 use Exception;
 
 class PushoverNotify extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'notifications.pushover_notify_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'max_retries_per_chunk' => 2,
+        'retry_delay_seconds' => 1,
+        'inter_chunk_delay_seconds' => 2,
+        'timeout_seconds' => 300,
+        'multipart_send_budget_seconds' => 2,
+        'multipart_delivery_safety_margin_seconds' => 5,
+        'emergency_retry_seconds' => 60,
+        'emergency_expire_seconds' => 3600,
+    ];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function execute(array $input): array
     {
         try {
             $title = $this->getConfigValue('title', 'Notification');
             $priority = $this->getConfigValue('priority', 0);
             $sound = $this->getConfigValue('sound', null);
-            $maxRetriesPerChunk = max(1, (int) $this->getConfigValue('max_retries_per_chunk', 2));
-            $retryDelaySeconds = max(0, (int) $this->getConfigValue('retry_delay_seconds', 1));
-            $interChunkDelaySeconds = max(0, (int) $this->getConfigValue('inter_chunk_delay_seconds', 2));
-            $timeoutSeconds = max(1, (int) $this->getConfigValue('timeout_seconds', 300));
+            $maxRetriesPerChunk = $this->runtimeConfigInt('max_retries_per_chunk', 'max_retries_per_chunk', 1);
+            $retryDelaySeconds = $this->runtimeConfigInt('retry_delay_seconds', 'retry_delay_seconds', 0);
+            $interChunkDelaySeconds = $this->runtimeConfigInt('inter_chunk_delay_seconds', 'inter_chunk_delay_seconds', 0);
+            $timeoutSeconds = $this->runtimeConfigInt('timeout_seconds', 'timeout_seconds', 1);
             $effectiveTimeoutSeconds = max(1, (int) $this->getConfigValue('effective_timeout_seconds', $timeoutSeconds));
             $partTimestampsEnabled = filter_var(
                 $this->getConfigValue('part_timestamps_enabled', false),
@@ -185,8 +202,8 @@ class PushoverNotify extends BaseNode
 
                 // Emergency priority parameters
                 if ($priority == 2) {
-                    $payload['retry'] = (int) $this->getConfigValue('retry', 60);
-                    $payload['expire'] = (int) $this->getConfigValue('expire', 3600);
+                    $payload['retry'] = $this->runtimeConfigInt('retry', 'emergency_retry_seconds', 1);
+                    $payload['expire'] = $this->runtimeConfigInt('expire', 'emergency_expire_seconds', 1);
                 }
 
                 $result = null;
@@ -373,6 +390,46 @@ class PushoverNotify extends BaseNode
             || preg_match("/\\bNode '.+' execution timed out after \\d+s \\(limit: \\d+s\\)/", $message) === 1;
     }
 
+    private function runtimeConfigInt(string $configKey, string $policyKey, int $minimum): int
+    {
+        return $this->boundedInt(
+            $this->getConfigValue($configKey, $this->runtimePolicy()[$policyKey] ?? null),
+            (int) self::DEFAULT_RUNTIME_POLICY[$policyKey],
+            $minimum
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function boundedInt(mixed $value, int $fallback, int $minimum): int
+    {
+        if (! is_numeric($value)) {
+            return max($minimum, $fallback);
+        }
+
+        return max($minimum, (int) $value);
+    }
+
     private function assertMultipartDeliveryBudget(
         int $totalChunks,
         int $interChunkDelaySeconds,
@@ -384,8 +441,8 @@ class PushoverNotify extends BaseNode
             return;
         }
 
-        $sendBudgetSeconds = max(1, (int) $this->getConfigValue('multipart_send_budget_seconds', 2));
-        $safetyMarginSeconds = max(0, (int) $this->getConfigValue('multipart_delivery_safety_margin_seconds', 5));
+        $sendBudgetSeconds = $this->runtimeConfigInt('multipart_send_budget_seconds', 'multipart_send_budget_seconds', 1);
+        $safetyMarginSeconds = $this->runtimeConfigInt('multipart_delivery_safety_margin_seconds', 'multipart_delivery_safety_margin_seconds', 0);
         $requiredSeconds = ($totalChunks * $sendBudgetSeconds)
             + (($totalChunks - 1) * $interChunkDelaySeconds)
             + $safetyMarginSeconds;

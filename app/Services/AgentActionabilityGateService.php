@@ -40,6 +40,7 @@ class AgentActionabilityGateService
         $confidence = $this->numericConfidence($params['confidence'] ?? null);
         $text = $this->contextText($params, $details);
         $hardFailReasons = $this->qualityHardFailReasons($details);
+        $policy = $this->policyFor($reviewType) ?? $this->policyFor($findingType);
 
         if ($this->hasPromptInjectionMarker($text)) {
             return $this->envelope(
@@ -66,10 +67,31 @@ class AgentActionabilityGateService
         }
 
         if ($hardFailReasons !== []) {
+            $minConfidence = is_array($policy) ? ($policy['min_confidence'] ?? null) : null;
+            if ($confidence !== null && $minConfidence !== null && $confidence < $minConfidence) {
+                return $this->envelope(
+                    self::STATE_REVIEW_READY,
+                    ['quality_gate_hard_fail', 'below_actionability_confidence'],
+                    'Quality gate hard failure retained for review, but confidence is below the review-type operator-action threshold.',
+                    [
+                        'pushover_allowed' => $policy['pushover_allowed'] ?? null,
+                        'min_confidence' => $minConfidence,
+                        'policy_source' => 'review_type_registry',
+                        'policy_review_type' => $policy['review_type'] ?? $reviewType,
+                    ]
+                );
+            }
+
             return $this->envelope(
                 self::STATE_OPERATOR_ACTIONABLE,
                 ['quality_gate_hard_fail'],
-                'Quality gate hard failures require operator attention.'
+                'Quality gate hard failures require operator attention.',
+                is_array($policy) ? [
+                    'pushover_allowed' => $policy['pushover_allowed'] ?? null,
+                    'min_confidence' => $minConfidence,
+                    'policy_source' => 'review_type_registry',
+                    'policy_review_type' => $policy['review_type'] ?? $reviewType,
+                ] : []
             );
         }
 
@@ -89,7 +111,6 @@ class AgentActionabilityGateService
             );
         }
 
-        $policy = $this->policyFor($reviewType) ?? $this->policyFor($findingType);
         if ($policy !== null) {
             $policyState = (string) ($policy['state'] ?? self::STATE_REVIEW_READY);
             $policyReasons = ['review_type_registry_policy'];

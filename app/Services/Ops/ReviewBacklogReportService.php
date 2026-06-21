@@ -8,6 +8,7 @@ use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
 use App\Services\Review\ReviewTargetReferenceService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Throwable;
 
 class ReviewBacklogReportService
 {
@@ -18,6 +19,7 @@ class ReviewBacklogReportService
         'typed-remediation',
         'materializable-remediation',
         'source-backed-packet',
+        'face-photo-repair-packet',
         'aged-review',
     ];
 
@@ -158,13 +160,26 @@ class ReviewBacklogReportService
         }
 
         $payload['queries_executed'] = true;
+        $facePhotoRepairFindingType = $focus === 'face-photo-repair-packet'
+            ? $this->facePhotoRepairFindingType()
+            : null;
+
+        if ($focus === 'face-photo-repair-packet' && $facePhotoRepairFindingType === null) {
+            $payload['query_state'] = 'no_focus_candidates';
+            $payload['focus_summary'] = $this->nextTargetFocusSummary([], $focus);
+
+            return $payload;
+        }
 
         $query = DB::table('agent_review_queue')
             ->select(['id', 'token', 'review_type', 'finding_type', 'priority', 'status', 'created_at', 'details'])
             ->where('status', 'pending');
 
-        if ($focus === 'source-backed-packet') {
+        if ($focus === 'source-backed-packet' || $focus === 'face-photo-repair-packet') {
             $query->where('review_type', 'genealogy_review_packet');
+            if ($focus === 'face-photo-repair-packet' && $facePhotoRepairFindingType !== null) {
+                $query->where('finding_type', $facePhotoRepairFindingType);
+            }
         } elseif ($focus === 'typed-remediation' || $focus === 'materializable-remediation') {
             $query
                 ->where('review_type', 'genealogy_finding')
@@ -197,7 +212,7 @@ class ReviewBacklogReportService
         if ($focus !== null) {
             $payload['focus_summary'] = $this->nextTargetFocusSummary($candidates, $focus);
         }
-        $candidates = $this->filterNextTargetCandidates($candidates, $focus);
+        $candidates = $this->filterNextTargetCandidates($candidates, $focus, $facePhotoRepairFindingType);
 
         if ($candidates === []) {
             $payload['query_state'] = $focus === null
@@ -680,7 +695,7 @@ class ReviewBacklogReportService
             'apply_controls_included' => false,
         ];
 
-        if ($focus === 'source-backed-packet') {
+        if ($focus === 'source-backed-packet' || $focus === 'face-photo-repair-packet') {
             return array_merge($summary, $this->sourcePacketFocusSummary($candidates));
         }
 
@@ -966,6 +981,7 @@ class ReviewBacklogReportService
         $materializationStatus = $this->safeReviewPassCode($materialization['status'] ?? null);
 
         return match (true) {
+            $focus === 'face-photo-repair-packet' => 'review_one_face_photo_repair_packet',
             $focus === 'source-backed-packet' => 'review_one_source_backed_packet',
             $focus === 'materializable-remediation' => 'inspect_one_preview_remediation',
             $focus === 'typed-remediation' && $materializationStatus === 'validation_blocked' => 'explain_validation_blocked_remediation',
@@ -3293,7 +3309,7 @@ class ReviewBacklogReportService
      * @param  list<array<string, mixed>>  $candidates
      * @return list<array<string, mixed>>
      */
-    private function filterNextTargetCandidates(array $candidates, ?string $focus): array
+    private function filterNextTargetCandidates(array $candidates, ?string $focus, ?string $facePhotoRepairFindingType = null): array
     {
         if ($focus === null) {
             return $candidates;
@@ -3330,6 +3346,24 @@ class ReviewBacklogReportService
             }));
         }
 
+        if ($focus === 'face-photo-repair-packet') {
+            $findingType = $facePhotoRepairFindingType ?? $this->facePhotoRepairFindingType();
+            if ($findingType === null) {
+                return [];
+            }
+
+            return array_values(array_filter($candidates, function (array $candidate) use ($findingType): bool {
+                $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
+
+                return ($candidate['review_type'] ?? null) === 'genealogy_review_packet'
+                    && ($candidate['finding_type'] ?? null) === $findingType
+                    && ($flags['packet_source_backed'] ?? false) === true
+                    && ($flags['packet_review_ready'] ?? false) === true
+                    && ($flags['packet_preview_only'] ?? false) === true
+                    && ($flags['packet_canonical_mutation'] ?? true) === false;
+            }));
+        }
+
         if ($focus === 'aged-review') {
             return array_values(array_filter($candidates, function (array $candidate): bool {
                 $flags = is_array($candidate['evidence_flags'] ?? null) ? $candidate['evidence_flags'] : [];
@@ -3339,6 +3373,41 @@ class ReviewBacklogReportService
         }
 
         return [];
+    }
+
+    private function facePhotoRepairFindingType(): ?string
+    {
+        if (! Schema::hasTable('system_configs')) {
+            return null;
+        }
+
+        try {
+            $row = DB::table('system_configs')
+                ->select('config_value')
+                ->where('section', 'faces')
+                ->where('config_key', 'face_person_source_repair_plan')
+                ->first();
+        } catch (Throwable) {
+            return null;
+        }
+
+        if ($row === null) {
+            return null;
+        }
+
+        $decoded = json_decode((string) $row->config_value, true);
+        if (! is_array($decoded)) {
+            return null;
+        }
+
+        $findingType = $decoded['finding_type'] ?? null;
+        if (! is_string($findingType)) {
+            return null;
+        }
+
+        $findingType = trim($findingType);
+
+        return $findingType === '' ? null : $findingType;
     }
 
     private function compareAgedReviewCandidates(array $left, array $right): int

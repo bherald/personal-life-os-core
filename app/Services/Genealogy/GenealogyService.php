@@ -1041,7 +1041,7 @@ class GenealogyService
                     ? 'Primary photo set successfully'
                     : 'Primary photo removed successfully',
             ];
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             DB::rollBack();
 
             return ['success' => false, 'error' => 'Failed to update primary photo: '.$e->getMessage()];
@@ -2404,7 +2404,7 @@ class GenealogyService
                     (array) $oldPerson,
                     array_intersect_key($data, array_flip($allowedFields))
                 );
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('GenealogyService: Failed to record change history', ['error' => $e->getMessage()]);
             }
         }
@@ -2775,7 +2775,7 @@ class GenealogyService
                     $existingFamily,
                     array_intersect_key($data, array_flip($allowedFields))
                 );
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('GenealogyService: Failed to record change history', ['error' => $e->getMessage()]);
             }
         }
@@ -9235,13 +9235,25 @@ class GenealogyService
      *
      * Filters out exhausted persons (exhaustion >= 0.90 AND searched in last 30 days)
      * and persons whose pending hints are all deferred, unless explicitly requested.
+     * Optionally filters out people with recent completed queue/task work so assess
+     * can still return a full batch of eligible people after the SQL LIMIT.
      *
      * @param  int  $limit  Max persons to return (default 20)
      * @param  int|null  $tier  Filter to specific bloodline tier (1-4), null = all tiers
      * @param  bool  $includeExhausted  Include persons with high exhaustion scores (default false)
+     * @param  string|null  $recentWorkCutoff  Exclude persons completed at or after this timestamp
+     * @param  float|null  $minDataGapScore  Optional lower bound for data gap score
+     * @param  int|null  $minPendingHints  Optional lower bound for pending hint count
      */
-    public function getPriorityPersons(int $treeId, int $limit = 20, ?int $tier = null, bool $includeExhausted = false): array
-    {
+    public function getPriorityPersons(
+        int $treeId,
+        int $limit = 20,
+        ?int $tier = null,
+        bool $includeExhausted = false,
+        ?string $recentWorkCutoff = null,
+        ?float $minDataGapScore = null,
+        ?int $minPendingHints = null
+    ): array {
         // Main query: join coverage with persons for name/dates context
         $params = [$treeId];
         $tierFilter = '';
@@ -9254,6 +9266,45 @@ class GenealogyService
         if (! $includeExhausted) {
             // Skip persons with >= 90% negative searches AND searched within last 30 days
             $exhaustionFilter = 'AND NOT (c.research_exhaustion_score >= 0.90 AND c.last_searched_at >= DATE_SUB(NOW(), INTERVAL 30 DAY))';
+        }
+
+        $recentWorkFilter = '';
+        if (is_string($recentWorkCutoff) && trim($recentWorkCutoff) !== '') {
+            $recentWorkFilter = "
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM genealogy_research_queue q_recent
+                  WHERE q_recent.tree_id = c.tree_id
+                    AND q_recent.person_id = c.person_id
+                    AND q_recent.status = 'completed'
+                    AND q_recent.completed_at >= ?
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM genealogy_research_tasks t_recent
+                  WHERE t_recent.tree_id = c.tree_id
+                    AND t_recent.person_id = c.person_id
+                    AND t_recent.status = 'completed'
+                    AND t_recent.completed_at >= ?
+              )";
+            $params[] = trim($recentWorkCutoff);
+            $params[] = trim($recentWorkCutoff);
+        }
+
+        $fallbackQualityFilter = '';
+        $qualityClauses = [];
+        $qualityParams = [];
+        if ($minDataGapScore !== null) {
+            $qualityClauses[] = 'c.data_gap_score >= ?';
+            $qualityParams[] = max(0.0, min(1.0, $minDataGapScore));
+        }
+        if ($minPendingHints !== null) {
+            $qualityClauses[] = 'c.pending_hint_count >= ?';
+            $qualityParams[] = max(0, $minPendingHints);
+        }
+        if ($qualityClauses !== []) {
+            $fallbackQualityFilter = 'AND ('.implode(' OR ', $qualityClauses).')';
+            array_push($params, ...$qualityParams);
         }
 
         $params[] = $limit;
@@ -9284,6 +9335,8 @@ class GenealogyService
             WHERE c.tree_id = ?
               {$tierFilter}
               {$exhaustionFilter}
+              {$recentWorkFilter}
+              {$fallbackQualityFilter}
             ORDER BY c.priority_score DESC, c.priority_rank ASC
             LIMIT ?
         ", $params);
@@ -9357,6 +9410,9 @@ class GenealogyService
             'filters_applied' => [
                 'tier' => $tier,
                 'include_exhausted' => $includeExhausted,
+                'recent_work_cutoff' => $recentWorkCutoff,
+                'min_data_gap_score' => $minDataGapScore,
+                'min_pending_hints' => $minPendingHints,
                 'limit' => $limit,
             ],
         ];

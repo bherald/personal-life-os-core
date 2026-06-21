@@ -710,6 +710,9 @@ const PREVIEW_REQUIRED_GENEALOGY_CHANGE_TYPES = new Set([
   'sex_value_review',
   'missing_name_review',
 ])
+const ACK_ONLY_GENEALOGY_CHANGE_TYPES = new Set([
+  'search_complete',
+])
 
 const normalizeRouteString = (value) => {
   const normalized = `${value ?? ''}`.trim()
@@ -1228,7 +1231,7 @@ const onDetailApprove = (payload) => {
   if (selectedItem.value?.unified_id === unifiedId) selectedItem.value = null
   detailUnifiedId.value = null
   bumpDailyReviewed()
-  showToast('Item approved')
+  showToast(decisionSuccessMessage(payload?.result, null, 'Item approved'))
   updateStats()
 }
 
@@ -1364,7 +1367,7 @@ const handleApprove = async (item) => {
       detailUnifiedId.value = null
     }
     bumpDailyReviewed()
-    showToast('Item approved')
+    showToast(decisionSuccessMessage(resp, item, 'Item approved'))
     updateStats()
   } catch (e) {
     console.error('Approve failed:', e)
@@ -1376,6 +1379,14 @@ const handleApprove = async (item) => {
 
 function isReviewPacket(item) {
   return item?.review_type === 'genealogy_review_packet' || item?.source === 'genealogy_review_packet'
+}
+
+function decisionSuccessMessage(result, item, fallback) {
+  const message = typeof result?.message === 'string' ? result.message.trim() : ''
+  if (message) return message
+  if (item && isAckOnlyGenealogyFinding(item)) return 'Acknowledged; no accepted FT facts were changed.'
+  if (item && isReviewPacket(item)) return 'Packet marked reviewed; no accepted FT facts were changed.'
+  return fallback
 }
 
 function isBatchSelectable(item) {
@@ -1393,6 +1404,10 @@ function approvalLabel(item) {
 
   if (genealogyFindingApprovalBlockReason(item)) {
     return 'Needs preview'
+  }
+
+  if (isAckOnlyGenealogyFinding(item)) {
+    return 'Acknowledge'
   }
 
   return isReviewPacket(item) ? 'Open packet' : 'Approve'
@@ -1431,15 +1446,28 @@ function approvalBlockReason(item) {
     || null
 }
 
+function genealogyFindingChangeTypes(item) {
+  const proposals = Array.isArray(item?.details?.proposals) ? item.details.proposals : []
+  return proposals
+    .map(proposal => `${proposal?.change_type || ''}`.trim())
+    .filter(Boolean)
+}
+
+function isAckOnlyGenealogyFinding(item) {
+  if (item?.review_type !== 'genealogy_finding' && item?.source !== 'genealogy_finding') {
+    return false
+  }
+
+  const changeTypes = genealogyFindingChangeTypes(item)
+  return changeTypes.length > 0 && changeTypes.every(type => ACK_ONLY_GENEALOGY_CHANGE_TYPES.has(type))
+}
+
 function genealogyFindingApprovalBlockReason(item) {
   if (item?.review_type !== 'genealogy_finding' && item?.source !== 'genealogy_finding') {
     return null
   }
 
-  const proposals = Array.isArray(item?.details?.proposals) ? item.details.proposals : []
-  const changeTypes = proposals
-    .map(proposal => `${proposal?.change_type || ''}`.trim())
-    .filter(Boolean)
+  const changeTypes = genealogyFindingChangeTypes(item)
 
   if (!changeTypes.some(type => PREVIEW_REQUIRED_GENEALOGY_CHANGE_TYPES.has(type))) {
     return null

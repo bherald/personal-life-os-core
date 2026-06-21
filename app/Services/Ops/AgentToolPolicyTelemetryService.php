@@ -78,6 +78,7 @@ class AgentToolPolicyTelemetryService
             $source = $this->bucket((string) ($row->source ?? 'unspecified'));
             $availability = $this->availability((string) ($row->availability_status ?? 'unknown'));
             $privacyClass = $this->bucket((string) ($row->privacy_class ?? 'unspecified'));
+            $enabledPolicyGap = false;
 
             $summary['risk_level_counts'][$riskLevel] = ($summary['risk_level_counts'][$riskLevel] ?? 0) + 1;
             $summary['source_counts'][$source] = ($summary['source_counts'][$source] ?? 0) + 1;
@@ -92,6 +93,7 @@ class AgentToolPolicyTelemetryService
             }
             if ($enabled && $availability === 'unknown') {
                 $summary['enabled_unknown_availability_total']++;
+                $enabledPolicyGap = true;
             }
 
             if (isset($columns['last_checked_at'])) {
@@ -100,11 +102,13 @@ class AgentToolPolicyTelemetryService
                     $summary['freshness_unchecked_total']++;
                     if ($enabled) {
                         $summary['freshness_unchecked_enabled_total']++;
+                        $enabledPolicyGap = true;
                     }
                 } elseif ($checkedAt->lessThan($staleCutoff)) {
                     $summary['freshness_stale_total']++;
                     if ($enabled) {
                         $summary['freshness_stale_enabled_total']++;
+                        $enabledPolicyGap = true;
                     }
                     $oldestCheckedAt = $this->olderTime($oldestCheckedAt, $checkedAt);
                 } else {
@@ -115,6 +119,7 @@ class AgentToolPolicyTelemetryService
                 $summary['freshness_unchecked_total']++;
                 if ($enabled) {
                     $summary['freshness_unchecked_enabled_total']++;
+                    $enabledPolicyGap = true;
                 }
             }
 
@@ -135,6 +140,11 @@ class AgentToolPolicyTelemetryService
 
             if ($enabled && $privacyClass === 'unspecified') {
                 $summary['privacy_unspecified_enabled_total']++;
+                $enabledPolicyGap = true;
+            }
+
+            if ($enabledPolicyGap) {
+                $summary['policy_gap_enabled_distinct_total']++;
             }
 
             if (isset($columns['max_result_bytes']) && $enabled && empty($row->max_result_bytes)) {
@@ -211,6 +221,7 @@ class AgentToolPolicyTelemetryService
             'max_result_bytes_missing_enabled_total' => 0,
             'schema_generation_missing_total' => 0,
             'policy_gap_enabled_total' => 0,
+            'policy_gap_enabled_distinct_total' => 0,
             'registry_columns_present' => 0,
             'availability_counts' => [],
             'privacy_class_counts' => [],

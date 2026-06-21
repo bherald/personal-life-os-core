@@ -26,7 +26,7 @@ const clusterUndoStack = ref([])
 const MAX_UNDO = 10
 
 // Session
-const clusterSessionStats = ref({ identified: 0, hidden: 0, merged: 0, split: 0, undone: 0 })
+const clusterSessionStats = ref({ identified: 0, hidden: 0, merged: 0, split: 0, assigned: 0, undone: 0 })
 const sessionStartTime = ref(Date.now())
 
 // Help overlay
@@ -251,6 +251,24 @@ export function useFaceClusterData() {
       return result
     } catch (e) {
       console.error('Failed to split cluster', e)
+      return { success: false }
+    }
+  }
+
+  async function assignFaces(faceIds, name, genealogyPersonId = null, treeId = null) {
+    try {
+      const payload = { face_ids: faceIds, person_name: name }
+      if (genealogyPersonId) payload.genealogy_person_id = genealogyPersonId
+      if (treeId) payload.tree_id = treeId
+
+      const result = await api.post('/media/faces/bulk-name', payload)
+      if (result.success) {
+        clusterSessionStats.value.assigned += faceIds.length
+      }
+
+      return result
+    } catch (e) {
+      console.error('Failed to assign faces', e)
       return { success: false }
     }
   }
@@ -570,6 +588,7 @@ export function useFaceClusterData() {
     batchIdentifyClusters,
     mergeClusterIds,
     splitCluster,
+    assignFaces,
     hideCluster,
     restoreCluster,
     loadSimilarClusters,

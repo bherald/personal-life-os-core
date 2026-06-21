@@ -6,6 +6,7 @@ use App\Services\FileRegistryLifecycleService;
 use App\Services\Genealogy\SourceAudit\SourceAuditWorkbookService;
 use App\Services\Review\ReviewContextEnrichmentService;
 use App\Services\Review\ReviewTargetReferenceService;
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
@@ -102,6 +103,22 @@ use Illuminate\Support\Str;
  */
 class GenealogyMCPService
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'genealogy.mcp_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'tree_search_max_results_per_type' => 100,
+        'person_search_max_results' => 100,
+        'person_profile_max_related_rows' => 100,
+        'family_profile_max_related_rows' => 100,
+        'tree_status_max_tree_rows' => 25,
+        'research_task_queue_max_results' => 200,
+        'media_rag_batch_max_results' => 100,
+        'media_rag_batch_max_seconds' => 120,
+        'rag_index_batch_max_results' => 100,
+        'person_embedding_batch_max_results' => 500,
+        'media_htr_batch_max_results' => 20,
+    ];
+
     private const FACT_UPDATE_FIELDS = [
         'given_name', 'surname', 'suffix', 'nickname', 'sex',
         'birth_date', 'birth_place', 'birth_lat', 'birth_lon',
@@ -167,6 +184,20 @@ class GenealogyMCPService
             'confidence' => 0.85,
         ],
         [
+            'lesson_type' => 'research_process_lesson',
+            'title' => 'Treat same-name source search hits as leads only',
+            'lesson' => 'A LOC, NARA, or source_search_all hit that only shares a name is search coverage or a follow-up lead. Do not submit source_add or review_packet output until source text bridges the tree person by date, place, relative, FAN associate, occupation, or source chain.',
+            'tags' => ['same_name', 'source_search', 'identity_bridge', 'review_gate'],
+            'confidence' => 0.92,
+        ],
+        [
+            'lesson_type' => 'research_process_lesson',
+            'title' => 'Prioritize source-backed FT4 fill-ins over broad packets',
+            'lesson' => 'For FT4 expansion, start with a specific blank fact, relationship, source gap, or media gap and the expected source class. Prefer person_fact_extract and bounded review/apply paths when a source identifies the target beyond a shared name.',
+            'tags' => ['ft4', 'fills_blank', 'source_backed', 'bounded_apply'],
+            'confidence' => 0.9,
+        ],
+        [
             'lesson_type' => 'document_interpretation_lesson',
             'title' => 'Use a local OCR vision ladder for hard media',
             'lesson' => 'When offline or avoiding external LLM load, review media through the smallest useful local path first: existing OCR/RAG text, media_review_packet, HTR/vision escalation candidates, then local Ollama vision or OCR. Treat noisy machine readings as clues until a human-readable field, citation image, or stronger source confirms the fact.',
@@ -187,6 +218,9 @@ class GenealogyMCPService
     private GedcomExportService $exporter;
 
     private ?GenealogyAIResearchService $aiResearch = null;
+
+    /** @var array<string, mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function __construct(
         GenealogyService $genealogy,
@@ -419,6 +453,7 @@ class GenealogyMCPService
             'timestamp' => now()->toIso8601String(),
         ];
 
+        $limit = $this->clampRuntimeLimit($limit, 'tree_search_max_results_per_type', 100);
         $queryParam = "%{$query}%";
 
         if ($type === 'person' || $type === 'all') {
@@ -492,7 +527,7 @@ class GenealogyMCPService
             'include_living' => $include_living,
         ]);
 
-        $limit = max(1, min(100, $limit));
+        $limit = $this->clampRuntimeLimit($limit, 'person_search_max_results', 100);
         $query = trim($query);
 
         if ($query === '') {
@@ -1283,7 +1318,7 @@ class GenealogyMCPService
     {
         Log::info('GenealogyMCPService: person_profile called', ['person_id' => $person_id]);
 
-        $limit = max(1, min(100, $limit));
+        $limit = $this->clampRuntimeLimit($limit, 'person_profile_max_related_rows', 100);
 
         try {
             $person = DB::selectOne('
@@ -1477,7 +1512,7 @@ class GenealogyMCPService
             'family_id' => $family_id,
         ]);
 
-        $limit = max(1, min(100, $limit));
+        $limit = $this->clampRuntimeLimit($limit, 'family_profile_max_related_rows', 100);
 
         try {
             $family = DB::selectOne('
@@ -1740,7 +1775,7 @@ class GenealogyMCPService
     {
         Log::info('GenealogyMCPService: tree_status called', ['tree_id' => $tree_id]);
 
-        $limit = max(1, min(25, $limit));
+        $limit = $this->clampRuntimeLimit($limit, 'tree_status_max_tree_rows', 25);
 
         try {
             $trees = [];
@@ -2258,7 +2293,7 @@ class GenealogyMCPService
             'limit' => $limit,
         ]);
 
-        $limit = max(1, min(200, $limit));
+        $limit = $this->clampRuntimeLimit($limit, 'research_task_queue_max_results', 200);
 
         try {
             $tree = $this->genealogy->getTree($tree_id);
@@ -5387,8 +5422,8 @@ class GenealogyMCPService
         ]);
 
         $treeId = $tree_id !== null && $tree_id > 0 ? $tree_id : null;
-        $limit = max(1, min(100, $limit));
-        $maxSeconds = max(1, min(120, $max_seconds));
+        $limit = $this->clampRuntimeLimit($limit, 'media_rag_batch_max_results', 100);
+        $maxSeconds = $this->clampRuntimeLimit($max_seconds, 'media_rag_batch_max_seconds', 120);
 
         if (! $stats && ! $dry_run && ! $confirm) {
             return [
@@ -5488,7 +5523,7 @@ class GenealogyMCPService
         ]);
 
         $treeId = $tree_id !== null && $tree_id > 0 ? $tree_id : null;
-        $limit = max(1, min(100, $limit));
+        $limit = $this->clampRuntimeLimit($limit, 'rag_index_batch_max_results', 100);
         $type = strtolower(trim($type));
         $allowedTypes = ['persons', 'places', 'sources', 'all'];
 
@@ -5608,7 +5643,7 @@ class GenealogyMCPService
         ]);
 
         $treeId = $tree_id !== null && $tree_id > 0 ? $tree_id : null;
-        $limit = max(1, min(500, $limit));
+        $limit = $this->clampRuntimeLimit($limit, 'person_embedding_batch_max_results', 500);
 
         if (! $stats && ! $dry_run && ! $confirm) {
             return [
@@ -5731,7 +5766,7 @@ class GenealogyMCPService
         ]);
 
         $treeId = $tree_id !== null && $tree_id > 0 ? $tree_id : null;
-        $limit = max(1, min(20, $limit));
+        $limit = $this->clampRuntimeLimit($limit, 'media_htr_batch_max_results', 20);
 
         if (! $status && ! $dry_run && ! $confirm) {
             return [
@@ -6605,7 +6640,10 @@ class GenealogyMCPService
                       OR gm.analysis_status = 'failed'
                       OR gm.enrichment_status = 'failed'
                       OR COALESCE(gm.analysis_error, '') <> ''
-                      OR COALESCE(gm.enrichment_error, '') <> ''
+                      OR (
+                          COALESCE(gm.enrichment_error, '') <> ''
+                          AND gm.enrichment_error NOT LIKE 'source_quality:%'
+                      )
                   )
             ";
 
@@ -6631,7 +6669,12 @@ class GenealogyMCPService
                 ORDER BY
                     CASE
                         WHEN gm.analysis_status = 'failed' OR gm.enrichment_status = 'failed' THEN 0
-                        WHEN COALESCE(gm.analysis_error, '') <> '' OR COALESCE(gm.enrichment_error, '') <> '' THEN 1
+                        WHEN COALESCE(gm.analysis_error, '') <> ''
+                          OR (
+                              COALESCE(gm.enrichment_error, '') <> ''
+                              AND gm.enrichment_error NOT LIKE 'source_quality:%'
+                          )
+                        THEN 1
                         WHEN gm.media_type IN ('certificate', 'census', 'obituary', 'military') THEN 2
                         ELSE 3
                     END,
@@ -13524,7 +13567,7 @@ class GenealogyMCPService
             ],
             'genealogy_media_enrich' => [
                 'lane' => 'media_enrichment',
-                'command_hint' => 'genealogy:enrich-media --limit=5',
+                'command_hint' => 'genealogy:enrich-media --execute --limit=5',
                 'required' => true,
             ],
             'genealogy_media_rag_index' => [
@@ -16421,10 +16464,12 @@ class GenealogyMCPService
             (string) ($media->analysis_status ?? ''),
             (string) ($media->enrichment_status ?? ''),
         ])));
-        $errors = trim(implode(' ', [
-            (string) ($media->analysis_error ?? ''),
-            (string) ($media->enrichment_error ?? ''),
-        ]));
+        $analysisError = trim((string) ($media->analysis_error ?? ''));
+        $enrichmentError = trim((string) ($media->enrichment_error ?? ''));
+        if (str_starts_with($enrichmentError, 'source_quality:')) {
+            $enrichmentError = '';
+        }
+        $errors = trim($analysisError.' '.$enrichmentError);
 
         return str_contains($status, 'failed') || $errors !== '';
     }
@@ -18660,6 +18705,40 @@ class GenealogyMCPService
             'decision_log_count' => is_array($details['decision_log'] ?? null) ? count($details['decision_log']) : 0,
             'latest_decision' => $this->latestReviewPacketDecision($details['decision_log'] ?? []),
         ];
+    }
+
+    /** @return array<string, mixed> */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(
+            self::RUNTIME_POLICY_CONFIG_KEY,
+            self::DEFAULT_RUNTIME_POLICY
+        );
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function runtimePolicyInt(string $key, int $fallback): int
+    {
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+
+        return is_numeric($value) ? (int) $value : $fallback;
+    }
+
+    private function clampRuntimeLimit(int $value, string $maxKey, int $fallbackMax, int $min = 1): int
+    {
+        $minimum = max(0, $min);
+        $maximum = max($minimum, $this->runtimePolicyInt($maxKey, $fallbackMax));
+
+        return max($minimum, min($maximum, $value));
     }
 
     private function limitMemoryString(mixed $value, int $limit = 1000): ?string

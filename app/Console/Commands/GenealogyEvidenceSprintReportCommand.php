@@ -10,6 +10,7 @@ class GenealogyEvidenceSprintReportCommand extends Command
     protected $signature = 'genealogy:evidence-sprint-report
                             {--days=30 : Lookback window in days}
                             {--limit=500 : Maximum review-packet rows to inspect}
+                            {--boundary= : Restrict readiness to one exact sprint boundary label}
                             {--json : Output machine-readable JSON}
                             {--markdown : Output markdown report}
                             {--compact : Emit routine-check compact output}';
@@ -32,7 +33,11 @@ class GenealogyEvidenceSprintReportCommand extends Command
             return self::FAILURE;
         }
 
-        $payload = $service->collect($days, $limit);
+        $boundary = $this->option('boundary');
+        $boundary = is_string($boundary) ? trim($boundary) : null;
+        $boundary = $boundary === '' ? null : $boundary;
+
+        $payload = $service->collect($days, $limit, $boundary);
 
         if ($this->option('json')) {
             $json = json_encode(

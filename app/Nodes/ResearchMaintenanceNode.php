@@ -3,9 +3,8 @@
 namespace App\Nodes;
 
 use App\Services\Research\SourceOptimizationService;
-use App\Services\Research\DynamicSourceDiscoveryService;
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Artisan;
 
 /**
  * ResearchMaintenanceNode - Workflow node for automated research source maintenance
@@ -28,20 +27,42 @@ use Illuminate\Support\Facades\Artisan;
  */
 class ResearchMaintenanceNode extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'research.source_maintenance_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'enabled' => true,
+        'run_healing_default' => true,
+        'run_refresh_default' => true,
+        'run_discover_default' => true,
+        'run_optimize_default' => true,
+        'send_notification_default' => false,
+    ];
+
     private SourceOptimizationService $optimizationService;
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     public function execute(array $input): array
     {
         $startTime = microtime(true);
         $this->optimizationService = app(SourceOptimizationService::class);
 
+        if (! $this->runtimePolicyBool('enabled')) {
+            return $this->standardOutput(null, [
+                'node' => 'ResearchMaintenanceNode',
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
+            ], 'Research source maintenance runtime policy is disabled');
+        }
+
         // Get config
-        $runHealing = $this->getConfigValue('run_healing', true);
-        $runRefresh = $this->getConfigValue('run_refresh', true);
-        $runDiscover = $this->getConfigValue('run_discover', true);
-        $runOptimize = $this->getConfigValue('run_optimize', true);
+        $runHealing = $this->configuredBool('run_healing') ?? $this->runtimePolicyBool('run_healing_default');
+        $runRefresh = $this->configuredBool('run_refresh') ?? $this->runtimePolicyBool('run_refresh_default');
+        $runDiscover = $this->configuredBool('run_discover') ?? $this->runtimePolicyBool('run_discover_default');
+        $runOptimize = $this->configuredBool('run_optimize') ?? $this->runtimePolicyBool('run_optimize_default');
         $category = $this->getConfigValue('category', null);
-        $sendNotification = $this->getConfigValue('send_notification', false);
+        $sendNotification = $this->configuredBool('send_notification')
+            ?? $this->runtimePolicyBool('send_notification_default');
 
         Log::info('ResearchMaintenanceNode starting', [
             'healing' => $runHealing,
@@ -49,6 +70,8 @@ class ResearchMaintenanceNode extends BaseNode
             'discover' => $runDiscover,
             'optimize' => $runOptimize,
             'category' => $category,
+            'send_notification' => $sendNotification,
+            'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
         ]);
 
         $results = [
@@ -60,6 +83,8 @@ class ResearchMaintenanceNode extends BaseNode
             'health_summary' => null,
             'issues_found' => [],
             'actions_taken' => [],
+            'send_notification' => $sendNotification,
+            'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
         ];
 
         try {
@@ -146,6 +171,8 @@ class ResearchMaintenanceNode extends BaseNode
                 'tasks_run' => $results['tasks_run'],
                 'issues_found' => count($results['issues_found']),
                 'actions_taken' => count($results['actions_taken']),
+                'send_notification' => $sendNotification,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ]);
 
         } catch (\Exception $e) {
@@ -157,6 +184,7 @@ class ResearchMaintenanceNode extends BaseNode
             return $this->standardOutput(null, [
                 'node' => 'ResearchMaintenanceNode',
                 'error' => true,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ], $e->getMessage());
         }
     }
@@ -204,5 +232,52 @@ class ResearchMaintenanceNode extends BaseNode
         $lines[] = "Duration: {$results['duration_seconds']}s";
 
         return implode("\n", $lines);
+    }
+
+    private function configuredBool(string $key): ?bool
+    {
+        $value = $this->getConfigValue($key);
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
+    }
+
+    private function runtimePolicyBool(string $key): bool
+    {
+        $fallback = (bool) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
     }
 }

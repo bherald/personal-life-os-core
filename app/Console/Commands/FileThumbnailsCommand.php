@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Ops\MediaWorkloadAdmissionService;
 use App\Services\ThumbnailService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -29,6 +30,7 @@ class FileThumbnailsCommand extends Command
         {--timeout= : Runtime budget in seconds for batch generation}
         {--stats : Show thumbnail statistics}
         {--cleanup : Remove orphaned thumbnails}
+        {--force-low-disk : Bypass media workload admission warning/block for operator-approved catch-up}
         {--backfill-db : Scan disk thumbnails and backfill DB records}
         {--reprocess-unsupported : Clear unsupported_type errors for now-supported extensions and queue for regeneration}';
 
@@ -56,7 +58,7 @@ class FileThumbnailsCommand extends Command
 
         if ($this->option('reprocess-unsupported')) {
             $resetCount = $this->reprocessUnsupported($service);
-            if (!$this->option('generate') && !$this->option('regenerate')) {
+            if (! $this->option('generate') && ! $this->option('regenerate')) {
                 return 0;
             }
         }
@@ -66,6 +68,7 @@ class FileThumbnailsCommand extends Command
         }
 
         $this->info('Usage: files:thumbnails --generate|--regenerate|--uuid=|--stats|--cleanup|--reprocess-unsupported');
+
         return 0;
     }
 
@@ -73,7 +76,7 @@ class FileThumbnailsCommand extends Command
     {
         $stats = $service->getStats();
 
-        $this->info("Thumbnail Statistics");
+        $this->info('Thumbnail Statistics');
         $this->line("Generated: {$stats['generated']}");
         $this->line("Errors: {$stats['errors']}");
         $this->line("Pending: {$stats['pending']}");
@@ -84,13 +87,13 @@ class FileThumbnailsCommand extends Command
 
     private function cleanup(ThumbnailService $service): int
     {
-        $this->info("Cleaning up orphaned thumbnails...");
+        $this->info('Cleaning up orphaned thumbnails...');
         $result = $service->cleanupOrphaned();
 
         $this->line("Checked: {$result['checked']}");
         $this->line("Removed: {$result['removed']}");
         if ($result['bytes_freed'] > 0) {
-            $this->line("Freed: " . $this->formatBytes($result['bytes_freed']));
+            $this->line('Freed: '.$this->formatBytes($result['bytes_freed']));
         }
 
         return 0;
@@ -128,6 +131,11 @@ class FileThumbnailsCommand extends Command
             $filters['path'] = $this->option('path');
         }
 
+        $admission = $this->admitMediaWorkload('file_thumbnails');
+        if ($admission !== self::SUCCESS) {
+            return $admission;
+        }
+
         $this->info("Generating thumbnails (limit: {$limit}, runtime budget: {$deadlineSeconds}s)...");
 
         $stats = $service->batchGenerate($filters, $limit, $deadlineSeconds);
@@ -136,12 +144,35 @@ class FileThumbnailsCommand extends Command
         $this->line("Generated: {$stats['generated']}");
         $this->line("Skipped: {$stats['skipped']}");
         $this->line("Errors: {$stats['errors']}");
-        if (!empty($stats['stopped_early'])) {
+        if (! empty($stats['stopped_early'])) {
             $this->warn("Stopped early to stay within runtime budget ({$deadlineSeconds}s).");
         }
         $this->line("[ITEMS_PROCESSED:{$stats['processed']}]");
 
         return 0;
+    }
+
+    private function admitMediaWorkload(string $workload): int
+    {
+        $service = app(MediaWorkloadAdmissionService::class);
+        $decision = $service->evaluate($workload, [
+            'force' => (bool) $this->option('force-low-disk'),
+        ]);
+        $line = $service->compactLine($decision);
+
+        if (($decision['allowed'] ?? false) !== true) {
+            $this->error('Media workload admission blocked: '.$line);
+
+            return self::FAILURE;
+        }
+
+        if (($decision['would_block'] ?? false) === true) {
+            $this->warn('Media workload admission warning: '.$line);
+        } else {
+            $this->line('Media workload admission: '.$line);
+        }
+
+        return self::SUCCESS;
     }
 
     private function resolveDeadlineSeconds(): int
@@ -157,8 +188,9 @@ class FileThumbnailsCommand extends Command
     private function backfillDb(ThumbnailService $service): int
     {
         $thumbDir = storage_path('app/thumbnails');
-        if (!is_dir($thumbDir)) {
+        if (! is_dir($thumbDir)) {
             $this->error('No thumbnails directory found.');
+
             return 1;
         }
 
@@ -168,9 +200,9 @@ class FileThumbnailsCommand extends Command
         $uuidSizes = []; // uuid => [sizes]
 
         // Scan all prefix directories
-        $prefixDirs = glob($thumbDir . '/*', GLOB_ONLYDIR);
+        $prefixDirs = glob($thumbDir.'/*', GLOB_ONLYDIR);
         foreach ($prefixDirs as $prefixDir) {
-            $files = glob($prefixDir . '/*.jpg');
+            $files = glob($prefixDir.'/*.jpg');
             foreach ($files as $thumbFile) {
                 $stats['scanned']++;
                 $basename = basename($thumbFile, '.jpg');
@@ -182,11 +214,11 @@ class FileThumbnailsCommand extends Command
                 $uuid = substr($basename, 0, $lastDot);
                 $size = substr($basename, $lastDot + 1);
 
-                if (!in_array($size, ['small', 'medium', 'large'])) {
+                if (! in_array($size, ['small', 'medium', 'large'])) {
                     continue;
                 }
 
-                if (!isset($uuidSizes[$uuid])) {
+                if (! isset($uuidSizes[$uuid])) {
                     $uuidSizes[$uuid] = [];
                 }
                 $uuidSizes[$uuid][] = $size;
@@ -206,8 +238,9 @@ class FileThumbnailsCommand extends Command
                 [$uuid]
             );
 
-            if (!$file) {
+            if (! $file) {
                 $stats['orphaned']++;
+
                 continue;
             }
 
@@ -218,11 +251,12 @@ class FileThumbnailsCommand extends Command
 
             if ($mergedSizes === $existingSizes && $file->thumbnail_generated_at) {
                 $stats['skipped']++;
+
                 continue;
             }
 
             DB::update(
-                "UPDATE file_registry SET thumbnail_sizes = ?, thumbnail_generated_at = COALESCE(thumbnail_generated_at, NOW()), thumbnail_error = NULL WHERE id = ?",
+                'UPDATE file_registry SET thumbnail_sizes = ?, thumbnail_generated_at = COALESCE(thumbnail_generated_at, NOW()), thumbnail_error = NULL WHERE id = ?',
                 [json_encode($mergedSizes), $file->id]
             );
             $stats['updated']++;
@@ -246,7 +280,7 @@ class FileThumbnailsCommand extends Command
 
         // Extension-based clear: derived from ThumbnailService::EXTENSION_TYPE_MAP (single source of truth)
         $extensions = ThumbnailService::getSupportedExtensions();
-        $pattern = '\.(' . implode('|', array_map('preg_quote', $extensions)) . ')$';
+        $pattern = '\.('.implode('|', array_map('preg_quote', $extensions)).')$';
 
         $byExt = DB::update(
             "UPDATE file_registry
@@ -271,6 +305,7 @@ class FileThumbnailsCommand extends Command
         $this->line("  Reset by extension: {$byExt}");
         $this->line("  Reset by MIME type: {$byMime}");
         $this->line("  Total cleared: {$total}");
+
         return $total;
     }
 
@@ -283,6 +318,7 @@ class FileThumbnailsCommand extends Command
             $size /= 1024;
             $i++;
         }
-        return round($size, 2) . ' ' . $units[$i];
+
+        return round($size, 2).' '.$units[$i];
     }
 }

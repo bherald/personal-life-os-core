@@ -622,6 +622,17 @@ class ReviewContextEnrichmentService
             $claimContexts,
             $validation
         );
+        $workTrail = $this->reviewPacketWorkTrail(
+            $details,
+            $reviewFocus,
+            $reviewChecklist,
+            $reviewProof,
+            $packetOutcome,
+            $claimContexts,
+            $validation,
+            $applyPreviewMeta,
+            $targetRef
+        );
 
         return [
             'target_ref' => $targetRef,
@@ -647,6 +658,7 @@ class ReviewContextEnrichmentService
             'review_checklist' => $reviewChecklist,
             'evidence_lens' => $evidenceLens,
             'review_proof' => $reviewProof,
+            'work_trail' => $workTrail,
             'review_pass' => $this->reviewPacketPass(
                 $reviewFocus,
                 $reviewChecklist,
@@ -654,6 +666,149 @@ class ReviewContextEnrichmentService
                 $reviewProof,
                 $packetOutcome,
             ),
+        ];
+    }
+
+    /**
+     * Display-only operational trail for a Genea review packet.
+     *
+     * This intentionally describes workflow and gate state, not fact evidence.
+     * It omits raw packet details, source locators, row ids, person ids,
+     * prompts, tool payloads, filesystem paths, and tokens.
+     *
+     * @param  array<string, mixed>  $details
+     * @param  array<string, mixed>  $reviewFocus
+     * @param  array<string, mixed>  $reviewChecklist
+     * @param  array<string, mixed>  $reviewProof
+     * @param  array<string, mixed>  $packetOutcome
+     * @param  list<array<string, mixed>>  $claimContexts
+     * @param  array<string, mixed>  $validation
+     * @param  array<string, mixed>  $applyPreviewMeta
+     * @return array<string, mixed>
+     */
+    private function reviewPacketWorkTrail(
+        array $details,
+        array $reviewFocus,
+        array $reviewChecklist,
+        array $reviewProof,
+        array $packetOutcome,
+        array $claimContexts,
+        array $validation,
+        array $applyPreviewMeta,
+        ?string $targetRef
+    ): array {
+        $proofSummary = is_array($reviewProof['summary'] ?? null) ? $reviewProof['summary'] : [];
+        $readiness = is_array($reviewFocus['review_readiness'] ?? null) ? $reviewFocus['review_readiness'] : [];
+        $sourceCount = $this->nonNegativeInt($proofSummary['source_count'] ?? null)
+            ?? $this->nonNegativeInt($reviewFocus['source_count'] ?? null)
+            ?? count($this->detailArray($details, 'sources'));
+        $claimCount = count($claimContexts);
+        $resolvedMediaCount = $this->nonNegativeInt($proofSummary['resolved_media_count'] ?? null)
+            ?? $this->nonNegativeInt($reviewFocus['resolved_media_count'] ?? null)
+            ?? 0;
+        $missingMediaCount = $this->nonNegativeInt($proofSummary['missing_media_count'] ?? null)
+            ?? $this->nonNegativeInt($reviewFocus['missing_media_count'] ?? null)
+            ?? 0;
+        $validationState = $this->validationProofState($validation);
+        $previewPersisted = ($applyPreviewMeta['persisted'] ?? null) === true;
+        $previewGenerated = ($applyPreviewMeta['generated'] ?? null) === true;
+        $approvalReady = ($proofSummary['review_ready'] ?? null) === true;
+        $outcomeState = $this->safeReviewPassCode($packetOutcome['outcome_state'] ?? null) ?? 'unknown';
+        $blockerCodes = $this->reviewPassBlockerCodes($reviewFocus);
+        $targetRefPresent = $this->safeTargetRef($targetRef) !== null;
+        $boundaryPresent = $this->firstScalarText($reviewFocus, ['boundary_label']) !== null;
+
+        $rows = [
+            $this->checklistRow('packet_projection', 'Packet projection', 'packet context loaded', 'ok'),
+            $this->checklistRow(
+                'target_reference',
+                'Target reference',
+                $targetRefPresent ? 'stable target reference present' : 'missing target reference',
+                $targetRefPresent ? 'ok' : 'warning'
+            ),
+            $this->checklistRow(
+                'source_screening',
+                'Source screening',
+                $this->checklistCountLabel($sourceCount, 'source'),
+                $sourceCount > 0 ? 'ok' : 'blocked'
+            ),
+            $this->checklistRow(
+                'claim_extraction',
+                'Claim extraction',
+                $this->checklistCountLabel($claimCount, 'claim'),
+                $claimCount > 0 ? 'ok' : 'blocked'
+            ),
+            $this->checklistRow(
+                'media_resolution',
+                'Media resolution',
+                $resolvedMediaCount.' resolved, '.$missingMediaCount.' missing',
+                $missingMediaCount === 0 ? 'ok' : 'warning'
+            ),
+            $this->checklistRow(
+                'validation_gate',
+                'Validation gate',
+                $validationState,
+                $validationState === 'valid' ? 'ok' : 'blocked'
+            ),
+            $this->checklistRow(
+                'apply_preview_gate',
+                'Apply preview',
+                $previewPersisted ? 'persisted preview present' : ($previewGenerated ? 'display preview generated' : 'preview missing'),
+                $previewPersisted ? 'ok' : ($previewGenerated ? 'warning' : 'blocked')
+            ),
+            $this->checklistRow(
+                'operator_boundary',
+                'Operator boundary',
+                $boundaryPresent ? 'boundary labeled' : 'boundary missing',
+                $boundaryPresent ? 'ok' : 'warning'
+            ),
+            $this->checklistRow(
+                'approval_readiness',
+                'Approval readiness',
+                $approvalReady ? 'reviewable' : ($this->safeReviewPassCode($readiness['reason_code'] ?? null) ?? 'not reviewable'),
+                $approvalReady ? 'ok' : 'blocked'
+            ),
+            $this->checklistRow(
+                'outcome_state',
+                'Outcome state',
+                $outcomeState,
+                $this->packetOutcomeChecklistState($packetOutcome)
+            ),
+        ];
+
+        return [
+            'schema' => 'genealogy_review_packet_work_trail.v1',
+            'mode' => 'display_only',
+            'derived' => true,
+            'operational_trace_only' => true,
+            'canonical_write_allowed' => false,
+            'batch_review_allowed' => false,
+            'details_included' => false,
+            'raw_identifiers_included' => false,
+            'tokens_included' => false,
+            'locators_included' => false,
+            'prompts_included' => false,
+            'tool_payloads_included' => false,
+            'summary' => [
+                'review_ready' => $approvalReady,
+                'validation_state' => $validationState,
+                'apply_preview_persisted' => $previewPersisted,
+                'apply_preview_generated' => $previewGenerated,
+                'source_count' => $sourceCount,
+                'claim_count' => $claimCount,
+                'resolved_media_count' => $resolvedMediaCount,
+                'missing_media_count' => $missingMediaCount,
+                'checklist_row_count' => $this->nonNegativeInt($reviewChecklist['row_count'] ?? null) ?? count((array) ($reviewChecklist['rows'] ?? [])),
+                'blocker_count' => count($blockerCodes),
+                'blocker_codes' => $blockerCodes,
+                'outcome_state' => $outcomeState,
+            ],
+            'row_count' => count($rows),
+            'rows' => $rows,
+            'state_counts' => array_count_values(array_map(
+                fn (array $row): string => (string) ($row['state'] ?? 'unknown'),
+                $rows
+            )),
         ];
     }
 

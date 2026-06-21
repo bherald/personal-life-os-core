@@ -155,11 +155,13 @@ class OpsRuntimeDiagnosticsService
 
         try {
             $rows = DB::select(
-                'SELECT scheduled_job_id, started_at, completed_at, status,
-                        duration_seconds, output
-                   FROM scheduled_job_runs
-                  WHERE started_at >= (NOW() - INTERVAL ? MINUTE)
-                  ORDER BY started_at DESC',
+                'SELECT sjr.scheduled_job_id, sjr.started_at, sjr.completed_at, sjr.status,
+                        sjr.duration_seconds, sjr.output,
+                        sj.last_run_status AS current_job_status
+                   FROM scheduled_job_runs sjr
+                   LEFT JOIN scheduled_jobs sj ON sj.id = sjr.scheduled_job_id
+                  WHERE sjr.started_at >= (NOW() - INTERVAL ? MINUTE)
+                  ORDER BY sjr.started_at DESC',
                 [$windowMinutes]
             );
         } catch (\Throwable $e) {
@@ -174,6 +176,8 @@ class OpsRuntimeDiagnosticsService
         $durationsMs = [];
         $durationsWithId = [];
         $errorSignatureCounts = [];
+        $problemRunsRecovered = 0;
+        $problemRunsUnrecovered = 0;
 
         foreach ($rows as $row) {
             $status = (string) ($row->status ?? '');
@@ -192,6 +196,13 @@ class OpsRuntimeDiagnosticsService
             }
 
             if (in_array($status, ['failed', 'timeout'], true)) {
+                $currentJobStatus = (string) ($row->current_job_status ?? '');
+                if (in_array($currentJobStatus, ['', 'failed', 'timeout', 'running'], true)) {
+                    $problemRunsUnrecovered++;
+                } else {
+                    $problemRunsRecovered++;
+                }
+
                 $output = (string) ($row->output ?? '');
                 $sig = $this->errorSignature($output);
                 if ($sig !== '') {
@@ -216,6 +227,8 @@ class OpsRuntimeDiagnosticsService
             'result' => 'ok',
             'total' => $total,
             'status_distribution' => $distribution,
+            'problem_runs_recovered' => $problemRunsRecovered,
+            'problem_runs_unrecovered' => $problemRunsUnrecovered,
             'percent_success' => $percentSuccess,
             'median_duration_ms' => $this->percentile($durationsMs, 50.0),
             'p95_duration_ms' => $this->percentile($durationsMs, 95.0),

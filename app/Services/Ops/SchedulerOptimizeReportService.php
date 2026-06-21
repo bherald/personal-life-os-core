@@ -257,20 +257,29 @@ class SchedulerOptimizeReportService
                 continue;
             }
 
+            $lastRunStatus = (string) ($job['last_run_status'] ?? '');
+            $unrecovered = in_array($lastRunStatus, ['failed', 'timeout', 'running'], true);
+
             $recommendations[] = [
                 'id' => 'failure-hotspot-'.$job['id'],
-                'priority' => 80,
-                'severity' => 'warning',
+                'priority' => $unrecovered ? 80 : 45,
+                'severity' => $unrecovered ? 'warning' : 'notice',
                 'category' => 'reliability',
                 'job_id' => $job['id'],
                 'job_name' => $job['name'],
-                'action' => 'Review job failures before changing cadence or batch size.',
-                'reason' => 'A failing job should not be optimized for throughput until root cause is known.',
+                'action' => $unrecovered
+                    ? 'Review job failures before changing cadence or batch size.'
+                    : 'Monitor recovered failure history before changing cadence or batch size.',
+                'reason' => $unrecovered
+                    ? 'A failing job should not be optimized for throughput until root cause is known.'
+                    : 'Recent failures are present in the observation window, but the job has since recovered.',
                 'evidence' => [
                     'run_count' => $runCount,
                     'failed_or_timeout_count' => $failed,
                     'failure_rate' => $failureRate,
                     'status_counts' => $job['status_counts'],
+                    'last_run_status' => $lastRunStatus,
+                    'recovered' => ! $unrecovered,
                 ],
             ];
         }

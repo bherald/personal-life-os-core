@@ -20,6 +20,7 @@ class RagRetrievalEvidenceCommand extends Command
         {--type= : Default document type filter}
         {--max-queries=25 : Maximum queries accepted in one batch}
         {--include-results : Include result titles/previews in output}
+        {--no-trace : Do not write rag_query_traces for this evidence run}
         {--json : Emit machine-readable retrieval evidence}
         {--markdown : Emit redacted Markdown retrieval evidence}';
 
@@ -37,20 +38,21 @@ class RagRetrievalEvidenceCommand extends Command
         $limit = max(1, min((int) $this->option('limit'), 20));
         $defaultType = $this->normaliseType($this->option('type'));
         $includeResults = (bool) $this->option('include-results');
+        $traceQueries = ! (bool) $this->option('no-trace');
         $maxQueries = max(1, min((int) $this->option('max-queries'), 50));
 
         try {
             $queries = $this->loadQueries($defaultType);
         } catch (\Throwable $e) {
-            return $this->emitFailure($e->getMessage(), $started);
+            return $this->emitFailure($e->getMessage(), $started, $traceQueries);
         }
 
         if ($queries === []) {
-            return $this->emitFailure('No queries supplied. Use --query or --queries-file.', $started);
+            return $this->emitFailure('No queries supplied. Use --query or --queries-file.', $started, $traceQueries);
         }
 
         if (count($queries) > $maxQueries) {
-            return $this->emitFailure('Query count '.count($queries).' exceeds max-queries '.$maxQueries.'.', $started);
+            return $this->emitFailure('Query count '.count($queries).' exceeds max-queries '.$maxQueries.'.', $started, $traceQueries);
         }
 
         $entries = [];
@@ -65,7 +67,9 @@ class RagRetrievalEvidenceCommand extends Command
             $query = $querySpec['query'];
 
             try {
-                $results = $ragService->search($query, $limit, $querySpec['type']);
+                $results = $traceQueries
+                    ? $ragService->search($query, $limit, $querySpec['type'])
+                    : $ragService->search($query, $limit, $querySpec['type'], false, null, ['trace' => false]);
                 $durationMs = $this->durationMs($queryStarted);
                 $durations[] = $durationMs;
                 $resultCount = count($results);
@@ -124,7 +128,7 @@ class RagRetrievalEvidenceCommand extends Command
         $payload = [
             'status' => $failedCount > 0 ? 'observe_warning' : 'observe_ok',
             'duration_ms' => $this->durationMs($started),
-            'evidence_contract' => $this->evidenceContract($includeResults),
+            'evidence_contract' => $this->evidenceContract($includeResults, $traceQueries),
             'query_set_hash' => $this->querySetHash($queries),
             'query_count' => count($entries),
             'successful_count' => count($entries) - $failedCount,
@@ -249,12 +253,12 @@ class RagRetrievalEvidenceCommand extends Command
         return substr(hash('sha256', json_encode($fingerprint, JSON_UNESCAPED_SLASHES)), 0, 16);
     }
 
-    private function emitFailure(string $message, float $started): int
+    private function emitFailure(string $message, float $started, bool $traceQueries = true): int
     {
         $payload = [
             'status' => 'failed',
             'duration_ms' => $this->durationMs($started),
-            'evidence_contract' => $this->evidenceContract(false),
+            'evidence_contract' => $this->evidenceContract(false, $traceQueries),
             'error' => $message,
         ];
 
@@ -313,6 +317,7 @@ class RagRetrievalEvidenceCommand extends Command
             $lines[] = '- Query set hash basis: `'.($contract['query_set_hash_basis'] ?? 'unknown').'`';
             $lines[] = '- Query text: `'.($contract['query_text'] ?? 'unknown').'`';
             $lines[] = '- Results: `'.($contract['results'] ?? 'unknown').'`';
+            $lines[] = '- Query traces: `'.($contract['query_traces'] ?? 'unknown').'`';
             $lines[] = '';
         }
 
@@ -378,7 +383,7 @@ class RagRetrievalEvidenceCommand extends Command
     /**
      * @return array<string, int|string>
      */
-    private function evidenceContract(bool $includeResults): array
+    private function evidenceContract(bool $includeResults, bool $traceQueries = true): array
     {
         return [
             'version' => self::EVIDENCE_CONTRACT_VERSION,
@@ -387,6 +392,7 @@ class RagRetrievalEvidenceCommand extends Command
             'query_text' => 'redacted_by_default',
             'labels' => 'operator_supplied_public_handles',
             'results' => $includeResults ? 'included_by_operator_option' : 'redacted_by_default',
+            'query_traces' => $traceQueries ? 'enabled_default' : 'disabled_by_operator_option',
         ];
     }
 

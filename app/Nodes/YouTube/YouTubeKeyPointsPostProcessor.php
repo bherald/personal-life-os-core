@@ -6,15 +6,34 @@ use App\DTOs\TrustEnvelope;
 use App\Nodes\BaseNode;
 use App\Services\AIService;
 use App\Services\JoplinYouTubeOrganizer;
+use App\Services\SystemConfigService;
 use App\Services\TrustBoundaryFormatterService;
 use Illuminate\Support\Facades\Log;
 use Exception;
 
 class YouTubeKeyPointsPostProcessor extends BaseNode
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'youtube.key_points_post_processor_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'execute_default_limit' => 50,
+        'direct_process_default_limit' => 20,
+        'dry_run_default' => false,
+        'file_batch_size' => 50,
+        'max_seconds' => 900,
+        'title_preview_chars' => 50,
+        'transcript_min_chars' => 50,
+        'transcript_max_chars' => 12000,
+        'ai_max_tokens' => 1000,
+        'ai_temperature' => 0.0,
+    ];
+
     private const PLACEHOLDER = '*Key points will be extracted*';
 
     private ?TrustBoundaryFormatterService $trustBoundaryFormatter = null;
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     private function trustBoundaryFormatter(): TrustBoundaryFormatterService
     {
@@ -24,12 +43,13 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
     public function execute(array $input): array
     {
         try {
-            $limit = (int) $this->getConfigValue('limit', 50);
-            $dryRun = $this->getConfigValue('dry_run', false);
+            $limit = $this->configuredPositiveInt('limit') ?? $this->runtimePolicyInt('execute_default_limit');
+            $dryRun = $this->configuredBool('dry_run') ?? $this->runtimePolicyBool('dry_run_default');
 
             Log::info('YouTubeKeyPointsPostProcessor: Starting', [
                 'limit' => $limit,
                 'dry_run' => $dryRun,
+                'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
             ]);
 
             $organizer = app(JoplinYouTubeOrganizer::class);
@@ -46,6 +66,10 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
                     'placeholders_found' => $result['found'],
                     'notes_updated' => $result['updated'],
                     'notes_failed' => $result['failed'],
+                    'limit' => $limit,
+                    'dry_run' => $dryRun,
+                    'max_seconds' => $result['max_seconds'],
+                    'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
                 ]
             );
 
@@ -68,14 +92,28 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
         bool $dryRun = false,
         ?object $output = null
     ): array {
-        $stats = ['scanned' => 0, 'found' => 0, 'updated' => 0, 'failed' => 0, 'notes' => []];
+        $limit = $limit > 0 ? $limit : $this->runtimePolicyInt('direct_process_default_limit');
+        $fileBatchSize = $this->configuredPositiveInt('file_batch_size') ?? $this->runtimePolicyInt('file_batch_size');
+        $maxSeconds = $this->configuredNonNegativeInt('max_seconds') ?? $this->runtimePolicyNonNegativeInt('max_seconds');
+        $titlePreviewChars = $this->configuredPositiveInt('title_preview_chars')
+            ?? $this->runtimePolicyInt('title_preview_chars');
+
+        $stats = [
+            'scanned' => 0,
+            'found' => 0,
+            'updated' => 0,
+            'failed' => 0,
+            'notes' => [],
+            'max_seconds' => $maxSeconds,
+            'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
+        ];
 
         $joplinPath = $organizer->getJoplinPath();
         $watchLaterFolderId = $organizer->getWatchLaterFolderId();
 
         // Fetch all Joplin files
         $files = $organizer->listDirectory($joplinPath);
-        $allContents = $organizer->getFileContentsBatch($files, 50);
+        $allContents = $organizer->getFileContentsBatch($files, $fileBatchSize);
 
         // Find the Watch Later folder and all its subfolders
         $watchLaterFolderIds = [$watchLaterFolderId];
@@ -110,14 +148,13 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
         $this->logMessage($output, "Found {$stats['found']} notes with placeholder key points (scanned {$stats['scanned']})");
 
         // Process each placeholder note with wall-clock limit
-        $maxSeconds = 900; // 15 minutes — 468 note backlog needs larger window
         $startTime = microtime(true);
         foreach ($placeholderNotes as $note) {
             if ((microtime(true) - $startTime) >= $maxSeconds) {
                 $this->logMessage($output, "Wall-clock limit reached ({$maxSeconds}s), stopping");
                 break;
             }
-            $title = substr($note['title'], 0, 50);
+            $title = substr($note['title'], 0, $titlePreviewChars);
 
             // Extract transcript from note body
             $transcript = $this->extractTranscript($note['raw']);
@@ -189,7 +226,10 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             $transcript = preg_replace('/^\*\*Transcript Stats:\*\*\n(?:- .*\n)*/m', '', $transcript);
 
             $transcript = trim($transcript);
-            return strlen($transcript) > 50 ? $transcript : null;
+            $minChars = $this->configuredNonNegativeInt('transcript_min_chars')
+                ?? $this->runtimePolicyNonNegativeInt('transcript_min_chars');
+
+            return strlen($transcript) > $minChars ? $transcript : null;
         }
 
         return null;
@@ -206,7 +246,8 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             contentType: 'text/plain',
             origin: (string) $title,
             payload: $transcript,
-            maxChars: 12000,
+            maxChars: $this->configuredPositiveInt('transcript_max_chars')
+                ?? $this->runtimePolicyInt('transcript_max_chars'),
         ));
 
         $prompt = <<<PROMPT
@@ -234,8 +275,8 @@ Transcript:
 PROMPT;
 
         $result = $aiService->process($prompt, [
-            'max_tokens' => 1000,
-            'temperature' => 0,
+            'max_tokens' => $this->configuredPositiveInt('ai_max_tokens') ?? $this->runtimePolicyInt('ai_max_tokens'),
+            'temperature' => $this->configuredFloat('ai_temperature') ?? $this->runtimePolicyFloat('ai_temperature'),
         ]);
 
         if (!($result['success'] ?? false)) {
@@ -259,5 +300,132 @@ PROMPT;
             $output->writeln($message);
         }
         Log::info('[YouTubeKeyPointsPostProcessor] ' . strip_tags($message));
+    }
+
+    private function configuredBool(string $key): ?bool
+    {
+        $value = $this->getConfigValue($key);
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? (bool) $value;
+    }
+
+    private function configuredPositiveInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : null;
+    }
+
+    private function configuredNonNegativeInt(string $key): ?int
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue >= 0 ? $intValue : null;
+    }
+
+    private function configuredFloat(string $key): ?float
+    {
+        $value = $this->getConfigValue($key);
+        if ($value === null || $value === '' || ! is_numeric($value)) {
+            return null;
+        }
+
+        return (float) $value;
+    }
+
+    private function runtimePolicyBool(string $key): bool
+    {
+        $fallback = (bool) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? $fallback;
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyNonNegativeInt(string $key): int
+    {
+        return $this->nonNegativeInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyFloat(string $key): float
+    {
+        $fallback = (float) self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? null;
+
+        return is_numeric($value) ? (float) $value : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    private function nonNegativeInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue >= 0 ? $intValue : $fallback;
     }
 }

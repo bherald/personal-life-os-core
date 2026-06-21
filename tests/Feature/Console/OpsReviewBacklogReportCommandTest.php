@@ -274,6 +274,28 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $this->assertSame('source-backed-packet', json_decode((string) Artisan::output(), true)['focus']);
     }
 
+    public function test_next_target_face_photo_repair_packet_focus_option_is_forwarded(): void
+    {
+        $payload = $this->nextTargetPayload(['focus' => 'face-photo-repair-packet']);
+
+        $service = Mockery::mock(ReviewBacklogReportService::class);
+        $service->shouldReceive('nextTarget')
+            ->once()
+            ->with(7, 8, false, 'face-photo-repair-packet')
+            ->andReturn($payload);
+        $service->shouldReceive('collect')->never();
+        $this->app->instance(ReviewBacklogReportService::class, $service);
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--json' => true,
+            '--next-target' => true,
+            '--focus' => 'face-photo-repair-packet',
+        ]);
+
+        $this->assertSame(0, $exit);
+        $this->assertSame('face-photo-repair-packet', json_decode((string) Artisan::output(), true)['focus']);
+    }
+
     public function test_next_target_aged_review_focus_option_is_forwarded(): void
     {
         $payload = $this->nextTargetPayload(['focus' => 'aged-review']);
@@ -397,6 +419,32 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         $this->assertStringContainsString('available=true', $output);
         $this->assertStringContainsString('classification=source_backed_packet_review', $output);
         $this->assertStringContainsString('operator_action=review_one_source_backed_packet', $output);
+        $this->assertStringContainsString('target_ref_included=false', $output);
+        $this->assertStringContainsString('raw_ids_included=false', $output);
+        $this->assertStringContainsString('tokens_included=false', $output);
+        $this->assertStringContainsString('locators_included=false', $output);
+        $this->assertSourceBackedPacketCommandOutputIsRedacted($output);
+    }
+
+    public function test_face_photo_repair_packet_next_target_compact_flag_output_is_redacted(): void
+    {
+        $payload = $this->facePhotoRepairPacketNextTargetPayload();
+        $this->bindPartialNextTargetService($payload, 'face-photo-repair-packet');
+
+        $exit = Artisan::call('ops:review-backlog-report', [
+            '--next-target' => true,
+            '--focus' => 'face-photo-repair-packet',
+            '--compact' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Review backlog next target compact: review_required', $output);
+        $this->assertStringContainsString('focus=face-photo-repair-packet', $output);
+        $this->assertStringContainsString('available=true', $output);
+        $this->assertStringContainsString('classification=source_backed_packet_review', $output);
+        $this->assertStringContainsString('finding=face_person_source_repair_plan', $output);
+        $this->assertStringContainsString('operator_action=review_one_face_photo_repair_packet', $output);
         $this->assertStringContainsString('target_ref_included=false', $output);
         $this->assertStringContainsString('raw_ids_included=false', $output);
         $this->assertStringContainsString('tokens_included=false', $output);
@@ -705,7 +753,7 @@ class OpsReviewBacklogReportCommandTest extends TestCase
         ]);
 
         $this->assertSame(1, $exit);
-        $this->assertStringContainsString('Unsupported --focus value. Supported values: typed-remediation, materializable-remediation, source-backed-packet, aged-review.', (string) Artisan::output());
+        $this->assertStringContainsString('Unsupported --focus value. Supported values: typed-remediation, materializable-remediation, source-backed-packet, face-photo-repair-packet, aged-review.', (string) Artisan::output());
     }
 
     public function test_json_and_markdown_options_are_mutually_exclusive(): void
@@ -1196,6 +1244,16 @@ class OpsReviewBacklogReportCommandTest extends TestCase
                 ],
             ],
         ];
+    }
+
+    private function facePhotoRepairPacketNextTargetPayload(): array
+    {
+        $payload = $this->sourceBackedPacketNextTargetPayload();
+        $payload['focus'] = 'face-photo-repair-packet';
+        $payload['next_target']['finding_type'] = 'face_person_source_repair_plan';
+        $payload['next_target']['next_action'] = 'Open face/photo repair packet in Review Hub and decide one packet at a time.';
+
+        return $payload;
     }
 
     private function assertSourceBackedPacketCommandOutputIsRedacted(string $output): void

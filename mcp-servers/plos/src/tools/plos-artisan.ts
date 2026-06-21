@@ -1,14 +1,15 @@
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CONFIG, shellQuote, sshCmd } from '../config.js';
 import { logger } from '../util/logger.js';
 import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
 // Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-05-27-trace-tail-compact';
+export const ALLOWLIST_REVISION = '2026-06-20-mcp-capacity-observe';
 
 const ALLOWLIST_REVISION_PATTERN = /ALLOWLIST_REVISION\s*=\s*['"]([^'"]+)['"]/;
 
@@ -20,8 +21,30 @@ export type AllowlistFreshness = {
   mismatched_revision_count: number;
 };
 
+type AllowedCommandMeta = { description: string; timeout: number };
+
+type AllowedCommands = Record<string, AllowedCommandMeta>;
+
+type AllowlistModuleCandidate = {
+  ALLOWLIST_REVISION?: unknown;
+  ALLOWED_COMMANDS?: unknown;
+  COMPACT_SCORECARD_COMMANDS?: unknown;
+};
+
+type ResolvedAllowlistPolicy = {
+  source: 'loaded' | 'dist';
+  revision: string;
+  commands: AllowedCommands;
+  compactCommands: readonly string[];
+  freshness: AllowlistFreshness;
+};
+
 export function extractAllowlistRevision(contents: string): string | null {
   return contents.match(ALLOWLIST_REVISION_PATTERN)?.[1] ?? null;
+}
+
+export function allowlistContentFingerprint(contents: string): string {
+  return createHash('sha256').update(contents).digest('hex').slice(0, 16);
 }
 
 export function allowlistFreshness(input: {
@@ -58,9 +81,7 @@ function readTextIfPresent(path: string): string | null {
   return readFileSync(path, 'utf8');
 }
 
-function allowlistFreshnessLine(): string {
-  const freshness = allowlistFreshness();
-
+function allowlistFreshnessLine(freshness: AllowlistFreshness = allowlistFreshness()): string {
   return `Allowlist freshness: status=${freshness.status} loaded=${freshness.loaded_revision} source=${freshness.source_revision ?? 'unknown'} dist=${freshness.dist_revision ?? 'unknown'} mismatches=${freshness.mismatched_revision_count}`;
 }
 
@@ -76,6 +97,9 @@ export const COMPACT_SCORECARD_COMMANDS = [
   'codex:exec-smoke --json',
   'ops:local-runtime-scorecard --json --compact',
   'ops:scheduled-output-audit --json --compact --fail-on-violations',
+  'ops:runtime-diagnostics --json --compact',
+  'ops:queue-fit-audit --json --compact',
+  'ops:capacity-utilization-manager --json --compact',
   'ollama:drift-check --json --compact --no-fail',
   'ollama:eval-scorecard --json --compact',
 ] as const;
@@ -90,6 +114,8 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:daily-report --dry-run':  { description: 'Morning digest preview (no send)', timeout: 60_000 },
   'ops:operator-evidence --compact': { description: 'Compact operator evidence dashboard summary', timeout: 30_000 },
   'ops:operator-evidence --json --compact': { description: 'Compact operator evidence dashboard payload', timeout: 30_000 },
+  'ops:agent-tool-policy-refresh --json --compact': { description: 'Dry-run table-backed agent tool policy metadata refresh summary', timeout: 30_000 },
+  'ops:agent-tool-policy-refresh --apply --json --compact': { description: 'Apply deterministic agent tool policy metadata refresh without tool execution', timeout: 60_000 },
   'ops:review-backlog-report --json': { description: 'Read-only review backlog triage report', timeout: 30_000 },
   'ops:review-backlog-report --markdown': { description: 'Read-only review backlog triage markdown', timeout: 30_000 },
   'ops:review-backlog-report --dry-run': { description: 'Read-only review backlog dry-run report', timeout: 30_000 },
@@ -103,6 +129,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:review-backlog-report --next-target --focus=materializable-remediation --json': { description: 'Read-only sanitized materializable remediation review target JSON', timeout: 30_000 },
   'ops:review-backlog-report --next-target --focus=source-backed-packet --json': { description: 'Read-only sanitized source-backed review packet target JSON', timeout: 30_000 },
   'ops:review-backlog-report --next-target --focus=aged-review --json': { description: 'Read-only sanitized oldest aged review target JSON', timeout: 30_000 },
+  'ops:review-backlog-report --json --compact --next-target --focus=face-photo-repair-packet': { description: 'Compact read-only sanitized face/photo repair packet review target JSON', timeout: 30_000 },
   'ops:offline-status --json':   { description: 'Offline/degraded runtime status', timeout: 15_000 },
   'ops:offline-smoke --json --compact': { description: 'Compact read-only offline smoke report without raw details', timeout: 30_000 },
   'ops:agent-doctor --compact': { description: 'Compact observe-only agent health diagnostics', timeout: 30_000 },
@@ -118,8 +145,10 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'llm:sync-providers --json --compact': { description: 'Compact read-only LLM provider model diff and role/capability review', timeout: 60_000 },
   'llm:sync-providers --json --compact --no-live': { description: 'Compact read-only LLM provider role/capability review without network probes', timeout: 30_000 },
   'codex:exec-smoke --json': { description: 'Dry-run table-backed Codex Exec connector smoke without invoking Codex', timeout: 30_000 },
+  'bitllm:privacy-gate --eval --json': { description: 'Run the redacted local BitLLM privacy eval pack through table-routed providers', timeout: 120_000 },
   'ops:local-runtime-scorecard --json --compact': { description: 'Compact observe-only local/runtime LLM privacy and readiness scorecard without probes', timeout: 30_000 },
   'ops:scheduled-output-audit --json --compact --fail-on-violations': { description: 'Compact retained scheduled-output key hygiene audit without raw output or job rows', timeout: 30_000 },
+  'ops:scheduled-output-audit --json --compact': { description: 'Compact retained scheduled-output key hygiene audit without raw output or job rows', timeout: 30_000 },
   'ollama:drift-check --json --compact --no-fail': { description: 'Compact read-only Ollama live-vs-DB model drift summary without model names or host URLs', timeout: 60_000 },
   'ollama:eval-scorecard --json --compact': { description: 'Compact read-only Ollama Sprint A routing, candidate, and compression scorecard', timeout: 30_000 },
   'ops:capacity-report --json':   { description: 'Observe-only capacity evidence report', timeout: 30_000 },
@@ -127,14 +156,39 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:capacity-checkpoint --json --compact': { description: 'Compact observe-only no-decision capacity checkpoint JSON', timeout: 60_000 },
   'ops:capacity-checkpoint --markdown': { description: 'Observe-only no-decision capacity checkpoint markdown', timeout: 60_000 },
   'ops:capacity-checkpoint --dry-run --json': { description: 'Dry-run capacity checkpoint wiring and shape JSON', timeout: 30_000 },
+  'ops:capacity-utilization-manager --json --compact': { description: 'Compact dry-run capacity utilization manager posture without starting scheduler lanes', timeout: 120_000 },
+  'ops:capacity-utilization-manager --dry-run --json --compact': { description: 'Explicit compact dry-run capacity utilization manager posture without starting scheduler lanes', timeout: 120_000 },
   'ops:runtime-diagnostics --window=60m --focus=all --json': { description: 'Read-only runtime recovery diagnostics', timeout: 30_000 },
+  'ops:runtime-diagnostics --json --compact': { description: 'Compact read-only runtime recovery diagnostics with default 60m window', timeout: 30_000 },
+  'ops:runtime-diagnostics --window=60m --focus=all --json --compact': { description: 'Compact read-only 60m runtime recovery diagnostics', timeout: 30_000 },
+  'ops:runtime-diagnostics --window=24h --json --compact': { description: 'Compact read-only 24h runtime recovery diagnostics', timeout: 60_000 },
+  'ops:runtime-diagnostics --window=24h --focus=all --json --compact': { description: 'Compact read-only 24h runtime recovery diagnostics with explicit focus', timeout: 60_000 },
+  'ops:queue-fit-audit --json --compact': { description: 'Compact inferential queue fit audit without job names, row IDs, or reasons', timeout: 30_000 },
+  'ops:runtime-policy-leak-audit --json --compact': { description: 'Compact observe-only audit for hardcoded runtime policy candidates', timeout: 120_000 },
   'ops:face-telemetry-report --json': { description: 'Face/genealogy telemetry report', timeout: 30_000 },
   'ops:face-telemetry-report --markdown --hours=168': { description: 'Weekly face/genealogy telemetry markdown', timeout: 30_000 },
   'ops:face-telemetry-report --compact': { description: 'Compact face/genealogy telemetry report', timeout: 30_000 },
   'ops:face-telemetry-report --json --compact': { description: 'Compact face/genealogy telemetry JSON', timeout: 30_000 },
   'ops:face-telemetry-report --markdown --compact': { description: 'Compact face/genealogy telemetry markdown', timeout: 30_000 },
   'ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json': { description: 'Read-only face mixed-cluster operator packet with sanitized face samples', timeout: 30_000 },
+  'ops:face-mixed-cluster-report --limit=10 --sample-faces=0 --compact --json': { description: 'Compact read-only mixed-cluster face report without face samples', timeout: 30_000 },
+  'ops:face-integrity-audit --json --limit=20': { description: 'Read-only face integrity audit with bounded operator samples', timeout: 30_000 },
+  'ops:face-integrity-audit --json --compact --limit=20': { description: 'Compact read-only face integrity audit without samples', timeout: 30_000 },
   'ops:face-named-only-slice --limit=10 --json': { description: 'Read-only named-only face operator slice without writeback', timeout: 30_000 },
+  'ops:face-named-only-slice --limit=10 --cluster-scope=mixed --sort=oldest --compact --json': { description: 'Compact read-only named-only mixed-cluster face review slice without writeback', timeout: 30_000 },
+  'ops:face-bridge-alignment-report --tree=4 --json --compact --limit=20': { description: 'Compact read-only face bridge alignment report without row identifiers', timeout: 30_000 },
+  'ops:face-same-person-candidates --tree=4 --person-id=2203 --limit=10 --seed-limit=20 --scan-per-seed=50 --json --compact': { description: 'Compact read-only visual same-person candidate search for a configured FT person without candidate rows or writeback', timeout: 60_000 },
+  'ops:face-person-source-provenance-report --tree=4 --json --compact --limit=10': { description: 'Compact read-only all-person face/photo source provenance report without sample rows or writeback', timeout: 120_000 },
+  'ops:face-person-source-repair-plan --tree=4 --status=face_export_person_conflict --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for export-person conflicts; review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:face-person-source-repair-plan --tree=4 --status=face_linked_display_mismatch --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for linked display mismatches; review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:face-person-source-repair-plan --tree=4 --status=face_trusted_export_no_source --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for trusted export faces without source backing; review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for untrusted export review; review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:face-person-source-repair-plan --tree=4 --status=face_no_export_provenance --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for faces without export provenance; review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:face-person-source-repair-plan --tree=4 --status=person_media_unbacked_confirmed --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for confirmed person-media links without source backing; review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:face-person-source-repair-plan --tree=4 --status=person_media_unbacked_unconfirmed --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for unconfirmed person-media links without source backing; review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:face-person-source-repair-plan --tree=4 --status=person_media_source_backed_unconfirmed --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for source-backed unconfirmed person-media links; review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:face-person-source-repair-packet-refill --tree=4 --json --compact --dry-run': { description: 'Dry-run face/photo repair-packet refill planner; scheduled review packet writeback is not allowed through MCP', timeout: 120_000 },
+  'ops:audit-privacy-routing --json --compact': { description: 'Compact read-only privacy routing audit without provider or tool lists', timeout: 30_000 },
   'ops:dba-telemetry-report --compact': { description: 'Compact observe-only DBA telemetry report', timeout: 60_000 },
   'ops:dba-telemetry-report --json --compact': { description: 'Compact observe-only DBA telemetry JSON', timeout: 60_000 },
   'ops:dba-telemetry-report --markdown --compact': { description: 'Compact observe-only DBA telemetry markdown', timeout: 60_000 },
@@ -152,6 +206,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'joplin:rag-reconcile --json --event-hours=24': { description: 'Read-only Joplin RAG reconcile dry-run for 24-hour context events', timeout: 60_000 },
   'joplin:rag-reconcile --json --event-hours=24 --triggered-only': { description: 'Read-only Joplin RAG reconcile dry-run scoped to triggered context events', timeout: 60_000 },
   'joplin:rag-reconcile --json --event-hours=24 --triggered-only --limit=50 --max-delete-candidates=50 --max-dependent-rows=5000': { description: 'Capped scheduled Joplin RAG reconcile dry-run without execute/writeback', timeout: 60_000 },
+  'joplin:rag-refresh-touch --json --compact --limit=50 --max-candidates=200': { description: 'Compact dry-run Joplin RAG timestamp refresh-touch verifier without writeback', timeout: 120_000 },
   'files:thumbnails --stats':    { description: 'Thumbnail pipeline stats', timeout: 15_000 },
   'genealogy:reject-codes --json': { description: 'Genealogy reviewer reject-code rollup', timeout: 30_000 },
   'genealogy:reject-codes --json --days=30': { description: 'Genealogy reviewer reject-code 30-day rollup', timeout: 30_000 },
@@ -163,8 +218,11 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:packet-reason-codes --days=30 --json': { description: 'Genealogy review-packet reason-code rollup', timeout: 30_000 },
   'genealogy:packet-reason-codes --compact': { description: 'Compact genealogy review-packet reason-code text rollup', timeout: 30_000 },
   'genealogy:packet-reason-codes --json --compact': { description: 'Compact genealogy review-packet reason-code rollup', timeout: 30_000 },
+  'genealogy:manager --tree=4 --json --compact': { description: 'Compact read-only Genea manager posture and lane-decision report', timeout: 60_000 },
   'genealogy:evidence-sprint-report --json': { description: 'Read-only genealogy evidence sprint readiness report', timeout: 30_000 },
   'genealogy:evidence-sprint-report --json --compact': { description: 'Compact genealogy evidence sprint readiness report', timeout: 30_000 },
+  'genealogy:evidence-sprint-report --json --compact --boundary="FT4 Heintzelman cousin expansion review-first, no face evidence, no canonical writeback"': { description: 'Compact genealogy evidence sprint readiness for FT4 Heintzelman boundary', timeout: 30_000 },
+  'genealogy:evidence-sprint-report --json --compact --boundary="Frederick Renner source-cleanup and identity review, tree 4, person 2687"': { description: 'Compact genealogy evidence sprint readiness for Frederick Renner boundary', timeout: 30_000 },
   'genealogy:evidence-sprint-report --markdown': { description: 'Read-only genealogy evidence sprint readiness markdown', timeout: 30_000 },
   'genealogy:evidence-sprint-report --markdown --compact': { description: 'Compact genealogy evidence sprint readiness markdown', timeout: 30_000 },
   'genealogy:evidence-asset-candidates --compact': { description: 'Compact read-only genealogy review evidence asset candidate report', timeout: 30_000 },
@@ -176,6 +234,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:evidence-asset-capture-review --json --compact': { description: 'Compact dry-run genealogy evidence asset capture review materialization plan', timeout: 30_000 },
   'genealogy:evidence-asset-capture-executor --json --compact': { description: 'Compact read-only genealogy evidence asset capture executor preflight', timeout: 30_000 },
   'genealogy:media-intake-report --json --compact': { description: 'Compact read-only genealogy media intake gap report JSON', timeout: 30_000 },
+  'genealogy:media-intake-report --tree=4 --json --compact': { description: 'Compact read-only FT4 genealogy media intake gap report JSON', timeout: 30_000 },
   'genealogy:media-intake-report --markdown --compact': { description: 'Compact read-only genealogy media intake gap markdown', timeout: 30_000 },
   'genealogy:media-intake-report --dry-run --json --compact': { description: 'Dry-run compact genealogy media intake report JSON without row queries', timeout: 30_000 },
   'genealogy:media-intake-run --dry-run --json --compact': { description: 'Dry-run compact genealogy media intake wrapper without row queries or subcommands', timeout: 30_000 },
@@ -188,6 +247,8 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:agent-triage --json': { description: 'Read-only genealogy agent re-enablement triage', timeout: 30_000 },
   'genealogy:agent-triage --compact': { description: 'Compact genealogy agent re-enablement triage text', timeout: 30_000 },
   'genealogy:agent-triage --json --compact': { description: 'Compact genealogy agent re-enablement triage', timeout: 30_000 },
+  'genealogy:agent-triage --days=30 --json --compact': { description: 'Compact 30-day genealogy agent re-enablement triage', timeout: 30_000 },
+  'genealogy:health-audit --tree=4 --json --aggregate --compact': { description: 'Compact aggregate-only FT4 genealogy health audit JSON', timeout: 60_000 },
   'genealogy:source-registry --validate': { description: 'Read-only genealogy source registry posture validation', timeout: 30_000 },
   'genealogy:source-registry --validate --json --compact': { description: 'Compact read-only genealogy source registry posture validation JSON', timeout: 30_000 },
   'awo:replay --window=7d --json': { description: 'Approval-worthy-output read-only replay', timeout: 30_000 },
@@ -209,6 +270,8 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'news:bias-tags-audit --json --compact': { description: 'Compact read-only news-bias tag audit JSON', timeout: 30_000 },
   'news:pushover-proof --workflow=news_brief --compact': { description: 'Compact Pushover proof for the latest natural news brief run', timeout: 30_000 },
   'news:pushover-proof --workflow=news_brief --json --compact': { description: 'Compact Pushover proof JSON for the latest natural news brief run', timeout: 30_000 },
+  'news:pushover-proof --workflow=\'Cybersecurity News Brief\' --compact': { description: 'Compact Pushover proof for the latest natural cybersecurity news run', timeout: 30_000 },
+  'news:pushover-proof --workflow=\'Cybersecurity News Brief\' --json --compact': { description: 'Compact Pushover proof JSON for the latest natural cybersecurity news run', timeout: 30_000 },
   'news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --compact': { description: 'Compact Pushover proof for the latest natural Press Enterprise run', timeout: 30_000 },
   'news:pushover-proof --workflow=Press_Enterprise_Headlines_Today --json --compact': { description: 'Compact Pushover proof JSON for the latest natural Press Enterprise run', timeout: 30_000 },
   'news:source-inventory --workflow=news_brief --days=7 --strict --json': { description: 'Read-only news source inventory and bias coverage', timeout: 30_000 },
@@ -252,20 +315,119 @@ export const plosArtisanInput = z.object({
 
 export type PlosArtisanInput = z.infer<typeof plosArtisanInput>;
 
+export function selectAllowlistPolicy(input: {
+  loadedRevision?: string;
+  loadedCommands?: AllowedCommands;
+  loadedCompactCommands?: readonly string[];
+  freshness: AllowlistFreshness;
+  candidate?: AllowlistModuleCandidate | null;
+}): ResolvedAllowlistPolicy {
+  const loadedRevision = input.loadedRevision ?? ALLOWLIST_REVISION;
+  const loadedCommands = input.loadedCommands ?? ALLOWED_COMMANDS;
+  const loadedCompactCommands = input.loadedCompactCommands ?? COMPACT_SCORECARD_COMMANDS;
+  const candidate = input.candidate;
+  const candidateRevision = typeof candidate?.ALLOWLIST_REVISION === 'string'
+    ? candidate.ALLOWLIST_REVISION
+    : null;
+
+  if (
+    input.freshness.status === 'stale'
+    && input.freshness.dist_revision !== null
+    && candidateRevision === input.freshness.dist_revision
+    && candidateRevision !== loadedRevision
+    && isAllowedCommands(candidate?.ALLOWED_COMMANDS)
+  ) {
+    return {
+      source: 'dist',
+      revision: candidateRevision,
+      commands: candidate.ALLOWED_COMMANDS,
+      compactCommands: isStringArray(candidate.COMPACT_SCORECARD_COMMANDS)
+        ? candidate.COMPACT_SCORECARD_COMMANDS
+        : loadedCompactCommands,
+      freshness: input.freshness,
+    };
+  }
+
+  return {
+    source: 'loaded',
+    revision: loadedRevision,
+    commands: loadedCommands,
+    compactCommands: loadedCompactCommands,
+    freshness: input.freshness,
+  };
+}
+
+function isAllowedCommands(value: unknown): value is AllowedCommands {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+
+  return Object.values(value as Record<string, unknown>).every((meta) => {
+    if (meta === null || typeof meta !== 'object') {
+      return false;
+    }
+
+    const record = meta as Record<string, unknown>;
+
+    return typeof record.description === 'string'
+      && typeof record.timeout === 'number'
+      && Number.isFinite(record.timeout);
+  });
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
+async function resolveAllowlistPolicy(): Promise<ResolvedAllowlistPolicy> {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  const sourceText = readTextIfPresent(resolve(moduleDir, '../../src/tools/plos-artisan.ts'));
+  const distPath = resolve(moduleDir, 'plos-artisan.js');
+  const distText = readTextIfPresent(distPath);
+  const freshness = allowlistFreshness({ sourceText, distText });
+
+  if (freshness.status !== 'stale' || freshness.dist_revision === null) {
+    return selectAllowlistPolicy({ freshness });
+  }
+
+  try {
+    const distUrl = pathToFileURL(distPath);
+    distUrl.searchParams.set('allowlist_revision', freshness.dist_revision);
+    distUrl.searchParams.set(
+      'allowlist_fingerprint',
+      distText === null ? 'missing' : allowlistContentFingerprint(distText),
+    );
+
+    const candidate = await import(distUrl.href) as AllowlistModuleCandidate;
+
+    return selectAllowlistPolicy({ freshness, candidate });
+  } catch (error) {
+    logger.warn('PLOS artisan allowlist refresh failed', {
+      loaded_revision: freshness.loaded_revision,
+      dist_revision: freshness.dist_revision,
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    return selectAllowlistPolicy({ freshness });
+  }
+}
+
 export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext): Promise<string> {
   const { command, on_prod } = input;
+  const policy = await resolveAllowlistPolicy();
 
   // Special: list available commands
   if (command === 'list') {
     const lines = [
       'Available artisan commands:\n',
-      `Allowlist revision: ${ALLOWLIST_REVISION}`,
-      allowlistFreshnessLine(),
-      `Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}\n`,
+      `Allowlist revision: ${policy.revision}`,
+      `Allowlist source: ${policy.source}`,
+      allowlistFreshnessLine(policy.freshness),
+      `Allowlist entries: ${Object.keys(policy.commands).length}\n`,
       'Compact scorecard commands (exact forms only):',
     ];
 
-    for (const cmd of COMPACT_SCORECARD_COMMANDS) {
+    for (const cmd of policy.compactCommands) {
       lines.push(`  php artisan ${cmd}`);
     }
 
@@ -274,7 +436,7 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
       'All allowed commands:\n',
     );
 
-    for (const [cmd, meta] of Object.entries(ALLOWED_COMMANDS)) {
+    for (const [cmd, meta] of Object.entries(policy.commands)) {
       lines.push(`  php artisan ${cmd}`);
       lines.push(`    ${meta.description}\n`);
     }
@@ -282,15 +444,16 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
   }
 
   // Validate against whitelist
-  const match = Object.entries(ALLOWED_COMMANDS).find(([allowed]) => command === allowed);
+  const match = Object.entries(policy.commands).find(([allowed]) => command === allowed);
   if (!match) {
-    const suggestions = Object.keys(ALLOWED_COMMANDS)
+    const suggestions = Object.keys(policy.commands)
       .filter(k => k.includes(command.split(' ')[0].split(':')[0]))
       .slice(0, 5);
     return `Blocked: "${command}" is not in the allowed command list.\n`
-      + `Allowlist revision: ${ALLOWLIST_REVISION}\n`
-      + `${allowlistFreshnessLine()}\n`
-      + `Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}\n`
+      + `Allowlist revision: ${policy.revision}\n`
+      + `Allowlist source: ${policy.source}\n`
+      + `${allowlistFreshnessLine(policy.freshness)}\n`
+      + `Allowlist entries: ${Object.keys(policy.commands).length}\n`
       + (suggestions.length ? `Did you mean: ${suggestions.join(', ')}?\n` : '')
       + `Use command "list" to see all available commands.`;
   }

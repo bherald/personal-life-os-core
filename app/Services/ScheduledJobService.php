@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Jobs\ExecuteWorkflow;
 use App\Services\Custody\TaskCustodyService;
+use App\Services\Genealogy\GenealogyService;
 use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Artisan;
@@ -12,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Str;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 /**
  * ScheduledJobService - Centralized job scheduling with cron pattern support
@@ -724,11 +726,12 @@ class ScheduledJobService
             return ['success' => false, 'error' => 'Job is already running'];
         }
 
+        $pid = getmypid() ?: null;
+
         // Reuse parent's run record if provided (parallel worker path), else create new
         if ($existingRunId) {
             $runId = $existingRunId;
             // Still update job status and set our PID on the existing run
-            $pid = getmypid() ?: null;
             DB::update("
                 UPDATE scheduled_jobs SET last_run_at = NOW(), last_run_status = 'running', last_pid = ?, updated_at = NOW()
                 WHERE id = ?
@@ -773,7 +776,11 @@ class ScheduledJobService
                         $output,
                         $job->timeout_minutes ?? 30,
                         $timeoutExtender,
-                        $job->name
+                        $job->name,
+                        [
+                            'run_id' => $runId,
+                            'pid' => $pid,
+                        ]
                     );
                     break;
 
@@ -813,8 +820,13 @@ class ScheduledJobService
             $commandLine = trim($matches[1]);
         }
 
-        $exitCode = Artisan::call($commandLine);
-        $output = Artisan::output();
+        $buffer = new BufferedOutput;
+        $exitCode = Artisan::call($commandLine, [], $buffer);
+        $output = $buffer->fetch();
+
+        if ($output === '') {
+            $output = Artisan::output();
+        }
 
         return $exitCode;
     }
@@ -871,7 +883,8 @@ class ScheduledJobService
         string &$output,
         int $timeoutMinutes = 30,
         ?\Closure $timeoutExtender = null,
-        ?string $scheduledJobName = null
+        ?string $scheduledJobName = null,
+        array $executionContext = []
     ): bool {
         try {
             $params = $this->decodeJobParameters($parametersJson);
@@ -899,13 +912,13 @@ class ScheduledJobService
             if (in_array($skillName, ['genealogy-researcher', 'genealogy-records'], true)) {
                 $mode = $params['mode'] ?? 'full';
                 if ($runtimeMode === 'queue_research') {
-                    return $this->runGenealogyResearchFromQueue($agentLoop, $skillName, $params, $output, $timeoutMinutes, $timeoutExtender);
+                    return $this->runGenealogyResearchFromQueue($agentLoop, $skillName, $params, $output, $timeoutMinutes, $timeoutExtender, $executionContext);
                 }
                 if ($mode === 'assess') {
                     return $this->runGenealogyAssess($params, $output, $timeoutMinutes);
                 }
                 if ($mode === 'research') {
-                    return $this->runGenealogyResearchFromQueue($agentLoop, $skillName, $params, $output, $timeoutMinutes, $timeoutExtender);
+                    return $this->runGenealogyResearchFromQueue($agentLoop, $skillName, $params, $output, $timeoutMinutes, $timeoutExtender, $executionContext);
                 }
                 if ($scheduledJobName && str_starts_with($scheduledJobName, 'genealogy_')) {
                     $output = "Automatic whole-tree genealogy runs are disabled for scheduled jobs ({$scheduledJobName}).";
@@ -1040,13 +1053,35 @@ class ScheduledJobService
         return $trimmed;
     }
 
-    private function extractRuntimeValue(array $params, string $key): ?string
+    private function extractRuntimeValue(array $params, string $key): mixed
     {
         $runtime = $params['runtime'] ?? null;
         $value = is_array($runtime) ? ($runtime[$key] ?? null) : null;
         $value ??= $params[$key] ?? null;
 
-        return is_string($value) && trim($value) !== '' ? trim($value) : null;
+        if (is_string($value)) {
+            return trim($value) !== '' ? trim($value) : null;
+        }
+
+        return is_scalar($value) ? $value : null;
+    }
+
+    private function normalizedUnitInterval(mixed $value): ?float
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return max(0.0, min(1.0, (float) $value));
+    }
+
+    private function nonNegativeRuntimeInt(mixed $value): ?int
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return max(0, (int) $value);
     }
 
     private function runResearchAnalystSnapshot(AgentLoopService $agentLoop, string &$output): bool
@@ -1175,7 +1210,7 @@ class ScheduledJobService
     public function cleanupGenealogyTaskBacklog(?int $treeId = null, int $staleHours = 72): array
     {
         $staleHours = max(1, $staleHours);
-        $genealogy = app(\App\Services\Genealogy\GenealogyService::class);
+        $genealogy = app(GenealogyService::class);
         $cleanup = $genealogy->cleanupStaleProcessingResearchTasks($treeId, $staleHours * 60);
 
         $recoveredTaskIds = array_map(
@@ -1260,11 +1295,31 @@ class ScheduledJobService
                 return true;
             }
 
-            $genealogyService = app(\App\Services\Genealogy\GenealogyService::class);
+            $genealogyService = app(GenealogyService::class);
             $totalQueued = 0;
             $totalStale = 0;
             $totalStaleTasks = 0;
             $staleTaskHours = max(1, (int) ($params['stale_task_hours'] ?? $params['stale_hours'] ?? 3));
+            $assessLimit = max(1, min(200, (int) ($this->extractRuntimeValue($params, 'assess_limit') ?? 20)));
+            $recentWorkCooldownHours = $this->extractRuntimeValue($params, 'recent_work_cooldown_hours');
+            $recentWorkCooldownHours = is_numeric($recentWorkCooldownHours) && (int) $recentWorkCooldownHours > 0
+                ? (int) $recentWorkCooldownHours
+                : null;
+            $recentWorkCutoff = $recentWorkCooldownHours !== null
+                ? Carbon::now()->subHours($recentWorkCooldownHours)->toDateTimeString()
+                : null;
+            $includeExhaustedFallback = filter_var(
+                $this->extractRuntimeValue($params, 'include_exhausted_fallback'),
+                FILTER_VALIDATE_BOOLEAN,
+                FILTER_NULL_ON_FAILURE
+            ) === true;
+            $exhaustedFallbackMinDataGapScore = $this->normalizedUnitInterval(
+                $this->extractRuntimeValue($params, 'exhausted_fallback_min_data_gap_score')
+            );
+            $exhaustedFallbackMinPendingHints = $this->nonNegativeRuntimeInt(
+                $this->extractRuntimeValue($params, 'exhausted_fallback_min_pending_hints')
+            );
+            $exhaustedFallbackTrees = 0;
 
             foreach ($trees as $tree) {
                 $treeId = (int) $tree->tree_id;
@@ -1294,8 +1349,24 @@ class ScheduledJobService
                 ", [$treeId]);
 
                 // Get priority persons from coverage table
-                $result = $genealogyService->getPriorityPersons($treeId, 20);
+                $result = $genealogyService->getPriorityPersons($treeId, $assessLimit, null, false, $recentWorkCutoff);
                 $persons = $result['persons'] ?? [];
+                if ($persons === [] && $includeExhaustedFallback) {
+                    $fallbackResult = $genealogyService->getPriorityPersons(
+                        $treeId,
+                        $assessLimit,
+                        null,
+                        true,
+                        $recentWorkCutoff,
+                        $exhaustedFallbackMinDataGapScore,
+                        $exhaustedFallbackMinPendingHints
+                    );
+                    $fallbackPersons = $fallbackResult['persons'] ?? [];
+                    if ($fallbackPersons !== []) {
+                        $persons = $fallbackPersons;
+                        $exhaustedFallbackTrees++;
+                    }
+                }
 
                 foreach ($persons as $person) {
                     $personId = $person['person_id'] ?? null;
@@ -1388,7 +1459,12 @@ class ScheduledJobService
 
             $output = "Assess complete: queued {$totalQueued} persons across "
                 .count($trees)." tree(s), expired {$totalStale} stale queue entries, "
-                ."recovered {$totalStaleTasks} stale tasks.";
+                ."recovered {$totalStaleTasks} stale tasks. Assess limit: {$assessLimit}. "
+                .'Recent work cooldown: '.($recentWorkCooldownHours !== null ? $recentWorkCooldownHours.'h.' : 'off.').' '
+                .'Exhausted fallback: '.($includeExhaustedFallback ? 'enabled' : 'disabled')
+                .", used {$exhaustedFallbackTrees} tree(s). "
+                .'Fallback filters: data_gap>='.($exhaustedFallbackMinDataGapScore ?? 'off')
+                .', pending_hints>='.($exhaustedFallbackMinPendingHints ?? 'off').'.';
 
             return true;
         } catch (\Throwable $e) {
@@ -1405,7 +1481,7 @@ class ScheduledJobService
      */
     private function runGenealogyResearchFromQueue(
         AgentLoopService $agentLoop, string $skillName, array $params, string &$output,
-        int $timeoutMinutes, ?\Closure $timeoutExtender = null
+        int $timeoutMinutes, ?\Closure $timeoutExtender = null, array $executionContext = []
     ): bool {
         // Pull highest-priority pending person
         $item = DB::selectOne("
@@ -1421,7 +1497,9 @@ class ScheduledJobService
             return true; // Not a failure — just nothing to do
         }
 
-        $sessionId = 'genealogy-research-'.uniqid();
+        $runId = (int) ($executionContext['run_id'] ?? 0);
+        $pid = (int) ($executionContext['pid'] ?? 0);
+        $sessionId = self::buildGenealogyQueueSessionId($runId, $pid, (int) $item->id);
 
         // Atomic claim: prevents double-processing if two workers start simultaneously
         $claimed = DB::update("
@@ -1478,6 +1556,7 @@ class ScheduledJobService
         ]);
 
         $taskId = $this->createGenealogyQueueTask($item);
+        $maxIterations = $this->extractRuntimeValue($params, 'max_iterations') ?? $params['max_iterations'] ?? null;
 
         // Build focused single-person task prompt (skips assess phase)
         $task = "Anchor-centered genealogy research run for {$personName} (ID: {$personId}) in tree {$treeId}.\n"
@@ -1512,7 +1591,6 @@ class ScheduledJobService
             'record_adaptive_outcome' => false,
             'model' => $params['model'] ?? null,
             'model_role' => $params['model_role'] ?? null,
-            'max_iterations' => min((int) ($params['max_iterations'] ?? 8), 8),
             'context' => [
                 'queue_mode' => true,
                 'queue_item_id' => $item->id,
@@ -1555,6 +1633,9 @@ class ScheduledJobService
                 ', [$message, $item->id]);
             },
         ];
+        if (is_numeric($maxIterations)) {
+            $options['max_iterations'] = max(1, (int) $maxIterations);
+        }
 
         $result = $agentLoop->execute($skillName, $task, $options);
 
@@ -1584,6 +1665,7 @@ class ScheduledJobService
 
         if ($outcomeState === 'deferred') {
             $findingsCount = 0;
+            $reviewItemsCount = 0;
         }
 
         $scopeReason = $parsedOutcome['scope_reason'] ?? 'none';
@@ -1631,6 +1713,20 @@ class ScheduledJobService
             $result['success'] ? null : ($result['error'] ?? 'unknown'),
             $taskId,
         ]);
+
+        if ($result['success']) {
+            $this->recordGenealogyQueueSearchCoverage(
+                $item,
+                $taskId,
+                $sourcesChecked,
+                $outcomeState,
+                $outcomeReason,
+                $evidenceSummary,
+                $findingsCount,
+                $reviewItemsCount,
+                $result
+            );
+        }
 
         $queueStatus = match (true) {
             ! $result['success'] => 'failed',
@@ -1697,6 +1793,138 @@ class ScheduledJobService
             ." — outcome {$outcomeState}";
 
         return $result['success'];
+    }
+
+    private function recordGenealogyQueueSearchCoverage(
+        object $item,
+        int $queueTaskId,
+        array $sourcesChecked,
+        string $outcomeState,
+        string $outcomeReason,
+        string $evidenceSummary,
+        int $findingsCount,
+        int $reviewItemsCount,
+        array $result
+    ): void {
+        $treeId = (int) $item->tree_id;
+        $personId = (int) $item->person_id;
+        $question = trim((string) ($item->research_question ?? ''));
+        $sourcesChecked = array_values(array_filter(array_map(
+            static fn ($source) => trim((string) $source),
+            $sourcesChecked
+        )));
+        $negativeResult = $outcomeState === 'deferred';
+        $durationMinutes = isset($result['duration_ms'])
+            ? max(1, (int) ceil(((int) $result['duration_ms']) / 60000))
+            : null;
+        $gpsStatus = match ($outcomeState) {
+            'completed' => 'resolved',
+            'requeue' => 'in_progress',
+            default => 'inconclusive',
+        };
+
+        try {
+            DB::insert('
+                INSERT INTO gps_research_tasks
+                (person_id, tree_id, task_type, question, hypothesis, status, priority,
+                 conclusion, evidence_summary, resolved_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+            ', [
+                $personId,
+                $treeId,
+                $this->mapGenealogyQueueQuestionToGpsTaskType(
+                    (string) ($item->question_type ?? ''),
+                    $question
+                ),
+                $question !== '' ? $question : 'Queue-mode genealogy research run.',
+                'Mirrored from genealogy_research_tasks.id='.$queueTaskId,
+                $gpsStatus,
+                'high',
+                $outcomeReason,
+                json_encode([
+                    'queue_task_id' => $queueTaskId,
+                    'queue_item_id' => (int) $item->id,
+                    'outcome_state' => $outcomeState,
+                    'outcome_reason' => $outcomeReason,
+                    'sources_checked' => $sourcesChecked,
+                    'findings_count' => $findingsCount,
+                    'review_items_count' => $reviewItemsCount,
+                ]),
+                $gpsStatus === 'in_progress' ? null : now()->toDateTimeString(),
+            ]);
+
+            $gpsTaskId = (int) DB::getPdo()->lastInsertId();
+
+            DB::insert('
+                INSERT INTO gps_research_logs
+                (task_id, person_id, log_type, repository_searched, repository_url,
+                 search_terms, date_range_searched, location_searched, record_types_searched,
+                 results_summary, negative_result, source_ids_found, media_ids_found,
+                 search_duration_minutes, notes, searched_at, created_at)
+                VALUES (?, ?, \'search\', ?, NULL, ?, NULL, NULL, ?, ?, ?, NULL, NULL, ?, ?, NOW(), NOW())
+            ', [
+                $gpsTaskId,
+                $personId,
+                $sourcesChecked
+                    ? Str::limit(implode(', ', $sourcesChecked), 255, '')
+                    : 'queue-mode genealogy research',
+                Str::limit(trim(((string) ($item->person_name ?? 'Unknown person')).' '.$question), 1000, ''),
+                $sourcesChecked ? json_encode($sourcesChecked) : null,
+                $evidenceSummary,
+                $negativeResult ? 1 : 0,
+                $durationMinutes,
+                'Mirrored from queue research task '.$queueTaskId.'; outcome='.$outcomeState,
+            ]);
+
+            DB::update('
+                UPDATE genealogy_person_coverage
+                SET research_exhaustion_score = ROUND(
+                        LEAST(
+                            (COALESCE(negative_count_30d, 0) + ?)
+                            / GREATEST(COALESCE(search_count_30d, 0) + 1, 1),
+                            1
+                        ),
+                        3
+                    ),
+                    last_searched_at = NOW(),
+                    search_count_30d = LEAST(COALESCE(search_count_30d, 0) + 1, 65535),
+                    negative_count_30d = LEAST(COALESCE(negative_count_30d, 0) + ?, 65535),
+                    coverage_updated_at = NOW(),
+                    updated_at = NOW()
+                WHERE tree_id = ? AND person_id = ?
+            ', [
+                $negativeResult ? 1 : 0,
+                $negativeResult ? 1 : 0,
+                $treeId,
+                $personId,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('ScheduledJobService: Failed to mirror genealogy queue research into GPS coverage', [
+                'queue_item_id' => (int) $item->id,
+                'queue_task_id' => $queueTaskId,
+                'tree_id' => $treeId,
+                'person_id' => $personId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function mapGenealogyQueueQuestionToGpsTaskType(string $questionType, string $question): string
+    {
+        $haystack = strtolower($questionType.' '.$question);
+
+        return match (true) {
+            str_contains($haystack, 'birth') => 'birth',
+            str_contains($haystack, 'death') || str_contains($haystack, 'probate') => 'death',
+            str_contains($haystack, 'marriage') || str_contains($haystack, 'spouse') => 'marriage',
+            str_contains($haystack, 'parent') || str_contains($haystack, 'child') => 'parentage',
+            str_contains($haystack, 'identity') || str_contains($haystack, 'verify') => 'identity',
+            str_contains($haystack, 'place') || str_contains($haystack, 'location') => 'location',
+            str_contains($haystack, 'occupation') => 'occupation',
+            str_contains($haystack, 'migration') || str_contains($haystack, 'immigration') => 'migration',
+            str_contains($haystack, 'military') => 'military',
+            default => 'other',
+        };
     }
 
     private function buildGenealogyQuestionContract(array $person): array
@@ -2096,12 +2324,12 @@ class ScheduledJobService
             // returns any unreleased row regardless of expiry, so we also
             // clean up expired-but-unreleased rows from prior crashes.
             try {
-                $custody = app(\App\Services\Custody\TaskCustodyService::class)->findUnreleased(
-                    \App\Services\Custody\TaskCustodyService::SURFACE_SCHEDULED_JOB,
+                $custody = app(TaskCustodyService::class)->findUnreleased(
+                    TaskCustodyService::SURFACE_SCHEDULED_JOB,
                     self::custodySurfaceRef($jobId, $runId),
                 );
                 if ($custody) {
-                    app(\App\Services\Custody\TaskCustodyService::class)->release(
+                    app(TaskCustodyService::class)->release(
                         (int) $custody->id,
                         'failure',
                         [
@@ -2119,6 +2347,16 @@ class ScheduledJobService
                     'pid' => $pid,
                     'error' => $e->getMessage(),
                 ]);
+            }
+
+            $fullJob = $this->getJob($jobId);
+            if ($fullJob) {
+                $this->releaseQueueResearchItemsForJob(
+                    $fullJob,
+                    "Dead scheduled worker PID {$pid} was reconciled before completing its claimed queue item.",
+                    $runId,
+                    $pid
+                );
             }
 
             $reconciled[] = [
@@ -2272,6 +2510,13 @@ class ScheduledJobService
             }
 
             $nextRun = $this->calculateNextRun($job->cron_expression);
+            $timedOutRunRows = DB::select("
+                SELECT id, pid
+                FROM scheduled_job_runs
+                WHERE scheduled_job_id = ?
+                  AND status = 'running'
+                  AND started_at < DATE_SUB(NOW(), INTERVAL COALESCE(?, 120) MINUTE)
+            ", [$job->id, $job->timeout_minutes ? $job->timeout_minutes + 15 : null]);
 
             DB::update("
                 UPDATE scheduled_jobs
@@ -2298,7 +2543,18 @@ class ScheduledJobService
                   AND started_at < DATE_SUB(NOW(), INTERVAL COALESCE(?, 120) MINUTE)
             ", [$job->id, $job->timeout_minutes ? $job->timeout_minutes + 15 : null]);
 
-            $this->releaseQueueResearchItemsForJob($job, "Automatic cleanup after timed-out queue research worker ({$label}).");
+            if ($timedOutRunRows !== []) {
+                foreach ($timedOutRunRows as $runRow) {
+                    $this->releaseQueueResearchItemsForJob(
+                        $job,
+                        "Automatic cleanup after timed-out queue research worker ({$label}).",
+                        (int) $runRow->id,
+                        (int) ($runRow->pid ?? 0)
+                    );
+                }
+            } else {
+                $this->releaseQueueResearchItemsForJob($job, "Automatic cleanup after timed-out queue research worker ({$label}).", null, $pid ? (int) $pid : null);
+            }
 
             $stuckMinutes = $job->last_run_at
                 ? round((time() - strtotime($job->last_run_at)) / 60)
@@ -2731,7 +2987,7 @@ class ScheduledJobService
         if (function_exists('posix_kill')) {
             posix_kill($pid, 15); // SIGTERM
         } else {
-            \Illuminate\Support\Facades\Process::timeout(5)->run(['kill', '-15', (string) $pid]);
+            Process::timeout(5)->run(['kill', '-15', (string) $pid]);
         }
 
         // Wait for graceful shutdown
@@ -2746,7 +3002,7 @@ class ScheduledJobService
             if (function_exists('posix_kill')) {
                 posix_kill($pid, 9); // SIGKILL
             } else {
-                \Illuminate\Support\Facades\Process::timeout(5)->run(['kill', '-9', (string) $pid]);
+                Process::timeout(5)->run(['kill', '-9', (string) $pid]);
             }
             Log::warning("ScheduledJobService: Force-killed PID {$pid} after {$grace}s grace period");
         }
@@ -2761,17 +3017,29 @@ class ScheduledJobService
     private function cleanupDeadProcesses(): void
     {
         // Clean orphaned run records with NULL PIDs (parallel worker companions)
-        DB::update("
-            UPDATE scheduled_job_runs
-            SET status = 'failed', completed_at = COALESCE(completed_at, NOW()),
-                output = CONCAT(COALESCE(output, ''), '\n[ZOMBIE] No PID, auto-cleared')
+        $nullPidRuns = DB::select("
+            SELECT id, scheduled_job_id
+            FROM scheduled_job_runs
             WHERE status = 'running' AND pid IS NULL AND started_at < NOW() - INTERVAL 5 MINUTE
         ");
+        foreach ($nullPidRuns as $run) {
+            DB::update("
+                UPDATE scheduled_job_runs
+                SET status = 'failed', completed_at = COALESCE(completed_at, NOW()),
+                    output = CONCAT(COALESCE(output, ''), '\n[ZOMBIE] No PID, auto-cleared')
+                WHERE id = ? AND status = 'running'
+            ", [$run->id]);
+
+            $fullJob = $this->getJob((int) $run->scheduled_job_id);
+            if ($fullJob) {
+                $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research worker lost PID before completing the claimed item.', (int) $run->id);
+            }
+        }
 
         // Sweep stale run records with PIDs that are dead — catches orphans where
         // the parent job already moved on to a new run (last_run_status != 'running')
         $staleRuns = DB::select("
-            SELECT id, pid FROM scheduled_job_runs
+            SELECT id, scheduled_job_id, pid FROM scheduled_job_runs
             WHERE status = 'running' AND pid IS NOT NULL AND started_at < NOW() - INTERVAL 10 MINUTE
         ");
         foreach ($staleRuns as $run) {
@@ -2782,6 +3050,11 @@ class ScheduledJobService
                         output = CONCAT(COALESCE(output, ''), '\n[ZOMBIE] Stale PID dead, auto-cleared')
                     WHERE id = ? AND status = 'running'
                 ", [$run->id]);
+
+                $fullJob = $this->getJob((int) $run->scheduled_job_id);
+                if ($fullJob) {
+                    $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research worker stale PID died before completing the claimed item.', (int) $run->id, (int) $run->pid);
+                }
             }
         }
 
@@ -2802,7 +3075,7 @@ class ScheduledJobService
                 // Single-worker: check last_pid
                 if ($job->last_pid && ! $this->isProcessAlive($job->last_pid)) {
                     $runStatus = DB::selectOne('
-                        SELECT status FROM scheduled_job_runs
+                        SELECT id, status FROM scheduled_job_runs
                         WHERE scheduled_job_id = ? AND pid = ?
                         ORDER BY id DESC LIMIT 1
                     ', [$job->id, $job->last_pid]);
@@ -2843,7 +3116,7 @@ class ScheduledJobService
 
                     $fullJob = $this->getJob((int) $job->id);
                     if ($fullJob) {
-                        $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research worker exited before completing the claimed item.');
+                        $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research worker exited before completing the claimed item.', (int) ($runStatus->id ?? 0), (int) $job->last_pid);
                     }
 
                     Log::info("ScheduledJobService: Cleared zombie job #{$job->id} ({$job->name}), dead PID {$job->last_pid}");
@@ -2863,7 +3136,7 @@ class ScheduledJobService
                 foreach ($deadPids as $deadPid) {
                     // Check if the run already completed successfully before marking as zombie
                     $runStatus = DB::selectOne('
-                        SELECT status FROM scheduled_job_runs
+                        SELECT id, status FROM scheduled_job_runs
                         WHERE scheduled_job_id = ? AND pid = ?
                         ORDER BY id DESC LIMIT 1
                     ', [$job->id, $deadPid]);
@@ -2884,6 +3157,11 @@ class ScheduledJobService
                             output = CONCAT(COALESCE(output, ''), '\n[ZOMBIE] PID dead, auto-cleared')
                         WHERE scheduled_job_id = ? AND status = 'running' AND pid = ?
                     ", [$job->id, $deadPid]);
+
+                    $fullJob = $this->getJob((int) $job->id);
+                    if ($fullJob) {
+                        $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research parallel worker exited before completing the claimed item.', (int) ($runStatus->id ?? 0), (int) $deadPid);
+                    }
 
                     Log::info("ScheduledJobService: Cleared zombie worker PID {$deadPid} for job #{$job->id} ({$job->name})");
                 }
@@ -3025,9 +3303,26 @@ class ScheduledJobService
         return $runtimeMode === 'queue_research';
     }
 
-    private function releaseQueueResearchItemsForJob(object $job, string $reason): void
+    private function releaseQueueResearchItemsForJob(object $job, string $reason, ?int $runId = null, ?int $pid = null): void
     {
         if (! $this->isQueueResearchJob($job)) {
+            return;
+        }
+
+        $where = ['status = \'in_progress\''];
+        $params = [$reason];
+        $sessionLikes = self::genealogyQueueSessionLikePatterns($runId, $pid);
+
+        if ($sessionLikes !== []) {
+            $where[] = '('.implode(' OR ', array_fill(0, count($sessionLikes), 'session_id LIKE ?')).')';
+            array_push($params, ...$sessionLikes);
+        } elseif ((int) ($job->max_parallel ?? 1) > 1) {
+            Log::warning('ScheduledJobService: skipped broad queue release for parallel genealogy worker without owner identity', [
+                'job_id' => $job->id ?? null,
+                'job_name' => $job->name ?? null,
+                'reason' => $reason,
+            ]);
+
             return;
         }
 
@@ -3039,8 +3334,63 @@ class ScheduledJobService
                 last_outcome_reason = ?,
                 notes = CONCAT(COALESCE(notes, ''), ' [queue-worker-released]'),
                 updated_at = NOW()
-            WHERE status = 'in_progress'
-        ", [$reason]);
+            WHERE ".implode(' AND ', $where).'
+        ', $params);
+    }
+
+    /**
+     * Queue session IDs are stored in genealogy_research_queue.session_id (varchar 36).
+     * Keep run/PID ownership tokens compact so timeout cleanup can release only the
+     * affected worker's item without overflowing the queue table.
+     */
+    private static function buildGenealogyQueueSessionId(int $runId, int $pid, int $queueId): string
+    {
+        $runToken = self::compactGenealogyQueueSessionNumber($runId);
+        $pidToken = self::compactGenealogyQueueSessionNumber($pid);
+        $queueToken = self::compactGenealogyQueueSessionNumber($queueId);
+        $nonce = substr(hash('sha256', implode('|', [$runId, $pid, $queueId, uniqid('', true)])), 0, 8);
+
+        return "gq-r{$runToken}-p{$pidToken}-q{$queueToken}-{$nonce}";
+    }
+
+    public static function genealogyQueueSessionLikePatterns(?int $runId = null, ?int $pid = null): array
+    {
+        if ($runId !== null && $runId > 0) {
+            return [
+                self::genealogyQueueSessionLikeForRun($runId),
+                "genealogy-research-run{$runId}-%",
+            ];
+        }
+
+        if ($pid !== null && $pid > 0) {
+            return [
+                self::genealogyQueueSessionLikeForPid($pid),
+                "%-pid{$pid}-%",
+            ];
+        }
+
+        return [];
+    }
+
+    public static function genealogyQueueSessionLikeForRun(int $runId): string
+    {
+        return 'gq-r'.self::compactGenealogyQueueSessionNumber($runId).'-%';
+    }
+
+    public static function genealogyQueueSessionLikeForPid(int $pid): string
+    {
+        return '%-p'.self::compactGenealogyQueueSessionNumber($pid).'-%';
+    }
+
+    private static function compactGenealogyQueueSessionNumber(int $value): string
+    {
+        $token = base_convert((string) max(0, $value), 10, 36);
+
+        if (strlen($token) <= 6) {
+            return $token;
+        }
+
+        return substr(hash('sha256', (string) $value), 0, 6);
     }
 
     /**
@@ -3092,34 +3442,12 @@ class ScheduledJobService
     private static ?int $cpuCores = null;
 
     /**
-     * Resource profiles for job types — inferred from command string.
-     * Each profile defines how that job type consumes resources.
-     *
-     * hard_cap: absolute max workers regardless of system state
-     * gpu_bound: requires GPU — limits concurrency when GPU is busy
-     * cpu_bound: scales with CPU headroom
-     * io_bound: scales with memory/IO (higher natural concurrency)
-     * llm_bound: constrained by LLM provider throughput
-     */
-    private const JOB_RESOURCE_PROFILES = [
-        'faces' => ['hard_cap' => 4, 'gpu_bound' => false, 'cpu_bound' => true,  'io_bound' => false, 'llm_bound' => false],
-        'ai' => ['hard_cap' => 3, 'gpu_bound' => true,  'cpu_bound' => false, 'io_bound' => false, 'llm_bound' => true],
-        'rag' => ['hard_cap' => 4, 'gpu_bound' => false, 'cpu_bound' => false, 'io_bound' => true,  'llm_bound' => false],
-        'phash' => ['hard_cap' => 3, 'gpu_bound' => false, 'cpu_bound' => true,  'io_bound' => false, 'llm_bound' => false],
-        'video' => ['hard_cap' => 2, 'gpu_bound' => false, 'cpu_bound' => true,  'io_bound' => false, 'llm_bound' => false],
-        'exif' => ['hard_cap' => 3, 'gpu_bound' => false, 'cpu_bound' => false, 'io_bound' => true,  'llm_bound' => false],
-        'writeback' => ['hard_cap' => 2, 'gpu_bound' => false, 'cpu_bound' => false, 'io_bound' => true,  'llm_bound' => false],
-        'thumbnails' => ['hard_cap' => 3, 'gpu_bound' => false, 'cpu_bound' => true,  'io_bound' => false, 'llm_bound' => false],
-        'default' => ['hard_cap' => 2, 'gpu_bound' => false, 'cpu_bound' => true,  'io_bound' => false, 'llm_bound' => false],
-    ];
-
-    /**
      * Fully dynamic parallel worker resolution — computes optimal concurrency
      * from system state, workload, and resource availability.
      *
-     * max_parallel column is only a hard safety cap (defaults high).
+     * max_parallel column is the operator-owned safety cap.
      * The framework decides the actual worker count from:
-     *   1. Job resource profile (CPU/GPU/IO/LLM-bound)
+     *   1. Table-owned job resource profile (CPU/GPU/IO/LLM-bound)
      *   2. CPU load + available cores
      *   3. Available memory
      *   4. GPU utilization (for GPU-bound jobs)
@@ -3134,8 +3462,13 @@ class ScheduledJobService
             return 1; // Explicitly single-worker jobs stay single
         }
 
-        $profile = $this->getJobResourceProfile($job);
-        $hardCap = $profile['hard_cap'];
+        $profileKey = $this->getJobResourceProfileKey($job);
+        $profiles = $this->getJobResourceProfiles();
+        $profile = $profiles[$profileKey]
+            ?? $profiles['default']
+            ?? $this->nonLimitingResourceProfile((int) $safetyCap);
+        $hardCap = $this->getJobHardCap($job, $profile, (int) $safetyCap);
+        $scalingPolicy = $this->getWorkerScalingPolicy();
 
         // ── Gather system state (cached for this tick) ──
         $system = $this->getSystemState();
@@ -3146,52 +3479,67 @@ class ScheduledJobService
         // ── CPU headroom → additional workers for CPU-bound jobs ──
         if ($profile['cpu_bound']) {
             $idleCores = max(0, $system['cores'] - ($system['load'] * $system['cores']));
-            // Each worker needs ~2 cores of headroom for CPU-bound work
-            $cpuWorkers = (int) floor($idleCores / 2);
-            $workers = max($workers, min($cpuWorkers, $hardCap));
+            $coresPerWorker = $this->positivePolicyFloat($scalingPolicy, 'cpu_cores_per_worker');
+            if ($coresPerWorker !== null) {
+                $cpuWorkers = (int) floor($idleCores / $coresPerWorker);
+                $workers = max($workers, min($cpuWorkers, $hardCap));
+            }
         }
 
         // ── IO-bound jobs scale more freely (they wait on disk/network) ──
         if ($profile['io_bound']) {
-            // IO-bound can run more workers since they spend time waiting
-            $workers = max($workers, min(3, $hardCap));
-            // But back off if memory is tight
-            if ($system['memory_gb'] < 8) {
-                $workers = min($workers, 2);
+            $ioTargetWorkers = $this->positivePolicyInt($scalingPolicy, 'io_target_workers');
+            if ($ioTargetWorkers !== null) {
+                $workers = max($workers, min($ioTargetWorkers, $hardCap));
+            }
+
+            $ioLowMemoryGb = $this->positivePolicyFloat($scalingPolicy, 'io_low_memory_gb');
+            $ioLowMemoryWorkers = $this->positivePolicyInt($scalingPolicy, 'io_low_memory_workers');
+            if ($ioLowMemoryGb !== null && $ioLowMemoryWorkers !== null && $system['memory_gb'] < $ioLowMemoryGb) {
+                $workers = min($workers, $ioLowMemoryWorkers);
             }
         }
 
         // ── LLM-bound jobs scale with available providers ──
         if ($profile['llm_bound']) {
-            $healthyProviders = $this->countHealthyLlmProviders();
-            $workers = min($workers, max(1, $healthyProviders), $hardCap);
+            $providerCapacity = $this->countHealthyLlmProviderCapacity($profileKey, $job);
+            $workers = max($workers, min(max(1, $providerCapacity), $hardCap));
         }
 
         // ── GPU gate: GPU-bound jobs clamp when GPU is loaded ──
         if ($profile['gpu_bound']) {
-            if ($system['gpu_util'] > 70) {
+            $gpuSingleWorkerPct = $this->nonNegativePolicyInt($scalingPolicy, 'gpu_single_worker_util_pct');
+            $gpuLimitedWorkerPct = $this->nonNegativePolicyInt($scalingPolicy, 'gpu_limited_worker_util_pct');
+            $gpuLimitedWorkers = $this->positivePolicyInt($scalingPolicy, 'gpu_limited_workers');
+            if ($gpuSingleWorkerPct !== null && $system['gpu_util'] > $gpuSingleWorkerPct) {
                 $workers = 1;
-            } elseif ($system['gpu_util'] > 40) {
-                $workers = min($workers, 2);
+            } elseif ($gpuLimitedWorkerPct !== null && $gpuLimitedWorkers !== null && $system['gpu_util'] > $gpuLimitedWorkerPct) {
+                $workers = min($workers, $gpuLimitedWorkers);
             }
         }
 
         // ── Hard gates: insufficient resources → clamp to 1 ──
-        if ($system['load_ratio'] > 0.80) {
+        $loadRatioThreshold = $this->positivePolicyFloat($scalingPolicy, 'load_ratio_single_worker_threshold');
+        if ($loadRatioThreshold !== null && $system['load_ratio'] > $loadRatioThreshold) {
             return 1;
         }
-        if ($system['memory_gb'] < 4) {
+        $minMemoryGb = $this->positivePolicyFloat($scalingPolicy, 'min_memory_gb_single_worker');
+        if ($minMemoryGb !== null && $system['memory_gb'] < $minMemoryGb) {
             return 1;
         }
 
         // ── Backlog scaling: scale down when nearly caught up ──
         $pending = $this->getJobPendingCount($job);
-        if ($pending < 100) {
+        $parallelMinBacklog = $this->getParallelMinBacklog($job);
+        if ($pending < $parallelMinBacklog) {
             return 1; // Tail end — single worker finishes it
         }
-        if ($pending > 10000) {
-            $workers++; // Large backlog — push harder
+        $largeBacklogThreshold = $this->positivePolicyInt($scalingPolicy, 'large_backlog_threshold');
+        $largeBacklogBonusWorkers = $this->nonNegativePolicyInt($scalingPolicy, 'large_backlog_bonus_workers');
+        if ($largeBacklogThreshold !== null && $largeBacklogBonusWorkers !== null && $pending > $largeBacklogThreshold) {
+            $workers += $largeBacklogBonusWorkers;
         }
+        $workers = min($workers, max(1, $pending));
 
         // ── Cross-job awareness: total running workers across all jobs ──
         try {
@@ -3199,46 +3547,129 @@ class ScheduledJobService
                 SELECT COALESCE(SUM(running_count), 0) as c FROM scheduled_jobs WHERE last_run_status = 'running'
             ")->c ?? 0);
 
-            // Don't let total system workers exceed core count
-            if ($totalRunning >= $system['cores']) {
+            $systemWorkerLimitRatio = $this->positivePolicyFloat($scalingPolicy, 'total_running_core_ratio_limit');
+            if ($systemWorkerLimitRatio !== null && $totalRunning >= ($system['cores'] * $systemWorkerLimitRatio)) {
                 return 1;
             }
-            // If already running many workers system-wide, be conservative
-            if ($totalRunning > $system['cores'] * 0.6) {
-                $workers = min($workers, 2);
+
+            $conservativeRatio = $this->positivePolicyFloat($scalingPolicy, 'total_running_core_ratio_conservative');
+            $conservativeWorkers = $this->positivePolicyInt($scalingPolicy, 'total_running_conservative_workers');
+            if ($conservativeRatio !== null && $conservativeWorkers !== null && $totalRunning > ($system['cores'] * $conservativeRatio)) {
+                $workers = min($workers, $conservativeWorkers);
             }
         } catch (\Exception $e) {
             Log::debug('ScheduledJobService: system load check failed during worker calculation', ['error' => $e->getMessage()]);
         }
 
-        // ── Off-hours boost (9 PM - 6 AM): system is idle, push harder ──
+        // ── Configured off-hours boost: system is idle, push harder ──
         $hour = (int) now()->format('H');
-        if ($hour >= 21 || $hour <= 6) {
-            $workers++;
+        $offHoursStart = $this->hourPolicyInt($scalingPolicy, 'off_hours_start_hour');
+        $offHoursEnd = $this->hourPolicyInt($scalingPolicy, 'off_hours_end_hour');
+        $offHoursBonus = $this->nonNegativePolicyInt($scalingPolicy, 'off_hours_bonus_workers');
+        if ($offHoursStart !== null && $offHoursEnd !== null && $offHoursBonus !== null && $this->isWithinConfiguredHourWindow($hour, $offHoursStart, $offHoursEnd)) {
+            $workers += $offHoursBonus;
         }
 
         // ── Final clamp to safety cap ──
         return max(1, min($workers, $safetyCap, $hardCap));
     }
 
+    private function getParallelMinBacklog(object $job): int
+    {
+        $configured = $this->getScheduledJobRuntimeValue($job, 'parallel_min_backlog');
+        if (is_numeric($configured)) {
+            return max(1, (int) $configured);
+        }
+
+        $backlogMetric = $this->getScheduledJobRuntimeValue($job, 'backlog_metric');
+        $scalingPolicy = $this->getWorkerScalingPolicy();
+        if ($backlogMetric === 'genealogy_queue' || $this->isQueueResearchJob($job)) {
+            return $this->positivePolicyInt($scalingPolicy, 'genealogy_parallel_min_backlog') ?? 1;
+        }
+
+        return $this->positivePolicyInt($scalingPolicy, 'default_parallel_min_backlog') ?? 1;
+    }
+
+    /**
+     * Return the workload hard cap, allowing scheduled job runtime metadata to
+     * raise or lower a job-specific ceiling while max_parallel stays the final
+     * operator-owned safety cap.
+     *
+     * @param  array<string, bool|int>  $profile
+     */
+    private function getJobHardCap(object $job, array $profile, int $safetyCap): int
+    {
+        $configured = $this->getScheduledJobRuntimeValue($job, 'hard_cap');
+        if (is_numeric($configured)) {
+            return max(1, min((int) $configured, max(1, $safetyCap)));
+        }
+
+        if (isset($profile['hard_cap']) && is_numeric($profile['hard_cap']) && (int) $profile['hard_cap'] > 0) {
+            return max(1, min((int) $profile['hard_cap'], max(1, $safetyCap)));
+        }
+
+        return max(1, $safetyCap);
+    }
+
     /**
      * Count healthy LLM providers (active, healthy, circuit not open).
      * Cached 60s to avoid repeated DB queries within a scheduler tick.
      */
-    private function countHealthyLlmProviders(): int
+    private function countHealthyLlmProviderCapacity(string $resourceProfile = 'default', ?object $job = null): int
     {
-        return Cache::remember('healthy_llm_provider_count', 60, function () {
+        $capacityModelRoles = $job ? $this->getScheduledJobRuntimeList($job, 'capacity_model_roles') : [];
+        $errorDefault = $this->nonNegativePolicyInt($this->getWorkerScalingPolicy(), 'provider_capacity_error_default') ?? 0;
+        $roleCacheSuffix = $capacityModelRoles === []
+            ? ''
+            : ':roles:'.sha1(json_encode($capacityModelRoles, JSON_UNESCAPED_SLASHES));
+
+        return Cache::remember("healthy_llm_provider_capacity:{$resourceProfile}{$roleCacheSuffix}", 60, function () use ($resourceProfile, $capacityModelRoles, $errorDefault) {
             try {
+                if ($resourceProfile === 'genealogy_llm') {
+                    $roleWhere = '';
+                    $bindings = [];
+
+                    if ($capacityModelRoles !== []) {
+                        $rolePredicates = [];
+                        foreach ($capacityModelRoles as $role) {
+                            $rolePredicates[] = 'JSON_EXTRACT(COALESCE(config, JSON_OBJECT()), ?) IS NOT NULL';
+                            $bindings[] = '$.models.'.$role;
+                        }
+
+                        $roleWhere = ' AND ('.implode(' OR ', $rolePredicates).')';
+                    }
+
+                    $row = DB::selectOne("
+                        SELECT COALESCE(SUM(GREATEST(COALESCE(max_concurrent, 1), 1)), 0) AS c
+                        FROM llm_instances
+                        WHERE is_active = 1
+                          AND is_healthy = 1
+                          AND circuit_state != 'open'
+                          AND COALESCE(routability, 'allowed') = 'allowed'
+                          AND COALESCE(allows_private_data, 0) = 1
+                          AND COALESCE(data_privacy_scope, 'private_allowed') IN ('local_private', 'private_allowed')
+                          AND JSON_CONTAINS(COALESCE(capabilities, JSON_ARRAY()), JSON_QUOTE('text')) = 1
+                          AND JSON_CONTAINS(COALESCE(capabilities, JSON_ARRAY()), JSON_QUOTE('privacy_deny_prefilter')) = 0
+                          {$roleWhere}
+                    ", $bindings);
+
+                    return (int) ($row->c ?? 0);
+                }
+
                 $row = DB::selectOne("
-                    SELECT COUNT(*) as c FROM llm_instances
+                    SELECT COALESCE(SUM(GREATEST(COALESCE(max_concurrent, 1), 1)), 0) AS c
+                    FROM llm_instances
                     WHERE is_active = 1 AND is_healthy = 1 AND circuit_state != 'open'
                 ");
 
                 return (int) ($row->c ?? 0);
             } catch (\Exception $e) {
-                Log::debug('ScheduledJobService: healthy LLM provider count query failed', ['error' => $e->getMessage()]);
+                Log::debug('ScheduledJobService: healthy LLM provider capacity query failed', [
+                    'resource_profile' => $resourceProfile,
+                    'error' => $e->getMessage(),
+                ]);
 
-                return 2; // Safe default
+                return $errorDefault;
             }
         });
     }
@@ -3248,29 +3679,244 @@ class ScheduledJobService
      */
     private function getJobResourceProfile(object $job): array
     {
+        $profiles = $this->getJobResourceProfiles();
+        $key = $this->getJobResourceProfileKey($job);
+
+        return $profiles[$key]
+            ?? $profiles['default']
+            ?? $this->nonLimitingResourceProfile((int) ($job->max_parallel ?? 1));
+    }
+
+    /**
+     * Determine resource profile key from typed runtime metadata or command string.
+     */
+    private function getJobResourceProfileKey(object $job): string
+    {
+        $profiles = $this->getJobResourceProfiles();
         $resourceProfile = $this->getScheduledJobRuntimeValue($job, 'resource_profile');
-        if (is_string($resourceProfile) && isset(self::JOB_RESOURCE_PROFILES[$resourceProfile])) {
-            return self::JOB_RESOURCE_PROFILES[$resourceProfile];
+        if (is_string($resourceProfile) && isset($profiles[$resourceProfile])) {
+            return $resourceProfile;
         }
 
         $cmd = $job->command ?? '';
 
         // Match longest keys first to avoid substring collisions (e.g. 'ai' in 'thumbnails')
-        $keys = array_keys(self::JOB_RESOURCE_PROFILES);
+        $keys = array_keys($profiles);
         usort($keys, fn ($a, $b) => strlen($b) <=> strlen($a));
 
         foreach ($keys as $key) {
             if ($key !== 'default' && str_contains($cmd, $key)) {
-                return self::JOB_RESOURCE_PROFILES[$key];
+                return $key;
             }
         }
 
         // Check for common patterns
         if (str_contains($cmd, 'rag-sync') || str_contains($cmd, 'file-catalog')) {
-            return self::JOB_RESOURCE_PROFILES['rag'];
+            return 'rag';
         }
 
-        return self::JOB_RESOURCE_PROFILES['default'];
+        return 'default';
+    }
+
+    /**
+     * Resource profiles are table-owned at runtime.
+     *
+     * @return array<string,array<string,mixed>>
+     */
+    private function getJobResourceProfiles(): array
+    {
+        return Cache::remember('scheduler_resource_profiles', 60, function (): array {
+            try {
+                $row = DB::selectOne(
+                    "SELECT config_value
+                     FROM system_configs
+                     WHERE section = 'scheduler'
+                       AND config_key = 'resource_profiles'
+                     LIMIT 1"
+                );
+
+                $decoded = json_decode((string) ($row->config_value ?? ''), true);
+                if (! is_array($decoded) || $decoded === []) {
+                    return [];
+                }
+
+                $profiles = [];
+                foreach ($decoded as $key => $profile) {
+                    if (! is_string($key) || trim($key) === '' || ! is_array($profile)) {
+                        continue;
+                    }
+
+                    $profiles[$key] = $this->normalizeResourceProfile($profile);
+                }
+
+                return $profiles;
+            } catch (\Throwable $e) {
+                Log::debug('ScheduledJobService: scheduler resource profile config unavailable', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            return [];
+        });
+    }
+
+    /**
+     * Scheduler scaling thresholds are table-owned at runtime.
+     *
+     * @return array<string,int|float>
+     */
+    private function getWorkerScalingPolicy(): array
+    {
+        return Cache::remember('scheduler_worker_scaling_policy', 60, function (): array {
+            try {
+                $row = DB::selectOne(
+                    "SELECT config_value
+                     FROM system_configs
+                     WHERE section = 'scheduler'
+                       AND config_key = 'worker_scaling_policy'
+                     LIMIT 1"
+                );
+
+                $decoded = json_decode((string) ($row->config_value ?? ''), true);
+                if (! is_array($decoded)) {
+                    return [];
+                }
+
+                $policy = [];
+                foreach ($decoded as $key => $value) {
+                    if (! is_string($key) || ! is_numeric($value)) {
+                        continue;
+                    }
+
+                    $policy[$key] = str_contains((string) $key, 'ratio')
+                        || str_contains((string) $key, 'gb')
+                        || str_contains((string) $key, 'cores')
+                            ? (float) $value
+                            : (int) $value;
+                }
+
+                return $policy;
+            } catch (\Throwable $e) {
+                Log::debug('ScheduledJobService: scheduler worker scaling config unavailable', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            return [];
+        });
+    }
+
+    private function isWithinConfiguredHourWindow(int $hour, int $startHour, int $endHour): bool
+    {
+        $hour = max(0, min(23, $hour));
+        $startHour = max(0, min(23, $startHour));
+        $endHour = max(0, min(23, $endHour));
+
+        if ($startHour === $endHour) {
+            return true;
+        }
+
+        if ($startHour < $endHour) {
+            return $hour >= $startHour && $hour <= $endHour;
+        }
+
+        return $hour >= $startHour || $hour <= $endHour;
+    }
+
+    /**
+     * @return array{hard_cap:int,gpu_bound:bool,cpu_bound:bool,io_bound:bool,llm_bound:bool}
+     */
+    private function nonLimitingResourceProfile(int $safetyCap): array
+    {
+        return [
+            'hard_cap' => max(1, $safetyCap),
+            'gpu_bound' => false,
+            'cpu_bound' => false,
+            'io_bound' => false,
+            'llm_bound' => false,
+        ];
+    }
+
+    /**
+     * @param  array<string,mixed>  $profile
+     * @return array<string,mixed>
+     */
+    private function normalizeResourceProfile(array $profile): array
+    {
+        $normalized = [
+            'hard_cap' => null,
+            'gpu_bound' => false,
+            'cpu_bound' => false,
+            'io_bound' => false,
+            'llm_bound' => false,
+        ];
+
+        if (isset($profile['hard_cap']) && is_numeric($profile['hard_cap'])) {
+            $normalized['hard_cap'] = max(1, (int) $profile['hard_cap']);
+        }
+
+        foreach (['gpu_bound', 'cpu_bound', 'io_bound', 'llm_bound'] as $key) {
+            if (array_key_exists($key, $profile)) {
+                $normalized[$key] = filter_var($profile[$key], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE)
+                    ?? (bool) $profile[$key];
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param  array<string,int|float>  $policy
+     */
+    private function positivePolicyInt(array $policy, string $key): ?int
+    {
+        if (! isset($policy[$key]) || ! is_numeric($policy[$key])) {
+            return null;
+        }
+
+        $value = (int) $policy[$key];
+
+        return $value > 0 ? $value : null;
+    }
+
+    /**
+     * @param  array<string,int|float>  $policy
+     */
+    private function nonNegativePolicyInt(array $policy, string $key): ?int
+    {
+        if (! isset($policy[$key]) || ! is_numeric($policy[$key])) {
+            return null;
+        }
+
+        return max(0, (int) $policy[$key]);
+    }
+
+    /**
+     * @param  array<string,int|float>  $policy
+     */
+    private function hourPolicyInt(array $policy, string $key): ?int
+    {
+        if (! isset($policy[$key]) || ! is_numeric($policy[$key])) {
+            return null;
+        }
+
+        $value = (int) $policy[$key];
+
+        return $value >= 0 && $value <= 23 ? $value : null;
+    }
+
+    /**
+     * @param  array<string,int|float>  $policy
+     */
+    private function positivePolicyFloat(array $policy, string $key): ?float
+    {
+        if (! isset($policy[$key]) || ! is_numeric($policy[$key])) {
+            return null;
+        }
+
+        $value = (float) $policy[$key];
+
+        return $value > 0 ? $value : null;
     }
 
     /**
@@ -3298,6 +3944,9 @@ class ScheduledJobService
             if ($backlogMetric === 'thumbnail' || str_contains($cmd, 'thumbnail')) {
                 return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND thumbnail_generated_at IS NULL AND thumbnail_error IS NULL")->c ?? 0);
             }
+            if ($backlogMetric === 'genealogy_queue') {
+                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM genealogy_research_queue WHERE status = 'pending'")->c ?? 0);
+            }
         } catch (\Exception $e) {
             Log::debug('ScheduledJobService: backlog estimation query failed', ['error' => $e->getMessage()]);
         }
@@ -3318,6 +3967,51 @@ class ScheduledJobService
         }
 
         return $this->extractRuntimeValue($decoded, $key);
+    }
+
+    /**
+     * @return array<int,string>
+     */
+    private function getScheduledJobRuntimeList(object $job, string $key): array
+    {
+        $notes = $job->notes ?? null;
+        if (! is_string($notes) || trim($notes) === '') {
+            return [];
+        }
+
+        $decoded = $this->decodeJobParameters($notes);
+        if ($decoded === []) {
+            return [];
+        }
+
+        $runtime = $decoded['runtime'] ?? null;
+        $value = is_array($runtime) && array_key_exists($key, $runtime)
+            ? $runtime[$key]
+            : ($decoded[$key] ?? null);
+
+        if (is_string($value)) {
+            $value = str_contains($value, ',') ? explode(',', $value) : [$value];
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($value as $item) {
+            if (! is_scalar($item)) {
+                continue;
+            }
+
+            $item = trim((string) $item);
+            if ($item === '' || ! preg_match('/^[A-Za-z0-9_]+$/', $item)) {
+                continue;
+            }
+
+            $items[] = $item;
+        }
+
+        return array_values(array_unique($items));
     }
 
     /**

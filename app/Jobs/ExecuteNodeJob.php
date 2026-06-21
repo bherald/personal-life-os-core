@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Engine\NodeLoader;
+use App\Services\SystemConfigService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\DB;
@@ -19,9 +20,20 @@ class ExecuteNodeJob implements ShouldQueue
 {
     use Queueable;
 
+    private const RUNTIME_POLICY_CONFIG_KEY = 'workflow.execute_node_job_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'timeout_seconds' => 600,
+        'tries' => 3,
+        'backoff_seconds' => [30, 60, 120],
+    ];
+
     public $timeout = 600; // 10 minutes per node
     public $tries = 3;
     public $backoff = [30, 60, 120];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     protected int $runId;
     protected int $nodeExecutionId;
@@ -47,6 +59,7 @@ class ExecuteNodeJob implements ShouldQueue
         $this->input = $input;
         $this->branchIndex = $branchIndex;
         $this->parentFanOutId = $parentFanOutId;
+        $this->applyRuntimePolicy();
 
         $this->onQueue('workflow');
     }
@@ -132,5 +145,72 @@ class ExecuteNodeJob implements ShouldQueue
             'fanout:' . $this->parentFanOutId,
             'branch:' . $this->branchIndex,
         ];
+    }
+
+    private function applyRuntimePolicy(): void
+    {
+        $this->timeout = $this->runtimePolicyInt('timeout_seconds');
+        $this->tries = $this->runtimePolicyInt('tries');
+        $this->backoff = $this->runtimePolicyIntList('backoff_seconds');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function runtimePolicyIntList(string $key): array
+    {
+        $fallback = self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (! is_array($value)) {
+            return $fallback;
+        }
+
+        $ints = array_values(array_filter(
+            array_map(fn ($item) => is_numeric($item) ? (int) $item : 0, $value),
+            fn (int $item) => $item > 0
+        ));
+
+        return $ints !== [] ? $ints : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

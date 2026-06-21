@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Services\AIAutoTagService;
+use App\Services\SystemConfigService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\DB;
@@ -24,6 +25,16 @@ class AIAutoTagJob implements ShouldQueue
 {
     use Queueable;
 
+    private const RUNTIME_POLICY_CONFIG_KEY = 'files.ai_auto_tag_job_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'timeout_seconds' => 300,
+        'tries' => 3,
+        'backoff_seconds' => [30, 60, 180],
+        'overlap_release_after_seconds' => 60,
+        'overlap_expire_after_seconds' => 300,
+    ];
+
     /**
      * Job timeout in seconds (5 minutes for complex documents)
      */
@@ -38,6 +49,9 @@ class AIAutoTagJob implements ShouldQueue
      * Retry backoff in seconds (exponential)
      */
     public array $backoff = [30, 60, 180];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     /**
      * File registry ID to process
@@ -56,6 +70,7 @@ class AIAutoTagJob implements ShouldQueue
     {
         $this->fileRegistryId = $fileRegistryId;
         $this->forceRefresh = $forceRefresh;
+        $this->applyRuntimePolicy();
 
         // AI analysis is latency-heavy and should not contend with the shared default lane.
         $this->onQueue('long-running');
@@ -69,8 +84,8 @@ class AIAutoTagJob implements ShouldQueue
         // Prevent duplicate processing of same file
         return [
             (new WithoutOverlapping("ai_tag_{$this->fileRegistryId}"))
-                ->releaseAfter(60)
-                ->expireAfter(300),
+                ->releaseAfter($this->runtimePolicyInt('overlap_release_after_seconds'))
+                ->expireAfter($this->runtimePolicyInt('overlap_expire_after_seconds')),
         ];
     }
 
@@ -159,5 +174,72 @@ class AIAutoTagJob implements ShouldQueue
             'file_registry',
             "file:{$this->fileRegistryId}",
         ];
+    }
+
+    private function applyRuntimePolicy(): void
+    {
+        $this->timeout = $this->runtimePolicyInt('timeout_seconds');
+        $this->tries = $this->runtimePolicyInt('tries');
+        $this->backoff = $this->runtimePolicyIntList('backoff_seconds');
+    }
+
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function runtimePolicyIntList(string $key): array
+    {
+        $fallback = self::DEFAULT_RUNTIME_POLICY[$key];
+        $value = $this->runtimePolicy()[$key] ?? $fallback;
+        if (! is_array($value)) {
+            return $fallback;
+        }
+
+        $ints = array_values(array_filter(
+            array_map(fn ($item) => is_numeric($item) ? (int) $item : 0, $value),
+            fn (int $item) => $item > 0
+        ));
+
+        return $ints !== [] ? $ints : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
     }
 }

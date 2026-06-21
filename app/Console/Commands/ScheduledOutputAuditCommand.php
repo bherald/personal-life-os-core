@@ -186,7 +186,7 @@ class ScheduledOutputAuditCommand extends Command
             'status' => (string) ($payload['status'] ?? 'unknown'),
             'generated_at' => (string) ($payload['generated_at'] ?? now()->toIso8601String()),
             'summary' => $payload['summary'] ?? [],
-            'forbidden_key_counts' => $payload['forbidden_key_counts'] ?? [],
+            'forbidden_key_distinct_count' => count($payload['forbidden_key_counts'] ?? []),
             'posture' => [
                 'aggregate_only' => true,
                 'raw_scheduled_output_included' => false,

@@ -4,6 +4,7 @@ namespace App\Controllers;
 
 use App\Exceptions\NodeTimeoutException;
 use App\Services\PushoverRateLimitPolicy;
+use App\Services\SystemConfigService;
 use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -11,6 +12,20 @@ use Illuminate\Support\Facades\Mail;
 
 class NotificationController
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'notifications.pushover_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'emergency_retry_seconds' => 60,
+        'emergency_expire_seconds' => 3600,
+        'send_connect_timeout_seconds' => 5,
+        'send_request_timeout_seconds' => 30,
+        'receipt_connect_timeout_seconds' => 5,
+        'receipt_request_timeout_seconds' => 10,
+    ];
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
+
     public function send(string $provider, array $data): array
     {
         switch ($provider) {
@@ -133,8 +148,8 @@ class NotificationController
 
             // Emergency priority requires retry and expire
             if (($data['priority'] ?? 0) == 2) {
-                $payload['retry'] = $data['retry'] ?? 60;
-                $payload['expire'] = $data['expire'] ?? 3600;
+                $payload['retry'] = $data['retry'] ?? $this->runtimePolicyInt('emergency_retry_seconds');
+                $payload['expire'] = $data['expire'] ?? $this->runtimePolicyInt('emergency_expire_seconds');
             }
 
             if (isset($data['attachment'])) {
@@ -142,7 +157,10 @@ class NotificationController
                 $payload['attachment_type'] = $data['attachment_type'] ?? 'image/jpeg';
             }
 
-            $response = Http::connectTimeout(5)->timeout(30)->asForm()->post($apiUrl, $payload);
+            $response = Http::connectTimeout($this->runtimePolicyInt('send_connect_timeout_seconds'))
+                ->timeout($this->runtimePolicyInt('send_request_timeout_seconds'))
+                ->asForm()
+                ->post($apiUrl, $payload);
 
             if (! $response->successful()) {
                 Log::error('Pushover notification failed', [
@@ -204,6 +222,47 @@ class NotificationController
         }
     }
 
+    private function runtimePolicyInt(string $key): int
+    {
+        return $this->positiveInt(
+            $this->runtimePolicy()[$key] ?? null,
+            (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
+    }
+
+    private function positiveInt(mixed $value, int $fallback): int
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
     private function resolvePushoverSourceGroup(array $data): string
     {
         $explicit = $data['source_group'] ?? null;
@@ -259,10 +318,12 @@ class NotificationController
         }
 
         try {
-            $response = Http::connectTimeout(5)->timeout(10)->get(
-                "https://api.pushover.net/1/receipts/{$receipt}.json",
-                ['token' => $apiToken]
-            );
+            $response = Http::connectTimeout($this->runtimePolicyInt('receipt_connect_timeout_seconds'))
+                ->timeout($this->runtimePolicyInt('receipt_request_timeout_seconds'))
+                ->get(
+                    "https://api.pushover.net/1/receipts/{$receipt}.json",
+                    ['token' => $apiToken]
+                );
 
             if (! $response->successful()) {
                 return ['success' => false, 'error' => 'HTTP '.$response->status()];

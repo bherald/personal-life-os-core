@@ -99,6 +99,8 @@ Guidance:
 - weak: fragmentary or too uncertain for proposals
 - noisy: mostly junk, OCR garbage, or non-genealogical content
 - collateral_only: useful context about relatives or cluster, but not strong enough for direct person proposals
+- same-name source-search hits without date/place/relative/source-chain bridges are weak leads, not usable proposal evidence
+- for FT4, source-backed blank fact, relationship, source, or media fill-ins are higher value than broad same-name coverage
 {$lessonContext}
 
 Document:

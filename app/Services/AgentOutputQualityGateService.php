@@ -659,7 +659,7 @@ class AgentOutputQualityGateService
                 continue;
             }
             $normalized = strtolower(trim((string) $source));
-            if (in_array($normalized, ['source_search_all', 'update_search_coverage'], true)) {
+            if (in_array($normalized, ['source_search_all', 'nara_search', 'update_search_coverage'], true)) {
                 return true;
             }
         }
@@ -841,7 +841,7 @@ class AgentOutputQualityGateService
 
     private function isGenericSourceLabel(string $value): bool
     {
-        return (bool) preg_match('/^(src|source|sources?|unknown|n\/a|none|manual search|browser search|source_search_all|update_search_coverage)$/i', trim($value));
+        return (bool) preg_match('/^(src|source|sources?|unknown|n\/a|none|manual search|browser search|source_search_all|nara_search|update_search_coverage)$/i', trim($value));
     }
 
     private function hasSourceLikeKeys(array $item): bool

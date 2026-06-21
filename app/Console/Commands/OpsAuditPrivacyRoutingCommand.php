@@ -21,6 +21,7 @@ class OpsAuditPrivacyRoutingCommand extends Command
     protected $signature = 'ops:audit-privacy-routing
                             {--strict : Exit non-zero when reachable unsafe providers overlap sensitive tool permissions}
                             {--details : Include full sensitive tool and provider lists in JSON output}
+                            {--compact : With --json, emit aggregate-only scheduled-output-safe JSON}
                             {--json : Output machine-readable JSON}';
 
     protected $description = 'Read-only audit of sensitive tool permissions against reachable LLM provider privacy posture';
@@ -76,7 +77,9 @@ class OpsAuditPrivacyRoutingCommand extends Command
             'issues' => $issues,
         ];
 
-        if (! $this->option('details')) {
+        if ($this->option('compact')) {
+            $payload = $this->compactPayload($payload);
+        } elseif (! $this->option('details')) {
             $payload['sensitive_tools']['sample_tools'] = array_slice($payload['sensitive_tools']['tools'], 0, 20);
             unset($payload['sensitive_tools']['tools']);
 
@@ -85,6 +88,58 @@ class OpsAuditPrivacyRoutingCommand extends Command
         }
 
         return $this->finish($payload, $status === 'fail' ? self::FAILURE : self::SUCCESS);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function compactPayload(array $payload): array
+    {
+        return [
+            'generated_at' => $payload['generated_at'] ?? now()->toIso8601String(),
+            'status' => $payload['status'] ?? 'unknown',
+            'strict' => (bool) ($payload['strict'] ?? false),
+            'compact' => true,
+            'offline_mode_active' => (bool) ($payload['offline_mode_active'] ?? false),
+            'allowed_provider_class_count' => count($payload['allowed_provider_classes'] ?? []),
+            'sensitive_namespace_count' => count($payload['sensitive_permission_namespaces'] ?? []),
+            'sensitive_tools' => [
+                'total_tools' => (int) ($payload['sensitive_tools']['total_tools'] ?? 0),
+                'namespace_counts' => $payload['sensitive_tools']['namespace_counts'] ?? [],
+            ],
+            'providers' => [
+                'counts' => $payload['providers']['counts'] ?? [],
+                'reachable_cloud_external_count' => (int) ($payload['providers']['reachable_cloud_external_count'] ?? 0),
+            ],
+            'issue_count' => count($payload['issues'] ?? []),
+            'issue_severity_counts' => $this->issueSeverityCounts($payload['issues'] ?? []),
+            'posture' => [
+                'aggregate_only' => true,
+                'tool_lists_included' => false,
+                'provider_lists_included' => false,
+                'provider_hosts_included' => false,
+                'names_included' => false,
+                'writes_enabled' => false,
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $issues
+     * @return array<string, int>
+     */
+    private function issueSeverityCounts(array $issues): array
+    {
+        $counts = [];
+        foreach ($issues as $issue) {
+            $severity = is_scalar($issue['severity'] ?? null) ? (string) $issue['severity'] : 'unknown';
+            $counts[$severity] = ($counts[$severity] ?? 0) + 1;
+        }
+
+        ksort($counts);
+
+        return $counts;
     }
 
     private function sensitiveTools(): array
@@ -102,6 +157,7 @@ class OpsAuditPrivacyRoutingCommand extends Command
         foreach ($rows as $row) {
             $permissions = $this->decodeJson((string) ($row->permissions ?? '[]'));
             $sensitivePermissions = [];
+            $toolNamespaces = [];
 
             foreach ($permissions as $permission) {
                 if (! is_string($permission)) {
@@ -114,11 +170,15 @@ class OpsAuditPrivacyRoutingCommand extends Command
                 }
 
                 $sensitivePermissions[] = $permission;
-                $namespaceCounts[$namespace]++;
+                $toolNamespaces[$namespace] = true;
             }
 
             if ($sensitivePermissions === []) {
                 continue;
+            }
+
+            foreach (array_keys($toolNamespaces) as $namespace) {
+                $namespaceCounts[$namespace]++;
             }
 
             $tools[] = [

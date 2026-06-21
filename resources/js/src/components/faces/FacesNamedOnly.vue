@@ -78,13 +78,26 @@
             </button>
           </form>
         </div>
-        <button
-          class="rounded border border-ops-plum/40 px-3 py-1.5 text-xs uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-40"
-          :disabled="namedOnlyLoading"
-          @click="loadNamedOnly(true)"
-        >
-          Refresh
-        </button>
+        <div class="flex items-center gap-2">
+          <span v-if="bulkSelectedIds.size > 0" class="text-xs uppercase tracking-wide text-ops-gold">
+            {{ bulkSelectedIds.size }} selected
+          </span>
+          <button
+            v-if="bulkSelectedIds.size > 0"
+            class="rounded bg-ops-gold px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-black hover:bg-ops-peach disabled:opacity-40"
+            :disabled="namedOnlyLoading || assignmentSaving"
+            @click="openAssignSelected"
+          >
+            Assign Selected
+          </button>
+          <button
+            class="rounded border border-ops-plum/40 px-3 py-1.5 text-xs uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-40"
+            :disabled="namedOnlyLoading"
+            @click="loadNamedOnly(true)"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div v-if="faces.length === 0 && !namedOnlyLoading" class="py-16 text-center text-ops-text-muted">
@@ -93,12 +106,20 @@
       </div>
 
       <div class="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8">
-        <button
+        <div
           v-for="face in faces"
           :key="face.face_id"
+          role="button"
+          tabindex="0"
           class="group min-w-0 overflow-hidden rounded-lg border bg-ops-plum/20 text-left transition-colors"
-          :class="selectedFaceId === face.face_id ? 'border-ops-gold' : 'border-transparent hover:border-ops-peach/40'"
+          :class="bulkSelectedIds.has(face.face_id)
+            ? 'border-ops-gold ring-2 ring-ops-gold/50'
+            : selectedFaceId === face.face_id
+              ? 'border-ops-gold'
+              : 'border-transparent hover:border-ops-peach/40'"
           @click="selectFace(face)"
+          @keydown.enter.prevent="selectFace(face)"
+          @keydown.space.prevent="toggleBulkFace(face)"
         >
           <div class="relative aspect-square overflow-hidden">
             <img
@@ -131,6 +152,18 @@
                 Mixed
               </span>
             </div>
+            <button
+              type="button"
+              class="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded border text-[11px] font-bold transition-colors"
+              :class="bulkSelectedIds.has(face.face_id)
+                ? 'border-ops-gold bg-ops-gold text-black'
+                : 'border-ops-plum/50 bg-black/70 text-ops-text-muted hover:border-ops-peach/60 hover:text-ops-peach'"
+              :title="bulkSelectedIds.has(face.face_id) ? 'Remove from selected' : 'Select for bulk assign'"
+              :aria-pressed="bulkSelectedIds.has(face.face_id)"
+              @click.stop="toggleBulkFace(face)"
+            >
+              {{ bulkSelectedIds.has(face.face_id) ? 'x' : '+' }}
+            </button>
           </div>
           <div class="min-w-0 px-2 py-1.5">
             <div class="truncate text-xs font-semibold text-ops-text" :title="face.person_name">
@@ -152,7 +185,7 @@
               </span>
             </div>
           </div>
-        </button>
+        </div>
       </div>
 
       <div v-if="namedOnlyLoading" class="py-8 text-center">
@@ -208,6 +241,13 @@
               </span>
             </div>
             <div class="mt-2 flex items-center gap-2">
+              <button
+                class="rounded bg-ops-gold px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-black hover:bg-ops-peach disabled:opacity-40"
+                :disabled="assignmentSaving"
+                @click="openAssignSingle(selectedFace)"
+              >
+                Assign
+              </button>
               <button
                 class="rounded border border-ops-plum/40 px-2 py-1 text-[10px] uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-40"
                 :disabled="candidateLoading"
@@ -289,7 +329,7 @@
         <div v-else class="space-y-2">
           <div
             v-for="candidate in candidates"
-            :key="candidate.genealogy_person_id"
+            :key="candidateKey(candidate)"
             class="rounded border border-ops-plum/40 bg-black/30 p-3"
           >
             <div class="flex items-start justify-between gap-3">
@@ -298,8 +338,10 @@
                   {{ candidateDisplayName(candidate) }}
                 </div>
                 <div class="mt-0.5 text-xs text-ops-text-muted">
-                  {{ formatLifeSpan(candidate) }}
-                  <span v-if="candidate.face_count"> | {{ candidate.face_count }} linked face{{ candidate.face_count === 1 ? '' : 's' }}</span>
+                  {{ candidateSubtitle(candidate) }}
+                  <span v-if="candidate.known_face_count || candidate.face_count">
+                    | {{ candidate.known_face_count || candidate.face_count }} known face{{ (candidate.known_face_count || candidate.face_count) === 1 ? '' : 's' }}
+                  </span>
                 </div>
               </div>
               <div class="shrink-0 text-right">
@@ -342,6 +384,7 @@
 
             <div class="mt-3 flex justify-end gap-2">
               <button
+                v-if="candidate.genealogy_person_id"
                 class="rounded border border-ops-orange/40 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-ops-orange hover:border-ops-peach/40 hover:text-ops-peach disabled:opacity-50"
                 :disabled="decisionLoadingKey !== '' || linkingCandidateId !== null"
                 @click="recordDecision('not_this_person', candidate)"
@@ -349,22 +392,110 @@
                 {{ decisionLoadingKey === `not_this_person:${candidate.genealogy_person_id}` ? 'Saving' : 'Not This Person' }}
               </button>
               <button
+                v-if="candidate.genealogy_person_id"
                 class="rounded bg-ops-gold px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-black hover:bg-ops-peach disabled:opacity-50"
                 :disabled="linkingCandidateId !== null || decisionLoadingKey !== ''"
                 @click="linkCandidate(candidate)"
               >
                 {{ linkingCandidateId === candidate.genealogy_person_id ? 'Linking' : 'Link' }}
               </button>
+              <button
+                v-else
+                class="rounded bg-ops-gold px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-black hover:bg-ops-peach disabled:opacity-50"
+                :disabled="linkingCandidateId !== null || decisionLoadingKey !== ''"
+                @click="confirmStandaloneCandidate(candidate)"
+              >
+                {{ decisionLoadingKey === `use_name:${candidateKey(candidate)}` ? 'Saving' : 'Use Name' }}
+              </button>
             </div>
           </div>
         </div>
       </div>
     </aside>
+
+    <div
+      v-if="assignmentDialogVisible"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      @click.self="closeAssignDialog"
+    >
+      <div class="w-full max-w-md rounded border-2 border-ops-peach bg-black p-5 shadow-xl">
+        <div class="mb-4 flex items-start justify-between gap-4">
+          <div>
+            <h3 class="text-lg font-bold text-ops-peach">
+              Assign {{ assignmentFaceIds.length }} face{{ assignmentFaceIds.length === 1 ? '' : 's' }}
+            </h3>
+            <p class="mt-1 text-xs text-ops-text-muted">
+              {{ assignmentGenealogyPersonId ? 'FT person selected' : 'Standalone label if no FT person is selected' }}
+            </p>
+          </div>
+          <button
+            type="button"
+            class="rounded border border-ops-plum/40 px-2 py-1 text-xs uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/50 hover:text-ops-peach"
+            @click="closeAssignDialog"
+          >
+            Close
+          </button>
+        </div>
+
+        <div class="relative">
+          <input
+            ref="assignmentInput"
+            v-model="assignmentValue"
+            type="text"
+            maxlength="120"
+            class="w-full rounded border border-ops-peach/40 bg-black/50 px-3 py-2 text-sm text-ops-text outline-none placeholder:text-ops-text-muted/70 focus:border-ops-peach"
+            placeholder="Person name or FT person"
+            @input="onAssignmentInput"
+            @keydown.enter.prevent="submitAssignment"
+            @keydown.escape.prevent="closeAssignDialog"
+          />
+          <div
+            v-if="assignmentSuggestions.length > 0"
+            class="absolute left-0 right-0 top-full z-30 max-h-48 overflow-y-auto rounded-b border border-ops-peach/40 bg-black"
+          >
+            <button
+              v-for="suggestion in assignmentSuggestions"
+              :key="assignmentSuggestionKey(suggestion)"
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm text-ops-text hover:bg-ops-plum/40"
+              @click="selectAssignmentSuggestion(suggestion)"
+            >
+              <span class="font-semibold">{{ assignmentSuggestionName(suggestion) }}</span>
+              <span class="ml-2 text-xs text-ops-text-muted">
+                {{ assignmentSuggestionMeta(suggestion) }}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="assignmentError" class="mt-3 rounded border border-ops-orange/40 bg-ops-orange/10 p-2 text-xs text-ops-orange">
+          {{ assignmentError }}
+        </div>
+
+        <div class="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            class="rounded border border-ops-plum/40 px-3 py-1.5 text-xs uppercase tracking-wide text-ops-text-muted hover:border-ops-peach/50 hover:text-ops-peach"
+            @click="closeAssignDialog"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="rounded bg-ops-gold px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-black hover:bg-ops-peach disabled:opacity-40"
+            :disabled="assignmentSaving || !assignmentValue.trim() || assignmentFaceIds.length === 0"
+            @click="submitAssignment"
+          >
+            {{ assignmentSaving ? 'Saving' : 'Assign' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import api from '../../utils/api'
 import { useFacesData } from '../../composables/useFacesData'
 
@@ -394,7 +525,9 @@ const {
   setNamedOnlyClusterScope,
   setNamedOnlySearch,
   linkNamedOnlyFace,
+  assignNamedOnlyFaces,
   decideNamedOnlyFace,
+  searchPersons,
 } = useFacesData()
 
 const selectedFaceId = ref(null)
@@ -404,6 +537,17 @@ const candidateLoading = ref(false)
 const candidateError = ref('')
 const linkingCandidateId = ref(null)
 const decisionLoadingKey = ref('')
+const bulkSelectedIds = ref(new Set())
+const assignmentDialogVisible = ref(false)
+const assignmentFaceIds = ref([])
+const assignmentValue = ref('')
+const assignmentGenealogyPersonId = ref(null)
+const assignmentTreeId = ref(null)
+const assignmentSuggestions = ref([])
+const assignmentSaving = ref(false)
+const assignmentError = ref('')
+const assignmentInput = ref(null)
+let assignmentSearchTimer = null
 
 const faceDecisionActions = [
   { value: 'keep_name_only', label: 'Keep Name Only' },
@@ -439,6 +583,10 @@ watch(faces, () => {
   if (selectedFaceId.value && !selectedFace.value) {
     clearCandidatePanel()
   }
+  if (bulkSelectedIds.value.size > 0) {
+    const visibleIds = new Set(faces.value.map(face => face.face_id))
+    bulkSelectedIds.value = new Set([...bulkSelectedIds.value].filter(id => visibleIds.has(id)))
+  }
 })
 
 async function selectFace(face) {
@@ -450,33 +598,157 @@ async function selectFace(face) {
 async function changeDecisionState(decisionState) {
   if (namedOnlyDecisionState.value === decisionState) return
   clearCandidatePanel()
+  clearBulkSelection()
   await setNamedOnlyDecisionState(decisionState)
 }
 
 async function changeStaleOnly(staleOnly) {
   clearCandidatePanel()
+  clearBulkSelection()
   await setNamedOnlyStaleOnly(staleOnly)
 }
 
 async function changeSort(sort) {
   if (namedOnlySort.value === sort) return
   clearCandidatePanel()
+  clearBulkSelection()
   await setNamedOnlySort(sort)
 }
 
 async function changeActiveOnly(activeOnly) {
   clearCandidatePanel()
+  clearBulkSelection()
   await setNamedOnlyActiveOnly(activeOnly)
 }
 
 async function changeMixedClusterOnly(mixedOnly) {
   clearCandidatePanel()
+  clearBulkSelection()
   await setNamedOnlyClusterScope(mixedOnly ? 'mixed' : 'all')
 }
 
 async function applySearch() {
   clearCandidatePanel()
+  clearBulkSelection()
   await setNamedOnlySearch(searchDraft.value)
+}
+
+function toggleBulkFace(face) {
+  if (!face?.face_id) return
+
+  if (bulkSelectedIds.value.has(face.face_id)) {
+    bulkSelectedIds.value.delete(face.face_id)
+  } else {
+    bulkSelectedIds.value.add(face.face_id)
+  }
+  bulkSelectedIds.value = new Set(bulkSelectedIds.value)
+}
+
+function clearBulkSelection() {
+  bulkSelectedIds.value = new Set()
+}
+
+function openAssignSingle(face) {
+  if (!face?.face_id) return
+  openAssignDialog([face.face_id], face.person_name || '')
+}
+
+function openAssignSelected() {
+  const ids = [...bulkSelectedIds.value]
+  if (ids.length === 0) return
+
+  const selectedFaces = faces.value.filter(face => ids.includes(face.face_id))
+  const names = [...new Set(selectedFaces.map(face => String(face.person_name || '').trim()).filter(Boolean))]
+  openAssignDialog(ids, names.length === 1 ? names[0] : '')
+}
+
+function openAssignDialog(faceIds, initialName = '') {
+  assignmentFaceIds.value = [...new Set(faceIds)]
+  assignmentValue.value = initialName
+  assignmentGenealogyPersonId.value = null
+  assignmentTreeId.value = null
+  assignmentSuggestions.value = []
+  assignmentError.value = ''
+  assignmentDialogVisible.value = true
+  nextTick(() => assignmentInput.value?.focus())
+}
+
+function closeAssignDialog() {
+  assignmentDialogVisible.value = false
+  assignmentFaceIds.value = []
+  assignmentValue.value = ''
+  assignmentGenealogyPersonId.value = null
+  assignmentTreeId.value = null
+  assignmentSuggestions.value = []
+  assignmentError.value = ''
+  clearTimeout(assignmentSearchTimer)
+}
+
+function onAssignmentInput() {
+  assignmentGenealogyPersonId.value = null
+  assignmentTreeId.value = null
+  assignmentError.value = ''
+  clearTimeout(assignmentSearchTimer)
+
+  const query = assignmentValue.value.trim()
+  if (query.length < 2) {
+    assignmentSuggestions.value = []
+    return
+  }
+
+  assignmentSearchTimer = setTimeout(async () => {
+    assignmentSuggestions.value = await searchPersons(query)
+  }, 200)
+}
+
+function selectAssignmentSuggestion(suggestion) {
+  assignmentValue.value = assignmentSuggestionName(suggestion)
+  assignmentGenealogyPersonId.value = parsePositiveInt(suggestion?.genealogy_person_id) || parsePositiveInt(suggestion?.id)
+  assignmentTreeId.value = parsePositiveInt(suggestion?.tree_id)
+  assignmentSuggestions.value = []
+}
+
+async function submitAssignment() {
+  const name = assignmentValue.value.trim()
+  const ids = [...assignmentFaceIds.value]
+  if (!name || ids.length === 0 || assignmentSaving.value) return
+
+  assignmentSaving.value = true
+  assignmentError.value = ''
+
+  try {
+    const genealogyPersonId = parsePositiveInt(assignmentGenealogyPersonId.value)
+    const treeId = parsePositiveInt(assignmentTreeId.value) || parsePositiveInt(props.treeId)
+    const result = await assignNamedOnlyFaces(ids, name, genealogyPersonId, treeId)
+
+    if (!result?.success) {
+      assignmentError.value = result?.error || 'Assignment failed'
+      return
+    }
+
+    for (const id of ids) {
+      bulkSelectedIds.value.delete(id)
+      if (genealogyPersonId) {
+        emit('linked', {
+          face_id: id,
+          genealogy_person_id: genealogyPersonId,
+          tree_id: treeId,
+        })
+      }
+    }
+    bulkSelectedIds.value = new Set(bulkSelectedIds.value)
+
+    if (ids.includes(selectedFaceId.value)) {
+      clearCandidatePanel()
+    }
+
+    closeAssignDialog()
+    await loadNamedOnly(true)
+  } catch (error) {
+    assignmentError.value = candidateErrorMessage(error)
+  } finally {
+    assignmentSaving.value = false
+  }
 }
 
 async function loadCandidates(faceId = selectedFaceId.value) {
@@ -521,6 +793,41 @@ async function linkCandidate(candidate) {
     candidateError.value = candidateErrorMessage(error)
   } finally {
     linkingCandidateId.value = null
+  }
+}
+
+async function confirmStandaloneCandidate(candidate) {
+  if (!selectedFaceId.value) return
+
+  const name = String(candidate?.person_name || candidate?.face_label || candidate?.name || '').trim()
+  if (!name) return
+
+  const key = `use_name:${candidateKey(candidate)}`
+  decisionLoadingKey.value = key
+  candidateError.value = ''
+
+  try {
+    await api.post(`/media/faces/${selectedFaceId.value}/name`, { person_name: name })
+
+    const treeId = parsePositiveInt(candidatePayload.value?.tree_id)
+      || parsePositiveInt(props.treeId)
+    const payload = {
+      action: 'keep_name_only',
+      reason: `standalone face identity: ${name}`,
+    }
+    if (treeId) payload.tree_id = treeId
+
+    const result = await decideNamedOnlyFace(selectedFaceId.value, payload)
+    emit('decided', {
+      face_id: selectedFaceId.value,
+      action: 'keep_name_only',
+      terminal: result.decision?.terminal || false,
+    })
+    clearCandidatePanel()
+  } catch (error) {
+    candidateError.value = candidateErrorMessage(error)
+  } finally {
+    decisionLoadingKey.value = ''
   }
 }
 
@@ -596,14 +903,57 @@ function formatScore(score) {
 }
 
 function formatLifeSpan(candidate) {
+  if (!candidate?.genealogy_person_id) {
+    return 'Standalone face label'
+  }
+
   const birth = candidate.birth_date || '?'
   const death = candidate.death_date || ''
   return `${birth} - ${death || '?'}`
 }
 
+function candidateSubtitle(candidate) {
+  if (!candidate?.genealogy_person_id) {
+    return 'Standalone face label'
+  }
+
+  return formatLifeSpan(candidate)
+}
+
+function candidateKey(candidate) {
+  return candidate?.identity_key
+    || (candidate?.genealogy_person_id ? `genealogy:${candidate.genealogy_person_id}` : '')
+    || `face_label:${String(candidate?.person_name || candidate?.face_label || candidate?.name || 'unknown').toLowerCase()}`
+}
+
 function candidateDisplayName(candidate) {
   const name = String(candidate?.name || '').trim()
   return name || 'Person reference'
+}
+
+function assignmentSuggestionName(suggestion) {
+  return String(suggestion?.person_name || suggestion?.face_label || suggestion?.name || suggestion?.genealogy_name || '').trim()
+}
+
+function assignmentSuggestionKey(suggestion) {
+  return suggestion?.genealogy_person_id
+    ? `genealogy:${suggestion.genealogy_person_id}`
+    : `label:${assignmentSuggestionName(suggestion).toLowerCase()}`
+}
+
+function assignmentSuggestionMeta(suggestion) {
+  const faceCount = Number(suggestion?.face_count || suggestion?.known_face_count || suggestion?.media_count || 0)
+  const parts = []
+
+  if (suggestion?.genealogy_person_id || suggestion?.id) {
+    parts.push(`FT ${suggestion.genealogy_person_id || suggestion.id}`)
+  }
+
+  if (Number.isFinite(faceCount) && faceCount > 0) {
+    parts.push(`${faceCount} face${faceCount === 1 ? '' : 's'}`)
+  }
+
+  return parts.join(' | ') || 'standalone'
 }
 
 function formatReason(reason) {

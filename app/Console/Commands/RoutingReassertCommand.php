@@ -25,8 +25,10 @@ use Illuminate\Support\Facades\Log;
  */
 class RoutingReassertCommand extends Command
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'routing.reassert_runtime_policy';
+
     protected $signature = 'routing:reassert
-        {--stale=10 : Stale pending-confirmation threshold in minutes}
+        {--stale= : Optional stale pending-confirmation threshold override in minutes}
         {--json : Emit JSON instead of human-readable output}';
 
     protected $description = 'Reassert active 3b profile + offline_mode on boot; clean stale pending confirmations; never auto-widens.';
@@ -36,8 +38,19 @@ class RoutingReassertCommand extends Command
         OfflinePolicyService $policy,
         OfflineAuditService $audit,
     ): int {
-        $staleMinutes = (int) $this->option('stale');
         $emitJson = (bool) $this->option('json');
+        $stalePolicy = $this->staleThreshold($config);
+        if (($stalePolicy['status'] ?? 'ok') !== 'ok') {
+            return $this->emitPayload([
+                'status' => 'error',
+                'error' => $stalePolicy['error'] ?? 'reassert_runtime_policy_invalid',
+                'policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
+                'widened' => false,
+            ], $emitJson);
+        }
+
+        $staleMinutes = (int) $stalePolicy['minutes'];
+        $staleSource = (string) $stalePolicy['source'];
 
         $profile = $policy->activeProfile();
         $offlineMode = $policy->isOfflineModeActive();
@@ -69,6 +82,7 @@ class RoutingReassertCommand extends Command
             ),
             context: [
                 'stale_threshold_minutes' => $staleMinutes,
+                'stale_threshold_source' => $staleSource,
                 'stale_cleaned' => $staleCleaned,
                 'offline_mode_active' => $offlineMode,
             ],
@@ -78,26 +92,93 @@ class RoutingReassertCommand extends Command
             'profile' => $profile,
             'offline_mode' => $offlineMode,
             'stale_pending_confirmations_cleaned' => $staleCleaned,
+            'stale_threshold_minutes' => $staleMinutes,
+            'stale_threshold_source' => $staleSource,
         ]);
 
         $payload = [
+            'status' => 'ok',
             'active_profile' => $profile,
             'offline_mode_active' => $offlineMode,
+            'policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
+            'stale_threshold_minutes' => $staleMinutes,
+            'stale_threshold_source' => $staleSource,
             'stale_pending_confirmations_cleaned' => $staleCleaned,
             'widened' => false,  // Pinned by contract — this command never widens.
         ];
 
+        return $this->emitPayload($payload, $emitJson, $profile, $offlineMode, $staleCleaned, $staleMinutes);
+    }
+
+    /**
+     * @param  array<string,mixed>  $payload
+     */
+    private function emitPayload(
+        array $payload,
+        bool $emitJson,
+        ?string $profile = null,
+        ?bool $offlineMode = null,
+        ?int $staleCleaned = null,
+        ?int $staleMinutes = null,
+    ): int {
         if ($emitJson) {
             $this->line((string) json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         } else {
-            $this->info('3b state reasserted:');
-            $this->line("  active profile       : {$profile}");
-            $this->line('  offline mode         : '.($offlineMode ? 'enabled' : 'disabled'));
-            $this->line("  stale confirmations  : {$staleCleaned} cleaned (threshold={$staleMinutes}min)");
-            $this->line('  widened by this run  : no (never)');
+            if (($payload['status'] ?? 'ok') !== 'ok') {
+                $this->error('routing:reassert blocked: '.($payload['error'] ?? 'unknown_error'));
+            } else {
+                $this->info('3b state reasserted:');
+                $this->line("  active profile       : {$profile}");
+                $this->line('  offline mode         : '.($offlineMode ? 'enabled' : 'disabled'));
+                $this->line("  stale confirmations  : {$staleCleaned} cleaned (threshold={$staleMinutes}min)");
+                $this->line('  threshold source     : '.($payload['stale_threshold_source'] ?? 'unknown'));
+                $this->line('  widened by this run  : no (never)');
+            }
         }
 
-        return self::SUCCESS;
+        return ($payload['status'] ?? 'ok') === 'ok' ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * @return array{status:string,minutes?:int,source?:string,error?:string}
+     */
+    private function staleThreshold(SystemConfigService $config): array
+    {
+        $override = $this->option('stale');
+        if ($override !== null && trim((string) $override) !== '') {
+            $minutes = $this->positiveMinutes($override);
+
+            return $minutes !== null
+                ? ['status' => 'ok', 'minutes' => $minutes, 'source' => 'cli_option.--stale']
+                : ['status' => 'error', 'error' => 'invalid_stale_threshold_override'];
+        }
+
+        $policy = $config->get(self::RUNTIME_POLICY_CONFIG_KEY);
+        if (! is_array($policy)) {
+            return ['status' => 'error', 'error' => 'reassert_runtime_policy_missing'];
+        }
+
+        $minutes = $this->positiveMinutes($policy['stale_confirmation_minutes'] ?? null);
+        if ($minutes === null) {
+            return ['status' => 'error', 'error' => 'reassert_runtime_policy_invalid_stale_confirmation_minutes'];
+        }
+
+        return [
+            'status' => 'ok',
+            'minutes' => $minutes,
+            'source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY.'.stale_confirmation_minutes',
+        ];
+    }
+
+    private function positiveMinutes(mixed $value): ?int
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        $minutes = (int) $value;
+
+        return $minutes > 0 ? $minutes : null;
     }
 
     private function tableExists(string $name): bool

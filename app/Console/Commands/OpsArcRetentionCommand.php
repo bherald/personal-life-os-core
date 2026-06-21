@@ -256,6 +256,8 @@ class OpsArcRetentionCommand extends Command
         $table = is_array($payload['table'] ?? null) ? $payload['table'] : [];
         $safety = is_array($payload['safety'] ?? null) ? $payload['safety'] : [];
 
+        $remainingMeasured = array_key_exists('remaining_oldest_eligible', $payload);
+
         return [
             'version' => (int) ($payload['version'] ?? 1),
             'compact' => true,
@@ -275,7 +277,10 @@ class OpsArcRetentionCommand extends Command
                 'has_oldest_created_at' => ($table['oldest_created_at'] ?? null) !== null,
                 'has_newest_created_at' => ($table['newest_created_at'] ?? null) !== null,
                 'has_oldest_eligible' => ($payload['oldest_eligible'] ?? null) !== null,
-                'has_remaining_oldest_eligible' => ($payload['remaining_oldest_eligible'] ?? null) !== null,
+                'remaining_oldest_eligible_measured' => $remainingMeasured,
+                'has_remaining_oldest_eligible' => $remainingMeasured
+                    ? ($payload['remaining_oldest_eligible'] ?? null) !== null
+                    : null,
             ],
             'deleted_rows' => (int) ($payload['deleted_rows'] ?? 0),
             'batches' => (int) ($payload['batches'] ?? 0),
@@ -306,13 +311,17 @@ class OpsArcRetentionCommand extends Command
 
         foreach ((array) ($payload['runs'] ?? []) as $run) {
             $runPayload = is_array($run['payload'] ?? null) ? $run['payload'] : [];
+            $remainingMeasured = array_key_exists('remaining_oldest_eligible', $runPayload);
             $runs[] = [
                 'run' => (int) ($run['run'] ?? 0),
                 'status' => (string) ($runPayload['status'] ?? 'unknown'),
                 'deleted_rows' => (int) ($runPayload['deleted_rows'] ?? 0),
                 'batches' => (int) ($runPayload['batches'] ?? 0),
                 'stopped_reason' => (string) ($runPayload['stopped_reason'] ?? 'unknown'),
-                'has_remaining_oldest_eligible' => ($runPayload['remaining_oldest_eligible'] ?? null) !== null,
+                'remaining_oldest_eligible_measured' => $remainingMeasured,
+                'has_remaining_oldest_eligible' => $remainingMeasured
+                    ? ($runPayload['remaining_oldest_eligible'] ?? null) !== null
+                    : null,
             ];
         }
 

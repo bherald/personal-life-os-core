@@ -48,7 +48,7 @@ class FaceLinkBridgeService
             [$face->file_registry_id]
         );
 
-        $this->syncClusterPerson((int) $personId, $face);
+        $this->syncClusterPerson((int) $personId, $face, $personName);
 
         $media = $this->resolveMedia((int) $person->tree_id, $face, $mediaId);
         if (! $media) {
@@ -204,24 +204,129 @@ class FaceLinkBridgeService
         );
     }
 
-    private function syncClusterPerson(int $personId, object $face): void
+    private function syncClusterPerson(int $personId, object $face, ?string $personName = null): void
     {
         if (empty($face->cluster_id)) {
             return;
         }
 
+        $clusterId = (int) $face->cluster_id;
+
         try {
-            DB::connection('pgsql_rag')->update(
+            $pgsql = DB::connection('pgsql_rag');
+            $cluster = $pgsql->selectOne(
+                'SELECT id, genealogy_person_id FROM person_clusters WHERE id = ?',
+                [$clusterId]
+            );
+
+            if (! $cluster) {
+                Log::warning('FaceLinkBridgeService: Cluster link sync skipped; cluster not found', [
+                    'cluster_id' => $clusterId,
+                    'person_id' => $personId,
+                ]);
+
+                return;
+            }
+
+            $currentPersonId = $this->nullableInt($cluster->genealogy_person_id ?? null);
+            $agreement = $this->clusterFacesAgreeWithPerson($clusterId, $personId, $personName);
+
+            if ($currentPersonId !== null && $currentPersonId !== $personId) {
+                Log::warning('FaceLinkBridgeService: Cluster link sync blocked by conflicting cluster person', [
+                    'cluster_id' => $clusterId,
+                    'person_id' => $personId,
+                    'current_person_id' => $currentPersonId,
+                    'named_linked_face_count' => $agreement['named_linked_face_count'],
+                    'conflicting_face_count' => $agreement['conflicting_face_count'],
+                    'conflicting_face_ids' => $agreement['conflicting_face_ids'],
+                ]);
+
+                return;
+            }
+
+            if (! $agreement['all_agree']) {
+                Log::warning('FaceLinkBridgeService: Cluster link sync blocked by mixed visible faces', [
+                    'cluster_id' => $clusterId,
+                    'person_id' => $personId,
+                    'current_person_id' => $currentPersonId,
+                    'named_linked_face_count' => $agreement['named_linked_face_count'],
+                    'conflicting_face_count' => $agreement['conflicting_face_count'],
+                    'conflicting_face_ids' => $agreement['conflicting_face_ids'],
+                ]);
+
+                return;
+            }
+
+            $pgsql->update(
                 'UPDATE person_clusters SET genealogy_person_id = ?, updated_at = NOW() WHERE id = ?',
-                [$personId, $face->cluster_id]
+                [$personId, $clusterId]
             );
         } catch (Throwable $e) {
             Log::warning('FaceLinkBridgeService: Cluster link sync failed', [
-                'cluster_id' => $face->cluster_id,
+                'cluster_id' => $clusterId,
                 'person_id' => $personId,
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Visible MySQL face rows are the local evidence for whether a pgvector
+     * cluster can safely carry one genealogy person link.
+     *
+     * @return array{all_agree: bool, named_linked_face_count: int, conflicting_face_count: int, conflicting_face_ids: array<int>}
+     */
+    private function clusterFacesAgreeWithPerson(int $clusterId, int $personId, ?string $personName): array
+    {
+        $rows = DB::select(
+            "SELECT id, person_name, genealogy_person_id
+             FROM file_registry_faces
+             WHERE cluster_id = ?
+               AND COALESCE(hidden, 0) = 0
+               AND (
+                    genealogy_person_id IS NOT NULL
+                    OR TRIM(COALESCE(person_name, '')) <> ''
+               )",
+            [$clusterId]
+        );
+
+        $normalizedPersonName = $this->normalizeName($personName);
+        $conflictingFaceIds = [];
+
+        foreach ($rows as $row) {
+            $linkedPersonId = $this->nullableInt($row->genealogy_person_id ?? null);
+            if ($linkedPersonId === $personId) {
+                continue;
+            }
+
+            $rowName = $this->normalizeName($row->person_name ?? null);
+            if ($linkedPersonId === null && $rowName !== '' && $rowName === $normalizedPersonName) {
+                continue;
+            }
+
+            $conflictingFaceIds[] = (int) $row->id;
+        }
+
+        return [
+            'all_agree' => $conflictingFaceIds === [],
+            'named_linked_face_count' => count($rows),
+            'conflicting_face_count' => count($conflictingFaceIds),
+            'conflicting_face_ids' => array_slice($conflictingFaceIds, 0, 20),
+        ];
+    }
+
+    private function nullableInt(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return (int) $value;
+    }
+
+    private function normalizeName(?string $value): string
+    {
+        return strtolower(trim(preg_replace('/\s+/', ' ', $value ?? '')));
     }
 
     private function nullableFloat(mixed $value): ?float
