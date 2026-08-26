@@ -36,14 +36,9 @@ The public extraction ships code and docs, not private data. Genealogy,
 connector, agent, and media workflows are local/operator-configured surfaces;
 destructive or sensitive changes should stay behind explicit human approval.
 
-## Tip This Work
+## Tip this work
 
-PLOS is free and MIT licensed. If the project or its research helps you, you
-can leave an optional one-time tip through the repository's GitHub Sponsors
-button.
-
-Tips help cover hardware, storage, electricity, hosting, and testing. They do
-not purchase support or deliverables.
+If Personal Life OS Core has helped you, you may leave an [optional one-time tip](https://github.com/sponsors/bherald?frequency=one-time). Tips help offset hardware, storage, electricity, hosting, and testing. A tip does not purchase support, consulting, access, priority, or any deliverable.
 
 ## Quick Start: Docker
 
