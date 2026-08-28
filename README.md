@@ -9,6 +9,8 @@ Status: alpha public-core extraction. Current public release:
 Primary stack: Laravel 12, Vue, MySQL/MariaDB, PostgreSQL 16 + pgvector,
 Redis, Docker, and optional Ollama-compatible local AI.
 
+Watch the six-minute overview: [From Apple II to AI Agents: 5 Lessons That Still Matter](https://youtu.be/JAS4IoRm4sw).
+
 ## Current Public Release
 
 `v0.1.1` refreshes the public core with the June 2026 scheduler, agent,
