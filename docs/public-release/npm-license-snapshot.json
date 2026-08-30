@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-21T16:44:32Z",
+  "generated_at": "2026-08-30T13:15:40Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
       "label": "root",
       "path": ".",
       "lockfile": "package-lock.json",
-      "package_count": 1000,
+      "package_count": 963,
       "buckets": {
-        "permissive": 991,
+        "permissive": 954,
         "watch": 4,
         "other": 5
       },
@@ -1941,7 +1941,7 @@
         },
         {
           "name": "@hono/node-server",
-          "version": "1.19.14",
+          "version": "1.19.17",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -2546,7 +2546,7 @@
         },
         {
           "name": "@puppeteer/browsers",
-          "version": "2.6.1",
+          "version": "3.2.1",
           "license": "Apache-2.0",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -3447,17 +3447,6 @@
           "source": "package.json"
         },
         {
-          "name": "@tootallnate/quickjs-emscripten",
-          "version": "0.23.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/@tootallnate/quickjs-emscripten",
-          "repository": "https://github.com/justjake/quickjs-emscripten",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
           "name": "@types/debug",
           "version": "4.1.12",
           "license": "MIT",
@@ -3565,17 +3554,6 @@
           "package_path": "node_modules/@types/ws",
           "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
           "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/ws",
-          "source": "package.json"
-        },
-        {
-          "name": "@types/yauzl",
-          "version": "2.10.3",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/@types/yauzl",
-          "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
-          "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/yauzl",
           "source": "package.json"
         },
         {
@@ -4195,17 +4173,6 @@
           "source": "package.json"
         },
         {
-          "name": "ast-types",
-          "version": "0.13.4",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/ast-types",
-          "repository": "git://github.com/benjamn/ast-types.git",
-          "homepage": "http://github.com/benjamn/ast-types",
-          "source": "package.json"
-        },
-        {
           "name": "asynckit",
           "version": "0.4.0",
           "license": "MIT",
@@ -4240,24 +4207,13 @@
         },
         {
           "name": "axios",
-          "version": "1.16.1",
+          "version": "1.20.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/axios",
           "repository": "https://github.com/axios/axios.git",
           "homepage": "https://axios-http.com",
-          "source": "package.json"
-        },
-        {
-          "name": "b4a",
-          "version": "1.7.3",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/b4a",
-          "repository": "git+https://github.com/holepunchto/b4a.git",
-          "homepage": "https://github.com/holepunchto/b4a#readme",
           "source": "package.json"
         },
         {
@@ -4283,72 +4239,6 @@
           "source": "package.json"
         },
         {
-          "name": "bare-events",
-          "version": "2.8.2",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/bare-events",
-          "repository": "git+https://github.com/holepunchto/bare-events.git",
-          "homepage": "https://github.com/holepunchto/bare-events#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "bare-fs",
-          "version": "4.5.3",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/bare-fs",
-          "repository": "git+https://github.com/holepunchto/bare-fs.git",
-          "homepage": "https://github.com/holepunchto/bare-fs#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "bare-os",
-          "version": "3.6.2",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/bare-os",
-          "repository": "git+https://github.com/holepunchto/bare-os.git",
-          "homepage": "https://github.com/holepunchto/bare-os#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "bare-path",
-          "version": "3.0.0",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/bare-path",
-          "repository": "git+https://github.com/holepunchto/bare-path.git",
-          "homepage": "https://github.com/holepunchto/bare-path#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "bare-stream",
-          "version": "2.7.0",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/bare-stream",
-          "repository": "git+https://github.com/holepunchto/bare-stream.git",
-          "homepage": "https://github.com/holepunchto/bare-stream#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "bare-url",
-          "version": "2.3.2",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/bare-url",
-          "repository": "git+https://github.com/holepunchto/bare-url.git",
-          "homepage": "https://github.com/holepunchto/bare-url",
-          "source": "package.json"
-        },
-        {
           "name": "base64-js",
           "version": "1.5.1",
           "license": "MIT",
@@ -4367,17 +4257,6 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/baseline-browser-mapping",
           "repository": "git+https://github.com/web-platform-dx/baseline-browser-mapping.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "basic-ftp",
-          "version": "5.3.1",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/basic-ftp",
-          "repository": "https://github.com/patrickjuchli/basic-ftp.git",
           "homepage": "",
           "source": "package.json"
         },
@@ -4405,7 +4284,7 @@
         },
         {
           "name": "body-parser",
-          "version": "2.2.2",
+          "version": "2.3.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -4427,7 +4306,7 @@
         },
         {
           "name": "brace-expansion",
-          "version": "2.1.0",
+          "version": "2.1.4",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -4438,18 +4317,18 @@
         },
         {
           "name": "brace-expansion",
-          "version": "5.0.6",
+          "version": "5.0.9",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/minimatch/node_modules/brace-expansion",
-          "repository": "git+ssh://git@github.com/juliangruber/brace-expansion.git",
+          "repository": "git+https://github.com/juliangruber/brace-expansion.git",
           "homepage": "",
           "source": "package.json"
         },
         {
           "name": "brace-expansion",
-          "version": "1.1.14",
+          "version": "1.1.18",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -4500,28 +4379,6 @@
           "package_path": "node_modules/buffer",
           "repository": "git://github.com/feross/buffer.git",
           "homepage": "https://github.com/feross/buffer",
-          "source": "package.json"
-        },
-        {
-          "name": "buffer",
-          "version": "5.7.1",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/unbzip2-stream/node_modules/buffer",
-          "repository": "git://github.com/feross/buffer.git",
-          "homepage": "https://github.com/feross/buffer",
-          "source": "package.json"
-        },
-        {
-          "name": "buffer-crc32",
-          "version": "0.2.13",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/buffer-crc32",
-          "repository": "git://github.com/brianloveswords/buffer-crc32.git",
-          "homepage": "https://github.com/brianloveswords/buffer-crc32",
           "source": "package.json"
         },
         {
@@ -4724,7 +4581,7 @@
         },
         {
           "name": "chromium-bidi",
-          "version": "0.11.0",
+          "version": "17.0.2",
           "license": "Apache-2.0",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -4764,6 +4621,17 @@
           "package_path": "node_modules/cli-width",
           "repository": "git@github.com:knownasilya/cli-width.git",
           "homepage": "https://github.com/knownasilya/cli-width",
+          "source": "package.json"
+        },
+        {
+          "name": "cliui",
+          "version": "9.0.1",
+          "license": "ISC",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/@puppeteer/browsers/node_modules/cliui",
+          "repository": "yargs/cliui",
+          "homepage": "",
           "source": "package.json"
         },
         {
@@ -4922,11 +4790,33 @@
         },
         {
           "name": "content-type",
+          "version": "2.1.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/body-parser/node_modules/content-type",
+          "repository": "jshttp/content-type",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "content-type",
           "version": "1.0.5",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/content-type",
+          "repository": "jshttp/content-type",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "content-type",
+          "version": "2.1.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/type-is/node_modules/content-type",
           "repository": "jshttp/content-type",
           "homepage": "",
           "source": "package.json"
@@ -5428,17 +5318,6 @@
         },
         {
           "name": "data-uri-to-buffer",
-          "version": "6.0.2",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/data-uri-to-buffer",
-          "repository": "https://github.com/TooTallNate/proxy-agents.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "data-uri-to-buffer",
           "version": "4.0.1",
           "license": "MIT",
           "bucket": "permissive",
@@ -5515,17 +5394,6 @@
           "source": "package.json"
         },
         {
-          "name": "degenerator",
-          "version": "5.0.1",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/degenerator",
-          "repository": "https://github.com/TooTallNate/proxy-agents.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
           "name": "delaunator",
           "version": "5.0.1",
           "license": "ISC",
@@ -5582,7 +5450,7 @@
         },
         {
           "name": "devtools-protocol",
-          "version": "0.0.1367902",
+          "version": "0.0.1666840",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -5637,7 +5505,7 @@
         },
         {
           "name": "dompurify",
-          "version": "3.4.11",
+          "version": "3.4.14",
           "license": "(MPL-2.0 OR Apache-2.0)",
           "bucket": "watch",
           "lockfile": "package-lock.json",
@@ -5732,6 +5600,17 @@
           "package_path": "node_modules/electron-to-chromium",
           "repository": "https://github.com/kilian/electron-to-chromium/",
           "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "emoji-regex",
+          "version": "10.6.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/@puppeteer/browsers/node_modules/emoji-regex",
+          "repository": "https://github.com/mathiasbynens/emoji-regex.git",
+          "homepage": "https://mths.be/emoji-regex",
           "source": "package.json"
         },
         {
@@ -5831,17 +5710,6 @@
           "package_path": "node_modules/encodeurl",
           "repository": "pillarjs/encodeurl",
           "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "end-of-stream",
-          "version": "1.4.5",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/end-of-stream",
-          "repository": "git://github.com/mafintosh/end-of-stream.git",
-          "homepage": "https://github.com/mafintosh/end-of-stream",
           "source": "package.json"
         },
         {
@@ -5977,39 +5845,6 @@
           "source": "package.json"
         },
         {
-          "name": "escodegen",
-          "version": "2.1.0",
-          "license": "BSD-2-Clause",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/escodegen",
-          "repository": "http://github.com/estools/escodegen.git",
-          "homepage": "http://github.com/estools/escodegen",
-          "source": "package.json"
-        },
-        {
-          "name": "esprima",
-          "version": "4.0.1",
-          "license": "BSD-2-Clause",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/esprima",
-          "repository": "https://github.com/jquery/esprima.git",
-          "homepage": "http://esprima.org",
-          "source": "package.json"
-        },
-        {
-          "name": "estraverse",
-          "version": "5.3.0",
-          "license": "BSD-2-Clause",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/estraverse",
-          "repository": "http://github.com/estools/estraverse.git",
-          "homepage": "https://github.com/estools/estraverse",
-          "source": "package.json"
-        },
-        {
           "name": "estree-walker",
           "version": "2.0.2",
           "license": "MIT",
@@ -6018,17 +5853,6 @@
           "package_path": "node_modules/estree-walker",
           "repository": "https://github.com/Rich-Harris/estree-walker",
           "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "esutils",
-          "version": "2.0.3",
-          "license": "BSD-2-Clause",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/esutils",
-          "repository": "http://github.com/estools/esutils.git",
-          "homepage": "https://github.com/estools/esutils",
           "source": "package.json"
         },
         {
@@ -6076,17 +5900,6 @@
           "source": "package.json"
         },
         {
-          "name": "events-universal",
-          "version": "1.0.1",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/events-universal",
-          "repository": "git+https://github.com/holepunchto/events-universal.git",
-          "homepage": "https://github.com/holepunchto/events-universal#readme",
-          "source": "package.json"
-        },
-        {
           "name": "eventsource",
           "version": "3.0.7",
           "license": "MIT",
@@ -6121,7 +5934,7 @@
         },
         {
           "name": "express-rate-limit",
-          "version": "8.4.1",
+          "version": "8.7.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -6142,17 +5955,6 @@
           "source": "package.json"
         },
         {
-          "name": "extract-zip",
-          "version": "2.0.1",
-          "license": "BSD-2-Clause",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/extract-zip",
-          "repository": "maxogden/extract-zip",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
           "name": "fast-deep-equal",
           "version": "3.1.3",
           "license": "MIT",
@@ -6161,17 +5963,6 @@
           "package_path": "node_modules/fast-deep-equal",
           "repository": "git+https://github.com/epoberezkin/fast-deep-equal.git",
           "homepage": "https://github.com/epoberezkin/fast-deep-equal#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "fast-fifo",
-          "version": "1.3.2",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/fast-fifo",
-          "repository": "https://github.com/mafintosh/fast-fifo.git",
-          "homepage": "https://github.com/mafintosh/fast-fifo",
           "source": "package.json"
         },
         {
@@ -6187,7 +5978,7 @@
         },
         {
           "name": "fast-uri",
-          "version": "3.1.2",
+          "version": "3.1.6",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -6259,17 +6050,6 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/fbjs-css-vars",
           "repository": "facebook/fbjs",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "fd-slicer",
-          "version": "1.1.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/fd-slicer",
-          "repository": "git://github.com/andrewrk/node-fd-slicer.git",
           "homepage": "",
           "source": "package.json"
         },
@@ -6583,7 +6363,7 @@
         },
         {
           "name": "get-east-asian-width",
-          "version": "1.4.0",
+          "version": "1.6.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -6612,28 +6392,6 @@
           "package_path": "node_modules/get-proto",
           "repository": "git+https://github.com/ljharb/get-proto.git",
           "homepage": "https://github.com/ljharb/get-proto#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "get-stream",
-          "version": "5.2.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/get-stream",
-          "repository": "sindresorhus/get-stream",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "get-uri",
-          "version": "6.0.5",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/get-uri",
-          "repository": "https://github.com/TooTallNate/proxy-agents.git",
-          "homepage": "",
           "source": "package.json"
         },
         {
@@ -6902,7 +6660,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.26",
+          "version": "4.13.5",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -6919,17 +6677,6 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/http-errors",
           "repository": "jshttp/http-errors",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "http-proxy-agent",
-          "version": "7.0.2",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/http-proxy-agent",
-          "repository": "https://github.com/TooTallNate/proxy-agents.git",
           "homepage": "",
           "source": "package.json"
         },
@@ -7034,7 +6781,7 @@
         },
         {
           "name": "immutable",
-          "version": "5.1.5",
+          "version": "5.1.9",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -7111,12 +6858,12 @@
         },
         {
           "name": "ip-address",
-          "version": "10.2.0",
+          "version": "10.7.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/ip-address",
-          "repository": "git://github.com/beaugunderson/ip-address.git",
+          "repository": "https://github.com/beaugunderson/ip-address.git",
           "homepage": "",
           "source": "package.json"
         },
@@ -7485,7 +7232,7 @@
         },
         {
           "name": "js-yaml",
-          "version": "4.2.0",
+          "version": "4.3.2",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -7694,7 +7441,7 @@
         },
         {
           "name": "linkify-it",
-          "version": "5.0.1",
+          "version": "5.0.2",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -7897,17 +7644,6 @@
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/path-scurry/node_modules/lru-cache",
-          "repository": "git://github.com/isaacs/node-lru-cache.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "lru-cache",
-          "version": "7.18.3",
-          "license": "ISC",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/proxy-agent/node_modules/lru-cache",
           "repository": "git://github.com/isaacs/node-lru-cache.git",
           "homepage": "",
           "source": "package.json"
@@ -8199,6 +7935,17 @@
           "source": "package.json"
         },
         {
+          "name": "modern-tar",
+          "version": "0.8.4",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/modern-tar",
+          "repository": "git+https://github.com/ayuhito/modern-tar.git",
+          "homepage": "https://github.com/ayuhito/modern-tar",
+          "source": "package.json"
+        },
+        {
           "name": "ms",
           "version": "2.1.3",
           "license": "MIT",
@@ -8233,7 +7980,7 @@
         },
         {
           "name": "nanoid",
-          "version": "3.3.11",
+          "version": "3.3.18",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -8251,17 +7998,6 @@
           "package_path": "node_modules/negotiator",
           "repository": "jshttp/negotiator",
           "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "netmask",
-          "version": "2.0.2",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/netmask",
-          "repository": "git://github.com/rs/node-netmask.git",
-          "homepage": "https://github.com/rs/node-netmask",
           "source": "package.json"
         },
         {
@@ -8496,28 +8232,6 @@
           "source": "package.json"
         },
         {
-          "name": "pac-proxy-agent",
-          "version": "7.2.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/pac-proxy-agent",
-          "repository": "https://github.com/TooTallNate/proxy-agents.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "pac-resolver",
-          "version": "7.0.1",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/pac-resolver",
-          "repository": "https://github.com/TooTallNate/proxy-agents.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
           "name": "package-json-from-dist",
           "version": "1.0.1",
           "license": "BlueOak-1.0.0",
@@ -8727,17 +8441,6 @@
           "source": "package.json"
         },
         {
-          "name": "pend",
-          "version": "1.2.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/pend",
-          "repository": "git://github.com/andrewrk/node-pend.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
           "name": "picocolors",
           "version": "1.1.1",
           "license": "ISC",
@@ -8849,7 +8552,7 @@
         },
         {
           "name": "postcss",
-          "version": "8.5.12",
+          "version": "8.5.26",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -8958,17 +8661,6 @@
           "source": "package.json"
         },
         {
-          "name": "progress",
-          "version": "2.0.3",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/progress",
-          "repository": "git://github.com/visionmedia/node-progress",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
           "name": "promise",
           "version": "7.3.1",
           "license": "MIT",
@@ -8992,7 +8684,7 @@
         },
         {
           "name": "protobufjs",
-          "version": "7.6.4",
+          "version": "7.6.6",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -9013,17 +8705,6 @@
           "source": "package.json"
         },
         {
-          "name": "proxy-agent",
-          "version": "6.5.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/proxy-agent",
-          "repository": "https://github.com/TooTallNate/proxy-agents.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
           "name": "proxy-from-env",
           "version": "2.1.0",
           "license": "MIT",
@@ -9032,28 +8713,6 @@
           "package_path": "node_modules/axios/node_modules/proxy-from-env",
           "repository": "git+https://github.com/Rob--W/proxy-from-env.git",
           "homepage": "https://github.com/Rob--W/proxy-from-env#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "proxy-from-env",
-          "version": "1.1.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/proxy-from-env",
-          "repository": "https://github.com/Rob--W/proxy-from-env.git",
-          "homepage": "https://github.com/Rob--W/proxy-from-env#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "pump",
-          "version": "3.0.3",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/pump",
-          "repository": "git://github.com/mafintosh/pump.git",
-          "homepage": "",
           "source": "package.json"
         },
         {
@@ -9069,7 +8728,7 @@
         },
         {
           "name": "puppeteer",
-          "version": "23.11.1",
+          "version": "25.9.0",
           "license": "Apache-2.0",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -9080,7 +8739,7 @@
         },
         {
           "name": "puppeteer-core",
-          "version": "23.11.1",
+          "version": "25.9.0",
           "license": "Apache-2.0",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -9502,17 +9161,6 @@
           "license": "ISC",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
-          "package_path": "node_modules/@puppeteer/browsers/node_modules/semver",
-          "repository": "git+https://github.com/npm/node-semver.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "semver",
-          "version": "7.7.3",
-          "license": "ISC",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
           "package_path": "node_modules/jsonwebtoken/node_modules/semver",
           "repository": "git+https://github.com/npm/node-semver.git",
           "homepage": "",
@@ -9619,7 +9267,7 @@
         },
         {
           "name": "shell-quote",
-          "version": "1.8.4",
+          "version": "1.10.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -9717,17 +9365,6 @@
           "source": "package.json"
         },
         {
-          "name": "smart-buffer",
-          "version": "4.2.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/smart-buffer",
-          "repository": "https://github.com/JoshGlazebrook/smart-buffer.git",
-          "homepage": "https://github.com/JoshGlazebrook/smart-buffer/",
-          "source": "package.json"
-        },
-        {
           "name": "snake-case",
           "version": "3.0.4",
           "license": "MIT",
@@ -9736,39 +9373,6 @@
           "package_path": "node_modules/snake-case",
           "repository": "git://github.com/blakeembrey/change-case.git",
           "homepage": "https://github.com/blakeembrey/change-case/tree/master/packages/snake-case#readme",
-          "source": "package.json"
-        },
-        {
-          "name": "socks",
-          "version": "2.8.7",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/socks",
-          "repository": "https://github.com/JoshGlazebrook/socks.git",
-          "homepage": "https://github.com/JoshGlazebrook/socks/",
-          "source": "package.json"
-        },
-        {
-          "name": "socks-proxy-agent",
-          "version": "8.0.5",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/socks-proxy-agent",
-          "repository": "https://github.com/TooTallNate/proxy-agents.git",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "source-map",
-          "version": "0.6.1",
-          "license": "BSD-3-Clause",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/source-map",
-          "repository": "http://github.com/mozilla/source-map.git",
-          "homepage": "https://github.com/mozilla/source-map",
           "source": "package.json"
         },
         {
@@ -9805,17 +9409,6 @@
           "source": "package.json"
         },
         {
-          "name": "streamx",
-          "version": "2.23.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/streamx",
-          "repository": "https://github.com/mafintosh/streamx.git",
-          "homepage": "https://github.com/mafintosh/streamx",
-          "source": "package.json"
-        },
-        {
           "name": "string_decoder",
           "version": "1.3.0",
           "license": "MIT",
@@ -9834,6 +9427,39 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/string-env-interpolation",
           "repository": "https://github.com/kamilkisiela/string-env-interpolation",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "string-width",
+          "version": "7.2.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/@puppeteer/browsers/node_modules/cliui/node_modules/string-width",
+          "repository": "sindresorhus/string-width",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "string-width",
+          "version": "8.2.2",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/@puppeteer/browsers/node_modules/string-width",
+          "repository": "sindresorhus/string-width",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "string-width",
+          "version": "7.2.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/@puppeteer/browsers/node_modules/wrap-ansi/node_modules/string-width",
+          "repository": "sindresorhus/string-width",
           "homepage": "",
           "source": "package.json"
         },
@@ -10113,39 +9739,6 @@
           "source": "package.json"
         },
         {
-          "name": "tar-fs",
-          "version": "3.1.1",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/tar-fs",
-          "repository": "https://github.com/mafintosh/tar-fs.git",
-          "homepage": "https://github.com/mafintosh/tar-fs",
-          "source": "package.json"
-        },
-        {
-          "name": "tar-stream",
-          "version": "3.1.7",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/tar-stream",
-          "repository": "git+https://github.com/mafintosh/tar-stream.git",
-          "homepage": "https://github.com/mafintosh/tar-stream",
-          "source": "package.json"
-        },
-        {
-          "name": "text-decoder",
-          "version": "1.2.3",
-          "license": "Apache-2.0",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/text-decoder",
-          "repository": "git+https://github.com/holepunchto/text-decoder.git",
-          "homepage": "https://github.com/holepunchto/text-decoder#readme",
-          "source": "package.json"
-        },
-        {
           "name": "thenify",
           "version": "3.3.1",
           "license": "MIT",
@@ -10165,17 +9758,6 @@
           "package_path": "node_modules/thenify-all",
           "repository": "thenables/thenify-all",
           "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "through",
-          "version": "2.3.8",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/through",
-          "repository": "https://github.com/dominictarr/through.git",
-          "homepage": "https://github.com/dominictarr/through",
           "source": "package.json"
         },
         {
@@ -10411,7 +9993,7 @@
         },
         {
           "name": "type-is",
-          "version": "2.0.1",
+          "version": "2.1.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -10422,7 +10004,7 @@
         },
         {
           "name": "typed-query-selector",
-          "version": "2.12.0",
+          "version": "2.12.2",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -10461,17 +10043,6 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/uc.micro",
           "repository": "markdown-it/uc.micro",
-          "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "unbzip2-stream",
-          "version": "1.4.3",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/unbzip2-stream",
-          "repository": "https://github.com/regular/unbzip2-stream.git",
           "homepage": "",
           "source": "package.json"
         },
@@ -10696,6 +10267,17 @@
           "source": "package.json"
         },
         {
+          "name": "webdriver-bidi-protocol",
+          "version": "0.4.2",
+          "license": "Apache-2.0",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/webdriver-bidi-protocol",
+          "repository": "git+https://github.com/GoogleChromeLabs/webdriver-bidi-protocol.git",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
           "name": "webidl-conversions",
           "version": "3.0.1",
           "license": "BSD-2-Clause",
@@ -10746,6 +10328,17 @@
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/@isaacs/cliui/node_modules/wrap-ansi",
+          "repository": "chalk/wrap-ansi",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "wrap-ansi",
+          "version": "9.0.2",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/@puppeteer/browsers/node_modules/wrap-ansi",
           "repository": "chalk/wrap-ansi",
           "homepage": "",
           "source": "package.json"
@@ -10818,7 +10411,7 @@
         },
         {
           "name": "ws",
-          "version": "8.21.0",
+          "version": "8.21.3",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "package-lock.json",
@@ -10895,6 +10488,17 @@
         },
         {
           "name": "yargs",
+          "version": "18.1.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/@puppeteer/browsers/node_modules/yargs",
+          "repository": "https://github.com/yargs/yargs.git",
+          "homepage": "https://yargs.js.org/",
+          "source": "package.json"
+        },
+        {
+          "name": "yargs",
           "version": "17.7.2",
           "license": "MIT",
           "bucket": "permissive",
@@ -10902,6 +10506,17 @@
           "package_path": "node_modules/yargs",
           "repository": "https://github.com/yargs/yargs.git",
           "homepage": "https://yargs.js.org/",
+          "source": "package.json"
+        },
+        {
+          "name": "yargs-parser",
+          "version": "22.0.0",
+          "license": "ISC",
+          "bucket": "permissive",
+          "lockfile": "package-lock.json",
+          "package_path": "node_modules/@puppeteer/browsers/node_modules/yargs-parser",
+          "repository": "https://github.com/yargs/yargs-parser.git",
+          "homepage": "",
           "source": "package.json"
         },
         {
@@ -10924,17 +10539,6 @@
           "package_path": "node_modules/yargs/node_modules/yargs-parser",
           "repository": "https://github.com/yargs/yargs-parser.git",
           "homepage": "",
-          "source": "package.json"
-        },
-        {
-          "name": "yauzl",
-          "version": "2.10.0",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/yauzl",
-          "repository": "https://github.com/thejoshwolfe/yauzl.git",
-          "homepage": "https://github.com/thejoshwolfe/yauzl",
           "source": "package.json"
         },
         {
@@ -10983,17 +10587,6 @@
         },
         {
           "name": "zod",
-          "version": "3.23.8",
-          "license": "MIT",
-          "bucket": "permissive",
-          "lockfile": "package-lock.json",
-          "package_path": "node_modules/chromium-bidi/node_modules/zod",
-          "repository": "git+https://github.com/colinhacks/zod.git",
-          "homepage": "https://zod.dev",
-          "source": "package.json"
-        },
-        {
-          "name": "zod",
           "version": "3.25.76",
           "license": "MIT",
           "bucket": "permissive",
@@ -11020,9 +10613,9 @@
       "label": "mcp-server",
       "path": "mcp-server",
       "lockfile": "mcp-server/package-lock.json",
-      "package_count": 106,
+      "package_count": 108,
       "buckets": {
-        "permissive": 106
+        "permissive": 108
       },
       "packages": [
         {
@@ -11038,7 +10631,7 @@
         },
         {
           "name": "@hono/node-server",
-          "version": "1.19.14",
+          "version": "1.19.17",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -11115,7 +10708,7 @@
         },
         {
           "name": "body-parser",
-          "version": "2.2.1",
+          "version": "2.3.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -11170,11 +10763,33 @@
         },
         {
           "name": "content-type",
+          "version": "2.1.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "mcp-server/package-lock.json",
+          "package_path": "node_modules/body-parser/node_modules/content-type",
+          "repository": "jshttp/content-type",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "content-type",
           "version": "1.0.5",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
           "package_path": "node_modules/content-type",
+          "repository": "jshttp/content-type",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "content-type",
+          "version": "2.1.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "mcp-server/package-lock.json",
+          "package_path": "node_modules/type-is/node_modules/content-type",
           "repository": "jshttp/content-type",
           "homepage": "",
           "source": "package.json"
@@ -11412,7 +11027,7 @@
         },
         {
           "name": "fast-uri",
-          "version": "3.1.2",
+          "version": "3.1.6",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -11533,7 +11148,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.26",
+          "version": "4.13.5",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -11577,12 +11192,12 @@
         },
         {
           "name": "ip-address",
-          "version": "10.2.0",
+          "version": "10.7.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
           "package_path": "node_modules/ip-address",
-          "repository": "git://github.com/beaugunderson/ip-address.git",
+          "repository": "https://github.com/beaugunderson/ip-address.git",
           "homepage": "",
           "source": "package.json"
         },
@@ -12083,7 +11698,7 @@
         },
         {
           "name": "type-is",
-          "version": "2.0.1",
+          "version": "2.1.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-server/package-lock.json",
@@ -12197,14 +11812,14 @@
       "label": "mcp-servers/plos",
       "path": "mcp-servers/plos",
       "lockfile": "mcp-servers/plos/package-lock.json",
-      "package_count": 119,
+      "package_count": 121,
       "buckets": {
-        "permissive": 119
+        "permissive": 121
       },
       "packages": [
         {
           "name": "@hono/node-server",
-          "version": "1.19.14",
+          "version": "1.19.17",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",
@@ -12292,7 +11907,7 @@
         },
         {
           "name": "body-parser",
-          "version": "2.2.2",
+          "version": "2.3.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",
@@ -12347,11 +11962,33 @@
         },
         {
           "name": "content-type",
+          "version": "2.1.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "mcp-servers/plos/package-lock.json",
+          "package_path": "node_modules/body-parser/node_modules/content-type",
+          "repository": "jshttp/content-type",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "content-type",
           "version": "1.0.5",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",
           "package_path": "node_modules/content-type",
+          "repository": "jshttp/content-type",
+          "homepage": "",
+          "source": "package.json"
+        },
+        {
+          "name": "content-type",
+          "version": "2.1.0",
+          "license": "MIT",
+          "bucket": "permissive",
+          "lockfile": "mcp-servers/plos/package-lock.json",
+          "package_path": "node_modules/type-is/node_modules/content-type",
           "repository": "jshttp/content-type",
           "homepage": "",
           "source": "package.json"
@@ -12589,7 +12226,7 @@
         },
         {
           "name": "fast-uri",
-          "version": "3.1.2",
+          "version": "3.1.6",
           "license": "BSD-3-Clause",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",
@@ -12710,7 +12347,7 @@
         },
         {
           "name": "hono",
-          "version": "4.12.26",
+          "version": "4.13.5",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",
@@ -12754,12 +12391,12 @@
         },
         {
           "name": "ip-address",
-          "version": "10.2.0",
+          "version": "10.7.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",
           "package_path": "node_modules/ip-address",
-          "repository": "git://github.com/beaugunderson/ip-address.git",
+          "repository": "https://github.com/beaugunderson/ip-address.git",
           "homepage": "",
           "source": "package.json"
         },
@@ -13403,7 +13040,7 @@
         },
         {
           "name": "type-is",
-          "version": "2.0.1",
+          "version": "2.1.0",
           "license": "MIT",
           "bucket": "permissive",
           "lockfile": "mcp-servers/plos/package-lock.json",

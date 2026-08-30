@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "overrides": {
-    "ip-address": "10.2.0"
+    "ip-address": "10.7.0"
   },
   "scripts": {
     "build": "tsc",

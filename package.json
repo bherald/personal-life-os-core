@@ -5,7 +5,9 @@
   "type": "module",
   "overrides": {
     "@modelcontextprotocol/sdk": "1.26.0",
-    "ip-address": "10.2.0"
+    "@puppeteer/browsers": "3.2.1",
+    "ip-address": "10.7.0",
+    "puppeteer": "25.9.0"
   },
   "scripts": {
     "dev": "vite",

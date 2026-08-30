@@ -165,7 +165,7 @@ flag_lines "Credentialed URLs" \
     scan_credentialed_urls
 
 flag_lines "Private paths, hosts, users, and compute labels" \
-    git grep -n -I -E '(/home/bill|/Users/bill|C:\\Users\\bill|D:\\master|/MASTER(/|$)|192\.168\.8\.|ai-wphc-production|prod_252|gpu_252|cpu_252|prod_87|gpu_87|cpu_87|\.252_only|\.87_only|bill@|bherald|id_rsa|id_ed25519)' -- "${public_candidate_scan_paths[@]}" \
+    git grep -n -I -E '(/home/bill|/Users/bill|C:\\Users\\bill|D:\\master|/MASTER(/|$)|192\.168\.8\.|ai-wphc-production|prod_252|gpu_252|cpu_252|prod_87|gpu_87|cpu_87|\.252_only|\.87_only|bill@|id_rsa|id_ed25519)' -- "${public_candidate_scan_paths[@]}" \
         "${public_username_scan_excludes[@]}"
 
 flag_lines "Public-candidate files referencing non-exported planning paths" \
@@ -173,7 +173,7 @@ flag_lines "Public-candidate files referencing non-exported planning paths" \
         "${public_privacy_scan_excludes[@]}"
 
 flag_lines "Files containing private paths, LAN hosts, usernames, or machine-specific values" \
-    git grep -l -I -E '(/home/bill|192\.168\.8\.|ai-wphc-production|bill@|bherald)' -- "${public_candidate_scan_paths[@]}" \
+    git grep -l -I -E '(/home/bill|192\.168\.8\.|ai-wphc-production|bill@)' -- "${public_candidate_scan_paths[@]}" \
         "${public_username_scan_excludes[@]}"
 
 flag_lines "Operator-specific Nextcloud library root literal (/MASTER)" \
@@ -231,7 +231,7 @@ flag_lines "Operator username default ('bill') in SSH/Nextcloud helpers" \
         ':!scripts/guards/public-release-audit.sh'
 
 flag_lines "Public-bound source containing private genealogy/person literals" \
-    git grep -n -I -E '(William_P_Herald|\bHerald\b|\bMancini\b|bherald|/home/bill|192\.168\.8\.)' -- \
+    git grep -n -I -E '(William_P_Herald|\bHerald\b|\bMancini\b|/home/bill|192\.168\.8\.)' -- \
         .github \
         app \
         config \

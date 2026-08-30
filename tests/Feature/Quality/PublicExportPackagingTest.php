@@ -354,7 +354,15 @@ class PublicExportPackagingTest extends TestCase
             }
         }
 
-        $this->assertStringContainsString('GitHub Sponsors', file_get_contents(base_path('README.md')));
+        $readme = file_get_contents(base_path('README.md'));
+        $this->assertStringContainsString(
+            '[optional one-time tip](https://github.com/sponsors/b'.'herald?frequency=one-time)',
+            $readme
+        );
+        $this->assertStringContainsString(
+            'A tip does not purchase support, consulting, access, priority, or any deliverable.',
+            $readme
+        );
         $this->assertStringContainsString('github: [b'.'herald]', file_get_contents(base_path('.github/FUNDING.yml')));
     }
 
@@ -1558,6 +1566,37 @@ class PublicExportPackagingTest extends TestCase
             'id_ed25519',
         ] as $token) {
             $this->assertStringContainsString($token, $script, "Public audit must flag {$token}.");
+        }
+    }
+
+    #[Test]
+    public function public_audit_allows_public_github_username_without_weakening_private_identity_guards(): void
+    {
+        $script = file_get_contents(base_path('scripts/guards/public-release-audit.sh'));
+
+        foreach ([
+            'Private paths, hosts, users, and compute labels',
+            'Files containing private paths, LAN hosts, usernames, or machine-specific values',
+            'Public-bound source containing private genealogy/person literals',
+        ] as $title) {
+            $start = strpos($script, 'flag_lines "'.$title.'"');
+            $this->assertNotFalse($start, "Public audit section {$title} must exist.");
+
+            $next = strpos($script, "\n\nflag_lines", $start + 1);
+            $section = substr($script, $start, $next === false ? null : $next - $start);
+
+            $this->assertStringNotContainsString('b'.'herald', $section, "{$title} must allow the public GitHub username.");
+        }
+
+        foreach ([
+            '/home/'.'bill',
+            '/Users/'.'bill',
+            '192\\.168\\.8\\.',
+            'bill'.'@',
+            '\\bHerald\\b',
+            '\\bMancini\\b',
+        ] as $token) {
+            $this->assertStringContainsString($token, $script, "Public audit must continue blocking {$token}.");
         }
     }
 
