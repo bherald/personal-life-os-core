@@ -1,7 +1,9 @@
 # Contributing
 
-PLOS is being prepared for public extraction. Until that extraction is complete,
-this repository remains the private operational source of truth.
+Personal Life OS Core is the sanitized public foundation for a separate private
+operational system. Contributions belong in this public repository without
+importing private deployment history, configuration, credentials, or personal
+data.
 
 Public-bound contributions should keep these rules:
 
@@ -40,5 +42,6 @@ requests. Repository rulesets or branch protection should require the
 `Repository Governance / Production Fix Commit Messages` check before protected
 branches accept direct updates.
 
-The public extraction should start from a clean repository snapshot, not from
-this private repository's full history.
+Keep public contributions focused in this repository. Never copy private
+operational history or unreviewed private artifacts into a branch or pull
+request.
